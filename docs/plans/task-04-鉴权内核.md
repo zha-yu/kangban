@@ -72,7 +72,7 @@
 | T4b-1 | 人员与工牌接线（✅ 已完成） | `resolve_principal`（一类令牌只查一张表）、`get_current_principal` 生成器依赖、`current_staff` / `current_guardian` / `current_device` / `require_roles` | `task-3` 的 `app/db.py` 与 `staff` / `guardian` / `staff_tokens` ORM |
 | T4b-2 | 设备会话回查（✅ 已完成） | `_load_device_row` 读 `devices.device_id / token_hash / status / elder_id` 并送进 T4a 判定；工牌分支补 `devices` JOIN 带出绑定长者；原 `DeviceLookupNotWiredError` 随缺口补齐删除 | `task-3` 的 `Device` ORM（`f2fb1a0`，任务板 P-02 已闭环） |
 | T5 | 分层测试（✅ 已完成） | 覆盖收口：解码侧一致性核对（真密钥手工签矛盾载荷）、三条兜底路径、家属缺行；四层结构与未覆盖行清单落档 | T1–T4 |
-| T6 | 审查与交付报告      | diff 摘要、五类失败断言点、人审记录                      | 全部实现完成                       |
+| T6 | 审查与交付报告      | diff 摘要、五类失败断言点、人审记录（底稿：`docs/plans/adhoc-20261104-鉴权内核审查底稿.md`） | 全部实现完成                       |
 
 ## 5. 实现步骤
 
