@@ -1,0 +1,36 @@
+# 本地依赖服务最小版（task-3）：仅 postgres + redis。
+# 完整 7 服务版（nginx / coturn / backend / laya / weather-mcp / mock-operations-mcp）按大纲留到 Day 10。
+# 口令默认值与 .env.example / app/core/config.py 的本地默认一致；生产值一律经 .env 覆盖，不写死在这里。
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: silvermate-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-silvermate}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-silvermate}
+      POSTGRES_DB: ${POSTGRES_DB:-silvermate}
+    ports:
+      # 宿主端口可经环境变量改写（默认 5432，与 README §6 端口约定一致）；
+      # 本机 5432 被其他项目占用时，在 .env 里设 POSTGRES_HOST_PORT 换端口。
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-silvermate} -d ${POSTGRES_DB:-silvermate}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    container_name: silvermate-redis
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:

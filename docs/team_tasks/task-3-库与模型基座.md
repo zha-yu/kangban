@@ -2,11 +2,16 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 状态 | ⬜ 可认领（前置 `task-1` 已完成） |
-| 认领人 | — |
+| 状态 | ✅ 已完成（2026-11-04，验证与交付记录见 `docs/plans/task-03-库与模型基座.md`） |
+| 认领人 | A（数据基座） |
 | 主责 | A（数据基座） |
 | 前置 | `task-1` |
 | 写作用域 | `docker-compose.yml`、`app/db.py`、`app/models/`、`alembic/versions/`、`tests/conftest.py` |
+
+> 交付补充（2026-11-04）：实际产出比本卡多一项——`alembic/versions/0003_fix_day1_ck_names.py`，
+> 用于 RENAME 修正 `0001` 落库时被 naming_convention 二次前缀的 4 个 CHECK 约束名（0001 本体未动，
+> 依据 AGENTS §4.6）。conftest 未按下方「连 silvermate_test」执行，改为主库事务回滚隔离（决策记录在计划文档）。
+> 本机 5432/6379 被 langfuse 占用时，`.env` 设 `POSTGRES_HOST_PORT`/`REDIS_HOST_PORT` 换端口（默认 5432/6379）。
 
 ## 为什么是它先做
 
