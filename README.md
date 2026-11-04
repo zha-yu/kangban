@@ -143,7 +143,21 @@ pnpm --dir frontend install && pnpm --dir frontend dev
 
 全栈一键起：`docker compose up --build`，然后访问 HTTPS 入口。
 
-> **当前进度说明**：本仓库已完成 Day 1.2「搭工作台」（规则文件、依赖声明、配置样例、忽略规则与首次提交）。`app/`、`docker-compose.yml`、`alembic/`、`frontend/` 会在 Day 1.3–Day 10 逐步落地；上面的命令按目标形态编写，未就绪的步骤会随开发解锁。
+**没有 `uv` 的机器**（本开发机就是这种情况：`.venv` 与系统 `python` 都没有 `pip`）：第 3 步起不动，改用容器跑同一批命令。
+
+```bash
+docker run -d --name silvermate-verify -v "$PWD":/w -w /w python:3.12-slim sleep infinity
+docker exec silvermate-verify pip install fastapi "uvicorn[standard]" pydantic-settings \
+  sqlalchemy alembic "psycopg[binary]" pytest pytest-asyncio httpx ruff
+docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w python -m pytest -q'
+docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:app --port 8000'
+```
+
+需要连 PostgreSQL 跑迁移的完整版本见 [`AGENTS.md` §3.1](AGENTS.md)。
+
+> **当前进度**：Day 1.2「搭工作台」、Day 1.3「ER 与 Day 1 迁移」、Day 1.4「FastAPI 骨架」已完成并提交。
+> 已就绪：`alembic/`（`0001_day1` 五张表，upgrade/downgrade 往返实测）、`app/`（配置 / 结构化日志 / `trace_id` / `/health`）、`docs/ER_数据模型设计.md`、`docs/工作流选型说明.md`。
+> 尚未就绪：`docker-compose.yml`、`frontend/`、`Dockerfile`、`mcp-servers/`、`eval/` —— 随 Day 4–Day 10 落地，上面「起基础组件」「前端」两步届时才可执行。
 
 ---
 
@@ -232,11 +246,14 @@ pnpm --dir frontend install && pnpm --dir frontend dev
 | 文档 | 用途 |
 | --- | --- |
 | [`AGENTS.md`](AGENTS.md) | **AI 协作规则**：技术栈、目录约定、常用命令、禁区、高风险文件清单、模型路由表、硬性数值 |
-| [`docs/康伴3D数字人_PRD.md`](docs/康伴3D数字人_PRD.md) | 需求与验收基线（v2.5） |
-| [`docs/康伴3D数字人_技术设计文档.md`](docs/康伴3D数字人_技术设计文档.md) | 架构、26 张表、Agent 闭环、子图设计（v1.4） |
+| [`docs/康伴3D数字人_PRD.md`](docs/康伴3D数字人_PRD.md) | 需求与验收基线（**v2.6**，§7 修订记录含 26 表 / source 四值 / `follow_up` / `rtc_failed` 的口径变更） |
+| [`docs/康伴3D数字人_技术设计文档.md`](docs/康伴3D数字人_技术设计文档.md) | 架构、26 张表、Agent 闭环、子图设计（**v1.5**，附 C 修订记录） |
+| [`docs/ER_数据模型设计.md`](docs/ER_数据模型设计.md) | **数据模型唯一实现口径**（v0.2）：26 张表逐字段、约束与索引、迁移分批、42 条 AC 取证矩阵 |
+| [`docs/工作流选型说明.md`](docs/工作流选型说明.md) | Workflow vs Agent 判定：四问决策法、9 类能力形态映射、两个子图的分支条件 |
+| [`docs/prompts/seed-prompt.md`](docs/prompts/seed-prompt.md) | 种子提示词模板（六要素 + 两个实例） |
 | [`docs/康伴3D数字人_大纲.md`](docs/康伴3D数字人_大纲.md) | 十天迭代流程（Day 1–Day 10）：课时划分与每日产出物。**仅作节奏参考，不作为需求与技术事实依据**（见 `AGENTS.md` 前置节） |
 
-后续按课程进度补齐：`docs/ER_数据模型设计.md`、`docs/工作流选型说明.md`、`docs/HARNESS_DESIGN.md`、`docs/IDENTITY_RULES.md`、`docs/SECURITY.md`、`docs/AI_USAGE.md`、`docs/INTERVIEW_QA.md`、`docs/prompts/`。
+后续按课程进度补齐：`docs/HARNESS_DESIGN.md`、`docs/IDENTITY_RULES.md`、`docs/SECURITY.md`、`docs/AI_USAGE.md`、`docs/INTERVIEW_QA.md`、`app/prompts/personas/`（人设模板正文）。
 
 ---
 

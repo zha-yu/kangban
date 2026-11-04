@@ -75,10 +75,12 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False, default=str)
 
 
-def configure_logging(level: str = "INFO", *, service: str = "konban", force: bool = False) -> None:
+def configure_logging(
+    level: str = "INFO", *, service: str = "silvermate", force: bool = False
+) -> None:
     """幂等配置根日志器；重复调用不会叠加 handler（uvicorn --reload 会重复 import）。"""
     root = logging.getLogger()
-    if getattr(root, "_konban_configured", False) and not force:
+    if getattr(root, "_silvermate_configured", False) and not force:
         return
 
     handler = logging.StreamHandler(stream=sys.stdout)
@@ -94,7 +96,7 @@ def configure_logging(level: str = "INFO", *, service: str = "konban", force: bo
         logger.handlers.clear()
         logger.propagate = True
 
-    root._konban_configured = True  # type: ignore[attr-defined]
+    root._silvermate_configured = True  # type: ignore[attr-defined]
 
     logging.getLogger(__name__).info(
         "logging configured", extra={_SERVICE_FIELD: service, "log_level": level.upper()}

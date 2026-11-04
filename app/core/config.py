@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     )
 
     # ---------------------------- 应用 ----------------------------
-    app_name: str = "konban"
+    app_name: str = "silvermate"
     app_env: str = "local"
     debug: bool = False
     api_host: str = "0.0.0.0"  # noqa: S104 - 容器内需监听全部网卡，对外暴露由 nginx+TLS 收口
@@ -50,19 +50,21 @@ class Settings(BaseSettings):
     elder_session_expire_hours: int = 24
 
     # ---------------------------- 数据库（业务表） ----------------------------
-    database_url: str = "postgresql+asyncpg://konban:konban@localhost:5432/konban"
+    database_url: str = "postgresql+asyncpg://silvermate:silvermate@localhost:5432/silvermate"
     database_pool_size: int = 10
     database_pool_max_overflow: int = 20
 
     # ---------------------------- LangGraph Checkpoint（独立 schema + 独立连接池） ----------------------------
-    langgraph_checkpoint_database_url: str = "postgresql://konban:konban@localhost:5432/konban"
+    langgraph_checkpoint_database_url: str = (
+        "postgresql://silvermate:silvermate@localhost:5432/silvermate"
+    )
     langgraph_checkpoint_schema: str = "langgraph"
     langgraph_checkpoint_pool_min_size: int = 1
     langgraph_checkpoint_pool_max_size: int = 5
 
     # ---------------------------- 缓存 / 限流 ----------------------------
     redis_url: str = "redis://localhost:6379/0"
-    redis_key_prefix: str = "konban"
+    redis_key_prefix: str = "silvermate"
     rate_limit_per_minute: int = 60
 
     # ---------------------------- System Two · 大模型 ----------------------------
@@ -103,7 +105,7 @@ class Settings(BaseSettings):
     # ---------------------------- WebRTC / TURN ----------------------------
     stun_url: str = "stun:localhost:3478"
     turn_url: str = "turn:localhost:3478"
-    turn_username: str = "konban"
+    turn_username: str = "silvermate"
     turn_credential: str = ""
     turn_credential_ttl_seconds: int = 3600
     webrtc_ice_timeout_seconds: int = 5
@@ -139,7 +141,7 @@ class Settings(BaseSettings):
     langfuse_sample_rate: float = 1.0
     otel_enabled: bool = True
     otel_exporter_otlp_endpoint: str = "http://localhost:4317"
-    otel_service_name: str = "konban-backend"
+    otel_service_name: str = "silvermate-backend"
     metrics_enabled: bool = True
 
     # ---------------------------- 数据保留 / 调度 ----------------------------

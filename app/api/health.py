@@ -21,7 +21,7 @@ router = APIRouter(tags=["health"])
 
 class HealthResponse(BaseModel):
     status: str = Field(examples=["ok"], description="进程存活即 ok，不代表依赖就绪")
-    service: str = Field(examples=["konban"])
+    service: str = Field(examples=["silvermate"])
     version: str = Field(examples=["0.1.0"])
     app_env: str = Field(examples=["local"])
     trace_id: str = Field(description="本次请求的链路 ID，与响应头 X-Trace-Id 相同")

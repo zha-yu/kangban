@@ -14,13 +14,12 @@ keywords = ["elderly-care", "digital-human", "webrtc", "langgraph", "mcp", "agen
 # 版本一律在此统一锁定（技术设计文档 §1.4）。新增依赖前先进 spikes/ 验证。
 dependencies = [
     # ---- HTTP 与配置 ----
-    "fastapi>=0.115",
+    "fastapi[standard]>=0.115",
     "uvicorn[standard]>=0.32",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "python-multipart>=0.0.12",
     "httpx>=0.27",
-
     # ---- 数据层 ----
     "sqlalchemy[asyncio]>=2.0.36",
     "asyncpg>=0.30",
@@ -28,15 +27,12 @@ dependencies = [
     "psycopg[binary]>=3.2",   # langgraph-checkpoint-postgres 使用同步驱动
     "pgvector>=0.3.6",
     "redis>=5.2",
-
     # ---- 调度 ----
     "apscheduler>=3.10",
-
     # ---- Agent / 工作流 ----
     "langgraph>=0.2.60",
     "langgraph-checkpoint-postgres>=2.0",
     "mcp>=1.1",               # MCP 客户端与 mcp-servers 共用协议实现
-
     # ---- 实时语音 ----
     "aiortc>=1.10",
     # VAD 用 webrtcvad-wheels 而非 webrtcvad：上游 webrtcvad 自 2017 年起只发 sdist，
@@ -44,11 +40,9 @@ dependencies = [
     # 本包是 daanzu 维护的同源 fork，import 名仍是 webrtcvad、API 完全一致，
     # 自带 cp310–cp314 的 Windows/macOS/Linux 预编译 wheel，并修了内存泄漏与越界读。
     "webrtcvad-wheels>=2.0.14",
-
     # ---- 鉴权 ----
     "pyjwt[crypto]>=2.9",
     "bcrypt>=4.2",
-
     # ---- 观测 ----
     "prometheus-client>=0.21",
     "opentelemetry-sdk>=1.28",
@@ -123,7 +117,12 @@ indent-style = "space"
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
+# 本项目是应用形态（[tool.uv] package = false），`app` 不会被装进 site-packages；
+# 不把仓库根加进 sys.path 时，`from app.main import create_app` 会 ModuleNotFoundError。
+pythonpath = ["."]
 asyncio_mode = "auto"
+# pytest-asyncio 未来默认值变更提示，显式钉住避免行为漂移
+asyncio_default_fixture_loop_scope = "function"
 addopts = "-ra --strict-markers --strict-config"
 markers = [
     "gate: 三道隔离闸门（会话/记忆/工具授权），100% 覆盖",

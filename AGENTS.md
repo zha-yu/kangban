@@ -38,7 +38,7 @@
 
 | 层 | 选型 | 口径说明 |
 | --- | --- | --- |
-| 语言 | Python 3.13（文档要求 3.12+） | 异步优先；版本在 `pyproject.toml` 统一锁定 |
+| 语言 | Python 3.12（文档要求 3.12+） | 异步优先；`.python-version`、`requires-python`、ruff `target-version`、mypy `python_version` **四处已对齐 3.12**，改版本必须同改四处 |
 | HTTP | FastAPI + Uvicorn + Pydantic v2 + Pydantic Settings | `.env` 由 Pydantic Settings 加载；`trace_id` 中间件挂在 `app/main.py` |
 | 前端 | React + Vite（**MPA 三入口**）+ Tailwind（pad）/ MUI（console、family） | 单仓库单 React 工程，避免 three-vrm 进 console/family 构建包 |
 | 3D 数字人 | three.js + `@pixiv/three-vrm` | 加载失败或超 5s 降级静态头像，**不白屏** |
@@ -135,31 +135,40 @@ docker compose up --build
 
 > 端口约定（文档未定义，本项目自定义 **并已回填 README**）：postgres 5432、redis 6379、backend 8000、frontend nginx 80/443、laya 7001、weather-mcp 7101、mock-operations-mcp 7102、coturn 3478/5349、vite dev 5173。
 
-### 3.1 本机没有 `uv` / `pip` 时的验证路径（当前开发机状态）
+### 3.1 验证路径（uv 优先，Docker 兜底）
 
-当前开发机 Windows 与 WSL 都没有 `uv`，`.venv` 与系统 `python3` 也没有 `pip`，`uv sync`/`uv run` 跑不了。
-**不要**因此跳过验收，改用 Docker 跑同一批命令（已实测可行）：
+**Windows 侧有 `uv`**：`C:\Python313\Scripts\uv.exe`（实测 0.12.24），已装 cpython 3.12.13 / 3.13.7 / 3.14.x。**首选**在 PowerShell 里直接 `uv sync` / `uv run ...`，`.python-version` 已钉 3.12，`uv sync` 会把 `.venv` 对齐到 3.12。
+
+**WSL 里没有 `uv`**，`.venv` 与系统 `python3` 也没有 `pip` —— **在 WSL 里跑 `uv run pytest` 会落空**，从 WSL 调 Windows PowerShell 即可（实测可用）：
+
+```bash
+powershell.exe -NoProfile -Command "Set-Location 'E:\project_month\silvermate'; uv run pytest -q"
+```
+
+> 注意：`wsl` 工具会自动把命令里的 Windows 路径改写成 `/mnt/e/...`，交给 `powershell.exe` 就会变成非法路径（报 `E:\mnt\e\...` 不存在）。调 PowerShell 时必须关闭路径改写（工具参数 `translatePaths: false`），或干脆不要写 Windows 绝对路径。
+
+若某台机器连 `uv` 都装不上，再用 Docker 跑同一批命令（已验证可行）：
 
 ```bash
 # 一次性：起验证容器（仓库根挂到 /w），装与 pyproject 对应的依赖
-docker network create konban-verify
-docker run -d --name konban-pg-verify --network konban-verify \
-  -e POSTGRES_USER=konban -e POSTGRES_PASSWORD=konban -e POSTGRES_DB=konban \
+docker network create silvermate-verify
+docker run -d --name silvermate-pg-verify --network silvermate-verify \
+  -e POSTGRES_USER=silvermate -e POSTGRES_PASSWORD=silvermate -e POSTGRES_DB=silvermate \
   pgvector/pgvector:pg16
-docker run -d --name konban-app-verify --network konban-verify \
+docker run -d --name silvermate-app-verify --network silvermate-verify \
   -v "$PWD":/w -w /w python:3.12-slim sleep infinity
-docker exec konban-app-verify pip install fastapi "uvicorn[standard]" pydantic-settings \
+docker exec silvermate-app-verify pip install fastapi "uvicorn[standard]" pydantic-settings \
   sqlalchemy alembic "psycopg[binary]" pytest pytest-asyncio httpx ruff
 
 # 每次改完代码
-docker exec -w /w konban-app-verify sh -c 'PYTHONPATH=/w ruff check app tests && ruff format --check app tests'
-docker exec -w /w konban-app-verify sh -c 'PYTHONPATH=/w python -m pytest -q'
-docker exec -w /w -e DATABASE_URL=postgresql+asyncpg://konban:konban@konban-pg-verify:5432/konban \
-  konban-app-verify sh -c 'PYTHONPATH=/w alembic upgrade head && PYTHONPATH=/w alembic current'
+docker exec -w /w silvermate-app-verify sh -c 'PYTHONPATH=/w ruff check app tests && ruff format --check app tests'
+docker exec -w /w silvermate-app-verify sh -c 'PYTHONPATH=/w python -m pytest -q'
+docker exec -w /w -e DATABASE_URL=postgresql+asyncpg://silvermate:silvermate@silvermate-pg-verify:5432/silvermate \
+  silvermate-app-verify sh -c 'PYTHONPATH=/w alembic upgrade head && PYTHONPATH=/w alembic current'
 
 # 起服务验证接口（slim 镜像没有 curl，用 python 或 apt-get install curl）
-docker exec -d -w /w konban-app-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:app --port 8000 >/tmp/uv.log 2>&1'
-docker exec konban-app-verify python -c "import urllib.request as u; r=u.urlopen('http://127.0.0.1:8000/health'); print(r.status, r.headers['X-Trace-Id'])"
+docker exec -d -w /w silvermate-app-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:app --port 8000 >/tmp/uv.log 2>&1'
+docker exec silvermate-app-verify python -c "import urllib.request as u; r=u.urlopen('http://127.0.0.1:8000/health'); print(r.status, r.headers['X-Trace-Id'])"
 ```
 
 > 坑（已踩）：`docker cp` 到容器前必须先 `docker exec <c> mkdir -p <dir>`，否则报

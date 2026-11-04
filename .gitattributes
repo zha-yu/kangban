@@ -1,0 +1,27 @@
+# 统一换行符：仓库内一律 LF，检出到 Windows 也不转 CRLF。
+# 仓库里有大量多行 SQL、Alembic 迁移与 Markdown 表格，CRLF 混入会让 diff 整篇变红。
+* text=auto eol=lf
+
+# 逐字节比对的文件（不参与换行转换）
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
+*.ico  binary
+*.vrm  binary
+*.glb  binary
+*.fbx  binary
+*.wav  binary
+*.mp3  binary
+*.mp4  binary
+*.woff2 binary
+
+# Windows 脚本保留 CRLF，否则 cmd/PowerShell 可能解析异常
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# Shell 脚本必须 LF，否则容器内报 "bad interpreter"
+*.sh   text eol=lf
+Dockerfile text eol=lf

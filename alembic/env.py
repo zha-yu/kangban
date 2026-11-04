@@ -25,7 +25,7 @@ def _database_url() -> str:
     """取同步连接串（迁移用 psycopg，不用 asyncpg）。"""
     raw = os.getenv(
         "DATABASE_URL",
-        "postgresql+asyncpg://konban:konban@localhost:5432/konban",
+        "postgresql+asyncpg://silvermate:silvermate@localhost:5432/silvermate",
     )
     return raw.replace("postgresql+asyncpg://", "postgresql+psycopg://")
 
