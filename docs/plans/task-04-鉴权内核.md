@@ -2,7 +2,7 @@
 
 | 项      | 内容                                                                                               |
 | ------ | ------------------------------------------------------------------------------------------------ |
-| 状态     | 进行中（T1、T2、T3、T4a 已完成；T4b 等 `task-3` 建表后接线）                                                             |
+| 状态     | 进行中（T1、T2、T3、T4a、T4b-1 已完成；T4b-2 设备回查等 `task-3` 补 `Device` 模型，任务板 P-02）                        |
 | 对应任务   | `docs/team_tasks/task-4-鉴权内核.md`                                                                 |
 | 主责     | B（鉴权内核）                                                                                          |
 | 前置     | `task-1` 已完成；纯函数先行，数据库接线等待 `task-3`                                                              |
@@ -69,7 +69,8 @@
 | T2 | JWT 安全原语     | 四类令牌签发/解码、Settings 校验、载荷校验                | 无数据库                         |
 | T3 | 运行时身份上下文     | 不可变 `Identity`、contextvar 生命周期管理          | 无数据库                         |
 | T4a | 鉴权纯判定层 | Bearer 解析、三类主体解码、库里事实比对、身份构造、角色判定（可测、不碰库） | 无数据库 |
-| T4b | FastAPI 接线 | `get_session` 回查三张表、主体依赖、`WWW-Authenticate` 响应头 | `task-3` ORM 与 `get_session` |
+| T4b-1 | 人员与工牌接线（✅ 已完成） | `resolve_principal`（一类令牌只查一张表）、`get_current_principal` 生成器依赖、`current_staff` / `current_guardian` / `current_device` / `require_roles` | `task-3` 的 `app/db.py` 与 `staff` / `guardian` / `staff_tokens` ORM |
+| T4b-2 | 设备会话回查（⏸ 阻塞，任务板 P-02） | `devices` 表的 ORM 查询与 `elder_id` 绑定读取；当前对设备令牌抛 `DeviceLookupNotWiredError`，不伪装 401 | 缺 `app/models/device.py` |
 | T5 | 分层测试         | 纯函数测试先行，数据库与依赖测试后接线                       | T1–T4                        |
 | T6 | 审查与交付报告      | diff 摘要、五类失败断言点、人审记录                      | 全部实现完成                       |
 
@@ -131,13 +132,22 @@
 8. 为 `task-5` 保留清晰的 Refresh 解码入口；刷新流程中的账号状态和 `tv` 回查由 `task-5` 服务层复用同一判定规则，避免刷新接口绕过失效检查。
 
 > 落地口径（T4a 已完成，纯判定层）：上面 1–3、6–8 条的**判定规则**已在 `app/core/auth.py`
-> 实现并测试；第 3 条里「查询哪张表、怎么拿 session」属 T4b，等 `task-3` 的 `app/db.py`
-> 与 ORM 就绪后接线，**判定不许在依赖层重写一遍**。本轮新决策登记为契约 **S-19 ~ S-23**：
-> S-19 分派不读未验签 `typ`、S-20 角色取库、S-21 设备只 `locked` 拒、S-22 工牌归属/状态/到期
-> 四条 + **故意不比对 `staff_tokens.scope`**、S-23 Bearer 头语法。
+> 实现并测试；第 3 条里「查询哪张表、怎么拿 session」属 T4b，**判定不许在依赖层重写一遍**。
+> T4a 新决策登记为契约 **S-19 ~ S-23**：S-19 分派不读未验签 `typ`、S-20 角色取库、
+> S-21 设备只 `locked` 拒、S-22 工牌归属/状态/到期四条 + **故意不比对 `staff_tokens.scope`**、
+> S-23 Bearer 头语法。
 > 其中 S-22 的未做项是显式留白：R9 的 `scope` 是单个 text，载荷是列表，切分口径在 PRD/TD
 > 均无出处，等 Day 9 的 E14 定完口径再补比对。
-> 第 1 条的 `WWW-Authenticate: Bearer` 是**响应头**，不在纯判定层产生，由 T4b 的依赖/错误映射落。
+>
+> 落地口径（T4b-1 已完成，人员与工牌接线）：第 3 条的三张表里 `staff_accounts` /
+> `guardian_accounts` / `staff_tokens` 已接 `get_session` 做**只读 SELECT**（判定与查询分离：
+> `_load_*_row` 只把行交回 `*_identity_from_*`，规则不在依赖层重跑），第 5、6 条的注入/回滚与
+> 三个主体依赖、`require_roles` 全部落地。本轮新决策登记为契约 **S-24（主体种类不符 → 401）/
+> S-25（查不到行 → `TOKEN_REVOKED`，不回 404）/ S-26（缺头必须由内核出 401，参数须带 `= None`
+> 默认值，否则落到框架 422）**。
+> 第 1 条的 `WWW-Authenticate: Bearer` **本卡不做**：它是响应头，落点在异常处理器
+> （`app/api/**` 或 `app/core/errors.py`），不在 task-4 写作用域内；本卡只保证抛出的异常类型与
+> 契约 §7 的 `code` 正确，`task-5` 据此映射状态并补头。第 4 条的「设备」分支见 T4b-2。
 
 ### 5.5 T5：测试实施顺序
 
@@ -165,16 +175,16 @@
 
 ### 7.1 功能验收
 
-- [ ] 密码哈希/校验支持超过 72 字节及 Unicode 密码，错误密码不能通过。
-- [ ] Access、Refresh、设备、工牌令牌均可按契约签发和解码，TTL 来自 Settings 或工牌显式参数。
-- [ ] 空 `jwt_secret` 在签发和校验两侧均明确失败。
-- [ ] 五类必测失败全部有独立用例和有效断言：伪造签名、过期、`typ` 混用、`tv` 失配、空 secret 拒签，结果为 401 或明确异常。
-- [ ] 人员账号 `disabled`、`token_version+1` 后旧 Access/Refresh 均不能通过相应校验。
-- [ ] 设备哈希轮换/解绑后旧设备会话 401；工牌记录不存在或过期 401。
-- [ ] 人员 token 不能调用设备依赖，Refresh 不能充当 Access，设备 token 不能通过员工角色检查。
-- [ ] 有效员工但角色不足时 `require_roles` 返回 403；主体种类不符返回 401。
-- [ ] `Identity` 仅在校验成功后进入 context，请求结束及异常后均恢复为空；无任何客户端/模型 `elder_id` 注入入口。
-- [ ] 日志和测试失败输出不包含原始密码、完整 token 或 `jwt_secret`。
+- [x] 密码哈希/校验支持超过 72 字节及 Unicode 密码，错误密码不能通过。
+- [x] Access、Refresh、设备、工牌令牌均可按契约签发和解码，TTL 来自 Settings 或工牌显式参数。
+- [x] 空 `jwt_secret` 在签发和校验两侧均明确失败。
+- [x] 五类必测失败全部有独立用例和有效断言：伪造签名、过期、`typ` 混用、`tv` 失配、空 secret 拒签，结果为 401 或明确异常。
+- [x] 人员账号 `disabled`、`token_version+1` 后旧 Access/Refresh 均不能通过相应校验。<br />Access 侧已由真库用例闭环（`test_db_token_version_bump_revokes_the_issued_token`、`test_db_disable_and_role_edit_revoke_without_touching_the_token`）；**Refresh 的状态/`tv` 回查按 §5.4 第 8 条留给 `task-5`** 服务层复用同一判定函数，本卡只提供 `decode_refresh_token`。
+- [ ] 设备哈希轮换/解绑后旧设备会话 401；工牌记录不存在或过期 401。<br />工牌侧 ✅（含 JOIN 出员工停用、记录过期两条真库用例）；设备侧 ⏸ 判定层 `device_identity_from_session` 已测，**依赖链未接线**（缺 `app/models/device.py`，任务板 P-02），`resolve_principal` 对设备令牌抛 `DeviceLookupNotWiredError` 而非伪装 401。等 T4b-2。
+- [x] 人员 token 不能调用设备依赖，Refresh 不能充当 Access，设备 token 不能通过员工角色检查。
+- [x] 有效员工但角色不足时 `require_roles` 返回 403；主体种类不符返回 401（契约 S-24，并有真实 `TestClient` 用例证明工牌先撞 401 那道门）。
+- [x] `Identity` 仅在校验成功后进入 context，请求结束及异常后均恢复为空；无任何客户端/模型 `elder_id` 注入入口。
+- [x] 日志和测试失败输出不包含原始密码、完整 token 或 `jwt_secret`。
 
 ### 7.2 工程验收
 
@@ -184,8 +194,8 @@ uv run pytest -q
 uv run ruff check app tests
 ```
 
-- [ ] 上述命令在有 PostgreSQL 测试库的环境通过；数据库用例无静默 skip。
-- [ ] 仅修改本任务允许的四个实现/测试文件，不新增依赖，不触碰其他任务写作用域。
+- [x] 上述命令在有 PostgreSQL 测试库的环境通过；数据库用例无静默 skip。（2026-11-04 本机 docker：`pytest -q` 190 条全绿、0 skip；9 条真库用例走本文件的 `auth_db` 夹具，隔离契约与 conftest 的 `db_conn` 相同——事务 + 回滚 + 连不上即 skip。**注意**：`auth_db` 自建 NullPool 引擎是为了绕开 `db_conn` 的跨事件循环连接池缺陷（任务板 P-03），A 修好 conftest 后应删掉它、改回 `db_conn`。）
+- [x] 仅修改本任务允许的四个实现/测试文件，不新增依赖，不触碰其他任务写作用域。（`auth.py` 按卡面对 `app/db.py::get_session` 与 `app/models/**` 做**只读 SELECT**，不写库、不碰迁移；`tests/test_security.py` 里的 `rooms` / `devices` 两行是裸 SQL，只为补齐 `staff_tokens` 的外键链，等 P-02 的 `Device` 模型落地后改 ORM。）
 - [ ] `security.py`、`auth.py` 已人工逐行审查 diff。
 - [ ] 交付报告包含 diff 摘要，以及五类失败用例各自的测试名和断言点。
 
@@ -207,3 +217,4 @@ uv run ruff check app tests
 | v1.2 | 2026-11-04 | T2 完成：四类令牌签发 + 纯解码（不含回查库）落地，88 条单测、全量 95 条、ruff check/format、mypy 全绿。<br />**事实纠正**：原计划与代码注释假设「pyjwt 的 `leeway` 不作用于 `iat`」，pyjwt 2.15.1 实测**推翻**——`leeway` 对 `iat` 有效，但它是全局旋钮、会连带放宽 `exp`。实现做法不变（关 `verify_iat` + 自判 ≤60s），理由换成实测成立的那条，注释与用例已同步（`test_pyjwt_leeway_is_the_wrong_knob_for_iat_skew`）。<br />**测试自纠**：`STAFF_ID`/`GUARDIAN_ID`/`DEVICE_ID` 三个常量全是数字，`.upper()` 是空操作，导致两条「大写 UUID 规范化」用例静默退化为空测试；改用一个含字母的 `LETTERED_ID` 并在用例内断言 `upper() != 原值`，防止再次无声失效。<br />新增契约自裁 S-13/S-14/S-15/S-16（见契约 §12 v1.2） |
 | v1.3 | 2026-11-04 | T3 完成：`app/core/runtime_context.py` 落地 `Identity`（frozen + slots，`__post_init__` 强制字段矩阵）与 contextvar 载体（`set/get/require/reset/identity_scope/as_mapping`），新增 25 条用例，单文件 113 条、全量 120 条、ruff check/format、mypy（`security.py` + `runtime_context.py`）全绿。<br />**复用而非重造**：把 `security.py` 的 `_canonical_uuid` / `_STAFF_ROLES` / `_normalize_scope` 提为公开 `canonical_uuid` / `STAFF_ROLES` / `normalize_scope`，身份构造直接调用——令牌与身份必须同一套判定。<br />**实现自查**：`identity_scope` 初版漏了 `@contextmanager`，返回裸 generator，被 T3 用例当场抓到（`TypeError: 'generator' object does not support the context manager protocol`）——「异常必回滚」这条不写用例就根本测不出来。<br />**登记**：新增契约自裁 S-17（身份字段矩阵，`staff`/`guardian` 不容纳 `elder_id`）、S-18（注入只收 `Identity` 实例、无身份抛 `IdentityNotSetError`、写入必须成对回滚）。<br />**回报但不擅改**：`uv run mypy app/core` 在 Day 1 的 `app/core/context.py:44`、`app/core/trace.py:45` 各报一条 `union-attr`（`bool(value) and` 之后 mypy 不收窄），不在 task-4 写作用域内，等主理人决定是否顺手修。 |
 | v1.4 | 2026-11-04 | T4 拆成 T4a（纯判定层，本轮完成）/ T4b（`get_session` 接线，等 task-3）。T4a 落地 `app/core/auth.py`：`bearer_token_from_header`、`decode_principal_token`、`decode_refresh_token`、三类 `*_identity_from_*` 构造函数、`device_hash_prefix_matches`、`staff_card_lookup_key`、`check_roles`，异常系 `AuthError` 五种子类各带契约 §7 的 `code`；新增约 40 条用例，单文件 145 条、全量 152 条、ruff check/format、mypy（三个 auth 文件）全绿。<br />**判定与接线分离**：`auth.py` 只吃「从库里读出的事实」（`db_role` / `db_status` / `db_token_hash` / `db_expires_at` 等关键字参数），SQL 与 session 留在 T4b，避免同一条规则在依赖层重写第二份。<br />**两处口径纠正**：`decode_principal_token` 的三类尝试循环原先注释写「先判 typ 再验签」，实为逐类完整验签、过期在 typ 核对之前命中——注释按实现改正；员工角色越界的用例前提写错（漂移判定先命中，永远走不到构造），改成显式断言「库里脏角色进不了身份」。<br />**lint 自纠**：4 个契约 §7 响应码常量里 3 个被 ruff `S105` 误判成硬编码口令，加 `# noqa: S105` 并在上一行写清「是响应码字面量，不是密钥」，不放宽全局规则。<br />**登记**：新增契约自裁 S-19 ~ S-23（见契约 §12 v1.4），其中 S-22 明确记录工牌本轮**不比对** `staff_tokens.scope` 及原因。 |
+| v1.5 | 2026-11-04 | T4b-1（人员与工牌接线）完成：`app/core/auth.py` 新增 `resolve_principal`、生成器依赖 `get_current_principal`、`_load_staff_row` / `_load_guardian_row` / `_load_staff_token_row` 三条只读 SELECT、`current_staff` / `current_guardian` / `current_device` / `require_roles`，以及 `DeviceLookupNotWiredError`（设备分支未接线，**刻意不伪装成 401**）。新增 34 条用例（假会话 + `TestClient` 真实 ASGI 链 + 9 条真库），单文件 183 条、全量 190 条、0 skip，ruff check/format、mypy（三个 auth 文件）全绿。<br />**两条只有走真实链路才暴露的问题**：① 只写 `Annotated[str \| None, Header()]` 时 FastAPI 把 `Authorization` 当必填头，缺头直接 422 `{"type":"missing"}`，`bearer_token_from_header` 根本不被调用——与 §7「凭证缺失 = 401」冲突，改成 `= None`（有默认值只能排末位，故 `get_current_principal` 的参数顺序与 `resolve_principal` 相反）；② 工牌主体直接调 `require_roles(...)(identity)` 会得到 403，而真实链路先经 `current_staff` 得 401——顺序只在框架里成立，因此补 `TestClient` 用例，登记 S-24。<br />**新增自裁**：S-24（主体种类不符 → 401）、S-25（查不到行 → `TOKEN_REVOKED`，不回 404、不回显令牌）、S-26（缺头由内核出 401，须带 `= None`），见契约 §12 v1.5。<br />**夹具自纠（回报不改）**：conftest 的 `db_conn` 复用 `app/db.py` 的模块级引擎，而 pytest-asyncio 每个用例一个新事件循环——池里留下的 asyncpg 连接属于已关闭的循环，隔一个用例就在 `engine.connect()` 炸 `AttributeError: 'NoneType' object has no attribute 'send'`，表现为「一半通过、一半 skip」，看着像数据库在抖。本轮在本文件内自建 `auth_db`（NullPool，同契约：事务 + 回滚 + 连不上即 skip）先把真库用例跑实，缺陷登记任务板 P-03 请 A 在 conftest 补 `engine.dispose()`；A 修好后 `auth_db` 应删除、全部改回 `db_conn`。<br />**边界复述**：`app/core/auth.py` 只 `SELECT`，不写库、不碰迁移；`app/api/**`、`app/main.py` 未动。设备分支等 P-02 的 `Device` 模型（T4b-2）。 |
