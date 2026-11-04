@@ -10,7 +10,7 @@
 | --- | --- | --- | --- | --- | --- |
 | `task-1` | Step0 身份与权限契约冻结 | A–E 全员 | ✅ 已完成（`707bdf6`） | — | `docs/接口契约_身份与权限.md` |
 | `task-2` | 提示词模板库 v1（6 个模板） | E | ⬜ 待认领 | — | `docs/prompts/` |
-| `task-3` | Step1 库与模型基座（5 表 + `0002` 迁移 + conftest） | A | ⬜ 可认领 | `task-1` ✅ | `docker-compose.yml`、`app/db.py`、`app/models/`、`alembic/versions/`、`tests/conftest.py` |
+| `task-3` | Step1 库与模型基座（5 表 + `0002` 迁移 + conftest） | A | ✅ 已完成 | `task-1` ✅ | `docker-compose.yml`、`app/db.py`、`app/models/`、`alembic/versions/`、`tests/conftest.py` |
 | `task-4` | Step2 鉴权内核（security / 依赖注入 / runtime_context） | B | ⬜ 可认领 | `task-1` ✅ | `app/core/security.py`、`app/core/auth.py`、`app/core/runtime_context.py`、`tests/test_security.py` |
 | `task-5` | Step3 登录与凭证接口 | C | 🔒 锁定 | `task-3`、`task-4` | `app/services/auth_service.py`、`app/api/auth.py`、`tests/test_auth_api.py` |
 | `task-6` | Step4 长者 CRUD + 设备绑定 + 范围过滤 | D | 🔒 锁定 | `task-3`、`task-4` | `app/services/{elder,device}_service.py`、`app/api/{elders,devices}.py`、`tests/test_elders_api.py` |
@@ -18,10 +18,15 @@
 
 图例：⬜ 待认领 · 🚧 进行中 · ✅ 已完成 · 🔒 锁定（前置未完成） · ⛔ 阻塞
 
+> 交付说明（task-3，2026-11-04）：5 表 ORM + `0002` 迁移 + conftest + 最小版 compose 已落地，
+> 另加 `0003` 迁移修正 `0001` 的 4 个 CHECK 双前缀命名（0001 本体未动）；验证全绿
+> （ruff / mypy / pytest / alembic 升降级闭环），详见 `docs/plans/task-03-库与模型基座.md`。
+> conftest 实际为主库事务回滚隔离（卡面「silvermate_test」未采用，决策在计划文档）。
+
 ## 二、解锁节奏
 
 ```
-task-1 ✅ ─┬─► task-3   ◀ 现在可认领（A）
+task-1 ✅ ─┬─► task-3 ✅ 已完成（A）
            └─► task-4   ◀ 现在可认领（B）
 
 task-3 ─┐
