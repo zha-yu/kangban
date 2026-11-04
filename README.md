@@ -232,7 +232,7 @@ pnpm --dir frontend install && pnpm --dir frontend dev
 | [`AGENTS.md`](AGENTS.md) | **AI 协作规则**：技术栈、目录约定、常用命令、禁区、高风险文件清单、模型路由表、硬性数值 |
 | [`docs/康伴3D数字人_PRD.md`](docs/康伴3D数字人_PRD.md) | 需求与验收基线（v2.5） |
 | [`docs/康伴3D数字人_技术设计文档.md`](docs/康伴3D数字人_技术设计文档.md) | 架构、26 张表、Agent 闭环、子图设计（v1.4） |
-| [`docs/康伴3D数字人_大纲.md`](docs/康伴3D数字人_大纲.md) | 12 天课程进度与每日验收 |
+| [`docs/康伴3D数字人_大纲.md`](docs/康伴3D数字人_大纲.md) | 十天迭代流程（Day 1–Day 10）：课时划分与每日产出物。**仅作节奏参考，不作为需求与技术事实依据**（见 `AGENTS.md` 前置节） |
 
 后续按课程进度补齐：`docs/ER_数据模型设计.md`、`docs/工作流选型说明.md`、`docs/HARNESS_DESIGN.md`、`docs/IDENTITY_RULES.md`、`docs/SECURITY.md`、`docs/AI_USAGE.md`、`docs/INTERVIEW_QA.md`、`docs/prompts/`。
 
