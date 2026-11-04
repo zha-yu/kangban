@@ -42,7 +42,9 @@ class TraceIdMiddleware:
 
         headers = Headers(scope=scope)
         incoming = headers.get(TRACE_HEADER)
-        trace_id = incoming.strip() if is_valid_trace_id(incoming) else new_trace_id()
+        # incoming 判空要放在 is_valid_trace_id 之前：Headers.get 返回 str | None，
+        # mypy 只认显式判空收窄，否则下面的 .strip() 报 union-attr
+        trace_id = incoming.strip() if incoming and is_valid_trace_id(incoming) else new_trace_id()
 
         token = set_trace_id(trace_id)
         scope.setdefault("state", {})["trace_id"] = trace_id
