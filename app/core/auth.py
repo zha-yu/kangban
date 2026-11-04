@@ -5,11 +5,12 @@
 - `security.py`：验签、算法白名单、载荷一致性（纯密码学，失败原因按内部语义分类）；
 - **本文件**：Bearer 头解析 → 三类主体令牌解码 → 把「从库里读出的事实」与载荷逐项比对
   → 组装 `Identity`；失败原因按契约 §7 的对外 `code` 分类；
-- T4b-1（已接线）：文件末尾的 `resolve_principal` / `get_current_principal` 与三个主体依赖，
-  只负责 `SELECT` 与 `get_session`，把读到的事实原样传进上面的判定函数。
+- 接线层（T4b-1 人员/工牌、T4b-2 设备）：文件末尾的 `resolve_principal` /
+  `get_current_principal` 与三个主体依赖，只负责 `SELECT` 与 `get_session`，
+  把读到的事实原样传进上面的判定函数。
   **判定规则不许在依赖层再写一遍**，否则「护工改角色」这类失效判定会出现两套口径。
-- T4b-2（未接线）：设备会话回查缺 `app/models/device.py`（任务板 P-02）；工牌身份的
-  `elder_id` 同样读自 `devices`，本轮传 `None`，与契约 S-22 的未做项同一批补齐。
+  设备会话与工牌身份的 `elder_id` 都读自 `devices`（契约 §5.3、S-17）。
+  仍未做的一条：工牌不比对 `staff_tokens.scope` 与载荷 `scope`，原因与翻案条件见契约 S-22。
 
 本文件不生成 HTTP 响应：异常只携带契约 §7 的 `code`，异常 → 响应的映射属
 `app/core/errors.py`（§11 落点，B 负责，但不在 task-4 写作用域内）。
@@ -49,7 +50,7 @@ from app.core.security import (
     sha256_hex,
 )
 from app.db import get_session
-from app.models import GuardianAccount, StaffAccount, StaffToken
+from app.models import Device, GuardianAccount, StaffAccount, StaffToken
 
 # ------------------------------------------------------------------ 对外错误码（契约 §7）
 
@@ -425,16 +426,7 @@ def _optional_uuid_text(value: object | None) -> str | None:
     return None if value is None else canonical_uuid(value)
 
 
-# ------------------------------------------------------------------ T4b-1：库里回查的接线
-
-
-class DeviceLookupNotWiredError(RuntimeError):
-    """设备会话的库内回查还没接线（缺 `app/models/device.py`，见任务板 P-02）。
-
-    刻意**不**继承 `AuthError`、也**不**回 401：这不是凭证坏了，是这条路径还没实现。
-    把它伪装成 `TOKEN_INVALID` 的后果是让排障的人去查一张本来没问题的令牌，
-    而平板端以为凭证被撤销、开始重登循环 —— 缺口必须吵，不能静音。
-    """
+# ------------------------------------------------------------------ T4b：库里回查的接线
 
 
 def _uuid_bind(value: str) -> uuid.UUID:
@@ -481,11 +473,37 @@ async def _load_guardian_row(session: AsyncSession, guardian_id: str) -> Sequenc
     return row
 
 
-async def _load_staff_token_row(session: AsyncSession, lookup_key: str) -> Sequence[Any]:
-    """以哈希为键读 `staff_tokens`，并带出所属员工的当前状态。
+async def _load_device_row(session: AsyncSession, device_id: str) -> Sequence[Any]:
+    """按主键读 `devices` 的判定列；缺行即判撤销。
 
-    JOIN 是必须的：R9 只有 `expires_at`，员工停用不会写进工牌行；不 JOIN 就会出现
-    「人被 disabled 了，卡还能刷到过期」。
+    只取 `device_id / token_hash / status / elder_id`，心跳、房间、绑定关系一概不读：
+    这里产出的是**凭证事实**，设备在不在网属 FR-ADM-10 的心跳判定，不属鉴权。
+    """
+    row = (
+        await session.execute(
+            select(
+                Device.device_id,
+                Device.token_hash,
+                Device.status,
+                Device.elder_id,
+            ).where(Device.device_id == _uuid_bind(device_id))
+        )
+    ).one_or_none()
+    if row is None:
+        # 设备被删（解绑后回收）与「令牌对不上任何设备」在客户端看来是同一件事：重新配对。
+        raise CredentialRevokedError("device row is gone")
+    return row
+
+
+async def _load_staff_token_row(session: AsyncSession, lookup_key: str) -> Sequence[Any]:
+    """以哈希为键读 `staff_tokens`，并带出所属员工的当前状态与所在设备的绑定长者。
+
+    两处 JOIN 都是必须的：
+
+    - `staff_accounts`：R9 只有 `expires_at`，员工停用不会写进工牌行；不 JOIN 就会出现
+      「人被 disabled 了，卡还能刷到过期」。
+    - `devices`：工牌的可见长者范围由设备绑定决定（契约 §5.3、S-17）。载荷白名单里没有
+      `elder_id`（S-16），所以这个值**只有**库里一条来源；漏了 JOIN 就等于把工牌当全权会话。
     """
     row = (
         await session.execute(
@@ -494,8 +512,10 @@ async def _load_staff_token_row(session: AsyncSession, lookup_key: str) -> Seque
                 StaffToken.device_id,
                 StaffToken.expires_at,
                 StaffAccount.status,
+                Device.elder_id,
             )
             .join(StaffAccount, StaffAccount.staff_id == StaffToken.staff_id)
+            .join(Device, Device.device_id == StaffToken.device_id)
             .where(StaffToken.token_hash == lookup_key)
         )
     ).one_or_none()
@@ -510,15 +530,22 @@ async def resolve_principal(authorization: str | None, session: AsyncSession) ->
     分派只依据**已验签的载荷**（`typ` + `kind`），一条令牌只查一张表：跨表「试着找找」
     会让「哪张表负责这个主体」这个问题无法回答，也会把漏查变成误命中。
 
-    `staff_card` 的 `elder_id` 本轮传 `None`：绑定长者读自 `devices`，而设备那半属 T4b-2
-    （任务板 P-02）。契约 S-22 记了同一批未做项，Day 9 的 E14 之前必须补齐。
+    工牌的 `elder_id` 与设备会话同源，都读自 `devices`（契约 §5.3、S-17）：
+    工牌行只记「哪张卡在哪个设备上激活」，绑定长者是设备的属性，不是卡的属性。
     """
     token = bearer_token_from_header(authorization)
     claims = decode_principal_token(token)
     typ = claims["typ"]
     if typ == TYP_DEVICE:
-        raise DeviceLookupNotWiredError(
-            "device session lookup requires app/models/device.py (blocked on task-3 P-02)"
+        db_device_id, db_token_hash, db_status, db_elder_id = await _load_device_row(
+            session, _id_from_sub(claims, prefix=KIND_DEVICE)
+        )
+        return device_identity_from_session(
+            claims,
+            db_device_id=db_device_id,
+            db_token_hash=db_token_hash,
+            db_status=db_status,
+            db_elder_id=db_elder_id,
         )
     kind = claims["kind"]
     if typ == TYP_ACCESS and kind == KIND_STAFF:
@@ -537,16 +564,20 @@ async def resolve_principal(authorization: str | None, session: AsyncSession) ->
             claims, db_status=db_status, db_token_version=db_token_version
         )
     if typ == TYP_STAFF_CARD:
-        db_staff_id, db_device_id, db_expires_at, db_staff_status = await _load_staff_token_row(
-            session, staff_card_lookup_key(token)
-        )
+        (
+            db_staff_id,
+            db_device_id,
+            db_expires_at,
+            db_staff_status,
+            db_elder_id,
+        ) = await _load_staff_token_row(session, staff_card_lookup_key(token))
         return staff_card_identity_from_card(
             claims,
             db_staff_id=db_staff_id,
             db_device_id=db_device_id,
             db_staff_status=db_staff_status,
             db_expires_at=db_expires_at,
-            db_elder_id=None,
+            db_elder_id=db_elder_id,
         )
     # 解码层已按 S-16 白名单核过 typ/kind，走到这里只能是接线把新类型加进了允许列表
     raise CredentialInvalidError("token type is not accepted as a request principal")
@@ -602,7 +633,7 @@ async def current_guardian(
 async def current_device(
     identity: Annotated[Identity, Depends(get_current_principal)],
 ) -> Identity:
-    """设备主体（`kind=device`）。本轮不可能到达：`resolve_principal` 先抛未接线错误。"""
+    """设备主体（`kind=device`）。`elder_id` 是设备当前绑定的长者，未绑定为 `None`。"""
     return _require_kind(identity, kind=KIND_DEVICE)
 
 
@@ -635,7 +666,6 @@ __all__ = [
     "CredentialInvalidError",
     "CredentialMissingError",
     "CredentialRevokedError",
-    "DeviceLookupNotWiredError",
     "RoleForbiddenError",
     "bearer_token_from_header",
     "check_roles",

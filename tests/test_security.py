@@ -1,4 +1,4 @@
-"""task-4 T1+T2+T3+T4a · 密码、JWT、身份上下文与鉴权判定的单元测试（不依赖数据库）。
+"""task-4 T1+T2+T3+T4 · 密码、JWT、身份上下文、鉴权判定与库内回查接线的单元测试。
 
 T1 覆盖计划 §5.1 第 5 条要求的五类输入：普通、错误、超 72 字节、中文/emoji、互不可验，
 外加「长口令为什么必须预哈希」这一组依据实测的回归用例。
@@ -13,10 +13,10 @@ T4a 覆盖 `app/core/auth.py` 的纯判定层：Bearer 头语法、三类主体�
 逐项比对、身份构造入口、`check_roles` 只认员工会话。**这些用例把库里的值当参数直接喂给
 判定函数**，因此不需要数据库。
 
-T4b-1 覆盖同一模块的**接线层**：一类令牌只查一张表的分派、库里事实怎么进判定、
+T4b 覆盖同一模块的**接线层**：一类令牌只查一张表的分派、库里事实怎么进判定、
 `get_current_principal` 的注入与回滚点、`current_staff` / `require_roles` 依赖链，
 以及 AC-24（停用与 `token_version` 递增后旧令牌立刻失效）在真实 PostgreSQL 上的闭环。
-设备回查（T4b-2）仍缺 `app/models/device.py`，本文件只测到「未接线必须吵」这一层。
+设备会话与工牌的绑定长者都回查 `devices`（T4b-2）：解绑轮换哈希、设备锁定、缺行三条拒因各自覆盖。
 
 bcrypt cost 取默认 12（约 0.3s/次），单文件耗时可接受；不为了提速把 cost 压到
 低于允许下限，那样测出来的就不是生产路径的行为。
@@ -31,7 +31,7 @@ import hashlib
 import json
 import unicodedata
 import uuid
-from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, cast
 
@@ -53,12 +53,10 @@ from app.core.auth import (
     TOKEN_EXPIRED,
     TOKEN_INVALID,
     TOKEN_REVOKED,
-    AuthError,
     CredentialExpiredError,
     CredentialInvalidError,
     CredentialMissingError,
     CredentialRevokedError,
-    DeviceLookupNotWiredError,
     RoleForbiddenError,
     bearer_token_from_header,
     check_roles,
@@ -120,7 +118,7 @@ from app.core.security import (
     verify_password,
 )
 from app.db import get_session
-from app.models import GuardianAccount, StaffAccount, StaffToken
+from app.models import Device, Elder, GuardianAccount, Room, StaffAccount, StaffToken
 
 NORMAL_PASSWORD = "Passw0rd-测试"
 OTHER_PASSWORD = "Passw0rd-测试!"
@@ -1827,23 +1825,26 @@ def test_check_roles_accepts_only_staff_sessions(jwt_env: Settings) -> None:
             check_roles(identity, ("admin", "care_worker", "doctor"))
 
 
-# ==================================================================== T4b-1 · 库内回查接线与依赖
+# ==================================================================== T4b · 库内回查接线与依赖
 #
 # 这一节有两条速度差十倍的路径，各自证明不同的事，缺一条就是假绿：
 #
 # - **假会话**（`_FakeSession`，不连库）：喂「查哪几张表 → 回放哪一行」。测的是**分派与
 #   接线形状**：一类令牌只查一张表、查询键来自已验签的载荷而不是客户端、库里的事实怎么
 #   进判定，以及上下文的注入点与回滚点。没有 PostgreSQL 的机器上这部分也必须绿。
-# - **真库**（本文件的 `auth_db` 夹具，契约同 conftest 的 `db_conn`）：测三条 SQL 在 Postgres
-#   上真跑得通 —— 列名拼错、UUID 绑定、
-#   `timestamptz` 比较、`staff_tokens → staff_accounts` 的 JOIN，假会话一个都发现不了。
+# - **真库**（本文件的 `auth_db` 夹具，契约同 conftest 的 `db_conn`）：测四条 SQL 在 Postgres
+#   上真跑得通 —— 列名拼错、UUID 绑定、`timestamptz` 比较、
+#   `staff_tokens → staff_accounts / devices` 的两处 JOIN，假会话一个都发现不了。
 #
 # 401/403 的响应体映射**不在本节**：异常处理器与 `app/api/**` 属 task-5 写作用域。这里断言
 # 异常类型 + 契约 §7 的码，那才是 task-5 拿去映射的输入。
 
 _STAFF_TABLES = frozenset({"staff_accounts"})
 _GUARDIAN_TABLES = frozenset({"guardian_accounts"})
-_CARD_TABLES = frozenset({"staff_accounts", "staff_tokens"})
+_DEVICE_TABLES = frozenset({"devices"})
+# 工牌一条查询必须同时带出员工状态与设备绑定：少一个 JOIN 就少一条拒因，
+# 而缺行的表现是「回放不到」= 撤销，不是「查错表」，所以键里把三张表写全才有约束力。
+_CARD_TABLES = frozenset({"devices", "staff_accounts", "staff_tokens"})
 
 # `password_hash` 在判定层从不被读，只是 NOT NULL 列：填占位串而不是跑 bcrypt，
 # 免得每个数据库用例白付 0.3s（也避免把口令材料写进夹具，AGENTS §4.3）。
@@ -1900,6 +1901,50 @@ def _bearer(token: str) -> str:
     return f"Bearer {token}"
 
 
+def _sign_bound_device(**overrides: object) -> str:
+    """设备会话令牌，其 `tv` 取自 `DEVICE_TOKEN_HASH` 的前 16 位。
+
+    `_sign_device()` 的默认前缀是另一个常数（T2 只验签名形状，不需要和库同源）；
+    接线层要比对 `devices.token_hash`，这里的 `tv` 就必须是那同一个哈希的前缀。
+    """
+    kwargs: dict[str, object] = {"token_hash_prefix": DEVICE_TOKEN_HASH[:16]}
+    kwargs.update(overrides)
+    return _sign_device(**kwargs)
+
+
+def _device_row(**changes: object) -> tuple[object, ...]:
+    """`devices` 回查的那一行，列序为 `device_id, token_hash, status, elder_id`。
+
+    位置解包意味着列序必须和 `_load_device_row` 的 `select(...)` 一致；假会话照原样回放，
+    写反了要等真库用例才炸，所以两个行助手都集中在这里、只写一遍列序。
+    """
+    row: dict[str, object] = {
+        "device_id": DEVICE_ID,
+        "token_hash": DEVICE_TOKEN_HASH,
+        "status": "online",
+        "elder_id": ELDER_ID,
+    }
+    row.update(changes)
+    return tuple(row.values())
+
+
+def _card_row(**changes: object) -> tuple[object, ...]:
+    """工牌 JOIN 出来的那一行，列序为 `staff_id, device_id, expires_at, staff_status, elder_id`。
+
+    同样按位置解包：写反就是把「员工状态」当「到期时间」用。列序要和
+    `_load_staff_token_row` 的 `select(...)` 一字不差，假会话发现不了拼错顺序。
+    """
+    row: dict[str, object] = {
+        "staff_id": STAFF_ID,
+        "device_id": DEVICE_ID,
+        "expires_at": _now() + timedelta(minutes=10),
+        "staff_status": "active",
+        "elder_id": ELDER_ID,
+    }
+    row.update(changes)
+    return tuple(row.values())
+
+
 # ------------------------------------------------------------------ 分派：一类令牌只查一张表
 
 
@@ -1930,6 +1975,42 @@ async def test_resolve_principal_looks_up_guardian_by_the_signed_subject(jwt_env
     assert fake.bound_values == {uuid.UUID(GUARDIAN_ID)}
 
 
+async def test_resolve_principal_looks_up_device_and_reads_the_bound_elder(
+    jwt_env: Settings,
+) -> None:
+    """设备主体的 `elder_id` 只有一个来源：`devices.elder_id`（契约 §5.3、S-17）。
+
+    载荷白名单里根本没有 `elder_id`（S-16），所以平板在请求里写什么都进不了身份；
+    这条断言把「绑定长者来自库」和「只查 devices 一张表」一起钉住。
+    """
+    token = _sign_bound_device()
+    fake = _FakeSession({_DEVICE_TABLES: _device_row()})
+
+    identity = await resolve_principal(_bearer(token), _as_session(fake))
+
+    assert identity.kind == KIND_DEVICE
+    assert identity.principal_id == DEVICE_ID
+    assert identity.device_id == DEVICE_ID
+    assert identity.elder_id == ELDER_ID
+    assert fake.queried == [("devices",)], "设备会话只该查 devices 一张表"
+    assert fake.bound_values == {uuid.UUID(DEVICE_ID)}
+
+
+async def test_resolve_principal_allows_an_unbound_and_offline_device(jwt_env: Settings) -> None:
+    """两个「不影响凭证」的库状态：没绑长者、当前掉线。
+
+    `elder_id` 为 NULL 是配对还没完成的正常中间态；`offline` 是心跳问题（FR-ADM-10）。
+    把掉线判成 401 会让平板在网络抖动时被踢出登录，重连一次就得重登一次。
+    """
+    token = _sign_bound_device()
+    fake = _FakeSession({_DEVICE_TABLES: _device_row(status="offline", elder_id=None)})
+
+    identity = await resolve_principal(_bearer(token), _as_session(fake))
+
+    assert identity.elder_id is None
+    assert identity.device_id == DEVICE_ID
+
+
 async def test_resolve_principal_keys_the_card_lookup_on_the_hash(jwt_env: Settings) -> None:
     """工牌回查用 SHA-256 当主键，明文令牌不进 SQL。
 
@@ -1937,37 +2018,19 @@ async def test_resolve_principal_keys_the_card_lookup_on_the_hash(jwt_env: Setti
     写进 `WHERE`，日志里的 SQL（以及 `pg_stat_statements`）就带上了可重放的凭证。
     """
     token = _sign_staff_card()
-    fake = _FakeSession(
-        {_CARD_TABLES: (STAFF_ID, DEVICE_ID, _now() + timedelta(minutes=10), "active")}
-    )
+    fake = _FakeSession({_CARD_TABLES: _card_row()})
 
     identity = await resolve_principal(_bearer(token), _as_session(fake))
 
     assert identity.kind == KIND_STAFF_CARD
     assert identity.device_id == DEVICE_ID
+    assert identity.elder_id == ELDER_ID, "工牌可见长者来自设备绑定，不来自载荷"
     assert identity.scope == ("workorder:handle",)
-    assert fake.queried == [("staff_accounts", "staff_tokens")], "工牌必须 JOIN 出员工当前状态"
+    assert fake.queried == [("devices", "staff_accounts", "staff_tokens")], (
+        "工牌必须 JOIN 出员工当前状态与设备绑定长者"
+    )
     assert staff_card_lookup_key(token) in fake.bound_values
     assert token not in fake.bound_values
-
-
-async def test_resolve_principal_refuses_device_session_without_faking_401(
-    jwt_env: Settings,
-) -> None:
-    """设备路径的缺口必须吵：不查库、也不装成凭证坏了。
-
-    伪装成 `TOKEN_INVALID` 会让排障的人去查一张本来没问题的设备令牌，让平板以为被撤销、
-    开始重登循环（契约 S-18 的「缺口不许静音」）。
-    """
-    token = _sign_device()
-    fake = _FakeSession({})
-
-    with pytest.raises(DeviceLookupNotWiredError) as excinfo:
-        await resolve_principal(_bearer(token), _as_session(fake))
-
-    assert not isinstance(excinfo.value, AuthError)
-    assert not hasattr(excinfo.value, "code")
-    assert fake.queried == []
 
 
 @pytest.mark.parametrize(
@@ -2010,6 +2073,12 @@ async def test_resolve_principal_never_accepts_a_refresh_token_as_a_principal(
         pytest.param(("admin", "active", 3), KIND_STAFF, id="staff-role-drift"),
         pytest.param(("disabled", 2), KIND_GUARDIAN, id="guardian-disabled"),
         pytest.param(("active", 2), KIND_GUARDIAN, id="guardian-version-bumped"),
+        pytest.param(_device_row(status="locked"), KIND_DEVICE, id="device-locked"),
+        pytest.param(
+            _device_row(token_hash=sha256_hex("rotated-device-token")),
+            KIND_DEVICE,
+            id="device-unbound-hash-rotated",
+        ),
     ],
 )
 async def test_resolve_principal_revokes_when_database_facts_move(
@@ -2017,15 +2086,20 @@ async def test_resolve_principal_revokes_when_database_facts_move(
 ) -> None:
     """签名仍然有效、库里不再认这张凭证 —— 一律 `TOKEN_REVOKED`（AC-24 / FR-ADM-04）。
 
-    三类原因（停用、版本号递增、角色漂移）对客户端是同一个动作（重新登录），对排障是
-    三个不同的库状态，所以这里合并成一个码、但每条都要单独覆盖。
+    四类原因（停用、版本号递增、角色漂移、解绑轮换哈希）对客户端是同一个动作（重新登录），
+    对排障是四个不同的库状态，所以这里合并成一个码、但每条都要单独覆盖。
+    `device-unbound-hash-rotated` 是 AC-24 的设备侧：解绑只写 `token_hash`，没有黑名单，
+    旧会话靠「载荷 `tv` 对不上新哈希前缀」失效，所以这条必须走真哈希比对。
     """
     if kind == KIND_STAFF:
         token = _sign_staff_access()
         rows = {_STAFF_TABLES: row}
-    else:
+    elif kind == KIND_GUARDIAN:
         token = _sign_guardian_access()
         rows = {_GUARDIAN_TABLES: row}
+    else:
+        token = _sign_bound_device()
+        rows = {_DEVICE_TABLES: row}
     fake = _FakeSession(rows)
 
     with pytest.raises(CredentialRevokedError) as excinfo:
@@ -2033,46 +2107,42 @@ async def test_resolve_principal_revokes_when_database_facts_move(
     assert excinfo.value.code == TOKEN_REVOKED
 
 
+@pytest.mark.parametrize(
+    "token",
+    [_sign_staff_access, _sign_bound_device],
+    ids=["staff-row-gone", "device-row-gone"],
+)
 async def test_resolve_principal_maps_a_missing_row_to_revoked_and_does_not_echo_the_token(
-    jwt_env: Settings,
+    jwt_env: Settings, token: Callable[[], str]
 ) -> None:
-    """查不到行 → 撤销，不是 404：账号是否存在不是凭证层该告诉客户端的信息。
+    """查不到行 → 撤销，不是 404：账号/设备是否存在不是凭证层该告诉客户端的信息。
 
     回 404 等于开一个「这个工号还在不在」的探针；错误 message 会进日志，所以也不能带令牌。
+    设备侧单列一条：设备回收（行被删）与「令牌对不上任何设备」对平板是同一个动作——重新配对。
     """
-    token = _sign_staff_access()
+    signed = token()
     fake = _FakeSession({})
 
     with pytest.raises(CredentialRevokedError) as excinfo:
-        await resolve_principal(_bearer(token), _as_session(fake))
+        await resolve_principal(_bearer(signed), _as_session(fake))
 
     assert excinfo.value.code == TOKEN_REVOKED
-    assert token not in str(excinfo.value)
+    assert signed not in str(excinfo.value)
 
 
 @pytest.mark.parametrize(
     ("row", "expected"),
     [
         pytest.param(
-            (STAFF_ID, DEVICE_ID, _now() + timedelta(minutes=10), "disabled"),
-            CredentialRevokedError,
-            id="owner-disabled",
+            _card_row(staff_status="disabled"), CredentialRevokedError, id="owner-disabled"
         ),
         pytest.param(
-            (STAFF_ID, DEVICE_ID, _now() - timedelta(minutes=1), "active"),
+            _card_row(expires_at=_now() - timedelta(minutes=1)),
             CredentialRevokedError,
             id="record-expired",
         ),
-        pytest.param(
-            (LETTERED_ID, DEVICE_ID, _now() + timedelta(minutes=10), "active"),
-            CredentialRevokedError,
-            id="wrong-owner",
-        ),
-        pytest.param(
-            (STAFF_ID, LETTERED_ID, _now() + timedelta(minutes=10), "active"),
-            CredentialRevokedError,
-            id="wrong-device",
-        ),
+        pytest.param(_card_row(staff_id=LETTERED_ID), CredentialRevokedError, id="wrong-owner"),
+        pytest.param(_card_row(device_id=LETTERED_ID), CredentialRevokedError, id="wrong-device"),
     ],
 )
 async def test_resolve_principal_refuses_cards_whose_record_says_no(
@@ -2087,6 +2157,21 @@ async def test_resolve_principal_refuses_cards_whose_record_says_no(
     fake = _FakeSession({_CARD_TABLES: row})
     with pytest.raises(expected):
         await resolve_principal(_bearer(token), _as_session(fake))
+
+
+async def test_resolve_principal_allows_a_card_on_an_unbound_device(jwt_env: Settings) -> None:
+    """设备还没绑长者时工牌照样有效，只是 `elder_id` 为空（S-17 的「来自库」而不是「必须有」）。
+
+    拒掉这种情况会把「新设备已配对、还没安排长者」的正常中间态变成刷不了卡，
+    而范围收敛本来就该由 `elder_id is None` 在服务层表达。
+    """
+    token = _sign_staff_card()
+    fake = _FakeSession({_CARD_TABLES: _card_row(elder_id=None)})
+
+    identity = await resolve_principal(_bearer(token), _as_session(fake))
+
+    assert identity.kind == KIND_STAFF_CARD
+    assert identity.elder_id is None
 
 
 async def test_resolve_principal_rejects_a_card_with_no_record(jwt_env: Settings) -> None:
@@ -2253,6 +2338,16 @@ def _probe_client(fake: _FakeSession) -> TestClient:
     ) -> dict[str, str]:
         return {"role": identity.role or ""}
 
+    @app.get("/device-session")
+    async def device_session(
+        identity: Annotated[Identity, Depends(current_device)],
+    ) -> dict[str, str | None]:
+        return {
+            "kind": identity.kind,
+            "principal": identity.principal_id,
+            "elder": identity.elder_id,
+        }
+
     app.dependency_overrides[get_session] = lambda: fake
     return TestClient(app)
 
@@ -2276,9 +2371,7 @@ def test_asgi_chain_maps_a_card_principal_to_401_before_the_role_gate(jwt_env: S
     直接调 `require_roles("admin")(...)` 测不出这个顺序 —— 它绕过了中间那层。这条用例钉住
     S-24：刷卡不等于拿到该员工的全部角色权限。
     """
-    fake = _FakeSession(
-        {_CARD_TABLES: (STAFF_ID, DEVICE_ID, _now() + timedelta(minutes=10), "active")}
-    )
+    fake = _FakeSession({_CARD_TABLES: _card_row()})
     client = _probe_client(fake)
 
     with pytest.raises(CredentialInvalidError) as excinfo:
@@ -2299,13 +2392,34 @@ def test_asgi_chain_surfaces_role_and_credential_errors_as_their_contract_codes(
 
     with pytest.raises(CredentialMissingError):
         _probe_client(_FakeSession({})).get("/whoami")
-    with pytest.raises(DeviceLookupNotWiredError):
-        _probe_client(_FakeSession({})).get(
-            "/whoami", headers={"Authorization": _bearer(_sign_device())}
+    # 设备令牌走员工端点：凭证本身没问题，是「主体种类与端点不符」→ 401（S-24）
+    with pytest.raises(CredentialInvalidError):
+        _probe_client(_FakeSession({_DEVICE_TABLES: _device_row()})).get(
+            "/whoami", headers={"Authorization": _bearer(_sign_bound_device())}
         )
 
 
-# ------------------------------------------------------------------ 真库：三条 SELECT 的可执行性
+def test_asgi_chain_resolves_a_device_principal_with_the_db_bound_elder(
+    jwt_env: Settings,
+) -> None:
+    """设备端点走通 T4b-2：`elder_id` 出自身查询，不来自请求体、也不来自载荷。
+
+    这是 AGENTS §4.9（身份只从服务端上下文注入）在设备侧的可执行版本 —— 平板在同一个请求里
+    带 `elder_id` 也改变不了响应，因为值来自 `_load_device_row`。
+    """
+    fake = _FakeSession({_DEVICE_TABLES: _device_row(elder_id=None)})
+    client = _probe_client(fake)
+
+    response = client.get(
+        "/device-session", headers={"Authorization": _bearer(_sign_bound_device())}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"kind": "device", "principal": DEVICE_ID, "elder": None}
+    assert fake.queried == [("devices",)]
+
+
+# ------------------------------------------------------------------ 真库：四条 SELECT 的可执行性
 
 
 @pytest.fixture
@@ -2396,33 +2510,70 @@ async def _db_add_guardian(
     )
 
 
+async def _db_add_elder(auth_db: AsyncConnection, *, elder_id: str = ELDER_ID) -> None:
+    """`devices.elder_id` 的外键目标；除 `name` 外全部有默认值。
+
+    姓名用「测试长者」这类占位串，不写真实长者数据（AGENTS §4.3）。
+    """
+    await auth_db.execute(
+        Elder.__table__.insert().values(elder_id=uuid.UUID(elder_id), name="测试长者")
+    )
+
+
+async def _db_add_device(
+    auth_db: AsyncConnection,
+    *,
+    device_id: str = DEVICE_ID,
+    elder_id: str | None = None,
+    token_hash: str = _DB_HASH_PLACEHOLDER,
+    status: str = "online",
+) -> None:
+    """rooms → devices 的最小外键链；`elder_id=None` 就是「已配对、还没绑长者」。
+
+    写成 ORM 的 `__table__.insert()`（与员工/家属/工牌一致）而不是裸 `text()`：列名拼错在
+    属性访问时就撞，裸 SQL 要等 Postgres 报错才发现，而这一节的存在理由就是验列名。
+    """
+    room_id = (
+        await auth_db.execute(
+            Room.__table__.insert()
+            .values(room_no=f"T-{uuid.uuid4()}")
+            .returning(Room.__table__.c.room_id)
+        )
+    ).scalar_one()
+    await auth_db.execute(
+        Device.__table__.insert().values(
+            device_id=uuid.UUID(device_id),
+            room_id=room_id,
+            elder_id=None if elder_id is None else uuid.UUID(elder_id),
+            token_hash=token_hash,
+            status=status,
+        )
+    )
+
+
+async def _db_patch_device(
+    auth_db: AsyncConnection, *, device_id: str = DEVICE_ID, **values: object
+) -> None:
+    await auth_db.execute(
+        Device.__table__.update()
+        .where(Device.__table__.c.device_id == uuid.UUID(device_id))
+        .values(**values)
+    )
+
+
 async def _db_add_card(
     auth_db: AsyncConnection,
     *,
     lookup_key: str,
     staff_id: str = STAFF_ID,
     device_id: str = DEVICE_ID,
+    elder_id: str | None = None,
     expires_at: datetime,
 ) -> None:
-    """补齐工牌行的外键链：rooms → devices → staff_tokens。
-
-    `devices` 那两行只能写裸 SQL：task-3 还没交付 `app/models/device.py`（任务板 P-02）。
-    等 A 的模型落地，这里应该改成 ORM 写法 —— 到时候 `resolve_principal` 的设备分支（T4b-2）
-    也要一起接线，两处别分开改。
-    """
-    room_id = (
-        await auth_db.execute(
-            text("INSERT INTO rooms (room_no) VALUES (:room_no) RETURNING room_id"),
-            {"room_no": f"T-{uuid.uuid4()}"},
-        )
-    ).scalar_one()
-    await auth_db.execute(
-        text(
-            "INSERT INTO devices (device_id, room_id, token_hash, status) "
-            "VALUES (:device_id, :room_id, :token_hash, 'online')"
-        ),
-        {"device_id": uuid.UUID(device_id), "room_id": room_id, "token_hash": _DB_HASH_PLACEHOLDER},
-    )
+    """补齐工牌行的外键链：（绑长者时先插 elders →）rooms → devices → staff_tokens。"""
+    if elder_id is not None:
+        await _db_add_elder(auth_db, elder_id=elder_id)
+    await _db_add_device(auth_db, device_id=device_id, elder_id=elder_id)
     await auth_db.execute(
         StaffToken.__table__.insert().values(
             token_hash=lookup_key,
@@ -2512,21 +2663,100 @@ async def test_db_guardian_lookup_and_drift(auth_db: AsyncConnection, jwt_env: S
             await resolve_principal(token, session)
 
 
+async def test_db_device_lookup_binds_the_elder_from_the_row(
+    auth_db: AsyncConnection, jwt_env: Settings
+) -> None:
+    """真库上的设备主体：列名、UUID 绑定、`elder_id` 取值与哈希前缀比对一次验完。
+
+    `token_hash` 直接用 `DEVICE_TOKEN_HASH`：会话令牌的 `tv` 是它的前 16 位（同一个常数组），
+    这条通过就等于证明「解绑=换哈希就失效」用的键和签发侧完全同源。
+    """
+    await _db_add_elder(auth_db)
+    await _db_add_device(auth_db, elder_id=ELDER_ID, token_hash=DEVICE_TOKEN_HASH)
+
+    async with _db_session(auth_db) as session:
+        identity = await resolve_principal(_bearer(_sign_bound_device()), session)
+
+    assert identity.kind == KIND_DEVICE
+    assert identity.device_id == DEVICE_ID
+    assert identity.elder_id == ELDER_ID, "绑定长者只能来自 devices.elder_id"
+
+
+async def test_db_device_without_elder_or_heartbeat_still_authenticates(
+    auth_db: AsyncConnection, jwt_env: Settings
+) -> None:
+    """没绑长者、当前掉线都不该拒：前者是配对的中间态，后者是心跳问题（FR-ADM-10）。
+
+    拒掉这两种会让平板在心跳抖动时反复重登，而 401 对平板的含义是「凭证作废」。
+    """
+    await _db_add_device(auth_db, status="offline", token_hash=DEVICE_TOKEN_HASH)
+
+    async with _db_session(auth_db) as session:
+        identity = await resolve_principal(_bearer(_sign_bound_device()), session)
+
+    assert identity.device_id == DEVICE_ID
+    assert identity.elder_id is None
+
+
+async def test_db_device_unbinding_rotates_the_hash_and_revokes(
+    auth_db: AsyncConnection, jwt_env: Settings
+) -> None:
+    """AC-24 的设备侧闭环：解绑只轮换 `token_hash`，没有黑名单，旧会话靠哈希对不上失效。"""
+    await _db_add_device(auth_db, token_hash=DEVICE_TOKEN_HASH)
+    token = _bearer(_sign_bound_device())
+
+    async with _db_session(auth_db) as session:
+        await resolve_principal(token, session)
+
+    await _db_patch_device(auth_db, token_hash=sha256_hex("rotated-device-token"))
+    async with _db_session(auth_db) as session:
+        with pytest.raises(CredentialRevokedError) as excinfo:
+            await resolve_principal(token, session)
+    assert excinfo.value.code == TOKEN_REVOKED
+
+
+async def test_db_device_lock_and_absent_row_revoke(
+    auth_db: AsyncConnection, jwt_env: Settings
+) -> None:
+    """锁定即拒；行被删（设备回收）也拒 —— 两者对平板是同一个动作：重新配对，都不是 404。"""
+    await _db_add_device(auth_db, token_hash=DEVICE_TOKEN_HASH)
+    token = _bearer(_sign_bound_device())
+
+    await _db_patch_device(auth_db, status="locked")
+    async with _db_session(auth_db) as session:
+        with pytest.raises(CredentialRevokedError):
+            await resolve_principal(token, session)
+
+    await auth_db.execute(
+        Device.__table__.delete().where(Device.__table__.c.device_id == uuid.UUID(DEVICE_ID))
+    )
+    async with _db_session(auth_db) as session:
+        with pytest.raises(CredentialRevokedError):
+            await resolve_principal(token, session)
+
+
 async def test_db_card_lookup_joins_the_owner_status(
     auth_db: AsyncConnection, jwt_env: Settings
 ) -> None:
-    """JOIN 的真实价值：没有它，「人停用后卡还能刷到过期」这条只能在真库上才测得出来。"""
+    """JOIN 的真实价值：没有它，「人停用后卡还能刷到过期」这条只能在真库上才测得出来。
+
+    同时验第二处 JOIN（`devices`）：设备绑定长者必须随工牌身份一起出来，
+    工牌能看谁由设备决定，不由刷卡的人决定（契约 §5.3、S-17）。
+    """
     card = _sign_staff_card()
     await _db_add_staff(auth_db)
     await _db_add_card(
-        auth_db, lookup_key=staff_card_lookup_key(card), expires_at=_now() + timedelta(minutes=10)
+        auth_db,
+        lookup_key=staff_card_lookup_key(card),
+        elder_id=ELDER_ID,
+        expires_at=_now() + timedelta(minutes=10),
     )
 
     async with _db_session(auth_db) as session:
         identity = await resolve_principal(_bearer(card), session)
     assert identity.kind == KIND_STAFF_CARD
     assert identity.device_id == DEVICE_ID
-    assert identity.elder_id is None  # T4b-2 的设备绑定回查还没接线（S-22）
+    assert identity.elder_id == ELDER_ID
 
     await _db_patch_staff(auth_db, status="disabled")
     async with _db_session(auth_db) as session:
@@ -2568,7 +2798,14 @@ async def test_db_fixture_rolls_back_every_row_it_inserted(
     assert (await auth_db.execute(text("SELECT count(*) FROM staff_accounts"))).scalar_one() == 1
 
     async with auth_db_engine.connect() as probe:
-        for name in ("staff_accounts", "guardian_accounts", "staff_tokens", "devices", "rooms"):
+        for name in (
+            "staff_accounts",
+            "guardian_accounts",
+            "staff_tokens",
+            "devices",
+            "rooms",
+            "elders",
+        ):
             count = (
                 await probe.execute(select(func.count()).select_from(sql_table(name)))
             ).scalar_one()
