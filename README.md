@@ -117,6 +117,8 @@ FastAPI（WebSocket 信令 SDP/ICE + aiortc 媒体）
 | Node.js + pnpm | 前端构建 | 三入口共用一套 Vite 配置 |
 | mkcert（可选） | 本地 HTTPS 证书 | 麦克风在非 localhost 下必须 HTTPS |
 
+> **Windows 不需要装 Microsoft C++ Build Tools**。VAD 依赖用的是 `webrtcvad-wheels`（上游 `webrtcvad` 的同源 fork，import 名与 API 完全不变），自带 cp310–cp314 预编译 wheel，`uv sync` 直接取二进制。若改回上游 `webrtcvad`，Windows 上会因缺少 C++ 编译器而 `uv sync` 失败。验证脚本：`uv run python spikes/vad/spike_webrtcvad.py`。
+
 ### 5.2 五步启动
 
 ```bash

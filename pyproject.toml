@@ -39,7 +39,11 @@ dependencies = [
 
     # ---- 实时语音 ----
     "aiortc>=1.10",
-    "webrtcvad>=2.0.10",
+    # VAD 用 webrtcvad-wheels 而非 webrtcvad：上游 webrtcvad 自 2017 年起只发 sdist，
+    # 在 Windows 上装它会强制要求 Microsoft C++ Build Tools（构建失败）。
+    # 本包是 daanzu 维护的同源 fork，import 名仍是 webrtcvad、API 完全一致，
+    # 自带 cp310–cp314 的 Windows/macOS/Linux 预编译 wheel，并修了内存泄漏与越界读。
+    "webrtcvad-wheels>=2.0.14",
 
     # ---- 鉴权 ----
     "pyjwt[crypto]>=2.9",
