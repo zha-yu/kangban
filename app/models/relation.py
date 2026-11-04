@@ -2,6 +2,8 @@
 
 唯一/查询索引以 ER §5.1/§5.2 为准；「每位长者 active 监护人 ≤2」与
 「每位长者 ≥1 责任护工」是服务层校验（裁决 C4），不落 DDL。
+列注释与 `0002_day2_identity.py` 逐字一致——漂移检查（compare_metadata）曾发现
+elder_id / guardian_id / relation 四处注释出入，已按迁移原文对齐；后续改注释须两边同步。
 """
 
 from __future__ import annotations
@@ -37,7 +39,9 @@ class ElderStaffAssignment(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
-    elder_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("elders.elder_id"), nullable=False)
+    elder_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("elders.elder_id"), nullable=False, comment="长者"
+    )
     staff_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("staff_accounts.staff_id"), nullable=False, comment="护工或医生"
     )
@@ -65,14 +69,16 @@ class ElderGuardian(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
-    elder_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("elders.elder_id"), nullable=False)
+    elder_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("elders.elder_id"), nullable=False, comment="长者"
+    )
     guardian_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("guardian_accounts.guardian_id"), nullable=False
+        ForeignKey("guardian_accounts.guardian_id"), nullable=False, comment="监护人"
     )
     relation: Mapped[str] = mapped_column(
         Text(),
         nullable=False,
-        comment="与长者关系（子/女/孙辈/配偶…）；绑定级非账号级，同一人绑两位长者关系可不同",
+        comment="与长者关系（子/女/孙辈/配偶…）；绑定级非账号级",
     )
     status: Mapped[str] = mapped_column(
         Text(),

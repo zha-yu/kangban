@@ -41,4 +41,7 @@ def reset_trace_id(token: Token[str | None]) -> None:
 
 def is_valid_trace_id(value: str | None) -> bool:
     """上游透传的 trace_id 是否可信；不可信一律重新生成，不报错。"""
-    return bool(value) and bool(_TRACE_PATTERN.match(value.strip()))
+    # 显式判空而非 bool(value) 短路：mypy 无法借布尔短路收窄 value，原写法报 union-attr
+    if not value:
+        return False
+    return bool(_TRACE_PATTERN.match(value.strip()))
