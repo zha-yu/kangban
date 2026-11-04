@@ -11,7 +11,12 @@ T3 覆盖 `Identity` 的字段矩阵（谁能带 `elder_id`）、构造即合法
 T4a 覆盖 `app/core/auth.py` 的纯判定层：Bearer 头语法、三类主体令牌的解码分派、
 `refresh` 拒入、库里事实（状态 / `token_version` / 角色 / 设备哈希 / 工牌到期）与载荷的
 逐项比对、身份构造入口、`check_roles` 只认员工会话。**这些用例把库里的值当参数直接喂给
-判定函数**，因此不需要数据库；真正的 `SELECT` 与 FastAPI 依赖接线属 T4b，本文件不含。
+判定函数**，因此不需要数据库。
+
+T4b-1 覆盖同一模块的**接线层**：一类令牌只查一张表的分派、库里事实怎么进判定、
+`get_current_principal` 的注入与回滚点、`current_staff` / `require_roles` 依赖链，
+以及 AC-24（停用与 `token_version` 递增后旧令牌立刻失效）在真实 PostgreSQL 上的闭环。
+设备回查（T4b-2）仍缺 `app/models/device.py`，本文件只测到「未接线必须吵」这一层。
 
 bcrypt cost 取默认 12（约 0.3s/次），单文件耗时可接受；不为了提速把 cost 压到
 低于允许下限，那样测出来的就不是生产路径的行为。
@@ -26,28 +31,48 @@ import hashlib
 import json
 import unicodedata
 import uuid
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
+from typing import Annotated, Any, cast
 
 import pytest
+from fastapi import Depends, FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncEngine,
+    AsyncSession,
+    create_async_engine,
+)
+from sqlalchemy.pool import NullPool
+from sqlalchemy.sql import table as sql_table
 
 from app.core.auth import (
     ROLE_FORBIDDEN,
     TOKEN_EXPIRED,
     TOKEN_INVALID,
     TOKEN_REVOKED,
+    AuthError,
     CredentialExpiredError,
     CredentialInvalidError,
     CredentialMissingError,
     CredentialRevokedError,
+    DeviceLookupNotWiredError,
     RoleForbiddenError,
     bearer_token_from_header,
     check_roles,
+    current_device,
+    current_guardian,
+    current_staff,
     decode_principal_token,
     decode_refresh_token,
     device_hash_prefix_matches,
     device_identity_from_session,
+    get_current_principal,
     guardian_identity_from_access,
+    require_roles,
+    resolve_principal,
     staff_card_identity_from_card,
     staff_card_lookup_key,
     staff_identity_from_access,
@@ -94,6 +119,8 @@ from app.core.security import (
     sign_staff_refresh,
     verify_password,
 )
+from app.db import get_session
+from app.models import GuardianAccount, StaffAccount, StaffToken
 
 NORMAL_PASSWORD = "Passw0rd-测试"
 OTHER_PASSWORD = "Passw0rd-测试!"
@@ -1372,7 +1399,7 @@ def _access_claims(**overrides: object) -> dict:
     return decode_token(token, expected_typ=TYP_ACCESS)
 
 
-def _guardian_claims(**overrides: object) -> dict:
+def _sign_guardian_access(**overrides: object) -> str:
     kwargs: dict[str, object] = {
         "kind": KIND_GUARDIAN,
         "staff_id": GUARDIAN_ID,
@@ -1381,7 +1408,11 @@ def _guardian_claims(**overrides: object) -> dict:
         "now": _now(),
     }
     kwargs.update(overrides)
-    return decode_token(sign_staff_access(**kwargs), expected_typ=TYP_ACCESS)  # type: ignore[arg-type]
+    return sign_staff_access(**kwargs)  # type: ignore[arg-type]
+
+
+def _guardian_claims(**overrides: object) -> dict:
+    return decode_token(_sign_guardian_access(**overrides), expected_typ=TYP_ACCESS)
 
 
 def _device_claims(**overrides: object) -> dict:
@@ -1794,3 +1825,751 @@ def test_check_roles_accepts_only_staff_sessions(jwt_env: Settings) -> None:
     for identity in others:
         with pytest.raises(RoleForbiddenError):
             check_roles(identity, ("admin", "care_worker", "doctor"))
+
+
+# ==================================================================== T4b-1 · 库内回查接线与依赖
+#
+# 这一节有两条速度差十倍的路径，各自证明不同的事，缺一条就是假绿：
+#
+# - **假会话**（`_FakeSession`，不连库）：喂「查哪几张表 → 回放哪一行」。测的是**分派与
+#   接线形状**：一类令牌只查一张表、查询键来自已验签的载荷而不是客户端、库里的事实怎么
+#   进判定，以及上下文的注入点与回滚点。没有 PostgreSQL 的机器上这部分也必须绿。
+# - **真库**（本文件的 `auth_db` 夹具，契约同 conftest 的 `db_conn`）：测三条 SQL 在 Postgres
+#   上真跑得通 —— 列名拼错、UUID 绑定、
+#   `timestamptz` 比较、`staff_tokens → staff_accounts` 的 JOIN，假会话一个都发现不了。
+#
+# 401/403 的响应体映射**不在本节**：异常处理器与 `app/api/**` 属 task-5 写作用域。这里断言
+# 异常类型 + 契约 §7 的码，那才是 task-5 拿去映射的输入。
+
+_STAFF_TABLES = frozenset({"staff_accounts"})
+_GUARDIAN_TABLES = frozenset({"guardian_accounts"})
+_CARD_TABLES = frozenset({"staff_accounts", "staff_tokens"})
+
+# `password_hash` 在判定层从不被读，只是 NOT NULL 列：填占位串而不是跑 bcrypt，
+# 免得每个数据库用例白付 0.3s（也避免把口令材料写进夹具，AGENTS §4.3）。
+_DB_HASH_PLACEHOLDER = "unit-test-row-not-a-real-hash"
+
+
+def _stmt_tables(stmt: Any) -> frozenset[str]:
+    """取出一条 select 引用的表名。
+
+    走 `column_descriptions` 的 `entity` 而不是 `get_final_froms()`：JOIN 的 from 树里根节点
+    是 `Join` 对象、没有 `name`，那样取出来是空集合，「只查了一张表」的断言会假通过。
+    """
+    names: set[str] = set()
+    for desc in stmt.column_descriptions:
+        table = getattr(desc.get("entity"), "__table__", None)
+        if table is not None:
+            names.add(table.name)
+    return frozenset(names)
+
+
+class _FakeResult:
+    def __init__(self, row: Sequence[object] | None) -> None:
+        self._row = row
+
+    def one_or_none(self) -> Sequence[object] | None:
+        return self._row
+
+
+class _FakeSession:
+    """按「表集合 → 行」回放的假会话，不解释任何 SQL 语义。
+
+    没配数据就等于「行不存在」。这个方向是故意的：接线查错了表时看到的就是撤销失败，
+    而不是静默拿到一条为本次用例编造的记录。
+    """
+
+    def __init__(self, rows: Mapping[frozenset[str], Sequence[object]]) -> None:
+        self._rows = dict(rows)
+        self.queried: list[tuple[str, ...]] = []
+        self.bound_values: set[object] = set()
+
+    async def execute(self, stmt: Any) -> _FakeResult:
+        names = _stmt_tables(stmt)
+        self.queried.append(tuple(sorted(names)))
+        self.bound_values.update(stmt.compile().params.values())
+        return _FakeResult(self._rows.get(names))
+
+
+def _as_session(fake: _FakeSession) -> AsyncSession:
+    """测试里不做假 ORM 的类型体操：`resolve_principal` 只用到 `execute`。"""
+    return cast(AsyncSession, fake)
+
+
+def _bearer(token: str) -> str:
+    return f"Bearer {token}"
+
+
+# ------------------------------------------------------------------ 分派：一类令牌只查一张表
+
+
+async def test_resolve_principal_looks_up_staff_by_the_signed_subject(jwt_env: Settings) -> None:
+    token = _sign_staff_access()
+    fake = _FakeSession({_STAFF_TABLES: ("care_worker", "active", 3)})
+
+    identity = await resolve_principal(_bearer(token), _as_session(fake))
+
+    assert identity.kind == KIND_STAFF
+    assert identity.principal_id == STAFF_ID
+    assert identity.role == "care_worker"
+    assert identity.elder_id is None
+    assert fake.queried == [("staff_accounts",)], "员工 Access 只该查 staff_accounts 一张表"
+    # 查询键来自已验签的 `sub`：客户端再怎么改请求头也换不了被查的账号
+    assert fake.bound_values == {uuid.UUID(STAFF_ID)}
+
+
+async def test_resolve_principal_looks_up_guardian_by_the_signed_subject(jwt_env: Settings) -> None:
+    token = _sign_guardian_access()
+    fake = _FakeSession({_GUARDIAN_TABLES: ("active", 1)})
+
+    identity = await resolve_principal(_bearer(token), _as_session(fake))
+
+    assert identity.kind == KIND_GUARDIAN
+    assert identity.principal_id == GUARDIAN_ID
+    assert fake.queried == [("guardian_accounts",)]
+    assert fake.bound_values == {uuid.UUID(GUARDIAN_ID)}
+
+
+async def test_resolve_principal_keys_the_card_lookup_on_the_hash(jwt_env: Settings) -> None:
+    """工牌回查用 SHA-256 当主键，明文令牌不进 SQL。
+
+    这是 AGENTS §4.2「库里不存明文凭证」在查询侧的落点：一旦有人图省事把 `token` 直接
+    写进 `WHERE`，日志里的 SQL（以及 `pg_stat_statements`）就带上了可重放的凭证。
+    """
+    token = _sign_staff_card()
+    fake = _FakeSession(
+        {_CARD_TABLES: (STAFF_ID, DEVICE_ID, _now() + timedelta(minutes=10), "active")}
+    )
+
+    identity = await resolve_principal(_bearer(token), _as_session(fake))
+
+    assert identity.kind == KIND_STAFF_CARD
+    assert identity.device_id == DEVICE_ID
+    assert identity.scope == ("workorder:handle",)
+    assert fake.queried == [("staff_accounts", "staff_tokens")], "工牌必须 JOIN 出员工当前状态"
+    assert staff_card_lookup_key(token) in fake.bound_values
+    assert token not in fake.bound_values
+
+
+async def test_resolve_principal_refuses_device_session_without_faking_401(
+    jwt_env: Settings,
+) -> None:
+    """设备路径的缺口必须吵：不查库、也不装成凭证坏了。
+
+    伪装成 `TOKEN_INVALID` 会让排障的人去查一张本来没问题的设备令牌，让平板以为被撤销、
+    开始重登循环（契约 S-18 的「缺口不许静音」）。
+    """
+    token = _sign_device()
+    fake = _FakeSession({})
+
+    with pytest.raises(DeviceLookupNotWiredError) as excinfo:
+        await resolve_principal(_bearer(token), _as_session(fake))
+
+    assert not isinstance(excinfo.value, AuthError)
+    assert not hasattr(excinfo.value, "code")
+    assert fake.queried == []
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        (None, CredentialMissingError),
+        ("", CredentialMissingError),
+        ("Bearer not.a.jwt", CredentialInvalidError),
+    ],
+)
+async def test_resolve_principal_fails_before_touching_the_database(
+    jwt_env: Settings, header: str | None, expected: type[Exception]
+) -> None:
+    """头不对 / 令牌解不开时不许发 SELECT：库里没有任何该被查询的主体，白跑一次还留下访问痕迹。"""
+    fake = _FakeSession({_STAFF_TABLES: ("care_worker", "active", 3)})
+    with pytest.raises(expected):
+        await resolve_principal(header, _as_session(fake))
+    assert fake.queried == []
+
+
+async def test_resolve_principal_never_accepts_a_refresh_token_as_a_principal(
+    jwt_env: Settings,
+) -> None:
+    """刷新令牌只能走 O2 的刷新流程；当主体令牌用就是绕过 access 的短生命周期。"""
+    token = sign_staff_refresh(kind=KIND_STAFF, staff_id=STAFF_ID, token_version=3, now=_now())
+    fake = _FakeSession({_STAFF_TABLES: ("care_worker", "active", 3)})
+    with pytest.raises(CredentialInvalidError):
+        await resolve_principal(_bearer(token), _as_session(fake))
+    assert fake.queried == []
+
+
+# ------------------------------------------------------------------ 库里事实 → 判定结果
+
+
+@pytest.mark.parametrize(
+    ("row", "kind"),
+    [
+        pytest.param(("care_worker", "disabled", 3), KIND_STAFF, id="staff-disabled"),
+        pytest.param(("care_worker", "active", 4), KIND_STAFF, id="staff-version-bumped"),
+        pytest.param(("admin", "active", 3), KIND_STAFF, id="staff-role-drift"),
+        pytest.param(("disabled", 2), KIND_GUARDIAN, id="guardian-disabled"),
+        pytest.param(("active", 2), KIND_GUARDIAN, id="guardian-version-bumped"),
+    ],
+)
+async def test_resolve_principal_revokes_when_database_facts_move(
+    jwt_env: Settings, row: tuple[object, ...], kind: str
+) -> None:
+    """签名仍然有效、库里不再认这张凭证 —— 一律 `TOKEN_REVOKED`（AC-24 / FR-ADM-04）。
+
+    三类原因（停用、版本号递增、角色漂移）对客户端是同一个动作（重新登录），对排障是
+    三个不同的库状态，所以这里合并成一个码、但每条都要单独覆盖。
+    """
+    if kind == KIND_STAFF:
+        token = _sign_staff_access()
+        rows = {_STAFF_TABLES: row}
+    else:
+        token = _sign_guardian_access()
+        rows = {_GUARDIAN_TABLES: row}
+    fake = _FakeSession(rows)
+
+    with pytest.raises(CredentialRevokedError) as excinfo:
+        await resolve_principal(_bearer(token), _as_session(fake))
+    assert excinfo.value.code == TOKEN_REVOKED
+
+
+async def test_resolve_principal_maps_a_missing_row_to_revoked_and_does_not_echo_the_token(
+    jwt_env: Settings,
+) -> None:
+    """查不到行 → 撤销，不是 404：账号是否存在不是凭证层该告诉客户端的信息。
+
+    回 404 等于开一个「这个工号还在不在」的探针；错误 message 会进日志，所以也不能带令牌。
+    """
+    token = _sign_staff_access()
+    fake = _FakeSession({})
+
+    with pytest.raises(CredentialRevokedError) as excinfo:
+        await resolve_principal(_bearer(token), _as_session(fake))
+
+    assert excinfo.value.code == TOKEN_REVOKED
+    assert token not in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("row", "expected"),
+    [
+        pytest.param(
+            (STAFF_ID, DEVICE_ID, _now() + timedelta(minutes=10), "disabled"),
+            CredentialRevokedError,
+            id="owner-disabled",
+        ),
+        pytest.param(
+            (STAFF_ID, DEVICE_ID, _now() - timedelta(minutes=1), "active"),
+            CredentialRevokedError,
+            id="record-expired",
+        ),
+        pytest.param(
+            (LETTERED_ID, DEVICE_ID, _now() + timedelta(minutes=10), "active"),
+            CredentialRevokedError,
+            id="wrong-owner",
+        ),
+        pytest.param(
+            (STAFF_ID, LETTERED_ID, _now() + timedelta(minutes=10), "active"),
+            CredentialRevokedError,
+            id="wrong-device",
+        ),
+    ],
+)
+async def test_resolve_principal_refuses_cards_whose_record_says_no(
+    jwt_env: Settings, row: tuple[object, ...], expected: type[Exception]
+) -> None:
+    """工牌的四条库内判定都要过：属于本人、属于本设备、人还 active、记录没过期。
+
+    `record-expired` 归 `TOKEN_REVOKED` 而不是 `TOKEN_EXPIRED`：载荷自己的 `exp` 已经过了
+    验签那关（JWT 还没到期），是**库里那行**先说不认这张卡 —— 语义是撤销，处置也是重新刷卡。
+    """
+    token = _sign_staff_card()
+    fake = _FakeSession({_CARD_TABLES: row})
+    with pytest.raises(expected):
+        await resolve_principal(_bearer(token), _as_session(fake))
+
+
+async def test_resolve_principal_rejects_a_card_with_no_record(jwt_env: Settings) -> None:
+    fake = _FakeSession({})
+    with pytest.raises(CredentialRevokedError):
+        await resolve_principal(_bearer(_sign_staff_card()), _as_session(fake))
+
+
+# ------------------------------------------------------------------ 上下文注入与回滚点
+
+
+async def test_get_current_principal_injects_for_the_request_and_clears_afterwards(
+    jwt_env: Settings,
+) -> None:
+    """依赖体本身：`yield` 期间上下文可用，请求结束后必须清空。
+
+    直接驱动异步生成器而不是走 HTTP，是因为「清空」这一步在真实请求里发生在**另一个
+    asyncio 任务**的上下文里，测试线程看不到；这里把注入/回滚压进同一个任务才测得准。
+    """
+    token = _sign_staff_access()
+    fake = _FakeSession({_STAFF_TABLES: ("care_worker", "active", 3)})
+    dependency = get_current_principal(_as_session(fake), _bearer(token))
+
+    try:
+        identity = await dependency.__anext__()
+        assert require_identity() is identity
+        assert get_identity() is identity
+        with pytest.raises(StopAsyncIteration):
+            await dependency.__anext__()
+    finally:
+        await dependency.aclose()
+
+    assert get_identity() is None
+
+
+async def test_get_current_principal_clears_identity_when_the_route_raises(
+    jwt_env: Settings,
+) -> None:
+    """路由抛异常也要清空：`finally` 而不是「只有正常路径才回滚」，否则下一个人接住上一个身份。"""
+    token = _sign_staff_access()
+    fake = _FakeSession({_STAFF_TABLES: ("care_worker", "active", 3)})
+    dependency = get_current_principal(_as_session(fake), _bearer(token))
+    await dependency.__anext__()
+    assert get_identity() is not None
+
+    with pytest.raises(RuntimeError, match="route blew up"):
+        await dependency.athrow(RuntimeError("route blew up"))
+
+    assert get_identity() is None
+
+
+async def test_get_current_principal_does_not_inject_when_resolution_fails(
+    jwt_env: Settings,
+) -> None:
+    """解析失败时连 `yield` 都不该到达：否则会留下「身份已设但请求 401」的半截状态。"""
+    fake = _FakeSession({})
+    dependency = get_current_principal(_as_session(fake), _bearer(_sign_staff_access()))
+    with pytest.raises(CredentialRevokedError):
+        await dependency.__anext__()
+    assert get_identity() is None
+
+
+# ------------------------------------------------------------------ 主体种类门禁与角色门禁
+
+
+async def test_current_staff_rejects_the_wrong_principal_kind_with_401_not_403(
+    jwt_env: Settings,
+) -> None:
+    """拿错凭证体系（家属/工牌当全权员工会话用）→ 401 `TOKEN_INVALID`。
+
+    403 会暗示「换个更高权限的账号就能过」，而真实情况是该重登的是当前这张凭证（S-24）。
+    """
+    guardian = guardian_identity_from_access(
+        _guardian_claims(token_version=1), db_status="active", db_token_version=1
+    )
+    with pytest.raises(CredentialInvalidError) as excinfo:
+        await current_staff(guardian)
+    assert excinfo.value.code == TOKEN_INVALID
+
+    card = staff_card_identity_from_card(
+        _card_claims(),
+        db_staff_id=STAFF_ID,
+        db_device_id=DEVICE_ID,
+        db_staff_status="active",
+        db_expires_at=_now() + timedelta(minutes=5),
+    )
+    with pytest.raises(CredentialInvalidError):
+        await current_staff(card)
+
+
+async def test_current_guardian_and_device_accept_only_their_own_kind(jwt_env: Settings) -> None:
+    staff = staff_identity_from_access(
+        _access_claims(token_version=3),
+        db_role="care_worker",
+        db_status="active",
+        db_token_version=3,
+    )
+    with pytest.raises(CredentialInvalidError):
+        await current_guardian(staff)
+
+    guardian = guardian_identity_from_access(
+        _guardian_claims(token_version=1), db_status="active", db_token_version=1
+    )
+    assert (await current_guardian(guardian)).principal_id == GUARDIAN_ID
+
+    device = device_identity_from_session(
+        _device_claims(),
+        db_device_id=DEVICE_ID,
+        db_token_hash=DEVICE_TOKEN_HASH,
+        db_status="online",
+    )
+    assert (await current_device(device)).elder_id is None
+    with pytest.raises(CredentialInvalidError):
+        await current_device(guardian)
+
+
+def test_require_roles_rejects_an_unknown_role_name_at_factory_time() -> None:
+    """角色名写错要在装配期炸，不留到运行期变成「所有人都 403」。"""
+    with pytest.raises(ValueError, match="super_user"):
+        require_roles("admin", "super_user")
+
+
+async def test_require_roles_passes_the_listed_role_only(jwt_env: Settings) -> None:
+    admin = staff_identity_from_access(
+        _access_claims(role="admin", token_version=3),
+        db_role="admin",
+        db_status="active",
+        db_token_version=3,
+    )
+    assert (await require_roles("admin", "doctor")(admin)).role == "admin"
+
+    care = staff_identity_from_access(
+        _access_claims(token_version=3),
+        db_role="care_worker",
+        db_status="active",
+        db_token_version=3,
+    )
+    with pytest.raises(RoleForbiddenError) as excinfo:
+        await require_roles("admin")(care)
+    assert excinfo.value.code == ROLE_FORBIDDEN
+
+
+# ------------------------------------------------------------------ 真实 ASGI 依赖链
+
+
+def _probe_client(fake: _FakeSession) -> TestClient:
+    """把假会话塞进一个最小应用，验的是**注解链**而不是手写调用。
+
+    `Depends(current_staff)` → `Depends(get_current_principal)` → `Depends(get_session)`
+    这三层里任何一层漏写，直接调函数的单测发现不了（例如把 `current_staff` 写成普通函数
+    却在路由里当依赖用：形状对了、行为全错）。
+    """
+    app = FastAPI()
+
+    @app.get("/whoami")
+    async def whoami(
+        identity: Annotated[Identity, Depends(current_staff)],
+    ) -> dict[str, str | None]:
+        return {"kind": identity.kind, "role": identity.role, "principal": identity.principal_id}
+
+    @app.get("/admin-only")
+    async def admin_only(
+        identity: Annotated[Identity, Depends(require_roles("admin"))],
+    ) -> dict[str, str]:
+        return {"role": identity.role or ""}
+
+    app.dependency_overrides[get_session] = lambda: fake
+    return TestClient(app)
+
+
+def test_asgi_chain_resolves_the_principal_from_the_authorization_header(jwt_env: Settings) -> None:
+    token = _sign_staff_access()
+    fake = _FakeSession({_STAFF_TABLES: ("care_worker", "active", 3)})
+    client = _probe_client(fake)
+
+    response = client.get("/whoami", headers={"Authorization": _bearer(token)})
+
+    assert response.status_code == 200
+    assert response.json() == {"kind": "staff", "role": "care_worker", "principal": STAFF_ID}
+    assert fake.queried == [("staff_accounts",)]
+    assert get_identity() is None  # 请求任务里的上下文不会漏回测试线程
+
+
+def test_asgi_chain_maps_a_card_principal_to_401_before_the_role_gate(jwt_env: Settings) -> None:
+    """真实链路里工牌先到 `current_staff`（401），轮不到 `check_roles`（403）。
+
+    直接调 `require_roles("admin")(...)` 测不出这个顺序 —— 它绕过了中间那层。这条用例钉住
+    S-24：刷卡不等于拿到该员工的全部角色权限。
+    """
+    fake = _FakeSession(
+        {_CARD_TABLES: (STAFF_ID, DEVICE_ID, _now() + timedelta(minutes=10), "active")}
+    )
+    client = _probe_client(fake)
+
+    with pytest.raises(CredentialInvalidError) as excinfo:
+        client.get("/admin-only", headers={"Authorization": _bearer(_sign_staff_card())})
+    assert excinfo.value.code == TOKEN_INVALID
+
+
+def test_asgi_chain_surfaces_role_and_credential_errors_as_their_contract_codes(
+    jwt_env: Settings,
+) -> None:
+    """task-5 只负责把这些码映射成 401/403 响应体；码在这里就得对。"""
+    care = _FakeSession({_STAFF_TABLES: ("care_worker", "active", 3)})
+    with pytest.raises(RoleForbiddenError) as forbidden:
+        _probe_client(care).get(
+            "/admin-only", headers={"Authorization": _bearer(_sign_staff_access())}
+        )
+    assert forbidden.value.code == ROLE_FORBIDDEN
+
+    with pytest.raises(CredentialMissingError):
+        _probe_client(_FakeSession({})).get("/whoami")
+    with pytest.raises(DeviceLookupNotWiredError):
+        _probe_client(_FakeSession({})).get(
+            "/whoami", headers={"Authorization": _bearer(_sign_device())}
+        )
+
+
+# ------------------------------------------------------------------ 真库：三条 SELECT 的可执行性
+
+
+@pytest.fixture
+async def auth_db_engine() -> AsyncIterator[AsyncEngine]:
+    """本文件专用的 NullPool 引擎；为什么不用 `app/db.py` 那个单例，见 `auth_db` 的说明。"""
+    test_engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
+    try:
+        yield test_engine
+    finally:
+        await test_engine.dispose()
+
+
+@pytest.fixture
+async def auth_db(auth_db_engine: AsyncEngine) -> AsyncIterator[AsyncConnection]:
+    """每用例一个事务、结束回滚；连不上库就 skip 并说明原因（与 conftest 的 `db_conn` 同契约）。
+
+    刻意自建 NullPool 引擎而不是复用 `app/db.py` 的模块级单例：单例的连接池会把
+    **上一个事件循环**创建的 asyncpg 连接留给下一个用例，而 pytest-asyncio 每个用例一个新
+    循环，于是隔一个用例就在 `engine.connect()` 里炸 `AttributeError: 'NoneType' object has
+    no attribute 'send'` —— 表现为「一半通过、一半 skip」，看起来像数据库在抖，其实是用例在
+    互相投毒。NullPool 每次真连、用完即关，绕开这个坑。
+    这是 task-3 夹具的缺陷，已登记任务板 P-03 请 A 在 conftest 里补 `engine.dispose()`；
+    那边修好后本夹具应当删掉，全部改回 `db_conn`。
+    """
+    try:
+        conn = await auth_db_engine.connect()
+    except Exception as exc:  # 任何连接失败（超时/拒绝/口令错）都算「无库」
+        pytest.skip(f"PostgreSQL 不可达，跳过数据库用例：{exc!r}")
+
+    trans = await conn.begin()
+    try:
+        yield conn
+    finally:
+        await trans.rollback()
+        await conn.close()
+
+
+def _db_session(auth_db: AsyncConnection) -> AsyncSession:
+    """把夹具那条未提交的事务借给被测代码：它只 SELECT，残留由夹具回滚。"""
+    return AsyncSession(bind=auth_db, expire_on_commit=False)
+
+
+async def _db_add_staff(
+    auth_db: AsyncConnection,
+    *,
+    staff_id: str = STAFF_ID,
+    role: str = "care_worker",
+    token_version: int = 3,
+    status: str = "active",
+) -> None:
+    await auth_db.execute(
+        StaffAccount.__table__.insert().values(
+            staff_id=uuid.UUID(staff_id),
+            name="测试护工",
+            role=role,
+            password_hash=_DB_HASH_PLACEHOLDER,
+            token_version=token_version,
+            status=status,
+        )
+    )
+
+
+async def _db_patch_staff(
+    auth_db: AsyncConnection, *, staff_id: str = STAFF_ID, **values: object
+) -> None:
+    await auth_db.execute(
+        StaffAccount.__table__.update()
+        .where(StaffAccount.__table__.c.staff_id == uuid.UUID(staff_id))
+        .values(**values)
+    )
+
+
+async def _db_add_guardian(
+    auth_db: AsyncConnection,
+    *,
+    guardian_id: str = GUARDIAN_ID,
+    token_version: int = 1,
+    status: str = "active",
+) -> None:
+    await auth_db.execute(
+        GuardianAccount.__table__.insert().values(
+            guardian_id=uuid.UUID(guardian_id),
+            name="测试家属",
+            password_hash=_DB_HASH_PLACEHOLDER,
+            token_version=token_version,
+            status=status,
+        )
+    )
+
+
+async def _db_add_card(
+    auth_db: AsyncConnection,
+    *,
+    lookup_key: str,
+    staff_id: str = STAFF_ID,
+    device_id: str = DEVICE_ID,
+    expires_at: datetime,
+) -> None:
+    """补齐工牌行的外键链：rooms → devices → staff_tokens。
+
+    `devices` 那两行只能写裸 SQL：task-3 还没交付 `app/models/device.py`（任务板 P-02）。
+    等 A 的模型落地，这里应该改成 ORM 写法 —— 到时候 `resolve_principal` 的设备分支（T4b-2）
+    也要一起接线，两处别分开改。
+    """
+    room_id = (
+        await auth_db.execute(
+            text("INSERT INTO rooms (room_no) VALUES (:room_no) RETURNING room_id"),
+            {"room_no": f"T-{uuid.uuid4()}"},
+        )
+    ).scalar_one()
+    await auth_db.execute(
+        text(
+            "INSERT INTO devices (device_id, room_id, token_hash, status) "
+            "VALUES (:device_id, :room_id, :token_hash, 'online')"
+        ),
+        {"device_id": uuid.UUID(device_id), "room_id": room_id, "token_hash": _DB_HASH_PLACEHOLDER},
+    )
+    await auth_db.execute(
+        StaffToken.__table__.insert().values(
+            token_hash=lookup_key,
+            staff_id=uuid.UUID(staff_id),
+            device_id=uuid.UUID(device_id),
+            scope="workorder:handle",
+            expires_at=expires_at,
+        )
+    )
+
+
+async def test_db_staff_lookup_resolves_a_real_row(
+    auth_db: AsyncConnection, jwt_env: Settings
+) -> None:
+    """证明 `_load_staff_row` 的列名与 UUID 绑定在真库上成立（假会话测不出拼错列名）。"""
+    await _db_add_staff(auth_db)
+    token = _sign_staff_access()
+
+    async with _db_session(auth_db) as session:
+        identity = await resolve_principal(_bearer(token), session)
+    assert identity.role == "care_worker"
+    assert identity.staff_id == STAFF_ID
+
+
+async def test_db_token_version_bump_revokes_the_issued_token(
+    auth_db: AsyncConnection, jwt_env: Settings
+) -> None:
+    """AC-24 的完整闭环：签发 → 库里递增 → 同一张令牌立刻失效，全程只走公开入口。"""
+    await _db_add_staff(auth_db, token_version=3)
+    token = _bearer(_sign_staff_access(token_version=3))
+
+    async with _db_session(auth_db) as session:
+        assert (await resolve_principal(token, session)).role == "care_worker"
+
+    await _db_patch_staff(auth_db, token_version=4)
+
+    async with _db_session(auth_db) as session:
+        with pytest.raises(CredentialRevokedError):
+            await resolve_principal(token, session)
+
+
+async def test_db_disable_and_role_edit_revoke_without_touching_the_token(
+    auth_db: AsyncConnection, jwt_env: Settings
+) -> None:
+    """停用与改角色都是纯库侧动作：签名照样有效，判定必须翻。"""
+    await _db_add_staff(auth_db)
+    token = _bearer(_sign_staff_access())
+
+    async with _db_session(auth_db) as session:
+        await resolve_principal(token, session)
+
+    await _db_patch_staff(auth_db, status="disabled")
+    async with _db_session(auth_db) as session:
+        with pytest.raises(CredentialRevokedError):
+            await resolve_principal(token, session)
+
+    await _db_patch_staff(auth_db, status="active", role="admin")
+    async with _db_session(auth_db) as session:
+        with pytest.raises(CredentialRevokedError):
+            await resolve_principal(token, session)
+
+
+async def test_db_absent_staff_row_revokes(auth_db: AsyncConnection, jwt_env: Settings) -> None:
+    """库里有别人、没这位：`one_or_none()` 走的是真「行不存在」，不是假会话里那个 None。"""
+    await _db_add_staff(auth_db, staff_id=LETTERED_ID)
+    async with _db_session(auth_db) as session:
+        with pytest.raises(CredentialRevokedError):
+            await resolve_principal(_bearer(_sign_staff_access()), session)
+
+
+async def test_db_guardian_lookup_and_drift(auth_db: AsyncConnection, jwt_env: Settings) -> None:
+    await _db_add_guardian(auth_db)
+    token = _bearer(_sign_guardian_access(token_version=1))
+
+    async with _db_session(auth_db) as session:
+        identity = await resolve_principal(token, session)
+    assert identity.kind == KIND_GUARDIAN
+    assert identity.elder_id is None, "家属身份里不许出现 elder_id（S-17）"
+
+    await auth_db.execute(
+        GuardianAccount.__table__.update()
+        .where(GuardianAccount.__table__.c.guardian_id == uuid.UUID(GUARDIAN_ID))
+        .values(token_version=2)
+    )
+    async with _db_session(auth_db) as session:
+        with pytest.raises(CredentialRevokedError):
+            await resolve_principal(token, session)
+
+
+async def test_db_card_lookup_joins_the_owner_status(
+    auth_db: AsyncConnection, jwt_env: Settings
+) -> None:
+    """JOIN 的真实价值：没有它，「人停用后卡还能刷到过期」这条只能在真库上才测得出来。"""
+    card = _sign_staff_card()
+    await _db_add_staff(auth_db)
+    await _db_add_card(
+        auth_db, lookup_key=staff_card_lookup_key(card), expires_at=_now() + timedelta(minutes=10)
+    )
+
+    async with _db_session(auth_db) as session:
+        identity = await resolve_principal(_bearer(card), session)
+    assert identity.kind == KIND_STAFF_CARD
+    assert identity.device_id == DEVICE_ID
+    assert identity.elder_id is None  # T4b-2 的设备绑定回查还没接线（S-22）
+
+    await _db_patch_staff(auth_db, status="disabled")
+    async with _db_session(auth_db) as session:
+        with pytest.raises(CredentialRevokedError):
+            await resolve_principal(_bearer(card), session)
+
+
+async def test_db_card_lookup_follows_the_record_expiry(
+    auth_db: AsyncConnection, jwt_env: Settings
+) -> None:
+    """载荷还没到期、库里 `expires_at` 已过 → 拒（`timestamptz` 读回来必须带时区，否则判定层当场抛）。"""
+    card = _sign_staff_card(ttl_seconds=3600)
+    await _db_add_staff(auth_db)
+    await _db_add_card(
+        auth_db, lookup_key=staff_card_lookup_key(card), expires_at=_now() - timedelta(minutes=1)
+    )
+
+    async with _db_session(auth_db) as session:
+        with pytest.raises(CredentialRevokedError):
+            await resolve_principal(_bearer(card), session)
+
+
+async def test_db_card_record_absent_revokes(auth_db: AsyncConnection, jwt_env: Settings) -> None:
+    await _db_add_staff(auth_db)
+    async with _db_session(auth_db) as session:
+        with pytest.raises(CredentialRevokedError):
+            await resolve_principal(_bearer(_sign_staff_card()), session)
+
+
+async def test_db_fixture_rolls_back_every_row_it_inserted(
+    auth_db: AsyncConnection, auth_db_engine: AsyncEngine
+) -> None:
+    """这条测的是夹具不是鉴权代码，但它撑着上面所有用例的前提：共享主库、零残留。
+
+    本事务里插进去的一行，换**另一条连接**必须看不见。哪天有人把回滚改成 commit，这里会红
+    —— 而不是让后续用例在别人的残留数据上跑出谁也解释不了的结果。
+    """
+    await _db_add_staff(auth_db)
+    assert (await auth_db.execute(text("SELECT count(*) FROM staff_accounts"))).scalar_one() == 1
+
+    async with auth_db_engine.connect() as probe:
+        for name in ("staff_accounts", "guardian_accounts", "staff_tokens", "devices", "rooms"):
+            count = (
+                await probe.execute(select(func.count()).select_from(sql_table(name)))
+            ).scalar_one()
+            assert count == 0, name

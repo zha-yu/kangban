@@ -5,9 +5,11 @@
 - `security.py`：验签、算法白名单、载荷一致性（纯密码学，失败原因按内部语义分类）；
 - **本文件**：Bearer 头解析 → 三类主体令牌解码 → 把「从库里读出的事实」与载荷逐项比对
   → 组装 `Identity`；失败原因按契约 §7 的对外 `code` 分类；
-- T4b（等 `task-3` 的 `app/db.py` 与 ORM 就绪）：只负责 `SELECT` 与 `get_session` 接线，
-  把读到的事实原样传进本文件的判定函数。**判定规则不许在依赖层再写一遍**，
-  否则「护工改角色」这类失效判定会出现两套口径。
+- T4b-1（已接线）：文件末尾的 `resolve_principal` / `get_current_principal` 与三个主体依赖，
+  只负责 `SELECT` 与 `get_session`，把读到的事实原样传进上面的判定函数。
+  **判定规则不许在依赖层再写一遍**，否则「护工改角色」这类失效判定会出现两套口径。
+- T4b-2（未接线）：设备会话回查缺 `app/models/device.py`（任务板 P-02）；工牌身份的
+  `elder_id` 同样读自 `devices`，本轮传 `None`，与契约 S-22 的未做项同一批补齐。
 
 本文件不生成 HTTP 响应：异常只携带契约 §7 的 `code`，异常 → 响应的映射属
 `app/core/errors.py`（§11 落点，B 负责，但不在 task-4 写作用域内）。
@@ -18,17 +20,23 @@ FR-ADM-06 ③（身份只从 runtime_context 走）、AC-24（解绑/停用立�
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Annotated, Any
 
-from app.core.runtime_context import Identity
+from fastapi import Depends, Header
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.runtime_context import Identity, reset_identity, set_identity
 from app.core.security import (
     KIND_DEVICE,
     KIND_GUARDIAN,
     KIND_STAFF,
     KIND_STAFF_CARD,
     PRINCIPAL_TYPE_LITERALS,
+    STAFF_ROLES,
     TYP_ACCESS,
     TYP_DEVICE,
     TYP_REFRESH,
@@ -40,6 +48,8 @@ from app.core.security import (
     decode_token,
     sha256_hex,
 )
+from app.db import get_session
+from app.models import GuardianAccount, StaffAccount, StaffToken
 
 # ------------------------------------------------------------------ 对外错误码（契约 §7）
 
@@ -415,6 +425,204 @@ def _optional_uuid_text(value: object | None) -> str | None:
     return None if value is None else canonical_uuid(value)
 
 
+# ------------------------------------------------------------------ T4b-1：库里回查的接线
+
+
+class DeviceLookupNotWiredError(RuntimeError):
+    """设备会话的库内回查还没接线（缺 `app/models/device.py`，见任务板 P-02）。
+
+    刻意**不**继承 `AuthError`、也**不**回 401：这不是凭证坏了，是这条路径还没实现。
+    把它伪装成 `TOKEN_INVALID` 的后果是让排障的人去查一张本来没问题的令牌，
+    而平板端以为凭证被撤销、开始重登循环 —— 缺口必须吵，不能静音。
+    """
+
+
+def _uuid_bind(value: str) -> uuid.UUID:
+    """规范 UUID 文本 → 绑定参数（`UUID(as_uuid=True)` 的列要 `UUID` 对象）。
+
+    S-16 已保证进来的是小写连字规范形式，所以这里失败只可能是接线拿错了载荷，
+    按「凭证与处理器不符」处理而不是当成数据坏了。
+    """
+    try:
+        return uuid.UUID(value)
+    except ValueError as exc:
+        raise CredentialInvalidError("subject id does not match an account") from exc
+
+
+async def _load_staff_row(session: AsyncSession, staff_id: str) -> Sequence[Any]:
+    """按主键读 `staff_accounts` 的三列判定值；缺行即判撤销。"""
+    row = (
+        await session.execute(
+            select(
+                StaffAccount.role,
+                StaffAccount.status,
+                StaffAccount.token_version,
+            ).where(StaffAccount.staff_id == _uuid_bind(staff_id))
+        )
+    ).one_or_none()
+    if row is None:
+        # 不回 404：账号是否存在不是凭证层该告诉客户端的信息（契约 §7 的 404 只给范围内资源）
+        raise CredentialRevokedError("staff account row is gone")
+    return row
+
+
+async def _load_guardian_row(session: AsyncSession, guardian_id: str) -> Sequence[Any]:
+    """按主键读 `guardian_accounts` 的两列判定值；缺行即判撤销。"""
+    row = (
+        await session.execute(
+            select(
+                GuardianAccount.status,
+                GuardianAccount.token_version,
+            ).where(GuardianAccount.guardian_id == _uuid_bind(guardian_id))
+        )
+    ).one_or_none()
+    if row is None:
+        raise CredentialRevokedError("guardian account row is gone")
+    return row
+
+
+async def _load_staff_token_row(session: AsyncSession, lookup_key: str) -> Sequence[Any]:
+    """以哈希为键读 `staff_tokens`，并带出所属员工的当前状态。
+
+    JOIN 是必须的：R9 只有 `expires_at`，员工停用不会写进工牌行；不 JOIN 就会出现
+    「人被 disabled 了，卡还能刷到过期」。
+    """
+    row = (
+        await session.execute(
+            select(
+                StaffToken.staff_id,
+                StaffToken.device_id,
+                StaffToken.expires_at,
+                StaffAccount.status,
+            )
+            .join(StaffAccount, StaffAccount.staff_id == StaffToken.staff_id)
+            .where(StaffToken.token_hash == lookup_key)
+        )
+    ).one_or_none()
+    if row is None:
+        raise CredentialRevokedError("staff token record is gone")
+    return row
+
+
+async def resolve_principal(authorization: str | None, session: AsyncSession) -> Identity:
+    """请求头 → 已通过库内校验的 `Identity`。**不碰 contextvar**，所以可以直接单测。
+
+    分派只依据**已验签的载荷**（`typ` + `kind`），一条令牌只查一张表：跨表「试着找找」
+    会让「哪张表负责这个主体」这个问题无法回答，也会把漏查变成误命中。
+
+    `staff_card` 的 `elder_id` 本轮传 `None`：绑定长者读自 `devices`，而设备那半属 T4b-2
+    （任务板 P-02）。契约 S-22 记了同一批未做项，Day 9 的 E14 之前必须补齐。
+    """
+    token = bearer_token_from_header(authorization)
+    claims = decode_principal_token(token)
+    typ = claims["typ"]
+    if typ == TYP_DEVICE:
+        raise DeviceLookupNotWiredError(
+            "device session lookup requires app/models/device.py (blocked on task-3 P-02)"
+        )
+    kind = claims["kind"]
+    if typ == TYP_ACCESS and kind == KIND_STAFF:
+        staff_id = _id_from_sub(claims, prefix=KIND_STAFF)
+        db_role, db_status, db_token_version = await _load_staff_row(session, staff_id)
+        return staff_identity_from_access(
+            claims,
+            db_role=db_role,
+            db_status=db_status,
+            db_token_version=db_token_version,
+        )
+    if typ == TYP_ACCESS and kind == KIND_GUARDIAN:
+        guardian_id = _id_from_sub(claims, prefix=KIND_GUARDIAN)
+        db_status, db_token_version = await _load_guardian_row(session, guardian_id)
+        return guardian_identity_from_access(
+            claims, db_status=db_status, db_token_version=db_token_version
+        )
+    if typ == TYP_STAFF_CARD:
+        db_staff_id, db_device_id, db_expires_at, db_staff_status = await _load_staff_token_row(
+            session, staff_card_lookup_key(token)
+        )
+        return staff_card_identity_from_card(
+            claims,
+            db_staff_id=db_staff_id,
+            db_device_id=db_device_id,
+            db_staff_status=db_staff_status,
+            db_expires_at=db_expires_at,
+            db_elder_id=None,
+        )
+    # 解码层已按 S-16 白名单核过 typ/kind，走到这里只能是接线把新类型加进了允许列表
+    raise CredentialInvalidError("token type is not accepted as a request principal")
+
+
+async def get_current_principal(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    authorization: Annotated[str | None, Header()] = None,
+) -> AsyncIterator[Identity]:
+    """FastAPI 依赖：解析主体并把 `Identity` 注入上下文，请求结束或异常都回滚。
+
+    用生成器依赖而不是普通依赖，是因为回滚点必须在**响应结束之后**：
+    普通依赖里 `set_identity` 之后没有落点可 `reset`，uvicorn 复用同一进程处理下一个请求时
+    就会带着上一个人的身份跑完全程（契约 S-18 ③）。
+
+    `authorization` 的 `= None` 不是写法偏好，是口径：只写 `Annotated[str | None, Header()]`
+    时 FastAPI 把 `Authorization` 当**必填头**，缺头直接 422 `{"type":"missing"}`，我们的解析器
+    根本不会被调用 —— 而契约 §7 要求「没带凭证」是 401 `TOKEN_INVALID`（实测：去掉 `= None`
+    本文件的 `test_asgi_chain_surfaces_...` 立刻变红）。
+    有默认值就得排在最后，所以参数顺序与 `resolve_principal` 相反：框架按注解解析依赖，顺序无关。
+    """
+    identity = await resolve_principal(authorization, session)
+    marker = set_identity(identity)
+    try:
+        yield identity
+    finally:
+        reset_identity(marker)
+
+
+def _require_kind(identity: Identity, *, kind: str) -> Identity:
+    """主体种类不符 → 401（`TOKEN_INVALID`），不是 403。
+
+    403 会误导客户端「换个更高权限的账号就能过」，而真实情况是拿错了凭证体系，
+    该重登的是当前这个（契约 §7 的四类拒绝里，凭证问题一律走 401）。
+    """
+    if identity.kind != kind:
+        raise CredentialInvalidError("principal kind does not match the endpoint")
+    return identity
+
+
+async def current_staff(identity: Annotated[Identity, Depends(get_current_principal)]) -> Identity:
+    """员工全权会话主体（`kind=staff`）。工牌主体不走这里，它按 `scope` 授权。"""
+    return _require_kind(identity, kind=KIND_STAFF)
+
+
+async def current_guardian(
+    identity: Annotated[Identity, Depends(get_current_principal)],
+) -> Identity:
+    """家属主体（`kind=guardian`）。能看哪些长者由服务层查 `elder_guardians`。"""
+    return _require_kind(identity, kind=KIND_GUARDIAN)
+
+
+async def current_device(
+    identity: Annotated[Identity, Depends(get_current_principal)],
+) -> Identity:
+    """设备主体（`kind=device`）。本轮不可能到达：`resolve_principal` 先抛未接线错误。"""
+    return _require_kind(identity, kind=KIND_DEVICE)
+
+
+def require_roles(*roles: str) -> Callable[[Identity], Awaitable[Identity]]:
+    """角色门禁工厂：`Depends(require_roles("admin"))`。只管角色，不做长者范围过滤。
+
+    在工厂调用处就把越界角色名挡掉：写错一个角色名（`super_user`）如果拖到运行期，
+    表现是「所有人都 403」，看起来像权限配窄了而不是代码写错了。
+    """
+    unknown = sorted({role for role in roles if role not in STAFF_ROLES})
+    if unknown:
+        raise ValueError(f"unknown staff roles in require_roles: {', '.join(unknown)}")
+
+    async def dependency(identity: Annotated[Identity, Depends(current_staff)]) -> Identity:
+        check_roles(identity, roles)
+        return identity
+
+    return dependency
+
+
 __all__ = [
     "ACCOUNT_STATUS_ACTIVE",
     "DEVICE_STATUS_LOCKED",
@@ -427,14 +635,21 @@ __all__ = [
     "CredentialInvalidError",
     "CredentialMissingError",
     "CredentialRevokedError",
+    "DeviceLookupNotWiredError",
     "RoleForbiddenError",
     "bearer_token_from_header",
     "check_roles",
+    "current_device",
+    "current_guardian",
+    "current_staff",
     "decode_principal_token",
     "decode_refresh_token",
     "device_hash_prefix_matches",
     "device_identity_from_session",
+    "get_current_principal",
     "guardian_identity_from_access",
+    "require_roles",
+    "resolve_principal",
     "staff_card_identity_from_card",
     "staff_card_lookup_key",
     "staff_identity_from_access",
