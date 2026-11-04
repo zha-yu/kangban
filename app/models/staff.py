@@ -3,6 +3,8 @@
 命名对齐说明：CHECK 约束只给短名（如 name="status"），最终名由 `Base.naming_convention`
 拼成 `ck_staff_accounts_status` —— 与 `alembic/versions/0002_day2_identity.py` 里
 显式写的全名一致，autogenerate 不会漂移。FK / UNIQUE / PK 不写名，全交约定推导。
+列注释同样与 0002 逐字一致——漂移检查（compare_metadata）曾发现 role / token_hash
+两处注释抄写出入，已按迁移原文对齐；后续改注释须两边同步。
 """
 
 from __future__ import annotations
@@ -39,7 +41,7 @@ class StaffAccount(Base):
     )
     name: Mapped[str] = mapped_column(Text(), nullable=False, comment="姓名")
     role: Mapped[str] = mapped_column(
-        Text(), nullable=False, comment="admin/care_worker/doctor，服务端据此分流权限"
+        Text(), nullable=False, comment="admin/care_worker/doctor，服务端据此分流权限（AC-18）"
     )
     phone: Mapped[str | None] = mapped_column(
         Text(), nullable=True, comment="手机号（日志脱敏规则覆盖）"
@@ -66,7 +68,7 @@ class StaffToken(Base):
     __table_args__ = ({"comment": "护工工牌临时令牌表"},)
 
     token_hash: Mapped[str] = mapped_column(
-        Text(), primary_key=True, comment="临时令牌哈希（刷工牌/扫码换取）"
+        Text(), primary_key=True, comment="临时令牌哈希（刷工牌/扫码换取），只存哈希"
     )
     staff_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("staff_accounts.staff_id"), nullable=False, comment="所属护工"
