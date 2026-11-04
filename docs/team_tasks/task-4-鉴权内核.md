@@ -2,21 +2,23 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 状态     | 🚧 进行中（T1–T3、T4a 已提交 `16513da`；T4b-1 人员/工牌接线待提交；T4b-2 设备回查等 `Device` 模型） |
+| 状态     | 🚧 进行中（T1–T3、T4a 已提交 `16513da`；T4b-1/T4b-2 接线已完成，剩 T5 测试收口与 T6 人工审查） |
 | 认领人    | B                                                                    |
 | 主责     | B（鉴权内核）                                                                |
 | 前置     | `task-1`                                                             |
 | 写作用域   | `app/core/security.py`、`app/core/auth.py`、`app/core/runtime_context.py`、`tests/test_security.py` |
 
 > 进展（2026-11-04）：判定层（密码、四类 JWT、`Identity` 与 contextvar、库里事实的逐项比对）已提交 `16513da`；
-> T4b-1 完成**人员与工牌**接线：`resolve_principal`（一类令牌只查一张表、查询键取已验签载荷）、
-> 生成器依赖 `get_current_principal`（`try/finally` 注入与回滚）、`current_staff` / `current_guardian` /
-> `current_device` / `require_roles`。用例 183 条（假会话 + 真实 `TestClient` 链路 + 9 条真库 AC-24 闭环）、
-> 全量 190 条 0 skip，ruff check/format + mypy 全绿；本轮口径登记在契约 §8 **S-24 ~ S-26**。
-> 三处已知边界：① `get_current_principal` 的**设备**分支要等 `app/models/device.py`（任务板 P-02），
-> 现在对设备令牌抛 `DeviceLookupNotWiredError` 而不是伪装 401；② 契约 §7 的响应体与 `WWW-Authenticate`
-> 落在 `app/core/errors.py` / `app/api/**`，不在本卡写作用域内，由 `task-5` 映射；
-> ③ 工牌身份的 `elder_id`（读自设备绑定）随 ① 一起做（契约 S-22 已登记未做项）。
+> T4b-1 完成**人员与工牌**接线、T4b-2 补上**设备回查与工牌 `elder_id`**：`resolve_principal`
+> （一类令牌只查一张表、查询键取已验签载荷）、生成器依赖 `get_current_principal`（`try/finally` 注入与回滚）、
+> `current_staff` / `current_guardian` / `current_device` / `require_roles`。四类主体（员工 / 家属 / 设备 / 工牌）
+> 全部可从 `Authorization` 头解到 `Identity`。用例 193 条（假会话 + 真实 `TestClient` 链路 + 13 条真库
+> AC-24 闭环）、全量 200 条 0 skip，ruff check/format + mypy 全绿；接线轮口径登记在契约 §8 **S-24 ~ S-26**，
+> T4b-2 只补 S-22/S-25 的接线事实（契约 §12 v1.6），判定规则一条没重跑。
+> 两处已知边界：① 契约 §7 的响应体与 `WWW-Authenticate` 落在 `app/core/errors.py` / `app/api/**`，
+> 不在本卡写作用域内，由 `task-5` 映射；② 工牌**不比对** `staff_tokens.scope` 与载荷 `scope`
+> （R9 是单个 text、切分口径无出处），Day 9 的 E14 之前必须先定口径 —— 见契约 S-22。
+> （原边界「设备分支等 `Device` 模型」「工牌 `elder_id` 未取」已随 A 的 `f2fb1a0` 与本轮 T4b-2 关闭，任务板 P-02 已闭环。）
 > 另登记 **P-03**：conftest 的 `db_conn` 与函数级事件循环冲突（跨循环复用 asyncpg 连接），
 > 表现为数据库用例「一半通过一半 skip」；本卡先在 `test_security.py` 内自建 NullPool 的 `auth_db` 绕过，
 > A 修好 conftest 后应删掉它改回 `db_conn`。
