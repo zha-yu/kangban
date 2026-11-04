@@ -1,0 +1,101 @@
+# ============================================================
+# 康伴（SilverMate）· 仓库忽略规则
+# 原则：密钥与环境文件永不入库；产物、缓存、大文件不入库；
+#      uv.lock / eval/reports / 迁移脚本必须入库。
+# ============================================================
+
+# ---------- 1. 密钥与环境变量（红线）----------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets/
+certs/
+
+# ---------- 2. Python / uv ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+.venv.bak/
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+# uv.lock 是应用项目的锁文件，必须入库，故不忽略
+
+# ---------- 3. 测试 / 静态检查缓存 ----------
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+junit.xml
+report.html
+
+# ---------- 4. Node / 前端（单 React 工程，Vite MPA 三入口）----------
+node_modules/
+frontend/**/dist/
+frontend/**/.vite/
+.pnpm-store/
+.yarn/
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# ---------- 5. 运行时数据 / 上传 / 日志 ----------
+data/
+runtime/
+uploads/
+logs/
+*.log
+*.pid
+*.db
+*.sqlite3
+pgdata/
+redisdata/
+langfuse-data/
+
+# ---------- 6. 媒体与 3D 大文件（走 nginx 静态目录或 Git LFS，不进普通提交）----------
+assets/media/
+static/media/
+*.vrm
+*.glb
+*.fbx
+*.blend
+
+# ---------- 7. IDE / 编辑器 ----------
+.idea/
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+*.iml
+*.swp
+*.swo
+
+# ---------- 8. 操作系统 ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- 9. 临时目录（spike 实验产物保留代码，丢弃输出）----------
+tmp/
+scratch/
+spikes/**/out/
+spikes/**/output/
+
+# ---------- 10. 补丁残留 ----------
+*.orig
+*.rej
+*.bak

@@ -1,0 +1,210 @@
+# AGENTS.md · 康伴（SilverMate）工程协作规则
+
+> 本文件是**跨工具通用**的项目规则（Cursor / Claude Code / Codex CLI / Windsurf / Trae / 通义灵码 / Copilot 等读取同名文件），不绑定任何一款 AI 编程工具。
+> 本文件只写**规则与约束**，不写教程。教程与方案在 `docs/`。
+> 冲突时的效力顺序：`docs/康伴3D数字人_PRD.md`（验收基线） > `docs/康伴3D数字人_技术设计文档.md`（实现口径） > `docs/康伴3D数字人_大纲.md`（课程进度）。发现冲突先看技术文档「有意差异表」，再回报主理人，**不要自行按旧稿实现**。
+
+---
+
+## 0. 项目一句话定位
+
+面向 CCRC 康养社区长者卧室的 **3D 数字人陪伴系统**：浏览器页面（模拟平板）上的 VRM 数字人 + WebRTC 全双工语音，用「安全规则层 → Laya 端侧分类器 → 主控 Agent」三级路由，承担情感陪伴、用药提醒、健康数据采集、戏曲/天气检索与人工告警五类职责。**不做医疗诊断，不替代 SOS 紧急呼叫。**
+
+三个使用端同一仓库存放：长者端 `pad`（1920×1080 大字）、照护台 `console`（护工/医生/管理员按角色分流）、家属端 `family`（375px 移动优先）。
+
+---
+
+## 1. 技术栈
+
+| 层 | 选型 | 口径说明 |
+| --- | --- | --- |
+| 语言 | Python 3.13（文档要求 3.12+） | 异步优先；版本在 `pyproject.toml` 统一锁定 |
+| HTTP | FastAPI + Uvicorn + Pydantic v2 + Pydantic Settings | `.env` 由 Pydantic Settings 加载；`trace_id` 中间件挂在 `app/main.py` |
+| 前端 | React + Vite（**MPA 三入口**）+ Tailwind（pad）/ MUI（console、family） | 单仓库单 React 工程，避免 three-vrm 进 console/family 构建包 |
+| 3D 数字人 | three.js + `@pixiv/three-vrm` | 加载失败或超 5s 降级静态头像，**不白屏** |
+| 实时语音 | WebRTC + aiortc + coturn + webrtcvad | 信令复用 FastAPI WebSocket，不新建信令服务；按住说话整段上传为降级 |
+| 语音识别/合成 | 第三方**流式** ASR / TTS API | 教师统一提供 key；必须带置信度埋点 |
+| 主库 | PostgreSQL 15 + pgvector | 业务表与 LangGraph checkpoint **物理隔离**（独立 schema `langgraph`、独立连接池） |
+| ORM/迁移 | SQLAlchemy 2.x（async）+ Alembic | 分批迁移，**主迁移一经合入不再改** |
+| 缓存 | Redis | 短期会话、限流、重复调用检测；**不是长期记忆的唯一存储** |
+| 调度 | APScheduler | 用药到点、19:00 健康采集、日报、记忆归并、漏采派单、原始音频 72h 清理 |
+| System One | Laya（本地开源权重，CPU 推理） | 一次前向出 intent / sensitive / confidence / privacy 四信号 |
+| System Two | DeepSeek 或 Qwen 兼容 API | 经统一 LLM 适配器接入，不直连 SDK |
+| Agent 编排 | 受约束 CompanionAgent（ReAct + Tool Calling） | 业务子图仅 2 个：`medication_confirmation_graph`、`health_checkup_graph` |
+| 状态工作流 | LangGraph + PostgreSQL Checkpointer | 按 `thread_id` 持久化，支持 Interrupt/HITL 与断点恢复 |
+| 工具协议 | MCP | `weather`（唯一真实外部接口）+ `mock-operations`（工单/通知，Mock 落库） |
+| 观测 | Langfuse + OpenTelemetry Traces + `/metrics` | 全链路统一 `trace_id`；上传前脱敏 |
+| 容器 | Docker Compose + nginx | 7 服务一键起；HTTPS 本地受控证书（getUserMedia 硬要求） |
+
+---
+
+## 2. 目录约定
+
+目标结构（技术设计文档 §2.1，**新代码一律按下表落位**）：
+
+```
+.
+├── app/                        # 后端唯一代码根（不叫 src/）
+│   ├── main.py                 # FastAPI 装配、/health、trace_id 中间件
+│   ├── core/                   # 配置、JWT 三体系（人/设备/工牌）、鉴权依赖、runtime_context、脱敏
+│   ├── api/                    # REST 路由：只做参数校验 + 权限范围过滤 + 调 services
+│   ├── audio/                  # WebRTC 建连与媒体、反向外呼、上传降级、WS 信令、回执、断线检测
+│   ├── router/                 # safety.py（安全一票否决）+ rules.py（规则层 ≤10 条）
+│   ├── system_one/             # Laya 客户端封装、questions.py（四信号）
+│   ├── agents/                 # companion.py（ReAct Loop）、预算熔断、工具注册表
+│   ├── graphs/                 # 两个业务子图 + checkpointer（独立 schema）
+│   ├── services/               # 领域服务：唯一写库层
+│   ├── models/                 # SQLAlchemy 2.x ORM（26 张表）
+│   ├── mcp_client/             # 工具发现/调用/超时/越权审计
+│   ├── scheduler/              # APScheduler 任务注册
+│   └── prompts/personas/       # 人设 prompt（进 Git 版本管理，固定前缀保 cache）
+├── mcp-servers/
+│   ├── weather/                # get_weather(city)
+│   └── mock-operations/        # create_work_order / send_family_notification
+├── frontend/
+│   ├── index.html              # MPA 入口声明
+│   └── src/{pad,console,family}/
+├── alembic/versions/           # 分批迁移脚本
+├── eval/fixtures/              # 固定测试集（普通 50/敏感 20/边界 20/模糊 20/注入 ≥10）
+├── eval/reports/               # 基线与 bad case 回流报告
+├── tests/                      # test_gates.py / test_injection.py / eval_gate.py
+├── spikes/                     # 新依赖最小验证，跑通才合并
+└── docs/                       # PRD、大纲、技术设计、ER、HARNESS 等基线文档
+```
+
+**分层硬约束（违反即返工）**
+
+1. `app/services/` 是**唯一写库层**。`api` / `audio` / `scheduler` / `graphs` 一律不直接操作 ORM 写数据。
+2. 依赖方向单向：`api | audio | scheduler | graphs → services → models`。**任何模块不得横向 import**（如 `api` 直接 import `graphs`）。
+3. `app/api/` 不写业务逻辑，只做校验、范围过滤、调服务、序列化响应。
+4. 前端三入口共用一套 Vite 配置，**pad 的 three-vrm 依赖不得进入 console/family 的构建产物**。
+
+---
+
+## 3. 常用命令
+
+```bash
+# 依赖（包管理器固定 uv）
+uv sync                        # 按 pyproject + uv.lock 安装
+uv add <pkg>                   # 新增依赖；新依赖先写进 spikes/ 验证再合并
+
+# 本地依赖服务（只起基础组件，后端本地跑便于调试）
+docker compose up -d postgres redis
+
+# 后端
+uv run uvicorn app.main:app --reload --port 8000
+curl -s localhost:8000/health
+
+# 迁移（autogenerate 后必须人工读 diff 再 upgrade）
+uv run alembic revision --autogenerate -m "add_xxx"
+uv run alembic upgrade head
+
+# 测试与门禁
+uv run pytest -q
+uv run pytest --cov=app --cov-report=term-missing
+uv run python tests/eval_gate.py          # 评测门禁，pre-push 钩子同款
+
+# 前端
+pnpm --dir frontend install
+pnpm --dir frontend dev                   # 本地开发（HTTPS or localhost）
+pnpm --dir frontend build                 # 产出 MPA 多页，交给 nginx 托管
+
+# 全栈
+docker compose up --build
+```
+
+> 端口约定（文档未定义，本项目自定义 **并已回填 README**）：postgres 5432、redis 6379、backend 8000、frontend nginx 80/443、laya 7001、weather-mcp 7101、mock-operations-mcp 7102、coturn 3478/5349、vite dev 5173。
+
+---
+
+## 4. 禁区（红线，AI 不得自行决定）
+
+1. **不连生产数据库、不连真实医疗系统**。只允许连 `docker compose` 起的本地 PostgreSQL。
+2. **不硬编码任何密钥**：API Key、JWT secret、数据库口令、TURN credential 一律经 Pydantic Settings 从 `.env` 读取；`.env` 已在 `.gitignore`，`.env.example` 只放占位符。
+3. **不把密钥、真实长者数据写进 prompt、测试夹具、日志或提交信息**。
+4. **不说医疗诊断口径**（禁止「您这是高血压/糖尿病」）。异常值一律走「建议问医生」话术，并同步走规则层人工告警。
+5. **不接真实微信 / HIS / 短信 / 电话 / 支付**。除天气 API 外，所有外部系统走 Mock。
+6. **不改已合入的 Alembic 历史迁移**，只新增迁移文件。
+7. **不删除或改写 `docs/` 下三份基线文档**；口径变化的正确做法是新增修订记录。
+8. **不新增第二种同类能力实现**：一个能力只允许一种形态（急症=规则层 Workflow、天气=MCP Tool、用药=LangGraph 子图……），已定形态不得并行造第二套。
+9. **不允许模型自报身份**：`elder_id` / `thread_id` 只能从服务端 `runtime_context` 注入，客户端与模型传入的值一律丢弃。
+10. **不落未经脱敏的原始音频与个人敏感信息**；原始音频最长保留 72h 且只允许由调试开关临时打开。
+11. **不提交** `node_modules/`、`.venv/`、媒体大文件、原始录音、`*.vrm`/`*.glb`。
+12. **不擅自升级主力依赖或引入新框架**（换 ORM、换 LLM SDK、加状态库均需先讨论）。
+
+---
+
+## 5. 高风险文件清单（AI 生成后**必须人工逐行读 diff**才能合并）
+
+| 文件 / 目录 | 风险类别 | 人工审查必须确认的点 |
+| --- | --- | --- |
+| `app/core/security.py`、`app/core/auth*.py`、`app/api/auth*.py` | **auth** | 密钥只从配置读；JWT 算法与过期固定（Access 2h / Refresh 7d / 设备会话 24h）；`token_version` 失效逻辑；密码不明文、不返给前端；三套凭证体系不串用 |
+| `app/models/**`、`alembic/versions/**` | **迁移与 schema** | 字段语义与类型（日期、枚举取值、可空性）符合技术文档 §3；迁移可回滚；不删改历史迁移；UUID 主键与索引齐全；不写死生产库连接 |
+| `app/agents/tool_registry.py`、`app/agents/companion.py`、`app/mcp_client/**`、`app/core/runtime_context.py` | **Tool 权限** | 工具白名单与参数 schema 校验；身份只从 runtime_context 注入；越权必须拒绝并写 `audit_logs`；`MAX_TOOL_CALLS=8` 与同 Tool 熔断生效；超时与失败四分类齐备 |
+| `mcp-servers/weather/**`、`mcp-servers/mock-operations/**` | **MCP server** | 工具 schema 与官方协议一致；入参强校验；返回脱敏、错误不回显内部细节；无自由外网访问；Mock 必须落库可查 |
+| `Dockerfile`、`docker-compose.yml`、`.dockerignore` | **部署** | 非 root 运行；密钥不进镜像层（构建期无 `.env`）；依赖锁定；健康检查；端口不裸奔公网；TURN 凭据从环境注入 |
+| `app/router/safety.py`、`app/router/rules.py` | **安全一票否决** | 急症/敏感判定先于一切；规则条数 ≤10；阈值与分级写在代码而非 prompt；异常值同时触发人工告警 |
+| `app/graphs/**`（含 checkpointer） | **状态与断点恢复** | checkpoint 落独立 schema、独立连接池；`thread_id` 服务端生成；Interrupt/HITL 分支不漏；重启后可恢复 |
+| `.env.example` | **配置泄露** | 只有占位符，无任何真实 key / 内网地址 / 账号口令 |
+
+> 另：老师抽查口径为 `auth` / `memory` / `mcp_client` 三处，评审前请优先自查这三处。
+
+---
+
+## 6. 模型路由表
+
+请求固定按 **L0 规则层 → L1 System One → L2 System Two** 三级升序，**低层不得被高层覆盖**。规则优先级：合法性校验 > 急症/敏感安全规则 > 进行中用药/健康任务 > 固定意图 > 低置信澄清或 System Two > 记忆个性化。
+
+| 层级 | 承担者 | 部署形态 | 延迟预算 | 负责什么 | 不可用/低置信时降级 |
+| --- | --- | --- | --- | --- | --- |
+| **L0 规则层** | `app/router/safety.py` + `app/router/rules.py`（关键词/正则 ≤10 条） | 进程内纯代码 | 路由 ≤200ms | 安全敏感**一票否决**前置；高频固定意图直路由（换一段/大声点/小声点/停/越剧京剧/几点了/今天天气/我要吃药/再见/重复一遍） | 不存在降级：规则层失效即 P0 缺陷 |
+| **L1 System One** | **Laya** 本地开源权重（CPU 推理） | 本地进程/容器，OpenAI 兼容 HTTP | 单句 ≤200ms | 七类 intent（闲聊/用药查询/戏曲点播/电影点播/天气查询/健康采集/其他）+ `is_sensitive` + `confidence` + 双人间隐私收敛 + `is_out_of_domain` | `confidence ≥ 0.85` 直接路由；`< 0.85` **只澄清一次**，仍模糊升级 L2；模型加载失败 → 全部走 L2 并打降级标记 |
+| **L2 System Two** | **DeepSeek / Qwen 兼容 API**，经统一 LLM 适配器 | 云 API | 首 token ≤800ms | 开放域闲聊、多工具 ReAct 编排、结构化输出、记忆摘要 | 超时/限流 → 重试 2 次后退化为「L1 结果 + 模板话术」，并提示人工；不得自动执行高危写操作（改药单/关工单/删数据） |
+| **语音识别** | 第三方**流式 ASR** API | 云 API（教师统一 key） | 首包 ≤300ms | 方言语音转文本 + 置信度埋点 | 降级：按住说话整段上传 → 再降级：页面输入框 |
+| **语音合成** | 第三方**流式 TTS** API | 云 API | 首包 ≤300ms | 语音播报 + 口型能量近似 | 降级：大字幕 + 预置音频；断网可用浏览器 `speechSynthesis` |
+| **Embedding / 声纹** | 向量模型（pgvector 存储）+ 3D-Speaker CAM++ | 本地或 API | 不计入主链路 | 长期记忆召回（强制 `WHERE elder_id`）、声纹比对（cosine ≥0.85） | 召回失败 → 本轮不加载记忆，**不得臆造**；声纹不可用 → 长者 ID + 主动确认 |
+
+**总预算**：端到端 P95 ≤ 1.5s（ASR + 路由 + 生成 + TTS 合计）。
+> 上表逐层毫秒数为按 1.5s 端到端目标拆分的工程预算，非 PRD 明文数值；调整必须同步 `docs/HARNESS_DESIGN.md`。
+
+---
+
+## 7. 硬性数值（写死在常量里，不得私自调整）
+
+| 参数 | 值 | 出处 |
+| --- | --- | --- |
+| `MAX_TOOL_CALLS_PER_TURN` | 8 | 大纲 §6.2 |
+| 同一 Tool 熔断 | 1 分钟内第 3 次调用 | 大纲 Day5.4 |
+| 快决策置信度阈值 | 0.85（低于则澄清一次后升级） | PRD §2.3 |
+| 声纹判定阈值 | cosine ≥ 0.85 | PRD §3.2 |
+| 用药触达 | T0 / +5 / +10 / +15 分钟，每次等 60s | PRD §4.5 |
+| 健康采集窗口 | 19:00 起，20:00 强制结束 | PRD §4.6 |
+| 健康红标 | 收缩压 ≥180 或 舒张压 ≥120（单分量即判红） | PRD §4.6 |
+| 原始音频保留 | 72 小时后自动删除 | 大纲 §五 |
+| 3D 加载降级 | 失败或 >5s 切静态头像 | PRD FR-3D-02 |
+| 端到端延迟 | P95 ≤ 1.5s；规则层路由 ≤200ms | 大纲 §3.2 |
+| 测试覆盖 | 核心 Tool 与权限场景 100%，接口 ≥70% | PRD FR-TC-06 |
+| 规则层规模 | ≤ 10 条 | 大纲 Day6.1 |
+
+---
+
+## 8. 编码与协作约定
+
+- **提交**：Conventional Commits（`feat/` `fix/` `docs/` `refactor/` `test/` `chore/`），一次提交只做一件事，正文中文说清「为什么」。
+- **类型**：全量 type hint；I/O 一律 async；配置走 Pydantic Settings，禁止 `os.environ.get` 散读。
+- **日志**：结构化，**每一行都带 `trace_id`**；禁止打印密钥、手机号、完整住址、身份证；脱敏工具集中放 `app/core/`。
+- **时间**：存储一律 UTC，展示层转 `Asia/Shanghai`。
+- **幂等**：用药提醒键 `(resident_id, plan_id, scheduled_at)`，触达键 `(reminder_id, attempt_no)`；重复请求返回原结果，同键异内容返回 409。
+- **失败分类**（工具层四类）：参数错 → 回传模型重试并计入预算；目标不存在 → 如实告知不编造；临时错误 → 退避重试 ≤2 次后降级话术；越权 → 拒绝 + 审计 + trace_id。
+- **给 AI 下任务的统一模板**：`改哪些文件 → 验收命令 → 禁止触碰的文件 → 完成后报告 diff 摘要`。涉及 §5 清单内文件时，**先出方案再落代码**。
+- **三次法则**：同一个坑第 3 次出现，必须补进下面 §9，否则不许继续往下做。
+
+---
+
+## 9. 踩坑记录（三次法则 · 同坑第 3 次必须写进来）
+
+<!-- 格式：日期 | 现象 | 根因 | 铁律。没有第 3 次就先别写，避免变噪音。 -->
+
+| 日期 | 现象 | 根因 | 铁律 |
+| --- | --- | --- | --- |
+| — | （待积累） | — | — |

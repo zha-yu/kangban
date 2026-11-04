@@ -1,0 +1,149 @@
+[project]
+name = "silvermate"
+version = "0.1.0"
+description = "康伴（SilverMate）· 3D 数字人康养陪伴系统：WebRTC 语音 + 三级路由 + 受约束 CompanionAgent"
+readme = "README.md"
+authors = [
+    { name = "zxd15978684198", email = "zxd15978684198@163.com" }
+]
+# 技术设计文档 §1.4 要求 Python 3.12+；本仓库 .python-version 锁 3.13
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+keywords = ["elderly-care", "digital-human", "webrtc", "langgraph", "mcp", "agent"]
+
+# 版本一律在此统一锁定（技术设计文档 §1.4）。新增依赖前先进 spikes/ 验证。
+dependencies = [
+    # ---- HTTP 与配置 ----
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "python-multipart>=0.0.12",
+    "httpx>=0.27",
+
+    # ---- 数据层 ----
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "psycopg[binary]>=3.2",   # langgraph-checkpoint-postgres 使用同步驱动
+    "pgvector>=0.3.6",
+    "redis>=5.2",
+
+    # ---- 调度 ----
+    "apscheduler>=3.10",
+
+    # ---- Agent / 工作流 ----
+    "langgraph>=0.2.60",
+    "langgraph-checkpoint-postgres>=2.0",
+    "mcp>=1.1",               # MCP 客户端与 mcp-servers 共用协议实现
+
+    # ---- 实时语音 ----
+    "aiortc>=1.10",
+    "webrtcvad>=2.0.10",
+
+    # ---- 鉴权 ----
+    "pyjwt[crypto]>=2.9",
+    "bcrypt>=4.2",
+
+    # ---- 观测 ----
+    "prometheus-client>=0.21",
+    "opentelemetry-sdk>=1.28",
+    "opentelemetry-instrumentation-fastapi>=0.49b0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.28",
+    "langfuse>=2.54",
+]
+
+# uv：本项目是应用而非可分发包，不需要 build-system，也不安装自身
+[tool.uv]
+package = false
+
+# ---------------------------------------------------------------------------
+# 开发依赖（PEP 735 dependency groups，uv sync 默认安装）
+# ---------------------------------------------------------------------------
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "types-redis>=4.6",
+]
+
+# ---------------------------------------------------------------------------
+# ruff：格式化 + 静态检查
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["app", "tests", "mcp-servers"]
+extend-exclude = ["alembic/versions", "spikes", "frontend"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "SIM",  # simplify
+    "ASYNC",
+    "S",    # bandit（安全：禁止硬编码密钥等）
+    "RUF",
+]
+ignore = [
+    "E501",  # 行长由 formatter 处理
+    "S101",  # 允许 assert（测试需要）
+    "B008",  # FastAPI 依赖注入以函数调用作默认值
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106"]
+"alembic/**" = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ---------------------------------------------------------------------------
+# pytest：覆盖率口径来自 PRD FR-TC-06（核心 Tool 与权限 100%，接口 ≥70%）
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "gate: 三道隔离闸门（会话/记忆/工具授权），100% 覆盖",
+    "injection: 提示注入与日志脱敏用例",
+    "slow: 依赖外部服务的慢用例",
+]
+filterwarnings = ["ignore::DeprecationWarning:aiortc.*"]
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+omit = ["app/main.py", "alembic/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 70
+
+# ---------------------------------------------------------------------------
+# mypy
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+files = ["app", "mcp-servers"]
+strict = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["aiortc.*", "webrtcvad.*", "apscheduler.*", "langfuse.*"]
+ignore_missing_imports = true
