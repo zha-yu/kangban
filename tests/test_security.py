@@ -1,4 +1,4 @@
-"""task-4 T1+T2+T3+T4 · 密码、JWT、身份上下文、鉴权判定与库内回查接线的单元测试。
+"""task-4 T1+T2+T3+T4+T5 · 密码、JWT、身份上下文、鉴权判定与库内回查接线的单元测试。
 
 T1 覆盖计划 §5.1 第 5 条要求的五类输入：普通、错误、超 72 字节、中文/emoji、互不可验，
 外加「长口令为什么必须预哈希」这一组依据实测的回归用例。
@@ -17,6 +17,13 @@ T4b 覆盖同一模块的**接线层**：一类令牌只查一张表的分派、
 `get_current_principal` 的注入与回滚点、`current_staff` / `require_roles` 依赖链，
 以及 AC-24（停用与 `token_version` 递增后旧令牌立刻失效）在真实 PostgreSQL 上的闭环。
 设备会话与工牌的绑定长者都回查 `devices`（T4b-2）：解绑轮换哈希、设备锁定、缺行三条拒因各自覆盖。
+
+T5 是覆盖收口：只补「绕过签发入口才走得到」的分支（用真密钥手工签一个自相矛盾的载荷）与
+三条兜底路径，末尾附三个鉴权模块的未覆盖行清单。它不追求数字，追求「删掉任何一条判定都有用例变红」。
+
+四层结构与运行前提：①纯函数（无库、无网络）②假会话（只验「查了哪张表、绑了什么值」）
+③ASGI 链路（`TestClient` 走完整依赖注入与 contextvar 回滚）④真实 PostgreSQL（只读四张表，
+事务内插入、结束回滚，连不上按 `conftest` 口径 skip 并说明原因；正式验收必须在有库环境执行）。
 
 bcrypt cost 取默认 12（约 0.3s/次），单文件耗时可接受；不为了提速把 cost 压到
 低于允许下限，那样测出来的就不是生产路径的行为。
@@ -48,6 +55,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 from sqlalchemy.sql import table as sql_table
 
+from app.core import auth as auth_module
 from app.core.auth import (
     ROLE_FORBIDDEN,
     TOKEN_EXPIRED,
@@ -58,6 +66,8 @@ from app.core.auth import (
     CredentialMissingError,
     CredentialRevokedError,
     RoleForbiddenError,
+    _id_from_sub,
+    _uuid_bind,
     bearer_token_from_header,
     check_roles,
     current_device,
@@ -103,6 +113,7 @@ from app.core.security import (
     TokenExpiredError,
     TokenInvalidError,
     TokenPayloadError,
+    _expected_kind,
     access_ttl_seconds,
     constant_time_equals,
     decode_token,
@@ -2109,8 +2120,8 @@ async def test_resolve_principal_revokes_when_database_facts_move(
 
 @pytest.mark.parametrize(
     "token",
-    [_sign_staff_access, _sign_bound_device],
-    ids=["staff-row-gone", "device-row-gone"],
+    [_sign_staff_access, _sign_guardian_access, _sign_bound_device],
+    ids=["staff-row-gone", "guardian-row-gone", "device-row-gone"],
 )
 async def test_resolve_principal_maps_a_missing_row_to_revoked_and_does_not_echo_the_token(
     jwt_env: Settings, token: Callable[[], str]
@@ -2119,6 +2130,7 @@ async def test_resolve_principal_maps_a_missing_row_to_revoked_and_does_not_echo
 
     回 404 等于开一个「这个工号还在不在」的探针；错误 message 会进日志，所以也不能带令牌。
     设备侧单列一条：设备回收（行被删）与「令牌对不上任何设备」对平板是同一个动作——重新配对。
+    三类主体各自走一条 `_load_*_row`，缺一条就等于给那张表留一个「查不到就放行」的口子。
     """
     signed = token()
     fake = _FakeSession({})
@@ -2636,12 +2648,20 @@ async def test_db_disable_and_role_edit_revoke_without_touching_the_token(
             await resolve_principal(token, session)
 
 
-async def test_db_absent_staff_row_revokes(auth_db: AsyncConnection, jwt_env: Settings) -> None:
-    """库里有别人、没这位：`one_or_none()` 走的是真「行不存在」，不是假会话里那个 None。"""
+async def test_db_absent_account_row_revokes(auth_db: AsyncConnection, jwt_env: Settings) -> None:
+    """库里有别人、没这位：`one_or_none()` 走的是真「行不存在」，不是假会话里那个 None。
+
+    员工与家属各查一张表，两条都跑：假会话只能证明分派对，证明不了 `_load_*_row` 的
+    `one_or_none()` 在真库上确实返回 None —— 列名写错时它抛异常而不是返回 None，
+    那时客户端拿到的是 500 而不是「重新登录」。
+    """
     await _db_add_staff(auth_db, staff_id=LETTERED_ID)
+    await _db_add_guardian(auth_db, guardian_id=LETTERED_ID)
     async with _db_session(auth_db) as session:
         with pytest.raises(CredentialRevokedError):
             await resolve_principal(_bearer(_sign_staff_access()), session)
+        with pytest.raises(CredentialRevokedError):
+            await resolve_principal(_bearer(_sign_guardian_access()), session)
 
 
 async def test_db_guardian_lookup_and_drift(auth_db: AsyncConnection, jwt_env: Settings) -> None:
@@ -2810,3 +2830,275 @@ async def test_db_fixture_rolls_back_every_row_it_inserted(
                 await probe.execute(select(func.count()).select_from(sql_table(name)))
             ).scalar_one()
             assert count == 0, name
+
+
+# ==================================================================== T5 · 覆盖收口
+#
+# 这一节补的是**只有绕过签发入口才走得到**的分支，以及三条兜底路径。它们不是凑覆盖率：
+#
+# - `_validate_payload` 的注释写明「同一套规则双向使用」（签发前一遍、验签后一遍）。签发入口
+#   自己就会拒掉矛盾载荷，所以**解码侧那半边此前一条用例都没有** —— 把 `decode_token` 里那次
+#   调用删掉，本文件其余用例全绿。矛盾载荷只能由「真密钥 + 手工拼」产生：旧版本签出的令牌、
+#   白名单被改过之后的令牌、以及任何绕过 `sign_*` 的调用方都造得出来。
+# - 三条兜底（底层加密库意外异常、异常文案里带密钥、白名单加了新 `typ` 却没加分派分支）
+#   都属「不该发生但发生了必须可判」的一类：判错方向就是把 401 变成 500，或把缺口变成假身份。
+
+
+def _signed_payload(payload: Mapping[str, object]) -> str:
+    """用**真密钥**手工签一个载荷：验签必过，只剩一致性核对能拦它。"""
+    import jwt as pyjwt
+
+    return pyjwt.encode(dict(payload), JWT_SECRET, algorithm="HS256")
+
+
+def _raw_access(**overrides: object) -> dict[str, object]:
+    """一张自洽的员工 Access 载荷，逐字段替换用（`iat`/`exp` 用真实时钟，见 `_now` 的说明）。"""
+    now = int(_now().timestamp())
+    payload: dict[str, object] = {
+        "sub": f"staff:{STAFF_ID}",
+        "typ": TYP_ACCESS,
+        "kind": KIND_STAFF,
+        "role": "care_worker",
+        "tv": 3,
+        "iat": now,
+        "exp": now + 3600,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _raw_device(**overrides: object) -> dict[str, object]:
+    now = int(_now().timestamp())
+    payload: dict[str, object] = {
+        "sub": f"device:{DEVICE_ID}",
+        "typ": TYP_DEVICE,
+        "kind": KIND_DEVICE,
+        "dev": DEVICE_ID,
+        "tv": DEVICE_TOKEN_HASH[:16],
+        "iat": now,
+        "exp": now + 3600,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _raw_card(**overrides: object) -> dict[str, object]:
+    now = int(_now().timestamp())
+    payload: dict[str, object] = {
+        "sub": f"staff:{STAFF_ID}",
+        "typ": TYP_STAFF_CARD,
+        "kind": KIND_STAFF_CARD,
+        "dev": DEVICE_ID,
+        "scope": ["workorder:handle"],
+        "iat": now,
+        "exp": now + 600,
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_typ"),
+    [
+        pytest.param(_raw_access(sub=STAFF_ID), TYP_ACCESS, id="sub-without-colon"),
+        pytest.param(_raw_access(sub=f"patient:{STAFF_ID}"), TYP_ACCESS, id="unknown-sub-prefix"),
+        pytest.param(_raw_access(kind=KIND_GUARDIAN), TYP_ACCESS, id="kind-contradicts-typ"),
+        pytest.param(_raw_access(iat=1.5), TYP_ACCESS, id="iat-not-an-int"),
+        pytest.param(
+            _raw_access(exp=float(int(_now().timestamp()) + 3600)),
+            TYP_ACCESS,
+            id=("exp-not-an-int"),
+        ),
+        pytest.param(
+            _raw_access(iat=int(_now().timestamp()) + 30, exp=int(_now().timestamp()) + 30),
+            TYP_ACCESS,
+            id="exp-not-after-iat",
+        ),
+        pytest.param(_raw_access(tv="3"), TYP_ACCESS, id="tv-not-an-int"),
+        pytest.param(_raw_access(role="super_user"), TYP_ACCESS, id="role-not-in-whitelist"),
+        pytest.param(
+            _raw_access(sub=f"guardian:{GUARDIAN_ID}", kind=KIND_GUARDIAN, role="care_worker"),
+            TYP_ACCESS,
+            id="guardian-carries-a-role",
+        ),
+        pytest.param(_raw_device(tv="zzzzzzzzzzzzzzzz"), TYP_DEVICE, id="device-tv-not-hex"),
+        # 大写规范化只能用 `LETTERED_ID`：`DEVICE_ID` 全是数字，`.upper()` 是空操作（见常量处说明）。
+        pytest.param(
+            _raw_device(sub=f"device:{LETTERED_ID}", dev=LETTERED_ID.upper()),
+            TYP_DEVICE,
+            id="device-dev-not-canonical",
+        ),
+        pytest.param(_raw_device(dev=LETTERED_ID), TYP_DEVICE, id="device-dev-not-the-subject"),
+        pytest.param(
+            _raw_device(sub=f"staff:{DEVICE_ID}"), TYP_DEVICE, id="device-sub-prefix-wrong"
+        ),
+        pytest.param(
+            _raw_card(dev=LETTERED_ID.upper()), TYP_STAFF_CARD, id="card-dev-not-canonical"
+        ),
+        pytest.param(
+            _raw_card(sub=f"guardian:{STAFF_ID}"), TYP_STAFF_CARD, id="card-sub-prefix-wrong"
+        ),
+        pytest.param(
+            _raw_card(scope="workorder:handle"), TYP_STAFF_CARD, id="card-scope-not-a-list"
+        ),
+    ],
+)
+def test_decode_rejects_self_contradictory_payloads_even_with_a_valid_signature(
+    jwt_env: Settings, payload: Mapping[str, object], expected_typ: str
+) -> None:
+    """签名有效但载荷自相矛盾 → `TokenInvalidError`（401），不是 500、也不是放行。
+
+    每条 `id` 对应 `_validate_payload` 里的一条独立拒因；断言的是**对外码**而不是内部
+    `TokenPayloadError`，因为解码侧会把后者统一转成前者（`security.py` 的 `decode_token`）。
+    这一整组是「解码侧也跑一致性核对」的唯一守卫。
+    """
+    with pytest.raises(TokenInvalidError):
+        decode_token(_signed_payload(payload), expected_typ=expected_typ)
+
+
+def test_expected_kind_rejects_a_typ_nobody_maps(jwt_env: Settings) -> None:
+    """白名单加了新 `typ` 却忘了 `_expected_kind` → 立刻炸，不留到运行期变成「所有令牌都解不开」。"""
+    with pytest.raises(TokenPayloadError, match="unknown token typ"):
+        _expected_kind("made_up_typ", sub_prefix=KIND_STAFF)
+
+
+def test_hash_format_check_rejects_a_wrong_segment_count() -> None:
+    """段数不对的哈希在粗筛就被拒：否则 `bcrypt.checkpw` 抛的是 `ValueError` 而不是本模块的异常。"""
+    assert is_password_hash_format_valid("$2b$12") is False
+    assert is_password_hash_format_valid("$2b$12$abcdefghijklmnop") is False
+
+
+def test_verify_password_raises_when_a_well_formed_hash_is_unparseable() -> None:
+    """过了粗筛（前缀、段数、长度都对）但内容损坏 → `PasswordHashInvalidError`，不是 500。
+
+    库里被截断或被编码折腾过的哈希就是这个形状：`is_password_hash_format_valid` 说它像样，
+    `bcrypt` 解析不了。异常类型必须是本模块的，否则 `errors.py` 无从归类（AGENTS §8 失败分类）。
+    """
+    broken = "$2b$12$" + "!" * 53
+    assert is_password_hash_format_valid(broken) is True, "前提：粗筛放过了它"
+    with pytest.raises(PasswordHashInvalidError):
+        verify_password(NORMAL_PASSWORD, broken)
+
+
+def test_non_integer_card_ttl_is_rejected(jwt_env: Settings) -> None:
+    """`ttl_seconds` 传 `True` 或浮点 → 拒：`True` 能过 `isinstance(int)`，那意味着调用方把标志位当数字传了。"""
+    for bad_ttl in (True, 600.0, "600"):
+        with pytest.raises(TokenPayloadError):
+            sign_staff_card(
+                staff_id=STAFF_ID,
+                device_id=DEVICE_ID,
+                scope=["workorder:handle"],
+                ttl_seconds=bad_ttl,  # type: ignore[arg-type]
+                now=_now(),
+            )
+
+
+def test_unexpected_decoder_failure_becomes_token_invalid(
+    jwt_env: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """底层加密库抛了意料之外的异常 → 仍然是 `TokenInvalidError`（401），不外泄成 500。
+
+    这条兜底平时走不到，所以只能用 monkeypatch 造：真出事时（库升级、内存里的令牌被截断）
+    它决定的是「客户端重登」还是「服务报警」，方向错了排查成本完全不同。
+    """
+    import jwt as pyjwt
+
+    def explode(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("codec exploded")
+
+    monkeypatch.setattr(pyjwt, "decode", explode)
+    with pytest.raises(TokenInvalidError):
+        decode_token(_sign_staff_access(), expected_typ=TYP_ACCESS)
+
+
+def test_decoder_error_text_that_leaks_the_secret_is_swallowed(
+    jwt_env: Settings, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """异常文案里出现密钥 → 就地换成不含信息的 `TokenInvalidError`，且不写进日志（AGENTS §4.3）。
+
+    HMAC 相关的库异常有把 key 写进 message 的先例；`raise ... from exc` 会把整条 message
+    带进日志与 trace，所以这条兜底必须有独立用例，不能靠「大概不会发生」。
+    """
+    import jwt as pyjwt
+
+    def leaky(*args: object, **kwargs: object) -> None:
+        raise pyjwt.InvalidTokenError(f"signature mismatch with key {JWT_SECRET}")
+
+    monkeypatch.setattr(pyjwt, "decode", leaky)
+    caplog.clear()
+    with pytest.raises(TokenInvalidError) as excinfo:
+        decode_token(_sign_staff_access(), expected_typ=TYP_ACCESS)
+
+    assert JWT_SECRET not in str(excinfo.value)
+    assert JWT_SECRET not in caplog.text
+
+
+def test_identity_requires_its_own_principal_id() -> None:
+    """缺主键的身份构造不出来：`Identity(kind="staff")` 不是「匿名身份」，是编程错误。
+
+    闸门③的正向表现是「无身份 == 无权限」，但一个 `principal_id` 为空的 `Identity` 会被
+    下游当成「已认证但不知道是谁」，比没有身份更危险，所以在构造期就拒。
+    """
+    with pytest.raises(IdentityConstructionError, match="staff_id"):
+        Identity(kind=KIND_STAFF, role="care_worker")
+    with pytest.raises(IdentityConstructionError, match="guardian_id"):
+        Identity(kind=KIND_GUARDIAN)
+    with pytest.raises(IdentityConstructionError, match="device_id"):
+        Identity(kind=KIND_DEVICE)
+    with pytest.raises(IdentityConstructionError, match="device_id"):
+        Identity(kind=KIND_STAFF_CARD, staff_id=STAFF_ID, scope=("workorder:handle",))
+
+
+def test_id_from_sub_rejects_a_mismatched_prefix() -> None:
+    """接线拿错载荷（用员工前缀去解设备 `sub`）→ 401，不许把 id 段当设备号用。"""
+    with pytest.raises(CredentialInvalidError):
+        _id_from_sub({"sub": f"guardian:{STAFF_ID}"}, prefix=KIND_STAFF)
+
+
+def test_uuid_bind_rejects_a_subject_that_is_not_a_uuid() -> None:
+    """绑定参数拼不出 UUID → 401（凭证与处理器不符），不是数据库异常。"""
+    with pytest.raises(CredentialInvalidError):
+        _uuid_bind("not-a-uuid")
+
+
+async def test_resolve_principal_refuses_a_typ_no_branch_handles(
+    jwt_env: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """白名单里加了新 `typ` 却没在 `resolve_principal` 加分派分支 → 401，不伪造身份、不查库。
+
+    模拟的是「有人扩了 `_ALLOWED_CLAIMS_BY_TYP` 就以为接线自动跟上」：缺口必须表现成拒绝。
+    """
+    monkeypatch.setattr(
+        auth_module,
+        "decode_principal_token",
+        lambda token: {"typ": "made_up_typ", "kind": KIND_STAFF, "sub": f"staff:{STAFF_ID}"},
+    )
+    fake = _FakeSession({_STAFF_TABLES: ("care_worker", "active", 3)})
+
+    with pytest.raises(CredentialInvalidError) as excinfo:
+        await resolve_principal(_bearer(_sign_staff_access()), _as_session(fake))
+
+    assert excinfo.value.code == TOKEN_INVALID
+    assert fake.queried == [], "认不出的 typ 不该触发任何 SELECT"
+
+
+# -------------------------------------------------------------- T5 交付证据 · 未覆盖行清单
+#
+# 命令：uv run pytest -q --cov=app.core.security --cov=app.core.auth
+#                     --cov=app.core.runtime_context --cov-report=term-missing
+# 结果：security.py 100%（无未覆盖行）、auth.py 99%（缺 1 行）、runtime_context.py 99%（缺 1 行），
+# 合计 99.45%。本节每条用例的自检口径是「把它守卫的那行判定删掉，用例必须变红」——
+# 覆盖率只说明走到了，变红才说明守住了。
+#
+# 剩下两行**故意不补**，理由写在这里而不是靠口头：用构造出来的调用去覆盖死代码，
+# 等于把「本该删掉的分支」钉成契约，后来人会以为它是有意的扩展点。
+#
+# auth.py:88 —— `AuthError.__init__` 里的 `if code is not None: self.code = code`。
+#   全仓库没有任何一处传 `code=`：四个子类各自用类属性定死了对外码（`TOKEN_INVALID` /
+#   `TOKEN_EXPIRED` / `TOKEN_REVOKED` / `ROLE_FORBIDDEN`）。这条 kwarg 是没人用的 API，
+#   留给 T6 人工审查决定删或留，不用测试把它合法化。
+#
+# runtime_context.py:210 —— `_assert_not_none` 的 `raise`。
+#   `Identity.__post_init__` 已保证 `principal_id` 非 None（守卫用例见
+#   `test_identity_requires_its_own_principal_id`），`frozen=True, slots=True` 之后没有
+#   第二条改写路径。要走到这行必须先伪造一个绕过类型系统的坏对象 —— 那是噪声，不是覆盖。
