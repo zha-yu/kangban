@@ -135,6 +135,37 @@ docker compose up --build
 
 > 端口约定（文档未定义，本项目自定义 **并已回填 README**）：postgres 5432、redis 6379、backend 8000、frontend nginx 80/443、laya 7001、weather-mcp 7101、mock-operations-mcp 7102、coturn 3478/5349、vite dev 5173。
 
+### 3.1 本机没有 `uv` / `pip` 时的验证路径（当前开发机状态）
+
+当前开发机 Windows 与 WSL 都没有 `uv`，`.venv` 与系统 `python3` 也没有 `pip`，`uv sync`/`uv run` 跑不了。
+**不要**因此跳过验收，改用 Docker 跑同一批命令（已实测可行）：
+
+```bash
+# 一次性：起验证容器（仓库根挂到 /w），装与 pyproject 对应的依赖
+docker network create konban-verify
+docker run -d --name konban-pg-verify --network konban-verify \
+  -e POSTGRES_USER=konban -e POSTGRES_PASSWORD=konban -e POSTGRES_DB=konban \
+  pgvector/pgvector:pg16
+docker run -d --name konban-app-verify --network konban-verify \
+  -v "$PWD":/w -w /w python:3.12-slim sleep infinity
+docker exec konban-app-verify pip install fastapi "uvicorn[standard]" pydantic-settings \
+  sqlalchemy alembic "psycopg[binary]" pytest pytest-asyncio httpx ruff
+
+# 每次改完代码
+docker exec -w /w konban-app-verify sh -c 'PYTHONPATH=/w ruff check app tests && ruff format --check app tests'
+docker exec -w /w konban-app-verify sh -c 'PYTHONPATH=/w python -m pytest -q'
+docker exec -w /w -e DATABASE_URL=postgresql+asyncpg://konban:konban@konban-pg-verify:5432/konban \
+  konban-app-verify sh -c 'PYTHONPATH=/w alembic upgrade head && PYTHONPATH=/w alembic current'
+
+# 起服务验证接口（slim 镜像没有 curl，用 python 或 apt-get install curl）
+docker exec -d -w /w konban-app-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:app --port 8000 >/tmp/uv.log 2>&1'
+docker exec konban-app-verify python -c "import urllib.request as u; r=u.urlopen('http://127.0.0.1:8000/health'); print(r.status, r.headers['X-Trace-Id'])"
+```
+
+> 坑（已踩）：`docker cp` 到容器前必须先 `docker exec <c> mkdir -p <dir>`，否则报
+> `Could not find the file …`；`docker exec -w` 指向不存在的目录会报 `chdir to cwd … failed`。
+> 装了 `uv` 之后以 `uv sync` 为准，本节降级为「无法装 uv 时的兜底」。
+
 ---
 
 ## 4. 禁区（红线，AI 不得自行决定）
