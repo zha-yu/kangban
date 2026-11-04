@@ -8,10 +8,10 @@
 
 | id | 内容 | 主责 | 状态 | 前置 | 写作用域 |
 | --- | --- | --- | --- | --- | --- |
-| `task-1` | Step0 身份与权限契约冻结 | A–E 全员 | ⬜ 待认领 | — | `docs/接口契约_身份与权限.md` |
+| `task-1` | Step0 身份与权限契约冻结 | A–E 全员 | ✅ 已完成（`707bdf6`） | — | `docs/接口契约_身份与权限.md` |
 | `task-2` | 提示词模板库 v1（6 个模板） | E | ⬜ 待认领 | — | `docs/prompts/` |
-| `task-3` | Step1 库与模型基座（5 表 + `0002` 迁移 + conftest） | A | 🔒 锁定 | `task-1` | `docker-compose.yml`、`app/db.py`、`app/models/`、`alembic/versions/`、`tests/conftest.py` |
-| `task-4` | Step2 鉴权内核（security / 依赖注入 / runtime_context） | B | 🔒 锁定 | `task-1` | `app/core/security.py`、`app/core/auth.py`、`app/core/runtime_context.py`、`tests/test_security.py` |
+| `task-3` | Step1 库与模型基座（5 表 + `0002` 迁移 + conftest） | A | ⬜ 可认领 | `task-1` ✅ | `docker-compose.yml`、`app/db.py`、`app/models/`、`alembic/versions/`、`tests/conftest.py` |
+| `task-4` | Step2 鉴权内核（security / 依赖注入 / runtime_context） | B | ⬜ 可认领 | `task-1` ✅ | `app/core/security.py`、`app/core/auth.py`、`app/core/runtime_context.py`、`tests/test_security.py` |
 | `task-5` | Step3 登录与凭证接口 | C | 🔒 锁定 | `task-3`、`task-4` | `app/services/auth_service.py`、`app/api/auth.py`、`tests/test_auth_api.py` |
 | `task-6` | Step4 长者 CRUD + 设备绑定 + 范围过滤 | D | 🔒 锁定 | `task-3`、`task-4` | `app/services/{elder,device}_service.py`、`app/api/{elders,devices}.py`、`tests/test_elders_api.py` |
 | `task-7` | Step5 验收收口（攻击用例 + router 注册 + DoD） | E | 🔒 锁定 | `task-5`、`task-6` | `tests/test_auth_attacks.py`、`app/main.py`、`app/api/__init__.py`、`README.md` |
@@ -21,11 +21,14 @@
 ## 二、解锁节奏
 
 ```
-task-1 ──┬─► task-3 ─┐
-         └─► task-4 ─┴─► task-5 ─┐
-                     └─► task-6 ─┴─► task-7
+task-1 ✅ ─┬─► task-3   ◀ 现在可认领（A）
+           └─► task-4   ◀ 现在可认领（B）
 
-task-2 全程独立，谁手快谁先做
+task-3 ─┐
+task-4 ─┴─► task-5 ─┐
+        └─► task-6 ─┴─► task-7
+
+task-2 全程独立，谁手快谁先做（模板库，不依赖任何卡）
 ```
 
 ## 三、认领与协作规则
@@ -36,14 +39,16 @@ task-2 全程独立，谁手快谁先做
 4. **冲突处理**：卡面写作用域重叠时，先改卡再改代码，不许两人同时动同一个文件。
 5. **禁止**为了让自己的测试变绿去改别人的 service / router。
 
-## 四、开工前必须裁决的四件事（卡住 `task-3`）
+## 四、四项待裁决 → 已裁决（2026-11-04，见契约 §8 / §9）
 
-| # | 问题 | 现状 | 待定 |
+| # | 问题 | 结论 | 契约位置 |
 | --- | --- | --- | --- |
-| **D1** | 登录用什么标识？ | `staff_accounts` / `guardian_accounts` 只有 `name/phone/password_hash`，无 username/email，且 `phone` 可空（技术设计文档 line 353-371） | 建议：`phone` 必填 + 部分唯一索引 `WHERE phone IS NOT NULL` |
-| **D2** | 设备第一次怎么拿到 token？ | `devices.token_hash` 是管理员绑定时签发的长期令牌哈希，但平板首次接入靠什么证明身份未定义 | 建议：管理员出一张一次性配对码，`/auth/device/register` 用码换 token |
-| **D3** | 双人间候选列表返回哪些字段？ | 未定义 | 建议只回 `elder_id + bed_no + 脱敏姓` |
-| **D4** | 工牌 token 做到哪一步？ | FR-ADM-08 是 P1 | 建议 Day 2 只建 `staff_tokens` 表，接口留到 Day 9 |
+| **D1** | 登录用什么标识？ | `phone` 登录，NOT NULL + 唯一索引（唯一索引随 `0002` 建，不动 `0001`） | S-02 |
+| **D2** | 设备首次怎么拿到凭证？ | 两层：长期 secret 只存 `sha256` 进 `devices.token_hash`；平板换 24h 会话凭证，载荷带 `tv`=哈希前 16 位，每次回查，解绑轮换即全线失效 | S-03、§5.3 |
+| **D3** | 双人间候选返回哪些字段？ | `{elder_id, bed_no, display_name}`，`display_name` 脱敏为「姓 + `*` + 末字」 | S-06、E11 |
+| **D4** | 工牌 token 做到哪一步？ | 只建 `staff_tokens` 表 + 定载荷，接口留 Day 9 | A-04 |
+
+> 四项已冻结，`task-3` 不必再等；若实现中发现与契约冲突，以契约为准改代码，改契约要走裁决记录。
 
 ## 五、当日 Definition of Done
 
