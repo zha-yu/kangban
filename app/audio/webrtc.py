@@ -43,6 +43,7 @@ from aiortc import (
     RTCSessionDescription,
 )
 from aiortc.mediastreams import MediaStreamError, MediaStreamTrack
+from aiortc.sdp import candidate_from_sdp
 
 from app.audio.asr import ASRError, ASREvent, ASREventKind, ASRProvider, build_asr
 from app.core.config import Settings, get_settings
@@ -550,10 +551,9 @@ async def _asr_frame_iterator(queue: asyncio.Queue[bytes | None]) -> AsyncIterat
 class MediaSession:
     """一个 `connection_id` 的媒体会话。
 
-    已接：running loop 捕获、PC 创建、offer/answer、收轨重采样分帧、600 ms preRoll、
-    `begin_turn` 启动 ASR、ASR 事件回调、幂等关闭与资源观测。
-    未接：ICE candidate 的显式收发（aiortc 1.15 先把本地 candidate 写进 answer SDP）、
-    `end_turn` flush、TTS PCM 写轨与 `barge_in` —— 等 A2/A4 联调与 M4/M5 再接。
+    已接：running loop 捕获、PC 创建、offer/answer、ICE candidate 缓存/添加、收轨重采样
+    分帧、600 ms preRoll、`begin_turn`/`end_turn`、ASR 事件回调、幂等关闭与资源观测。
+    未接：TTS PCM 写轨、`barge_in` 与播放代际 —— 等 M4/M5 再接。
     """
 
     def __init__(
@@ -590,6 +590,9 @@ class MediaSession:
         self._audio_track: MediaStreamTrack | None = None
         self._playback_track: SilentAudioTrack | None = None
         self._offer_seen = False
+        self._pending_ice: list[tuple[str, str | None, int | None]] = []
+        self._pending_ice_keys: set[tuple[str, str | None, int | None]] = set()
+        self._ice_seen: set[tuple[str, str | None, int | None]] = set()
         self._asr_frames_total = 0
         self._vad_frames_total = 0
         self._asr_dropped_frames = 0
@@ -714,6 +717,12 @@ class MediaSession:
         self._offer_seen = True
         self._state = MediaState.OFFER_RECEIVED
 
+        pending = self._pending_ice
+        self._pending_ice = []
+        self._pending_ice_keys.clear()
+        for candidate, sdp_mid, sdp_mline_index in pending:
+            await self._apply_ice_candidate(pc, candidate, sdp_mid, sdp_mline_index)
+
         try:
             answer = await pc.createAnswer()
             await pc.setLocalDescription(answer)
@@ -736,6 +745,110 @@ class MediaSession:
             mline_count=local.sdp.count("m="),
         )
         return local.sdp
+
+    async def add_ice_candidate(
+        self,
+        candidate: str,
+        sdp_mid: str | None = None,
+        sdp_mline_index: int | None = None,
+    ) -> None:
+        """A2 传入浏览器 ICE candidate；offer 前到达则缓存，重复 candidate 忽略。"""
+        self._ensure_loop()
+        self._ensure_open()
+        pc = self._pc
+        if pc is None or not self._offer_seen or pc.remoteDescription is None:
+            key = (candidate, sdp_mid, sdp_mline_index)
+            if key in self._pending_ice_keys:
+                return
+            self._pending_ice_keys.add(key)
+            self._pending_ice.append((candidate, sdp_mid, sdp_mline_index))
+            _log_event(
+                "ice candidate cached",
+                trace_id=self.trace_id,
+                connection_id=self.connection_id,
+                turn_id=self._turn_id,
+                state=self._state.value,
+                reason="ice_candidate_cached",
+                pending_candidates=len(self._pending_ice),
+            )
+            return
+        await self._apply_ice_candidate(pc, candidate, sdp_mid, sdp_mline_index)
+
+    async def _apply_ice_candidate(
+        self,
+        pc: RTCPeerConnection,
+        candidate: str,
+        sdp_mid: str | None,
+        sdp_mline_index: int | None,
+    ) -> None:
+        """解析并添加一个 candidate；无效/缺 mid 只记录，不让媒体会话崩溃。"""
+        key = (candidate, sdp_mid, sdp_mline_index)
+        if key in self._ice_seen:
+            return
+        self._ice_seen.add(key)
+
+        raw = candidate.strip()
+        if not raw:
+            await pc.addIceCandidate(None)
+            _log_event(
+                "ice candidates complete",
+                trace_id=self.trace_id,
+                connection_id=self.connection_id,
+                turn_id=self._turn_id,
+                state=self._state.value,
+                reason="ice_candidates_complete",
+            )
+            return
+        if sdp_mid is None and sdp_mline_index is None:
+            _log_event(
+                "ice candidate rejected",
+                trace_id=self.trace_id,
+                connection_id=self.connection_id,
+                turn_id=self._turn_id,
+                state=self._state.value,
+                reason=MediaFailureReason.FORMAT_ERROR.value,
+                error_type="missing_sdp_mid",
+            )
+            return
+        if raw.startswith("candidate:"):
+            raw = raw[len("candidate:") :]
+        try:
+            parsed = candidate_from_sdp(raw)
+        except (AssertionError, ValueError):
+            _log_event(
+                "ice candidate rejected",
+                trace_id=self.trace_id,
+                connection_id=self.connection_id,
+                turn_id=self._turn_id,
+                state=self._state.value,
+                reason=MediaFailureReason.FORMAT_ERROR.value,
+                error_type="invalid_candidate_sdp",
+            )
+            return
+
+        parsed.sdpMid = sdp_mid
+        parsed.sdpMLineIndex = sdp_mline_index
+        try:
+            await pc.addIceCandidate(parsed)
+        except Exception as exc:
+            _log_event(
+                "ice candidate rejected",
+                trace_id=self.trace_id,
+                connection_id=self.connection_id,
+                turn_id=self._turn_id,
+                state=self._state.value,
+                reason=MediaFailureReason.FORMAT_ERROR.value,
+                error_type=type(exc).__name__,
+            )
+            return
+        _log_event(
+            "ice candidate added",
+            trace_id=self.trace_id,
+            connection_id=self.connection_id,
+            turn_id=self._turn_id,
+            state=self._state.value,
+            reason="ice_candidate_added",
+        )
 
     async def begin_turn(self) -> str:
         """开始新 ASR turn：生成 turn_id，先补 600 ms preRoll，再持续喂 60 ms 帧。"""
@@ -767,6 +880,51 @@ class MediaSession:
             pre_roll_ms=sum(frame.duration_ms for frame in pre_roll_frames),
         )
         return turn_id
+
+    async def end_turn(self, turn_id: str | None = None) -> None:
+        """结束当前 ASR turn：flush 20/60 ms 尾帧、发哨兵、等 provider 自然收口。"""
+        self._ensure_loop()
+        current = self._turn_id
+        if current is None:
+            return
+        if turn_id is not None and turn_id != current:
+            _log_event(
+                "stale end_turn ignored",
+                trace_id=self.trace_id,
+                connection_id=self.connection_id,
+                turn_id=turn_id,
+                state=self._state.value,
+                reason="stale_turn",
+            )
+            return
+
+        queue = self._asr_queue
+        # 尾帧必须在 turn_id 仍有效时进入队列；否则 _push_asr_frame 会直接丢弃。
+        for canonical in self._normalizer.flush():
+            asr_frames, vad_frames = self._splitter.feed(canonical)
+            self._dispatch_frames(asr_frames, vad_frames)
+        asr_tail, vad_tail = self._splitter.flush()
+        self._dispatch_frames(asr_tail, vad_tail)
+
+        if queue is not None:
+            task = self._asr_task
+            # provider 已结束（如 Mock 已到 FINAL）时不再等待哨兵，避免队列满时自锁。
+            if task is not None and not task.done():
+                await queue.put(None)
+        self._turn_id = None
+        self._asr_queue = None
+        task = self._asr_task
+        self._asr_task = None
+        if task is not None:
+            await task
+        _log_event(
+            "asr turn ended",
+            trace_id=self.trace_id,
+            connection_id=self.connection_id,
+            turn_id=current,
+            state=self._state.value,
+            reason="turn_ended",
+        )
 
     def _cancel_turn(self, *, reason: str) -> None:
         old_turn = self._turn_id
