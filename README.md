@@ -161,6 +161,17 @@ docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:a
 
 ---
 
+### 5.3 本机已知环境坑（2026-11-05 实测）
+
+| 现象 | 根因 | 规避 |
+| --- | --- | --- |
+| 仓库根冒出 `pytest-of-Administrator/` | 本机 `TEMP` 是 8.3 短名（`ADMINI~1`），`tempfile.gettempdir()` 校验失败后回退到 CWD，pytest 的 tmp 工厂于是落在仓库根 | 已加 `.gitignore` §12；要根治可给 pytest 传 `--basetemp` 指向长路径目录 |
+| 仓库外写不动（`%LOCALAPPDATA%\Temp`、`~/.cache` 报 `WinError 5`） | 工具沙箱只放开工作区 | 临时产物一律写仓库内已被忽略的目录（如 `spikes/**/out/`） |
+| `uv run alembic` 报 `UnicodeDecodeError: 'gbk' codec can't decode byte 0x89` | configparser 用平台 locale 读 `alembic.ini` | **`alembic.ini` 必须 ASCII-only**，注释里不许出现中文/全角 |
+| 容器内 edge-tts 转码报 `TTSUnavailable("ffmpeg not found")` | `python:3.12-slim` 不带 ffmpeg | 设计内行为：生产走云端 TTS，edge 只是宿主机兜底；容器跑测试时相关用例自动 skip |
+| 容器在两次工具调用之间被回收（`docker ps -a` 显示 `Exited (0)`） | 环境在调用结束后回收容器 | 「起库 → 另开一次调用跑测试」必然失败；改成**库与测试同容器、一次调用跑完** |
+| `docker run ... bash -s <<'SH'` 返回空输出 | heredoc 经 `wsl` 工具传递被吞 | 用 `wsl-write` 落脚本到 `/tmp/*.sh`，再 `-v /tmp/x.sh:/v.sh:ro` 挂进容器执行 |
+
 ## 6. 配置说明
 
 所有密钥只走环境变量，由 Pydantic Settings 从 `.env` 加载；`.env.example` 只有占位符。**三份基线文档没有枚举任何环境变量名与端口**，下表是本项目自定义并回填文档的约定。
@@ -182,6 +193,8 @@ docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:a
 | 数据保留 | `AUDIO_RETENTION_HOURS` `SCHEDULER_TIMEZONE` | 原始音频默认 72h 自动清理 |
 | 前端构建期 | `VITE_API_BASE_URL` `VITE_PAD_WS_URL` `VITE_ENABLE_3D` `VITE_ENABLE_WEBRTC` | 以 `VITE_` 前缀暴露给浏览器 |
 
+**本地 ASR 基线（FunASR）**：**不新增变量**，复用现有 `ASR_*` 字段——`ASR_PROVIDER=funasr`、`ASR_BASE_URL=ws://localhost:7002`（宿主端口见下表 `funasr` 行，容器内 FunASR runtime 监听 10095）。`docker-compose.yml` 里的 funasr 服务默认**不开 TLS**（官方 `run_server_2pass.sh` 中 `--certfile`/`--keyfile` 同样被注释掉），所以用 `ws://`；若改成 wss，需同时给容器补 `--certfile`/`--keyfile` 并把地址改成 `wss://`。云 API 仍是主实现，FunASR 只作本地基线与降级备份（见 `docs/plans/task-a1-ASR与TTS适配层.md`）。
+
 ### 服务与端口
 
 | 服务 | 端口 | 说明 |
@@ -191,6 +204,7 @@ docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:a
 | backend（FastAPI + aiortc） | 8000 | `/health` 健康检查；WebSocket 信令 |
 | frontend（nginx） | 80 / 443 | 静态资源 + HTTPS 入口 + 媒体直连 |
 | laya | 7001 | 本地 System One 推理服务 |
+| funasr | 7002 | 本地 ASR 基线（FunASR runtime） |
 | weather-mcp | 7101 | `get_weather` |
 | mock-operations-mcp | 7102 | 工单 / 家属通知 |
 | coturn | 3478 / 5349 | TURN/STUN，跨网段才需要 |

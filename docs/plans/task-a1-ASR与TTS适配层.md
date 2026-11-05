@@ -1,6 +1,6 @@
 # TASK A1 · ASR/TTS 适配层 · 执行计划与 DAG
 
-> 状态：进行中（2026-11-05 主理人批准执行；§9 三项自裁按「默认」执行）　｜　版本：v1.1　｜　日期：2026-11-05
+> 状态：已完成（2026-11-05 N9 收口；N1–N7、N9 交付，**N8 真链路未达成**——funasr 镜像未拉全，见 §10 v1.2）　｜　版本：v1.2　｜　日期：2026-11-05
 > 关联：`docs/team_tasks_day03/a1-asr-tts.md`（任务卡）、`docs/team_tasks_day03/contracts.md`（C1/C2/C3）、`docs/team_tasks_day03/README.md`（五人分工）、`docs/plans/day-03-WebRTC与语音闭环.md`（T1 与 §3 裁决）
 > 上游依据：PRD v2.6 §4.2 FR-UI-01/02/05/09、§4.4 FR-DLG-02、§4.11 P2、§5.3 延迟口径、AC-40、Day 3 验收；技术设计文档 v1.7 §1.3 `app/audio` 职责（:167）、§8 Day 3 落地清单（:1019）与技术验收（:1022）、§3.7 `decision_logs.asr_confidence`（:633）
 > 命名说明：编号沿用 Day 3 卡片 id `a1`（该组卡片为 a1–a5，与 Day 2 的 `task-01`–`task-07` 不冲突）
@@ -237,3 +237,4 @@ graph LR
 | --- | --- | --- |
 | v1.0 | 2026-11-05 | 初稿：PRD 验收口径 7 条、TD 实现基准 5 条、五方功能边界与禁触清单、T1.0–T1.8 八步与判据、DAG 六层与关键路径、7 项风险降级、3 项待裁决自裁 |
 | v1.1 | 2026-11-05 | 主理人批准执行，状态转「进行中」；§9 三项自裁按「默认」生效（funasr 端口 **7002**、埋点由结构化日志承载并留 OTel hook、TTS 走 **ffmpeg** 子进程不引 pydub）；DAG 明细移交独立件 `task-a1-DAG.md` |
+| v1.2 | 2026-11-05 | N9 收口。实测：`ruff check .` 全过 / `ruff format --check .` 49 files / 带库容器全量 **337 passed, 4 skipped**（skip 为容器无 ffmpeg 的真转码用例）/ `alembic upgrade head` 到 `0003_fix_day1_ck_names`。落地 `app/audio/{asr,tts,__init__,_observe}.py` + `tests/test_audio_{asr,tts}.py`（71 例）+ `spikes/{funasr,edge_tts}/` + compose funasr 段 + README §6。**N8 真链路未达成**：镜像两轮共 41 分钟未拉全（12 层中 3 层解压完成），已按 P-A1-1 在 `spikes/funasr/README.md` §4/§6 如实记录，`ws_probe.py` 未对真容器跑过。附：`websockets` 从 `uvicorn[standard]` 传递依赖提为直接依赖；`ruff format` 排除 `*.md`（避免重排契约文档列对齐）；`.gitignore` 补 `pytest-of-*/` 等 |
