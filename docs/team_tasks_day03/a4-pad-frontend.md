@@ -19,7 +19,7 @@
 1. MPA 骨架：pad 入口、1920×1080 布局、大字幕组件、状态条（正在听/正在想/正在说）
 2. 登录页：device_id + device_secret 表单 → `POST /api/device-sessions`（E4）；错误映射（404 重输/403 停用/429 倒计时）；token 存 sessionStorage；成功跳主界面
 3. AudioWorklet 重采样：48k 采集 → 16k/60ms 帧 + 600ms preRoll 环形缓冲
-4. TEN-VAD WASM 接入（移植教师模块 `BrowserTenVad`）：speechstart → 发 `asr_start`（preRoll 随帧补发）；speechend（0.8s 静音）→ `asr_end`；**加载失败回落服务端 webrtcvad**（开关 + 降级标记）
+4. TEN-VAD WASM 接入（移植教师模块，参照 `spikes/reference/asr/src/asr/web/vad/`，WASM 资产 `spikes/reference/asr/funasr-runtime-resources/models/sherpa-onnx/sherpa-onnx-wasm-simd-v2.0.1-ten-vad/`）：speechstart → 发 `asr_start`（preRoll 随帧补发）；speechend（0.8s 静音）→ `asr_end`；**加载失败回落服务端 webrtcvad**（开关 + 降级标记）
 5. WebRTC 客户端：getUserMedia（AEC/NS/AGC 开启）→ offer → 经 C2 信令换 answer/ICE → 收音频轨播 TTS
 6. 打断：检测到本地说话 → 停止 TTS 播放渲染，字幕切换
 7. 静默刷新/过期处理：按 A2 的设备会话 refresh 核对结论执行（无 refresh 通道则过期回登录页）
@@ -46,3 +46,4 @@
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-05 | 初稿 |
+| v1.1 | 2026-11-05 | 教师参考模块入库 `spikes/reference/asr/`，TEN-VAD 参照与 WASM 资产路径落定 |
