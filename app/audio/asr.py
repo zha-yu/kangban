@@ -29,6 +29,7 @@ from typing import Final, Protocol, cast
 
 import websockets
 from websockets.exceptions import ConnectionClosed, WebSocketException
+from websockets.typing import Subprotocol
 
 from app.audio._observe import record_asr, start
 from app.core.config import Settings, get_settings
@@ -81,7 +82,7 @@ class ASRProvider:
         """输入 16kHz/16bit/单声道 60ms PCM 帧流，输出事件流。
         约束：不阻塞事件循环；连接级失败抛 ASRError 子类；identity 由调用方 runtime_context 注入，
         本协议不接受任何客户端传 elder_id。"""
-        ...
+        raise NotImplementedError("ASRProvider.stream is a protocol method")
 
 
 class TTSProvider:
@@ -89,7 +90,7 @@ class TTSProvider:
 
     async def synthesize(self, text: str) -> bytes:
         """输出 16kHz/16bit/单声道 PCM 整段音频（Day 3 非流式口径，首包预算受限已登记）。"""
-        ...
+        raise NotImplementedError("TTSProvider.synthesize is a protocol method")
 
 
 # ---------------------------------------------------------------------------
@@ -413,7 +414,7 @@ class FunASRWSProvider(ASRProvider):
         try:
             connection = await websockets.connect(
                 self._url,
-                subprotocols=["binary"],
+                subprotocols=[cast("Subprotocol", "binary")],
                 ping_interval=None,  # 禁 ping 帧：开了会被 FunASR 判超时踢掉
                 open_timeout=self._connect_timeout,
                 ssl=_ssl_context_for(self._url, self._insecure),
