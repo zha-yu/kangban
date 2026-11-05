@@ -39,6 +39,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from app.audio import signaling
+from app.audio.asr import ASREvent, ASREventKind, ASRResult, ASRUnavailable
 from app.core.config import get_settings
 from app.core.security import sha256_hex, sign_device_session
 from app.db import get_session as _app_get_session
@@ -440,18 +441,28 @@ async def test_case9_offer_answer_roundtrip_and_downlink(
     async def media_handler(conn: signaling.ConnectionContext, message: dict[str, Any]) -> None:
         assert message["type"] == "offer"
         signaling.deliver(conn.device_id or "", {"type": "answer", "sdp": message["sdp"]})
-        # 四类下行逐字段验证（计划 §W4 自检）
+        # 四类下行逐字段验证（计划 §W4 自检）；C1 已冻结，直接用真实 ASREvent
         signaling.deliver_asr_event(
             conn.device_id or "",
-            _FakeASREvent(kind="partial", text="今天天"),
+            ASREvent(
+                kind=ASREventKind.PARTIAL,
+                result=ASRResult(text="今天天", is_final=False, confidence=None),
+                error=None,
+            ),
         )
         signaling.deliver_asr_event(
             conn.device_id or "",
-            _FakeASREvent(kind="final", text="今天天气怎么样"),
+            ASREvent(
+                kind=ASREventKind.FINAL,
+                result=ASRResult(text="今天天气怎么样", is_final=True, confidence=None),
+                error=None,
+            ),
         )
         signaling.deliver_asr_event(
             conn.device_id or "",
-            _FakeASREvent(kind="error", error=Exception("内部细节不该透出")),
+            ASREvent(
+                kind=ASREventKind.ERROR, result=None, error=ASRUnavailable("内部细节不该透出")
+            ),
         )
         assert signaling.deliver(device_id, {"type": "tts_text", "text": "今天晴，适合出门走走。"})
         # 非本设备投递应失败（下行寻址按 device_id）
@@ -479,22 +490,6 @@ async def test_case9_offer_answer_roundtrip_and_downlink(
             }
     finally:
         signaling.set_media_handler(None)
-
-
-class _FakeASREvent:
-    """C1 ASREvent 结构替身（A1 的 asr.py 未落码，鸭子读取口径见 signaling.deliver_asr_event）。"""
-
-    def __init__(
-        self, *, kind: str, text: str | None = None, error: Exception | None = None
-    ) -> None:
-        self.kind = kind
-        self.result = None if text is None else _FakeASRResult(text)
-        self.error = error
-
-
-class _FakeASRResult:
-    def __init__(self, text: str) -> None:
-        self.text = text
 
 
 # ---------------------------------------------------------------------------
