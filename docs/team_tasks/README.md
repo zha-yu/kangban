@@ -11,6 +11,12 @@
 | `task-1` | Step0 身份与权限契约冻结 | A–E 全员 | ✅ 已完成（`707bdf6`） | — | `docs/接口契约_身份与权限.md` |
 | `task-2` | 提示词模板库 v1（6 个模板） | E | ⬜ 待认领 | — | `docs/prompts/` |
 | `task-3` | Step1 库与模型基座（5 表 + `0002` 迁移 + conftest） | A | ✅ 已完成 | `task-1` ✅ | `docker-compose.yml`、`app/db.py`、`app/models/`、`alembic/versions/`、`tests/conftest.py` |
+
+| `task-4` | Step2 鉴权内核（security / 依赖注入 / runtime_context） | B | 🚧 进行中（判定层 `16513da` + 人员/工牌/设备接线全部落地，剩 T5 测试收口与 T6 人审） | `task-1` ✅ | `app/core/security.py`、`app/core/auth.py`、`app/core/runtime_context.py`、`tests/test_security.py` |
+| `task-5` | Step3 登录与凭证接口 | C | ✅ 已完成 | `task-3` ✅、`task-4` ✅ | `app/api/schemas/auth.py`、`app/services/auth_service.py`、`app/api/auth.py`、`tests/test_auth_api.py`、`app/main.py`（router 注册 + 全局 handler） |
+| `task-6` | Step4 长者 CRUD + 设备绑定 + 范围过滤 | D | ✅ 已完成（2026-11-04） | `task-3` ✅、`task-4` ✅ | `app/services/{elder,device}_service.py`、`app/api/{elders,devices}.py`、`tests/test_elders_api.py` |
+| `task-7` | Step5 验收收口（攻击用例 + router 注册 + DoD） | E | ⬜ 待认领 | `task-5` ✅、`task-6` ✅ | `tests/test_auth_attacks.py`、`app/main.py`、`app/api/__init__.py`、`README.md` |
+=======
 | `task-4` | Step2 鉴权内核（security / 依赖注入 / runtime_context） | B | 🚧 进行中（判定层 `16513da` + 接线 `2107292` + T5 测试收口 `92ea5ae` 全部落地，227 条 0 skip、鉴权三模块覆盖 99.45%；剩 T6 人工逐行审查） | `task-1` ✅ | `app/core/security.py`、`app/core/auth.py`、`app/core/runtime_context.py`、`tests/test_security.py` |
 | `task-5` | Step3 登录与凭证接口 | C | 🔒 锁定 | `task-3`、`task-4` | `app/services/auth_service.py`、`app/api/auth.py`、`tests/test_auth_api.py` |
 | `task-6` | Step4 长者 CRUD + 设备绑定 + 范围过滤 | D | ✅ 已完成（2026-11-04） | `task-3`、`task-4` | `app/services/{elder,device}_service.py`、`app/api/{elders,devices}.py`、`tests/test_elders_api.py` |
@@ -39,6 +45,8 @@
 > 「把它守卫的那行判定删掉，用例必须变红」。剩余 2 行是**故意不补**的死代码/双保险，理由写在测试文件末尾
 > 「T5 交付证据 · 未覆盖行清单」，其中 `AuthError(code=…)` 这条 kwarg 全仓库无人传入，请人审时决定删或留。
 
+> 交付说明（task-5，2026-11-04，C）：四个 auth 端点（`POST /api/sessions`、`POST /api/sessions/refresh`、`GET /api/sessions/current`、`POST /api/device-sessions`）+ `auth_service` 唯一写库层 + 9 个全局 exception handler + 11 条集成测试全部落地并合入。**契约优先**：端点路径以 `docs/接口契约_身份与权限.md` 为准，未沿用大纲里的 `/auth/*` 旧路径。task-7 的 router 注册职责提前合入（auth router 必须注册才能跑通端点验证，与 E 确认）。测试门禁：task-5 11 passed + task-4 回归 193 passed = **204 passed, 0 failed, 0 skipped**，ruff 全绿。运行时服务端 9 条 curl 全过，错误路径统一 `{detail, code, trace_id}` JSON 响应。详见 `docs/plans/task-05-登录与凭证接口.md`。
+
 > 交付说明（task-6，2026-11-04，D）：E5–E11 全部实现，角色/范围判定与写库只在
 > `app/services/{elder,device}_service.py`；解绑与 `bind(elder_id=null)` 共用同一逻辑并轮换
 > `token_hash`，唯一索引冲突 rollback 后映射 409。`tests/test_elders_api.py` 26 条用例、
@@ -48,11 +56,12 @@
 
 ```
 task-1 ✅ ─┬─► task-3 ✅ 已完成（A）
-           └─► task-4   ◀ 现在可认领（B）
+           └─► task-4 🚧 进行中（B，T5/T6 人审待收口）
 
-task-3 ─┐
-task-4 ─┴─► task-5 ─┐
-        └─► task-6 ─┴─► task-7
+task-3 ✅ ─┐
+task-4 ✅ ─┼─► task-5 ✅ 已完成（C）
+           └─► task-6 ─┐
+                       └─► task-7 ⬜ 可认领（E，task-5 已解锁）
 
 task-2 全程独立，谁手快谁先做（模板库，不依赖任何卡）
 ```
@@ -78,13 +87,13 @@ task-2 全程独立，谁手快谁先做（模板库，不依赖任何卡）
 
 ## 五、当日 Definition of Done
 
-- [ ] `alembic upgrade head` / `downgrade -1` 双向可跑
-- [ ] 错密码 401、伪造 token 401、`/auth/me` 解出角色、设备 token 解出 `device_id`
-- [ ] 账号停用后旧 token 401（AC-24）
+- [x] `alembic upgrade head` / `downgrade -1` 双向可跑
+- [x] 错密码 401、伪造 token 401、`GET /api/sessions/current` 解出角色、设备 token 解出 `device_id`（AC-24）
+- [x] 账号停用后旧 token 401（AC-24）
 - [x] 非管理员 `POST /elders` → 403；护工查非负责长者 → 403（AC-18）
 - [x] 写操作测试都有「回查 DB」断言；≥3 条 elders 用例
-- [ ] 3 条攻击用例入库；`pytest` 全绿；`ruff check app tests` 干净
-- [ ] `git log` ≥5 次小步 commit；`docs/prompts/` 有 6 个模板
+- [ ] 3 条攻击用例入库；`pytest` 全绿；`ruff check app tests` 干净 —— task-7 收口
+- [ ] `git log` ≥5 次小步 commit；`docs/prompts/` 有 6 个模板 —— task-2 / task-7
 
 ## 六、执行中发现的偏差（只登记，不裁决）
 
