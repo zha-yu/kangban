@@ -12,15 +12,30 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app import __version__
-from app.api import health
+from app.api import auth as auth_api
+from app.api import devices, elders, health
+from app.api.schemas.auth import ErrorResponse
+from app.core.auth import (
+    CredentialExpiredError,
+    CredentialInvalidError,
+    CredentialRevokedError,
+)
 from app.core.config import Settings, get_settings
-from app.core.context import TRACE_HEADER
+from app.core.context import TRACE_HEADER, get_trace_id
 from app.core.logging import configure_logging
+from app.core.security import TokenExpiredError
 from app.core.trace import TraceIdMiddleware
+from app.services.auth_service import (
+    AuthConflictError,
+    AuthExpiredError,
+    AuthInvalidError,
+    AuthRevokedError,
+)
 
 
 @asynccontextmanager
@@ -61,6 +76,98 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     application.include_router(health.router)
+    application.include_router(auth_api.router, prefix="/api")
+    application.include_router(elders.router)
+    application.include_router(devices.router)
+
+    # ---------- 全局 exception handler（契约 §7） ----------
+    # auth_service 层异常（双重保险：auth.py 路由已捕获，这里兜底）
+    @application.exception_handler(AuthInvalidError)
+    async def _handle_auth_invalid(req: Request, exc: AuthInvalidError) -> JSONResponse:
+        return JSONResponse(
+            status_code=401,
+            content=ErrorResponse(
+                detail=str(exc.detail),
+                code=exc.kind or "TOKEN_INVALID",
+                trace_id=get_trace_id() or "-",
+            ).model_dump(),
+        )
+
+    @application.exception_handler(AuthExpiredError)
+    async def _handle_auth_expired(req: Request, exc: AuthExpiredError) -> JSONResponse:
+        return JSONResponse(
+            status_code=401,
+            content=ErrorResponse(
+                detail=str(exc.detail), code="TOKEN_EXPIRED", trace_id=get_trace_id() or "-"
+            ).model_dump(),
+        )
+
+    @application.exception_handler(AuthRevokedError)
+    async def _handle_auth_revoked(req: Request, exc: AuthRevokedError) -> JSONResponse:
+        return JSONResponse(
+            status_code=401,
+            content=ErrorResponse(
+                detail=str(exc.detail), code="TOKEN_REVOKED", trace_id=get_trace_id() or "-"
+            ).model_dump(),
+        )
+
+    @application.exception_handler(AuthConflictError)
+    async def _handle_auth_conflict(req: Request, exc: AuthConflictError) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content=ErrorResponse(
+                detail=str(exc.detail), code="CONFLICT", trace_id=get_trace_id() or "-"
+            ).model_dump(),
+        )
+
+    # task-4 auth 层异常（依赖注入阶段抛出，auth_service 还没机会参与）
+    @application.exception_handler(CredentialInvalidError)
+    async def _handle_cred_invalid(req: Request, exc: CredentialInvalidError) -> JSONResponse:
+        return JSONResponse(
+            status_code=401,
+            content=ErrorResponse(
+                detail=str(exc), code="TOKEN_INVALID", trace_id=get_trace_id() or "-"
+            ).model_dump(),
+        )
+
+    @application.exception_handler(CredentialExpiredError)
+    async def _handle_cred_expired(req: Request, exc: CredentialExpiredError) -> JSONResponse:
+        return JSONResponse(
+            status_code=401,
+            content=ErrorResponse(
+                detail=str(exc), code="TOKEN_EXPIRED", trace_id=get_trace_id() or "-"
+            ).model_dump(),
+        )
+
+    @application.exception_handler(CredentialRevokedError)
+    async def _handle_cred_revoked(req: Request, exc: CredentialRevokedError) -> JSONResponse:
+        return JSONResponse(
+            status_code=401,
+            content=ErrorResponse(
+                detail=str(exc), code="TOKEN_REVOKED", trace_id=get_trace_id() or "-"
+            ).model_dump(),
+        )
+
+    @application.exception_handler(TokenExpiredError)
+    async def _handle_token_expired(req: Request, exc: TokenExpiredError) -> JSONResponse:
+        return JSONResponse(
+            status_code=401,
+            content=ErrorResponse(
+                detail="token has expired", code="TOKEN_EXPIRED", trace_id=get_trace_id() or "-"
+            ).model_dump(),
+        )
+
+    # 未预期异常 → 500，不回显内部细节（AGENTS §8 失败分类）
+    @application.exception_handler(Exception)
+    async def _handle_unknown(req: Request, exc: Exception) -> JSONResponse:
+        logging.getLogger("app.main").exception("unhandled exception")
+        return JSONResponse(
+            status_code=500,
+            content=ErrorResponse(
+                detail="内部错误", code="INTERNAL_ERROR", trace_id=get_trace_id() or "-"
+            ).model_dump(),
+        )
+
     return application
 
 

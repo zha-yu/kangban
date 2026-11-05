@@ -1,7 +1,9 @@
 """Alembic 运行环境。
 
 约定（见 AGENTS.md §5 高风险清单）：
-- 连接串只从环境变量 `DATABASE_URL` 读，**不硬编码**、不读 `.env` 明文（由 Pydantic Settings 负责）。
+- 连接串统一走 `app.core.config.get_settings().database_url`，与 `app.db` / pytest 同源：
+  Pydantic Settings 的优先级是「进程环境变量 > 仓库根 .env > 字段默认值」，因此
+  `export DATABASE_URL=...` 依然可以覆盖 `.env`。**禁止**在这里另读一份 os.environ。
 - 项目用 asyncpg 异步驱动，迁移走同步驱动 psycopg，故此处做 `+asyncpg` → `+psycopg` 替换。
 - `app.models` 尚不存在时（1.4 建骨架之前）退化为 `target_metadata=None`：
   手写迁移照常执行，只是 autogenerate 不可用——这正是 Day 1 的状态。
@@ -9,11 +11,12 @@
 
 from __future__ import annotations
 
-import os
 from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
+
+from app.core.config import get_settings
 
 config = context.config
 
@@ -22,11 +25,14 @@ if config.config_file_name is not None:
 
 
 def _database_url() -> str:
-    """取同步连接串（迁移用 psycopg，不用 asyncpg）。"""
-    raw = os.getenv(
-        "DATABASE_URL",
-        "postgresql+asyncpg://silvermate:silvermate@localhost:5432/silvermate",
-    )
+    """取同步连接串（迁移用 psycopg，不用 asyncpg）。
+
+    走 Settings 而非裸 os.getenv：此前未 export DATABASE_URL 时会退回
+    localhost:5432 的硬编码默认值，本机被其他 Postgres 占用时就会连错库
+    （表现为 `password authentication failed for user "silvermate"`）。
+    现在与 app.db / tests 读同一个 `.env`，`export DATABASE_URL=...` 仍优先生效。
+    """
+    raw = get_settings().database_url
     return raw.replace("postgresql+asyncpg://", "postgresql+psycopg://")
 
 
@@ -34,7 +40,7 @@ try:  # 1.4 建好 app/models 之后自动生效，autogenerate 才需要
     from app.models import Base  # type: ignore[import-not-found]
 
     target_metadata = Base.metadata
-except Exception:  # noqa: BLE001 - 骨架未建立时属预期
+except Exception:  # 骨架未建立时属预期（ImportError 等），保持迁移可独立运行
     target_metadata = None
 
 

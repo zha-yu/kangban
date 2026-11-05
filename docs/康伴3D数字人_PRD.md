@@ -114,7 +114,7 @@
 | 信令        | FastAPI 侧用 WebSocket 承载 SDP offer/answer 与 ICE candidate 交换（信令复用现有 WS 通道，无需新增独立信令服务器） |
 | NAT 穿透    | 本地教学部署以 host 候选绕过为主；跨网段/容器网络部署 coturn TURN 中继（docker-compose 内置 coturn 服务）；ICE 协商失败自动降级为按住说话 |
 | 服务端媒体处理   | 采用 aiortc（Python asyncio WebRTC 库）与 FastAPI 集成；服务端从音频轨读取 PCM 帧送流式 ASR、把 TTS PCM 写入音频轨下发，避免引入 mediasoup/Janus 的 C++/Node 依赖 |
-| 实时 ASR 分帧 | 全双工下服务端从音频轨道持续分帧 + webrtcvad 静音检测（VAD）切段送流式 ASR；降级模式仍用按住说话整段上传 |
+| 实时 ASR 分帧 | 全双工下服务端从音频轨道持续分帧 + VAD 切段送流式 ASR：端侧 TEN-VAD（WASM）为主，服务端 webrtcvad 兜底（TEN-VAD 不可用/加载失败时回落）；降级模式仍用按住说话整段上传 |
 | 回声消除（AEC） | 浏览器约束 `echoCancellation:true` + `autoGainControl`；TTS 优先经 WebRTC 音频轨下发以利用浏览器 AEC；AEC 不足时降级半双工（TTS 播放期间静音麦克风） |
 | 反向外呼      | APScheduler 到点 → 服务端主动创建 PeerConnection → 向 pad 推送外呼信令 → pad 自动接听建连 → 数字人开口播报；外呼建连失败降级为 WebSocket 下发页面播报（FR-MED-06） |
 | 工期        | WebRTC 链路纳入 Day 3–5 既有排期（与大纲一致），不额外挤占三级路由 / LangGraph / MCP / Langfuse 的 Day 6–10 排期 |
@@ -597,3 +597,10 @@
 - 用药不混淆已服自报/实际服药/送达/已送达未确认/通知失败；红色事件不被阻塞；权限/审计/幂等/降级/重启恢复符合规则。
 - 三级路由、LangGraph、MCP、Langfuse、教学级声纹、**WebRTC 全双工与反向 WebRTC 外呼**、Docker 均有对应验收证据。（唤醒词激活优先级待定 Day 3 前敲定，若定 P0 则需有对应验收证据。）
 - 所有模拟数据、模拟通知、规则分级均有明确标识；不以教学验收表述为真实社区效果或商用准入证明。
+---
+
+## 修订记录
+
+| 版本 | 日期 | 说明 |
+| --- | --- | --- |
+| v2.5 | 2026-11-05 | 主理人裁决：§2.2「实时 ASR 分帧」VAD 口径由「服务端 webrtcvad 静音检测」改为「端侧 TEN-VAD（WASM）为主、服务端 webrtcvad 兜底」。依据：教师 asr 参考模块端侧 TEN-VAD WASM 切句质量优于 webrtcvad 且节省上行流量；webrtcvad 保留为 TEN-VAD 不可用/加载失败时的服务端兜底，不违反单一形态原则（VAD 仍是一个能力、一条主链路+一条兜底）。影响范围：技术设计文档 line 1019 Day 3 落地清单同步修改、AGENTS.md §1 实时语音行同步修改；`WEBRTC_VAD_AGGRESSIVENESS` 配置语义不变（兜底层参数）。不涉及 FR/AC 增删。

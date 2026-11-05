@@ -43,7 +43,7 @@
 | HTTP | FastAPI + Uvicorn + Pydantic v2 + Pydantic Settings | `.env` 由 Pydantic Settings 加载；`trace_id` 中间件挂在 `app/main.py` |
 | 前端 | React + Vite（**MPA 三入口**）+ Tailwind（pad）/ MUI（console、family） | 单仓库单 React 工程，避免 three-vrm 进 console/family 构建包 |
 | 3D 数字人 | three.js + `@pixiv/three-vrm` | 加载失败或超 5s 降级静态头像，**不白屏** |
-| 实时语音 | WebRTC + aiortc + coturn + webrtcvad | 信令复用 FastAPI WebSocket，不新建信令服务；按住说话整段上传为降级 |
+| 实时语音 | WebRTC + aiortc + coturn + TEN-VAD（端侧主 VAD）/ webrtcvad（服务端兜底） | 信令复用 FastAPI WebSocket，不新建信令服务；按住说话整段上传为降级 |
 | 语音识别/合成 | 第三方**流式** ASR / TTS API | 教师统一提供 key；必须带置信度埋点 |
 | 主库 | PostgreSQL 15 + pgvector | 业务表与 LangGraph checkpoint **物理隔离**（独立 schema `langgraph`、独立连接池） |
 | ORM/迁移 | SQLAlchemy 2.x（async）+ Alembic | 分批迁移，**主迁移一经合入不再改** |
