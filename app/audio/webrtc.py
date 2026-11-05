@@ -32,11 +32,12 @@ import json
 import logging
 import uuid
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from fractions import Fraction
-from typing import Any
+from typing import TYPE_CHECKING, Any
+from weakref import WeakKeyDictionary
 
 import av
 from aiortc import (
@@ -50,6 +51,9 @@ from aiortc.sdp import candidate_from_sdp
 
 from app.audio.asr import ASRError, ASREvent, ASREventKind, ASRProvider, build_asr
 from app.core.config import Settings, get_settings
+
+if TYPE_CHECKING:
+    from app.audio.signaling import ConnectionContext
 
 logger = logging.getLogger(__name__)
 
@@ -1626,6 +1630,208 @@ class MediaSessionRegistry:
             raise MediaLoopMismatch("media session registry belongs to another event loop")
 
 
+# ------------------------------------------------------------------ A2 信令接线
+# A2 唯一公开面：set_media_handler(handler) / deliver / deliver_asr_event。
+# 本层不触碰 WebSocket 实例、不解析 WS、不写业务回复。
+
+_SIGNALING_REGISTRIES: WeakKeyDictionary[asyncio.AbstractEventLoop, MediaSessionRegistry] = (
+    WeakKeyDictionary()
+)
+_INTERNAL_ERROR_MESSAGE = "出了点小状况，请再说一遍。"
+
+
+def _signaling_registry() -> MediaSessionRegistry:
+    """每个事件循环独立 registry；测试多 loop 与生产单 loop 都不串会话。"""
+    loop = asyncio.get_running_loop()
+    registry = _SIGNALING_REGISTRIES.get(loop)
+    if registry is None:
+        registry = MediaSessionRegistry()
+        _SIGNALING_REGISTRIES[loop] = registry
+    return registry
+
+
+def install_signaling_handler() -> None:
+    """把 A3 handler 注册到 A2；应用启动时调用一次，重复调用幂等。"""
+    from app.audio import signaling
+
+    signaling.set_media_handler(handle_signal_message)
+
+
+def uninstall_signaling_handler() -> None:
+    """注销 A2 handler（测试/关闭用）；不影响 A2 自身连接。"""
+    from app.audio import signaling
+
+    signaling.set_media_handler(None)
+
+
+def _deliver(device_id: str, message: Mapping[str, Any]) -> bool:
+    from app.audio import signaling
+
+    return signaling.deliver(device_id, message)
+
+
+def _deliver_error(device_id: str) -> None:
+    _deliver(
+        device_id,
+        {"type": "error", "code": "internal", "message": _INTERNAL_ERROR_MESSAGE},
+    )
+
+
+def _asr_callback(device_id: str, trace_id: str) -> AsrEventCallback:
+    async def _on_asr_event(turn_id: str, event: ASREvent) -> None:
+        from app.audio import signaling
+
+        delivered = signaling.deliver_asr_event(device_id, event)
+        kind = str(getattr(event.kind, "value", event.kind))
+        _log_event(
+            "asr event delivery",
+            trace_id=trace_id,
+            connection_id=device_id,
+            turn_id=turn_id,
+            state="-",
+            reason="asr_event",
+            kind=kind,
+            delivered=delivered,
+        )
+
+    return _on_asr_event
+
+
+def _failure_callback(
+    registry: MediaSessionRegistry, device_id: str, trace_id: str
+) -> MediaFailureCallback:
+    async def _on_media_failed(connection_id: str, reason: MediaFailureReason, detail: str) -> None:
+        _log_event(
+            "media failure delivery",
+            trace_id=trace_id,
+            connection_id=connection_id,
+            turn_id=None,
+            state=MediaState.FAILED.value,
+            reason=reason.value,
+            detail=detail,
+        )
+        await registry.close_session(device_id, reason=reason.value)
+        _deliver_error(device_id)
+
+    return _on_media_failed
+
+
+def _require_session(registry: MediaSessionRegistry, device_id: str) -> MediaSession:
+    session = registry.get_session(device_id)
+    if session is None:
+        raise MediaStateError("media session is not ready")
+    return session
+
+
+async def _handle_offer(
+    conn: ConnectionContext,
+    registry: MediaSessionRegistry,
+    device_id: str,
+    message: Mapping[str, Any],
+) -> None:
+    sdp = message.get("sdp")
+    if not isinstance(sdp, str) or not sdp.strip():
+        raise MediaFormatError("offer SDP must be a non-empty string")
+
+    # 同设备重连：A2 已踢旧连接；这里先收旧媒体，避免 create_session 冲突。
+    await registry.close_session(device_id, reason="replaced")
+    session = registry.create_session(
+        device_id,
+        conn.trace_id,
+        on_asr_event=_asr_callback(device_id, conn.trace_id),
+        on_media_failed=_failure_callback(registry, device_id, conn.trace_id),
+    )
+
+    async def _close_on_disconnect() -> None:
+        # 旧连接 callback 不能误关同设备新连接：必须确认槽位仍是本 session。
+        if registry.get_session(device_id) is session:
+            await registry.close_session(device_id, reason="ws_disconnect")
+
+    conn.disconnect_callbacks.append(_close_on_disconnect)
+    answer = await session.handle_offer(sdp)
+    _deliver(device_id, {"type": "answer", "sdp": answer})
+
+
+async def _handle_ice(
+    registry: MediaSessionRegistry, device_id: str, message: Mapping[str, Any]
+) -> None:
+    session = _require_session(registry, device_id)
+    candidate = message.get("candidate")
+    if not isinstance(candidate, str):
+        raise MediaFormatError("ice candidate must be a JSON string")
+    await session.add_ice_candidate(candidate)
+
+
+async def _handle_asr_start(registry: MediaSessionRegistry, device_id: str) -> None:
+    session = _require_session(registry, device_id)
+    # asr_start = 前端开口：先停旧 TTS 写轨/清队列，再开新 ASR turn。
+    session.barge_in()
+    await session.begin_turn()
+
+
+async def _handle_asr_end(registry: MediaSessionRegistry, device_id: str) -> None:
+    session = _require_session(registry, device_id)
+    await session.end_turn()
+
+
+async def handle_signal_message(conn: ConnectionContext, message: dict[str, Any]) -> None:
+    """A2 上行消息入口：只处理 C2 的 offer / ice / asr_start / asr_end。"""
+    device_id = conn.device_id
+    msg_type = message.get("type")
+    if device_id is None or not isinstance(msg_type, str):
+        return
+
+    _log_event(
+        "media signal received",
+        trace_id=conn.trace_id,
+        connection_id=device_id,
+        turn_id=None,
+        state="-",
+        reason=msg_type,
+        message_type=msg_type,
+    )
+
+    registry = _signaling_registry()
+    try:
+        if msg_type == "offer":
+            await _handle_offer(conn, registry, device_id, message)
+        elif msg_type == "ice":
+            await _handle_ice(registry, device_id, message)
+        elif msg_type == "asr_start":
+            await _handle_asr_start(registry, device_id)
+        elif msg_type == "asr_end":
+            await _handle_asr_end(registry, device_id)
+        else:
+            _deliver_error(device_id)
+    except MediaError as exc:
+        if msg_type == "offer":
+            await registry.close_session(device_id, reason="offer_failed")
+        logger.warning(
+            "media signal rejected",
+            extra={
+                "trace_id": conn.trace_id,
+                "connection_id": device_id,
+                "reason": msg_type,
+                "error_type": type(exc).__name__,
+            },
+        )
+        _deliver_error(device_id)
+    except Exception as exc:
+        # 信令边界必须兜底，不能让 A2 的 WS 端点因单条消息异常退出。
+        if msg_type == "offer":
+            await registry.close_session(device_id, reason="handler_error")
+        logger.exception(
+            "media signal handler failed",
+            extra={
+                "trace_id": conn.trace_id,
+                "connection_id": device_id,
+                "reason": msg_type,
+                "error_type": type(exc).__name__,
+            },
+        )
+        _deliver_error(device_id)
+
+
 __all__ = [
     "ASR_FRAME_BYTES",
     "ASR_FRAME_MS",
@@ -1664,5 +1870,8 @@ __all__ = [
     "PcmFrame",
     "PcmFramer",
     "PreRollBuffer",
+    "handle_signal_message",
+    "install_signaling_handler",
+    "uninstall_signaling_handler",
     "validate_downlink_pcm",
 ]
