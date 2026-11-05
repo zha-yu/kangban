@@ -110,3 +110,4 @@ spikes/**/output/
 pytest-of-*/
 tts-spike-*/
 .probe/
+seeds/
