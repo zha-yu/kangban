@@ -92,8 +92,10 @@ class TTSUnavailable(Exception):
 def mock_duration_seconds(text: str) -> float:
     """Mock 时长规则：``max(0.4s, 0.06s × 字数)``（计划 T1.3 钉死，不要自己改系数）。
 
-    字数按 `strip()` 后的字符数算：全角标点与空格不计入「要读出来的字」。空串仍然给 0.4s，
-    保证 `synthesize()` **永不返回空字节** —— A3 的下行写轨拿到空 buffer 会直接把轨写坏。
+    字数按 `strip()` 后的字符数算：只剔除**首尾**空白；句子中间的标点（`，` `。` 等）
+    **仍然计入**，这是刻意的（标点本来就占语气停顿）。别按「标点不计」去推算时长。
+    空串仍然给 0.4s，保证 `synthesize()` **永不返回空字节** —— A3 的下行写轨拿到空 buffer
+    会直接把轨写坏。
     """
     return max(MOCK_MIN_DURATION_S, MOCK_SECONDS_PER_CHAR * len(text.strip()))
 
