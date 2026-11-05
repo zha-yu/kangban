@@ -18,7 +18,8 @@
 | --- | --- | --- | --- |
 | [task-03-库与模型基座.md](./task-03-库与模型基座.md) | Day 2 身份体系 5 张表 + db 注入 + 0002 迁移 + conftest（含 0003 修正 0001 CHECK 命名） | 已冻结 | 2026-11-04 |
 | `task-04-鉴权内核.md` | task-4 鉴权内核的目标、拆解、实现步骤、风险与验收标准（T1–T3、T4a 判定层、T4b-1 人员/工牌接线、T4b-2 设备回查已完成；剩 T5 测试收口与 T6 人审） | 进行中 | 2026-11-04 |
-| `task-05-登录与凭证接口.md` | task-5 登录与凭证接口执行计划：四个端点（POST /api/sessions、POST /api/sessions/refresh、GET /api/sessions/current、POST /api/device-sessions）+ auth_service 唯一写库层 + 11 条集成测试（6 大验收全覆盖） | 已冻结 | 2026-11-04 |
+| [task-05-登录与凭证接口.md](./task-05-登录与凭证接口.md) | task-5 登录与凭证接口执行计划：四个端点（POST /api/sessions、POST /api/sessions/refresh、GET /api/sessions/current、POST /api/device-sessions）+ auth_service 唯一写库层 + 11 条集成测试（6 大验收全覆盖） | 已冻结 | 2026-11-04 |
+| [task-06-长者CRUD与设备绑定.md](./task-06-长者CRUD与设备绑定.md) | Task 6 长者档案 CRUD、设备绑定/解绑、候选长者与范围过滤（E5–E11，T01–T15） | 已冻结 | 2026-11-04 |
 
 ## 状态取值
 
