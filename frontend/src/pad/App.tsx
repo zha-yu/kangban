@@ -1,8 +1,11 @@
 import { useState } from "react";
 import type { PadStatus } from "./types";
 import type { SubtitleSource } from "./components/BigSubtitle";
+import type { DeviceSession } from "./session";
+import { sessionValid, clearSession } from "./session";
 import { StatusBar } from "./components/StatusBar";
 import { BigSubtitle } from "./components/BigSubtitle";
+import { LoginPage } from "./pages/LoginPage";
 import "./index.css";
 
 interface SubtitleState {
@@ -11,7 +14,7 @@ interface SubtitleState {
 }
 
 /** 步骤 3（T-A）骨架壳；自检控制面板在步骤 8/9 接真信令后移除 */
-export function App() {
+function MainScreen({ onLogout }: { onLogout: () => void }) {
   const [status, setStatus] = useState<PadStatus>("connecting");
   const [subtitle, setSubtitle] = useState<SubtitleState>({
     text: "",
@@ -34,9 +37,15 @@ export function App() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* 顶栏：状态条（1920×1080 布局，左侧安全边距） */}
-      <header className="flex items-center px-12 pt-8">
+      {/* 顶栏：状态条（1920×1080 布局，左侧安全边距）+ 退出（自检用） */}
+      <header className="flex items-center justify-between px-12 pt-8">
         <StatusBar status={status} />
+        <button
+          onClick={onLogout}
+          className="rounded-xl bg-slate-800 px-4 py-2 text-xl text-slate-400 active:bg-slate-700"
+        >
+          退出登录
+        </button>
       </header>
 
       {/* 中部：3D 数字人区（Day 4 接 three-vrm；加载失败/超 5s 切静态头像，不白屏）。
@@ -56,7 +65,7 @@ export function App() {
       </footer>
 
       {/* 自检控制面板（临时）：步骤 8 接真信令后移除 */}
-      <section className="fixed right-8 top-8 flex flex-col gap-2 rounded-2xl bg-slate-900/80 p-4">
+      <section className="fixed right-8 top-24 flex flex-col gap-2 rounded-2xl bg-slate-900/80 p-4">
         <p className="text-lg text-slate-400">自检控制（临时）</p>
         <div className="flex flex-wrap gap-2">
           {statuses.map((s) => (
@@ -83,4 +92,21 @@ export function App() {
       </section>
     </div>
   );
+}
+
+export function App() {
+  // 会话本体存 sessionStorage（session.ts）；组件只持有登录态
+  const [loggedIn, setLoggedIn] = useState(() => sessionValid());
+
+  function handleLoggedIn(_s: DeviceSession) {
+    setLoggedIn(true);
+  }
+
+  function handleLogout() {
+    clearSession();
+    setLoggedIn(false);
+  }
+
+  if (!loggedIn) return <LoginPage onLoggedIn={handleLoggedIn} />;
+  return <MainScreen onLogout={handleLogout} />;
 }
