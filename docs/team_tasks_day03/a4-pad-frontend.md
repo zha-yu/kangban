@@ -17,7 +17,7 @@
 ## 交付物
 
 1. MPA 骨架：pad 入口、1920×1080 布局、大字幕组件、状态条（正在听/正在想/正在说）
-2. 登录页：device_id + device_secret 表单 → `POST /api/device-sessions`（E4）；错误映射（404 重输/403 停用/429 倒计时）；token 存 sessionStorage；成功跳主界面
+2. 登录页：device_id + device_secret 表单 → `POST /api/device-sessions`（E4）；错误映射（**401 统一口径**：设备不存在/密钥不匹配/已锁定同码，防存在性探测——2026-11-05 主理人裁决；429 倒计时）；token 存 sessionStorage；成功跳主界面
 3. AudioWorklet 重采样：48k 采集 → 16k/60ms 帧 + 600ms preRoll 环形缓冲
 4. TEN-VAD WASM 接入（移植教师模块，参照 `spikes/reference/asr/src/asr/web/vad/`，WASM 资产 `spikes/reference/asr/funasr-runtime-resources/models/sherpa-onnx/sherpa-onnx-wasm-simd-v2.0.1-ten-vad/`）：speechstart → 发 `asr_start`（preRoll 随帧补发）；speechend（0.8s 静音）→ `asr_end`；**加载失败回落服务端 webrtcvad**（开关 + 降级标记）
 5. WebRTC 客户端：getUserMedia（AEC/NS/AGC 开启）→ offer → 经 C2 信令换 answer/ICE → 收音频轨播 TTS
@@ -27,7 +27,7 @@
 ## 验收标准
 
 - `pnpm --dir frontend build` 产出 MPA 多页且 pad 包不包含其他入口代码
-- 登录页真实换证成功（对 Day 2 后端）；三类错误提示正确
+- 登录页真实换证成功（对 Day 2 后端）；错误提示正确（401 统一口径 / 429 倒计时）
 - `three-vrm` 未出现在任何 `package.json` 与构建产物
 - 手工：localhost 页面麦克风权限申请 → VAD 切段 → 打断即时生效（V4 联调项）
 
@@ -47,3 +47,4 @@
 | --- | --- | --- |
 | v1.0 | 2026-11-05 | 初稿 |
 | v1.1 | 2026-11-05 | 教师参考模块入库 `spikes/reference/asr/`，TEN-VAD 参照与 WASM 资产路径落定 |
+| v1.2 | 2026-11-05 | 主理人裁决：登录错误映射统一 401 口径（设备不存在/密钥不匹配/已锁定同码，防存在性探测），废除原「404 重输/403 停用」两行；依据 E4 实测（错密钥与未知设备均 401）与接口契约文档 E4 行；同步修订 adhoc-20261105 §2.4 |
