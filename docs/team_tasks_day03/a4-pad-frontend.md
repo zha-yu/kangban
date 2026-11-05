@@ -41,6 +41,10 @@
 - 降级模式：WS/WebRTC 建连失败 → 按 C3（A5）走 REST 整段上传
 - 大字幕文本来源：C2 的 `tts_text`
 
+## 实现留痕（偏离说明与技术债）
+
+- **vad-assets 双份存储（技术债，待 Day 4+ 部署定型时处置）**：TEN-VAD WASM 资产（~12.7MB，5 文件）在 `spikes/reference/asr/.../sherpa-onnx/`（原件）与 `frontend/public/vad-assets/`（前端可服务副本）各存一份。原因：Vite 只能从 `frontend/public/` 对外提供静态文件，够不着 spikes 目录；复制是零配置的可靠做法。代价：仓库体积 +12.7MB，原件更新需手动同步副本。备选去重方案：vite dev middleware + nginx `location /vad-assets/ alias` 指向 spikes。2026-11-05 主理人已知情，取「简单可靠」优先。
+
 ## 变更记录
 
 | 版本 | 日期 | 说明 |
@@ -48,3 +52,4 @@
 | v1.0 | 2026-11-05 | 初稿 |
 | v1.1 | 2026-11-05 | 教师参考模块入库 `spikes/reference/asr/`，TEN-VAD 参照与 WASM 资产路径落定 |
 | v1.2 | 2026-11-05 | 主理人裁决：登录错误映射统一 401 口径（设备不存在/密钥不匹配/已锁定同码，防存在性探测），废除原「404 重输/403 停用」两行；依据 E4 实测（错密钥与未知设备均 401）与接口契约文档 E4 行；同步修订 adhoc-20261105 §2.4 |
+| v1.3 | 2026-11-05 | 新增「实现留痕」节：登记 vad-assets 双份存储技术债（spikes 原件 + frontend/public 副本，~12.7MB），原因与备选去重方案留档，主理人已知情 |
