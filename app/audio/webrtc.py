@@ -1,17 +1,19 @@
-"""A3 · WebRTC 媒体层骨架（Day 3 M1/M2 的无依赖部分）。
+"""A3 · WebRTC 媒体层（Day 3 M1–M5 代码层）。
 
-本文件当前刻意**只实现不依赖 C1/C2 的骨架**：
+已实现：
 
 - `MediaConfig`：只读 `app.core.config.Settings` 的真实字段，构造 aiortc ICE 配置；
-- `MediaState` / `MediaFailureReason` / 媒体层异常：给后续 M3–M5 复用；
+- `MediaState` / `MediaFailureReason` / 媒体层异常；
 - `MediaSession` + `MediaSessionRegistry`：`connection_id` 级 registry、running loop 捕获、
   任务登记、幂等关闭、`active_sessions` / `pending_tasks` 归零；
-- 音频纯工具：PyAV 有状态重采样、20 ms 规范帧、60/30 ms 双缓冲、600 ms preRoll、
-  TTS 下行 PCM 的格式校验。
+- `handle_offer` / `add_ice_candidate`：offer/answer、ICE 缓存与添加（兼容 C2 的
+  `RTCIceCandidate` JSON 字符串和原始 SDP candidate）、ICE 超时看门狗与失败回调；
+- `begin_turn` / `end_turn`：600 ms preRoll、60 ms ASR 帧、A1 `ASRProvider.stream()`；
+- `enqueue_tts_pcm` / `barge_in`：TTS 16→48 kHz 写轨、有界队列、播放代际；
+- 音频纯工具：PyAV 有状态重采样、20 ms 规范帧、60/30 ms 双缓冲。
 
-**尚未实现（等 C1/C2 冻结后再接）**：`handle_offer`、`begin_turn` / `end_turn`、
-`enqueue_tts_pcm`、`barge_in` 等公开接口，以及任何 `ASRProvider` / `ASREvent` / WS 消息类型。
-本文件不 import `signaling.py` / `asr.py`，避免把猜测接口写成既成事实。
+**尚未接**：A2 的 `/ws/signal` 实际路由、A5 的服务端 VAD 判定回调、真实浏览器
+H1–H3 联调。本文件不直接发 WebSocket、不切 REST、不写业务回复。
 
 约束（与 A3 任务卡一致）：
 
@@ -26,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import uuid
 from collections import deque
@@ -205,6 +208,48 @@ def _is_loopback_ice_url(url: str) -> bool:
     """
     host = _ice_url_host(url)
     return not host or host in _LOOPBACK_ICE_HOSTS
+
+
+def _normalize_ice_candidate(
+    candidate: str,
+    sdp_mid: str | None,
+    sdp_mline_index: int | None,
+) -> tuple[str, str | None, int | None]:
+    """把 C2 的 candidate 归一化为 aiortc 需要的 SDP candidate + mid/index。
+
+    A4 发送的是 `JSON.stringify(RTCIceCandidate)`，C2 也把 `candidate` 定义为
+    ICE candidate JSON 字符串；A2 可能原样转发。这里同时兼容原始 SDP 字符串。
+    显式传入的 `sdp_mid` / `sdp_mline_index` 优先于 JSON 内字段。
+    """
+    raw = candidate.strip()
+    if not raw.startswith("{"):
+        return candidate, sdp_mid, sdp_mline_index
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return candidate, sdp_mid, sdp_mline_index
+    if not isinstance(payload, dict):
+        return candidate, sdp_mid, sdp_mline_index
+
+    value = payload.get("candidate")
+    if value is None:
+        normalized_candidate = ""
+    elif isinstance(value, str):
+        normalized_candidate = value
+    else:
+        return candidate, sdp_mid, sdp_mline_index
+
+    mid_value = payload.get("sdpMid")
+    if sdp_mid is None and isinstance(mid_value, str):
+        sdp_mid = mid_value
+    index_value = payload.get("sdpMLineIndex")
+    if (
+        sdp_mline_index is None
+        and isinstance(index_value, int)
+        and not isinstance(index_value, bool)
+    ):
+        sdp_mline_index = index_value
+    return normalized_candidate, sdp_mid, sdp_mline_index
 
 
 @dataclass(frozen=True, slots=True)
@@ -944,9 +989,15 @@ class MediaSession:
         sdp_mid: str | None = None,
         sdp_mline_index: int | None = None,
     ) -> None:
-        """A2 传入浏览器 ICE candidate；offer 前到达则缓存，重复 candidate 忽略。"""
+        """A2 传入浏览器 ICE candidate；兼容 C2 的 JSON 字符串与原始 SDP。
+
+        offer 前到达则缓存，重复 candidate 忽略。JSON 内字段只在显式参数为空时生效。
+        """
         self._ensure_loop()
         self._ensure_open()
+        candidate, sdp_mid, sdp_mline_index = _normalize_ice_candidate(
+            candidate, sdp_mid, sdp_mline_index
+        )
         pc = self._pc
         if pc is None or not self._offer_seen or pc.remoteDescription is None:
             key = (candidate, sdp_mid, sdp_mline_index)
