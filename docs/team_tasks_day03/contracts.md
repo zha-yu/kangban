@@ -174,7 +174,7 @@ Authorization: Bearer <device access_token>   # E4 签发；elder_id 不由客�
 | --- | --- | --- | --- |
 | C1 | A1 | 待确认 | 会上确认后拷入 app/audio/asr.py |
 | C2 | A2 | 待确认 | 会上确认后拷入 app/audio/signaling.py；设备会话 refresh 核对结论随卡登记 |
-| C3 | A5 | 待确认 | reply 形状依赖 TTS 决议（audio_url vs 直返 PCM），会上定夺 |
+| C3 | A5 | 已冻结 | reply 形状定稿为 audio_url（非直返 PCM），TTS 决议落定后实现；类型已拷入 app/api/audio.py |
 
 ## 变更记录
 

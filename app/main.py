@@ -12,17 +12,19 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app import __version__
+from app.api import audio as audio_api
 from app.api import auth as auth_api
 from app.api import devices, elders, health
 from app.api.schemas.auth import ErrorResponse
 from app.core.auth import (
     CredentialExpiredError,
     CredentialInvalidError,
+    CredentialMissingError,
     CredentialRevokedError,
 )
 from app.core.config import Settings, get_settings
@@ -79,6 +81,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(auth_api.router, prefix="/api")
     application.include_router(elders.router)
     application.include_router(devices.router)
+    application.include_router(audio_api.router)
 
     # ---------- 全局 exception handler（契约 §7） ----------
     # auth_service 层异常（双重保险：auth.py 路由已捕获，这里兜底）
@@ -130,6 +133,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ).model_dump(),
         )
 
+    @application.exception_handler(CredentialMissingError)
+    async def _handle_cred_missing(req: Request, exc: CredentialMissingError) -> JSONResponse:
+        return JSONResponse(
+            status_code=401,
+            content=ErrorResponse(
+                detail=str(exc), code="TOKEN_INVALID", trace_id=get_trace_id() or "-"
+            ).model_dump(),
+        )
+
     @application.exception_handler(CredentialExpiredError)
     async def _handle_cred_expired(req: Request, exc: CredentialExpiredError) -> JSONResponse:
         return JSONResponse(
@@ -154,6 +166,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             status_code=401,
             content=ErrorResponse(
                 detail="token has expired", code="TOKEN_EXPIRED", trace_id=get_trace_id() or "-"
+            ).model_dump(),
+        )
+
+    # 兜底：业务代码 raise HTTPException 也包成 ErrorResponse（契约 §7）
+    @application.exception_handler(HTTPException)
+    async def _handle_http_exception(req: Request, exc: HTTPException) -> JSONResponse:
+        code_map = {
+            400: "BAD_REQUEST",
+            401: "TOKEN_INVALID",
+            403: "ROLE_FORBIDDEN",
+            404: "NOT_FOUND",
+            413: "PAYLOAD_TOO_LARGE",
+            422: "VALIDATION_ERROR",
+            503: "SERVICE_UNAVAILABLE",
+        }
+        code = code_map.get(exc.status_code, f"HTTP_{exc.status_code}")
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=ErrorResponse(
+                detail=str(exc.detail),
+                code=code,
+                trace_id=get_trace_id() or "-",
             ).model_dump(),
         )
 
