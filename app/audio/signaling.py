@@ -24,15 +24,6 @@ A2 单元（docs/plans/task-a2-信令WS与鉴权.md）的四件事：**连接、
 
 from __future__ import annotations
 
-"""C2 · 信令 WS 消息表（冻结人 A2，消费方 A3/A4）。
-
-本文件当前只落 **消息类型**，不实现 `/ws/signal`、鉴权、心跳或断线清理；
-这些行为归 A2，A3 只消费消息语义（offer/answer/ice、asr_start/asr_end、关闭）。
-
-传输：`WS /ws/signal`，文本帧 JSON，每消息一个对象。
-方向：C→S 客户端发，S→C 服务端发。`token` 只进首帧 `auth`，不进 URL。
-"""
-
 import asyncio
 import contextlib
 import inspect
@@ -47,6 +38,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.audio.asr import ASREvent, ASREventKind
 from app.core.auth import (
     KIND_DEVICE,
     AuthError,
@@ -96,8 +88,10 @@ class AuthOkMsg(TypedDict):  # S→C
 
 class AuthFailMsg(TypedDict):
     """S→C，随后以 4401 关闭。"""
+
     type: Literal["auth_fail"]
     code: Literal["timeout", "invalid", "expired"]
+
 
 __all__ = [
     "AnswerMsg",
@@ -115,7 +109,6 @@ __all__ = [
     "PongMsg",
     "TtsTextMsg",
 ]
-    
 
 
 class OfferMsg(TypedDict):
@@ -273,22 +266,21 @@ def deliver(device_id: str, message: Mapping[str, Any]) -> bool:
     return True
 
 
-def deliver_asr_event(device_id: str, event: Any) -> bool:
+def deliver_asr_event(device_id: str, event: ASREvent) -> bool:
     """C1 `ASREvent` → C2 下行消息映射（A1/A3 消费）。
 
-    `event` 是 `app.audio.asr.ASREvent`（C1 冻结件）；C1 模块当前尚未落码（A1 域），
-    这里按契约结构鸭子读取（kind/result/error），C1 落码后由 A1 侧切正式 import。
+    C1 已冻结落地（`app/audio/asr.py`），正式 import 消费。
     `ERROR` 只映射固定脱敏话术，不透出 `ASRError.message` 内部细节。
     """
-    kind = getattr(event, "kind", None)
-    kind_value = str(getattr(kind, "value", kind))
-    result = getattr(event, "result", None)
-    text = getattr(result, "text", None)
-    if kind_value == "partial":
-        return deliver(device_id, {"type": "asr_partial", "text": text or ""})
-    if kind_value == "final":
-        return deliver(device_id, {"type": "asr_final", "text": text or ""})
-    if kind_value == "error":
+    if event.kind is ASREventKind.PARTIAL:
+        return deliver(
+            device_id, {"type": "asr_partial", "text": event.result.text if event.result else ""}
+        )
+    if event.kind is ASREventKind.FINAL:
+        return deliver(
+            device_id, {"type": "asr_final", "text": event.result.text if event.result else ""}
+        )
+    if event.kind is ASREventKind.ERROR:
         return deliver(
             device_id,
             {
@@ -553,4 +545,3 @@ async def signal_endpoint(
             reset_identity(identity_token)
         await _cleanup(conn)
         reset_trace_id(trace_token)
-

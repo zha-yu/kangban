@@ -18,9 +18,11 @@ from fastapi.responses import JSONResponse
 
 from app import __version__
 from app.api import auth as auth_api
+from app.api import audio as audio_api
 from app.api import devices, elders, health
 from app.api.schemas.auth import ErrorResponse
 from app.audio import signaling  # Day 3 T2：WS 信令路由（/ws/signal）
+from app.audio.webrtc import install_signaling_handler  # Day 3 T3：A3 媒体层接线
 from app.core.auth import (
     CredentialExpiredError,
     CredentialInvalidError,
@@ -81,7 +83,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(auth_api.router, prefix="/api")
     application.include_router(elders.router)
     application.include_router(devices.router)
+    application.include_router(audio_api.router)  # /api/audio 降级上传（C3，路由自带前缀）
     application.include_router(signaling.router)  # /ws/signal 无 /api 前缀（契约裁决 A-03）
+    install_signaling_handler()  # A3 注册 offer/ice/asr_start/asr_end 上行处理器
 
     # ---------- 全局 exception handler（契约 §7） ----------
     # auth_service 层异常（双重保险：auth.py 路由已捕获，这里兜底）
