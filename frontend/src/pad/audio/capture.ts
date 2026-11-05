@@ -52,7 +52,6 @@ export function onDeviceChange(cb: () => void): () => void {
 
 export class MicCapture {
   private ctx: AudioContext | null = null;
-  private stream: MediaStream | null = null;
   private node: AudioWorkletNode | null = null;
   private preRoll: Int16Array[] = [];
   private preRollHead = 0;
@@ -60,9 +59,15 @@ export class MicCapture {
   /** 每帧回调（16k PCM16，60ms/帧；数组所有权归调用方） */
   onFrame: ((pcm: Int16Array) => void) | null = null;
 
+  /** 当前麦克风流（供 WebRTC addTrack；未启动时为 null） */
+  get stream(): MediaStream | null {
+    return this.stream_ ?? null;
+  }
+  private stream_: MediaStream | null = null;
+
   async start(): Promise<void> {
     try {
-      this.stream = await navigator.mediaDevices.getUserMedia({
+      this.stream_ = await navigator.mediaDevices.getUserMedia({
         audio: audioConstraints(),
       });
     } catch (err) {
@@ -86,7 +91,7 @@ export class MicCapture {
       this.onFrame?.(pcm);
     };
 
-    this.ctx.createMediaStreamSource(this.stream).connect(this.node);
+    this.ctx.createMediaStreamSource(this.stream!).connect(this.node);
     // 不连 destination：避免麦克风回灌到扬声器
   }
 
@@ -106,8 +111,8 @@ export class MicCapture {
     this.node?.port.close();
     this.node?.disconnect();
     this.node = null;
-    this.stream?.getTracks().forEach((t) => t.stop());
-    this.stream = null;
+    this.stream_?.getTracks().forEach((t) => t.stop());
+    this.stream_ = null;
     await this.ctx?.close();
     this.ctx = null;
   }

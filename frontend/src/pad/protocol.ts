@@ -78,6 +78,13 @@ export interface AnswerMsg {
   sdp: string;
 }
 
+/** ICE 候选（C2 契约标注「双向」：服务端也会下发自己的候选） */
+export interface ServerIceMsg {
+  type: "ice";
+  /** ICE candidate JSON 字符串 */
+  candidate: string;
+}
+
 export interface PongMsg {
   type: "pong";
 }
@@ -111,6 +118,7 @@ export type ServerSignal =
   | AuthOkMsg
   | AuthFailMsg
   | AnswerMsg
+  | ServerIceMsg
   | PongMsg
   | AsrPartialMsg
   | AsrFinalMsg
@@ -123,6 +131,7 @@ const SERVER_SIGNAL_TYPES: readonly ServerSignalType[] = [
   "auth_ok",
   "auth_fail",
   "answer",
+  "ice",
   "pong",
   "asr_partial",
   "asr_final",

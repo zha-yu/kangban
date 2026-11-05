@@ -1,11 +1,12 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PadStatus } from "./types";
 import type { SubtitleSource } from "./components/BigSubtitle";
 import type { DeviceSession } from "./session";
-import { sessionValid, clearSession } from "./session";
+import { sessionValid, loadSession, clearSession } from "./session";
 import { StatusBar } from "./components/StatusBar";
 import { BigSubtitle } from "./components/BigSubtitle";
 import { LoginPage } from "./pages/LoginPage";
+import { RealtimeClient } from "./realtime";
 import "./index.css";
 
 interface SubtitleState {
@@ -13,30 +14,37 @@ interface SubtitleState {
   source: SubtitleSource;
 }
 
-/** 步骤 3（T-A）骨架壳；自检控制面板在步骤 8/9 接真信令后移除 */
+/** 主界面：接真链路（WS 信令 + 麦克风 + VAD + WebRTC），步骤 8 起 */
 function MainScreen({ onLogout }: { onLogout: () => void }) {
   const [status, setStatus] = useState<PadStatus>("connecting");
   const [subtitle, setSubtitle] = useState<SubtitleState>({
     text: "",
     source: "final",
   });
+  const audioRef = useRef<HTMLAudioElement>(null);
 
-  const statuses: PadStatus[] = [
-    "listening",
-    "thinking",
-    "speaking",
-    "connecting",
-    "disconnected",
-  ];
-  const samples: SubtitleState[] = [
-    { text: "（ASR 中间结果）今天天气…", source: "partial" },
-    { text: "今天天气怎么样", source: "final" },
-    { text: "今天晴，22 到 28 度，适合出门走走。", source: "reply" },
-    { text: "网络不太稳定，正在重连…", source: "notice" },
-  ];
+  useEffect(() => {
+    const session = loadSession();
+    if (!session || !audioRef.current) return;
+    const client = new RealtimeClient({
+      onStatus: setStatus,
+      onSubtitle: (text, source) => setSubtitle({ text, source }),
+      onAuthFail: onLogout, // 会话过期/无效 → 回登录页（T-H 兜底口径）
+      audioEl: audioRef.current,
+    });
+    void client.start(session.access_token);
+    return () => {
+      void client.stop();
+    };
+    // onLogout 由调用方保证稳定；此处仅随挂载启停
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="flex h-full flex-col">
+      {/* TTS 下行播放（WebRTC 收轨） */}
+      <audio ref={audioRef} autoPlay />
+
       {/* 顶栏：状态条（1920×1080 布局，左侧安全边距）+ 退出（自检用） */}
       <header className="flex items-center justify-between px-12 pt-8">
         <StatusBar status={status} />
@@ -63,33 +71,6 @@ function MainScreen({ onLogout }: { onLogout: () => void }) {
       <footer className="pb-16">
         <BigSubtitle text={subtitle.text} source={subtitle.source} />
       </footer>
-
-      {/* 自检控制面板（临时）：步骤 8 接真信令后移除 */}
-      <section className="fixed right-8 top-24 flex flex-col gap-2 rounded-2xl bg-slate-900/80 p-4">
-        <p className="text-lg text-slate-400">自检控制（临时）</p>
-        <div className="flex flex-wrap gap-2">
-          {statuses.map((s) => (
-            <button
-              key={s}
-              onClick={() => setStatus(s)}
-              className="rounded-xl bg-slate-700 px-4 py-2 text-xl active:bg-slate-600"
-            >
-              {s}
-            </button>
-          ))}
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {samples.map((s, i) => (
-            <button
-              key={i}
-              onClick={() => setSubtitle(s)}
-              className="rounded-xl bg-slate-700 px-4 py-2 text-xl active:bg-slate-600"
-            >
-              字幕{s.source}
-            </button>
-          ))}
-        </div>
-      </section>
     </div>
   );
 }
