@@ -106,6 +106,12 @@ export class MicCapture {
     return ordered;
   }
 
+  /** 触发 worklet 把 preRoll 环形缓冲经 WebRTC 轨回放补发（A2 裁决：服务端不回溯轨道，
+   *  在 asr_start 发出后立即调用；主线程环形缓冲保留给 C3 降级 WAV 使用，两者独立） */
+  flushPreRollToTrack(): void {
+    this.node?.port.postMessage({ cmd: "flush_preRoll" });
+  }
+
   async stop(): Promise<void> {
     this.onFrame = null;
     this.node?.port.close();

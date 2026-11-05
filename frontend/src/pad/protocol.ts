@@ -41,7 +41,7 @@ export interface PingMsg {
   type: "ping";
 }
 
-/** TEN-VAD speechstart（preRoll 帧随其后补发） */
+/** TEN-VAD speechstart；preRoll 由 pad 经 WebRTC 轨回放补发（A2 裁决：服务端不回溯轨道） */
 export interface AsrStartMsg {
   type: "asr_start";
 }
@@ -101,7 +101,8 @@ export interface AsrFinalMsg {
   text: string;
 }
 
-/** 数字人回复文本（大字幕渲染；打断时前端立即停播） */
+/** 数字人回复文本（大字幕渲染；打断分两层已定案：前端 speechstart 同一刻立即停播，
+ *  服务端 A3 收到 asr_start 停写轨清缓冲——前端不等服务端） */
 export interface TtsTextMsg {
   type: "tts_text";
   text: string;

@@ -1,8 +1,12 @@
 /**
  * T-E 实时链路编排器：信令 WS + 麦克风采集 + 端侧 TEN-VAD + WebRTC 收发。
- * 主链路口径（adhoc §3/§4）：麦克风 16k 帧喂端侧 VAD；speechstart → 发 asr_start、
- * speechend → 发 asr_end；WebRTC 音频轨连续上行，音频（含 preRoll 回溯）由服务端
- * 从轨内取——客户端 preRoll 缓冲仅用于 C3 降级 WAV。⚠ 待 14:30 联调与 A2/A3 核对。
+ * 主链路口径（adhoc §3/§4 + A2 裁决 2026-11-05）：麦克风 16k 帧喂端侧 VAD；
+ * speechstart → 发 asr_start → worklet 立即把 preRoll 环形缓冲经轨回放补发
+ * （服务端不回溯轨道，asr_start 后服务端才开始消费识别流，句首 600ms 靠补发）；
+ * speechend → 发 asr_end；WebRTC 音频轨连续上行。主线程 preRoll 环形缓冲
+ * 仅用于 C3 降级 WAV，与轨上回放相互独立。
+ * 打断（A2 裁决）：前端本地 speechstart 同一刻立即停播，不等服务端；
+ * 服务端 A3 收到 asr_start 停写轨清缓冲（A3 媒体层未落码前联调不会中断）。
  * TEN-VAD 加载失败 → vadFallback：不发 asr_start/end，由服务端 webrtcvad 判定（字幕连续）。
  */
 import type { PadStatus } from "./types";
@@ -120,8 +124,8 @@ export class RealtimeClient {
     try {
       this.vad = await TenVad.load({
         onSpeechStart: () => {
-          // T-F 打断：TTS 在播时本地开口 → 立即停播 + 清回复字幕（契约：
-          // 无独立 interrupt 消息，asr_start 即打断信号，服务端以新会话感知）
+          // T-F 打断（A2 裁决定案）：TTS 在播时本地开口 → 立即停播 + 清回复字幕，
+          // 不等服务端；服务端 A3 收到 asr_start 停写轨清缓冲
           if (this.ttsPlaying) {
             this.ttsPlaying = false;
             this.cb.audioEl.pause();
@@ -129,6 +133,7 @@ export class RealtimeClient {
           }
           this.cb.onStatus("listening");
           this.socket?.send({ type: "asr_start" });
+          this.mic?.flushPreRollToTrack(); // asr_start 后立即轨上回放 600ms preRoll（句首保完整）
         },
         onSpeechEnd: () => {
           this.cb.onStatus("thinking");
