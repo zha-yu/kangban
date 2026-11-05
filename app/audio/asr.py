@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import ssl
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -110,7 +111,10 @@ FRAME_BYTES: Final[int] = (
 )
 
 # ---------------------------- FunASR 2pass 协议口径 ----------------------------
-FUNASR_DEFAULT_URL: Final[str] = "ws://localhost:7002"  # 7001 已给 laya，见计划 §9-1
+FUNASR_DEFAULT_URL: Final[str] = "wss://localhost:7002"  # 7001 已给 laya，见计划 §9-1
+# 为什么是 wss：FunASR runtime 镜像默认开 TLS 并内置自签证书（容器启动日志 "SSL is opened!"，
+# certfile ../../../ssl_key/server.crt）。用 ws:// 连它会直接被关掉，报 "did not receive a valid HTTP response"。
+# 自签证书要配 ASR_INSECURE=true 才连得上；正式环境换真证书并关掉该开关。
 FUNASR_HANDSHAKE: Final[dict[str, object]] = {
     "mode": "2pass",
     "chunk_size": [5, 10, 5],
@@ -118,8 +122,11 @@ FUNASR_HANDSHAKE: Final[dict[str, object]] = {
     "wav_format": "pcm",
     "itn": True,
 }
-# 收完音频后等 offline 终稿的总预算：对端不回必须自己收口，否则调用方会一直挂着。
-FUNASR_RECEIVE_TIMEOUT_S: Final[float] = 15.0
+# 收完音频后等 offline 终稿的**空闲**预算（每收到一帧就重置，不是整段总时长）。
+# 为什么是 45s：FunASR 的 2pass-offline 在 CPU 上要把整段重跑一遍，实测 5.55s 音频从
+# 最后一个 partial 到 final 隔了约 17s；按"总时长 15s"算会把正常终稿判成超时。
+# 之所以还要这个上限：对端真的不回帧时必须能自己收口，不能让调用方一直挂着。
+FUNASR_RECEIVE_TIMEOUT_S: Final[float] = 45.0
 FUNASR_CONNECT_TIMEOUT_S: Final[float] = 5.0
 FUNASR_END_OF_SPEECH: Final[dict[str, bool]] = {"is_speaking": False}
 FUNASR_END_OF_STREAM: Final[dict[str, bool]] = {"is_end": True}
@@ -286,6 +293,25 @@ async def _safe_close(connection: _WebSocket) -> None:
         await connection.close()
 
 
+def _ssl_context_for(url: str, insecure: bool) -> ssl.SSLContext | None:
+    """按 URL 方案决定 TLS 上下文。
+
+    - `ws://`  → 返回 None（websockets 会当明文处理，传上下文反而报错）
+    - `wss://` 且 `insecure=False` → 返回 None，交给 websockets 用系统信任链校验
+    - `wss://` 且 `insecure=True`  → 不校验证书与主机名
+
+    只对自签证书的本地 FunASR 镜像开这个口子；生产必须换真证书（见 config.asr_insecure 注释）。
+    """
+    if not url.lower().startswith("wss://"):
+        return None
+    if not insecure:
+        return None
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return context
+
+
 def _error_event(error: ASRError) -> ASREvent:
     return ASREvent(kind=ASREventKind.ERROR, result=None, error=error)
 
@@ -356,14 +382,23 @@ class FunASRWSProvider(ASRProvider):
         url: str = FUNASR_DEFAULT_URL,
         receive_timeout: float = FUNASR_RECEIVE_TIMEOUT_S,
         connect_timeout: float = FUNASR_CONNECT_TIMEOUT_S,
+        insecure: bool = False,
     ) -> None:
         self._url = url
         self._receive_timeout = receive_timeout
         self._connect_timeout = connect_timeout
+        # 只对 wss 生效：镜像自带自签证书，不跳过校验就握不上手（报 certificate verify failed）。
+        # ws 明文连接不受影响，传 True 也不会放宽任何东西。
+        self._insecure = insecure
 
     @property
     def url(self) -> str:
         return self._url
+
+    @property
+    def insecure(self) -> bool:
+        """是否跳过 wss 证书校验（只对自签证书的本地 FunASR 镜像有意义）。"""
+        return self._insecure
 
     async def stream(self, audio: AsyncIterator[bytes]) -> AsyncIterator[ASREvent]:
         connection = await self._connect()
@@ -382,8 +417,9 @@ class FunASRWSProvider(ASRProvider):
                 subprotocols=[cast("Subprotocol", "binary")],
                 ping_interval=None,  # 禁 ping 帧：开了会被 FunASR 判超时踢掉
                 open_timeout=self._connect_timeout,
+                ssl=_ssl_context_for(self._url, self._insecure),
             )
-        except (OSError, WebSocketException) as exc:  # TimeoutError 是 OSError 子类
+        except (OSError, WebSocketException, ssl.SSLError) as exc:  # TimeoutError 是 OSError 子类
             raise ASRUnavailable(f"FunASR 连接失败：{exc}") from exc
         return cast("_WebSocket", connection)
 
@@ -427,17 +463,27 @@ class FunASRWSProvider(ASRProvider):
     ) -> None:
         # 计时器挂在这条 task 里，而不是消费侧生成器里：生成器一 yield 就挂起，
         # 挂在它身上的 timeout 只会在调用方下一次 await 才炸，炸点会串到别人的帧上。
+        # 按帧重置（空闲超时）而不是整段预算：offline 重跑耗时随音频长度增长，
+        # 用总时长会在正常终稿前误杀（实测 5.55s 音频等了 17s 才出 final）。
+        frames = connection.__aiter__()
         try:
-            async with asyncio.timeout(self._receive_timeout):
-                async for raw in connection:
-                    event = _parse_funasr_frame(raw)
-                    await events.put(event)
-                    if event.kind is not ASREventKind.PARTIAL:
-                        return
-                raise ASRUnavailable("FunASR 在终稿前关闭了连接")
+            while True:
+                try:
+                    async with asyncio.timeout(self._receive_timeout):
+                        raw = await frames.__anext__()
+                except StopAsyncIteration:
+                    raise ASRUnavailable("FunASR 在终稿前关闭了连接") from None
+                event = _parse_funasr_frame(raw)
+                await events.put(event)
+                if event.kind is not ASREventKind.PARTIAL:
+                    return
         except TimeoutError:
             await events.put(
-                _error_event(ASRUnavailable(f"FunASR {self._receive_timeout:.1f}s 内没有等到终稿"))
+                _error_event(
+                    ASRUnavailable(
+                        f"FunASR {self._receive_timeout:.1f}s 内没有等到下一帧（含终稿）"
+                    )
+                )
             )
         except (ConnectionClosed, WebSocketException) as exc:
             await events.put(_error_event(ASRUnavailable(f"FunASR 连接异常断开：{exc}")))
@@ -511,7 +557,10 @@ def build_asr(settings: Settings | None = None) -> ASRProvider:
     config = settings if settings is not None else get_settings()
     kind = (config.asr_provider or "").strip().lower()
     if kind == "funasr":
-        return FunASRWSProvider(url=config.asr_base_url.strip() or FUNASR_DEFAULT_URL)
+        return FunASRWSProvider(
+            url=config.asr_base_url.strip() or FUNASR_DEFAULT_URL,
+            insecure=config.asr_insecure,
+        )
     if kind == "cloud":
         return CloudASRProvider(
             base_url=config.asr_base_url.strip(),

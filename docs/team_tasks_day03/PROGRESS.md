@@ -7,7 +7,7 @@
 
 | # | 任务卡 | 状态 | 文件 |
 | --- | --- | --- | --- |
-| 1 | A1 · ASR/TTS 适配层 | ✅ 已完成（N8 真链路未达成，见文末收口记录） | `docs/team_tasks_day03/a1-asr-tts.md` |
+| 1 | A1 · ASR/TTS 适配层 | ✅ 已完成 | `docs/team_tasks_day03/a1-asr-tts.md` |
 | 2 | A2 · 信令 WS 与鉴权 | 🚧 进行中 | `docs/team_tasks_day03/a2-signaling-ws.md` |
 | 3 | A3 · WebRTC 媒体层 | 🚧 进行中 | `docs/team_tasks_day03/a3-webrtc-media.md` |
 | 4 | A4 · pad 前端 | 🚧 进行中 | `docs/team_tasks_day03/a4-pad-frontend.md` |
@@ -17,8 +17,8 @@
 
 | 计划 | 状态 |
 | --- | --- |
-| `docs/plans/task-a1-ASR与TTS适配层.md` | ✅ 已完成（2026-11-05 N9 收口；N1–N7、N9 交付，**N8 真链路未达成**——funasr 镜像未拉全，见 §10 v1.2） |
-| `docs/plans/task-a1-DAG.md` | ✅ 已完成（2026-11-05；N1–N7、N9 完成，N8 未达成——镜像未拉全） |
+| `docs/plans/task-a1-ASR与TTS适配层.md` | ✅ 已完成（2026-11-05；N0–N9 全部达成，**N8 真链路已出字**，见 §10 v1.4） |
+| `docs/plans/task-a1-DAG.md` | ✅ 已完成（2026-11-05；N0–N9 全部达成，N8 已拿到真实出字） |
 
 ## 契约冻结：**C1 已冻结并交付；C2 / C3 待各自冻结人确认**
 
