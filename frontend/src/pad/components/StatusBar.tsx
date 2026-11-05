@@ -1,26 +1,26 @@
 import type { PadStatus } from "../types";
+import { StatusBadge, type BadgeTone } from "./StatusBadge";
 
+/** 状态条：三态走蓝 / 琥珀 / 绿，断开走灰，红色不进状态条（红色只留给急症与 SOS 事件） */
 const STATUS_CONFIG: Record<
   PadStatus,
-  { label: string; dot: string; bg: string }
+  { label: string; tone: BadgeTone; pulse: boolean }
 > = {
-  listening: { label: "正在听", dot: "bg-emerald-400", bg: "bg-emerald-500/15" },
-  thinking: { label: "正在想", dot: "bg-amber-400", bg: "bg-amber-500/15" },
-  speaking: { label: "正在说", dot: "bg-sky-400", bg: "bg-sky-500/15" },
-  connecting: { label: "连接中", dot: "bg-slate-400", bg: "bg-slate-500/15" },
-  disconnected: { label: "已断开", dot: "bg-red-400", bg: "bg-red-500/15" },
+  listening: { label: "正在听", tone: "info", pulse: true },
+  thinking: { label: "正在想", tone: "warning", pulse: true },
+  speaking: { label: "正在说", tone: "success", pulse: true },
+  connecting: { label: "连接中", tone: "info", pulse: true },
+  disconnected: { label: "已断开", tone: "neutral", pulse: false },
 };
 
 /** 状态条：PRD FR-UI-02 口径（触控区 ≥48px 正文 ≥20px），文案不自创交互 */
 export function StatusBar({ status }: { status: PadStatus }) {
   const cfg = STATUS_CONFIG[status];
   return (
-    <div
-      className={`flex items-center gap-3 rounded-2xl px-6 py-3 ${cfg.bg}`}
-      aria-live="polite"
-    >
-      <span className={`h-4 w-4 rounded-full ${cfg.dot} animate-pulse`} />
-      <span className="text-3xl font-semibold tracking-wide">{cfg.label}</span>
+    <div aria-live="polite">
+      <StatusBadge tone={cfg.tone} pulse={cfg.pulse} size="lg">
+        {cfg.label}
+      </StatusBadge>
     </div>
   );
 }
