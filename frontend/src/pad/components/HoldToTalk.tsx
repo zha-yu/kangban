@@ -96,8 +96,8 @@ export function HoldToTalk({ token, onSubtitle, onAuthFail }: Props) {
       onPointerLeave={() => holding && void end()}
       className={
         holding
-          ? "rounded-2xl bg-rose-500 px-16 py-8 text-5xl font-bold text-white active:bg-rose-600"
-          : "rounded-2xl bg-blue-600 px-16 py-8 text-5xl font-bold text-white active:bg-blue-700 disabled:opacity-50"
+          ? "rounded-2xl bg-brand-strong px-16 py-8 text-5xl font-bold text-ink-inverse"
+          : "rounded-2xl bg-brand px-16 py-8 text-5xl font-bold text-ink-inverse active:bg-brand-strong disabled:opacity-50"
       }
     >
       {busy ? "思考中…" : holding ? "松开 结束" : "按住 说话"}

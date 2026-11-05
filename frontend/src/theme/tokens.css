@@ -1,0 +1,53 @@
+/**
+ * 康伴设计 token —— pad / console / family 三端唯一真源
+ *
+ * 冻结口径（2026-11-05）：
+ *  - 主体：P2 藤紫 · 低饱和；全端浅底，无深色块，无深色模式
+ *  - 信号：标准语义色 700 级深字 + 100 级淡底徽标（已冻结，不随主体色变动）；
+ *          不做按钮底、不铺面
+ *  - 紫色与急症红 / 进行中蓝色相相邻：主色只承担交互、不铺面；
+ *    状态条固定在顶栏、主按钮在底部，靠位置与文字标签分离，不靠颜色区分
+ *  - Tailwind v4 @theme 同时输出 :root CSS 变量（供 MUI createTheme 读取）
+ *    与 bg / text / border 系列 utility（供 pad 端使用）
+ */
+
+/* static：三端共用的 :root 变量需完整输出，供 MUI createTheme 直接读取；
+   utility 仍按各端实际使用按需生成 */
+@theme static {
+  /* ---- 品牌：单一主色承担交互，其余安静 ---- */
+  --color-brand: #6b5b7b; /* 藤紫 · 主按钮 / 可点元素，白字对比 ≈6.2:1 */
+  --color-brand-strong: #5a4c69; /* 按下 / hover */
+  --color-brand-soft: #eeeaf1; /* 主色 8% 底：选中态、3D 舞台底 */
+  --color-brand-line: #d3c9dc; /* 主色描边：浅底上给 3D 形象收轮廓 */
+  --color-accent: #a79fae; /* 灰紫 · 辅助（暖灰赭配紫会发灰褐，故换中性灰紫） */
+  --color-accent-soft: #c4b9be; /* 灰藕 · 点缀，与紫同族，保留 */
+
+  /* ---- 中性面：同族浅色，靠 1px 线与留白分层 ---- */
+  --color-canvas: #f6f5f7; /* 页面底：中性微紫，避免暖味把紫推向灰褐 */
+  --color-surface: #ffffff; /* 卡片 */
+  --color-surface-sunken: #f0eff2; /* 抬升面 / 表头 */
+  --color-line: #e4e2e6; /* 分隔线、描边 */
+
+  /* ---- 文字：深字撑住长者端对比度，不跟着降饱和 ---- */
+  --color-ink: #2d302d; /* 正文 */
+  --color-ink-muted: #5f655f; /* 次级 */
+  --color-ink-subtle: #8a908a; /* 占位 / 禁用 / ASR 中间态 */
+  --color-ink-inverse: #ffffff; /* 主按钮反白 */
+
+  /* ---- 信号色：徽标淡底（100）+ 深字深图标（700）----
+     已冻结，不随主体色变动；色相与标准语义心智一致，只压明度；
+     淡底本身不承载识别，只负责"安静" */
+  --color-danger-soft: #fee2e2;
+  --color-danger-ink: #b91c1c; /* 急症 / 红色事件 / 表单错误 */
+  --color-warning-soft: #fef3c7;
+  --color-warning-ink: #b45309; /* 待复核 / 黄档 / 超时重试 */
+  --color-success-soft: #dcfce7;
+  --color-success-ink: #15803d; /* 正常 / 绿档 / 已服用 / 已解决 */
+  --color-info-soft: #dbeafe;
+  --color-info-ink: #1d4ed8; /* 进行中 / 连接中 / 信息 */
+  --color-neutral-soft: #f3f4f6;
+  --color-neutral-ink: #4b5563; /* 断开 / 降级 / 离线 / 禁用（红色不占） */
+
+  /* ---- 形状 ---- */
+  --radius-card: 1rem; /* 全端统一 rounded-2xl */
+}
