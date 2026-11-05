@@ -118,6 +118,10 @@ class MediaFailureReason(StrEnum):
     TASK_EXCEPTION = "task_exception"
 
 
+# A2 收到后负责记录/转发并调用 registry.close_session 移除会话；A3 不直接发 WS。
+MediaFailureCallback = Callable[[str, MediaFailureReason, str], Awaitable[None]]
+
+
 class MediaError(Exception):
     """媒体层错误基类：只表达「这次媒体操作被拒」，不构造 HTTP/WS 响应。"""
 
@@ -609,9 +613,9 @@ async def _asr_frame_iterator(queue: asyncio.Queue[bytes | None]) -> AsyncIterat
 class MediaSession:
     """一个 `connection_id` 的媒体会话。
 
-    已接：running loop 捕获、PC 创建、offer/answer、ICE candidate 缓存/添加、收轨重采样
-    分帧、600 ms preRoll、`begin_turn`/`end_turn`、ASR 事件回调、TTS 16→48 kHz 写轨、
-    `barge_in` 播放代际、幂等关闭与资源观测。
+    已接：running loop 捕获、PC 创建、offer/answer、ICE candidate 缓存/添加、ICE 超时
+    看门狗与失败回调、收轨重采样分帧、600 ms preRoll、`begin_turn`/`end_turn`、ASR 事件
+    回调、TTS 16→48 kHz 写轨、`barge_in` 播放代际、幂等关闭与资源观测。
     未接：真实浏览器/A2 WS 联调、A5 VAD 判定回调；H1/H2/H3 仍待联调。
     """
 
@@ -623,6 +627,7 @@ class MediaSession:
         *,
         asr_provider: ASRProvider | None = None,
         on_asr_event: AsrEventCallback | None = None,
+        on_media_failed: MediaFailureCallback | None = None,
     ) -> None:
         if not connection_id:
             raise ValueError("connection_id must not be empty")
@@ -641,6 +646,9 @@ class MediaSession:
         self._tasks: set[asyncio.Task[None]] = set()
         self._asr_provider = asr_provider
         self._on_asr_event = on_asr_event
+        self._on_media_failed = on_media_failed
+        self._ice_timeout_task: asyncio.Task[None] | None = None
+        self._failure_close_task: asyncio.Task[None] | None = None
         self._pre_roll = PreRollBuffer()
         self._splitter = DualFrameSplitter()
         self._normalizer = AudioNormalizer()
@@ -736,15 +744,39 @@ class MediaSession:
 
         @pc.on("connectionstatechange")
         async def _on_connection_state_change() -> None:
-            self._sync_connection_state(pc.connectionState)
+            await self._sync_connection_state(pc.connectionState)
 
-    def _sync_connection_state(self, connection_state: str) -> None:
+    async def _sync_connection_state(self, connection_state: str) -> None:
+        if self._state in (MediaState.CLOSING, MediaState.CLOSED):
+            # 关闭过程里 aiortc 还会发 disconnected/closed，不能再起 watchdog。
+            _log_event(
+                "peer connection state changed",
+                trace_id=self.trace_id,
+                connection_id=self.connection_id,
+                turn_id=self._turn_id,
+                state=self._state.value,
+                reason="connection_state",
+                connection_state=connection_state,
+            )
+            return
         if connection_state == "connected":
             self._state = MediaState.CONNECTED
+            self._cancel_ice_watchdog()
+        elif connection_state == "disconnected":
+            # 先降为 CONNECTING：断线重连计时未恢复前，watchdog 必须能判失败。
+            self._state = MediaState.CONNECTING
+            self._start_ice_watchdog("disconnected")
         elif connection_state == "failed":
-            self._state = MediaState.FAILED
-        # 不把 "closed" 直接写成 CLOSED：aiortc 可能自行关闭连接，A2 仍需调用
-        # close 才能取消任务/清缓冲；close 自己负责把状态落到 CLOSED。
+            await self._fail_media(MediaFailureReason.ICE_FAILED, "connection_failed")
+            return
+        elif connection_state == "closed" and self._state not in (
+            MediaState.CLOSING,
+            MediaState.CLOSED,
+        ):
+            await self._fail_media(MediaFailureReason.ICE_FAILED, "connection_closed")
+            return
+        # 不把 "closed" 直接写成 CLOSED：A2 仍需调用 close 才能取消任务/清缓冲；
+        # close 自己负责把状态落到 CLOSED。
         _log_event(
             "peer connection state changed",
             trace_id=self.trace_id,
@@ -754,6 +786,95 @@ class MediaSession:
             reason="connection_state",
             connection_state=connection_state,
         )
+
+    def _start_ice_watchdog(self, phase: str) -> None:
+        """启动/重启 ICE 看门狗；connected 后取消，超时→FAILED→自动 close。"""
+        self._cancel_ice_watchdog()
+        if self._state in (MediaState.CLOSED, MediaState.FAILED):
+            return
+        if self._state is MediaState.CONNECTED:
+            return
+        self._ice_timeout_task = self.spawn(self._ice_watchdog(phase))
+
+    async def _ice_watchdog(self, phase: str) -> None:
+        try:
+            await asyncio.sleep(self.config.ice_timeout_seconds)
+        except asyncio.CancelledError:
+            raise
+        if self._state is MediaState.CONNECTED:
+            return
+        await self._fail_media(MediaFailureReason.ICE_TIMEOUT, f"{phase}_timeout")
+
+    def _cancel_ice_watchdog(self) -> None:
+        task = self._ice_timeout_task
+        self._ice_timeout_task = None
+        if task is None or task.done():
+            return
+        # watchdog 自身触发失败时不能 cancel 自己，否则 close 的 gather 会自锁。
+        if task is not asyncio.current_task():
+            task.cancel()
+
+    async def _fail_media(self, reason: MediaFailureReason, detail: str) -> None:
+        """结构化失败：FAILED → 回调 A2 → 调度一次 detached close。"""
+        if self._state in (MediaState.CLOSING, MediaState.CLOSED, MediaState.FAILED):
+            return
+        self._state = MediaState.FAILED
+        self._cancel_ice_watchdog()
+        # 当前失败任务不再登记：A2 可能在回调里 close，本任务不能被 close 取消。
+        current = asyncio.current_task()
+        if current is not None:
+            self._tasks.discard(current)
+        _log_event(
+            "media failure",
+            trace_id=self.trace_id,
+            connection_id=self.connection_id,
+            turn_id=self._turn_id,
+            state=self._state.value,
+            reason=reason.value,
+            detail=detail,
+        )
+        await self._notify_failure(reason, detail)
+        self._schedule_failure_close(reason.value)
+
+    async def _notify_failure(self, reason: MediaFailureReason, detail: str) -> None:
+        callback = self._on_media_failed
+        if callback is None:
+            return
+        try:
+            await callback(self.connection_id, reason, detail)
+        except Exception as exc:
+            _log_event(
+                "media failure callback failed",
+                trace_id=self.trace_id,
+                connection_id=self.connection_id,
+                turn_id=self._turn_id,
+                state=self._state.value,
+                reason="callback_error",
+                error_type=type(exc).__name__,
+            )
+
+    def _schedule_failure_close(self, reason: str) -> None:
+        if self._failure_close_task is not None and not self._failure_close_task.done():
+            return
+
+        async def _close_after_failure() -> None:
+            try:
+                await self.close(reason=reason)
+            except Exception as exc:
+                logger.warning(
+                    "media close after failure failed",
+                    extra={
+                        "trace_id": self.trace_id,
+                        "connection_id": self.connection_id,
+                        "turn_id": self._turn_id,
+                        "state": self._state.value,
+                        "reason": MediaFailureReason.CLOSED.value,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+
+        # 刻意不放进 _tasks：close() 会取消 _tasks，自等待会自锁。
+        self._failure_close_task = self._loop.create_task(_close_after_failure())
 
     async def handle_offer(self, sdp: str) -> str:
         """A2 传入浏览器 offer；返回 answer SDP。重复 offer 直接拒绝（D4）。"""
@@ -801,6 +922,7 @@ class MediaSession:
             raise MediaFormatError("answer creation failed") from exc
 
         self._state = MediaState.ANSWER_CREATED
+        self._start_ice_watchdog("connect")
         local = pc.localDescription
         if local is None:
             raise MediaStateError("answer SDP is not available")
@@ -1029,6 +1151,7 @@ class MediaSession:
                 queued_frames=queue.qsize(),
                 incoming_frames=len(frames),
             )
+            await self._notify_failure(MediaFailureReason.BACKPRESSURE, "playback_queue_full")
             raise MediaBackpressureError("TTS playback queue is full")
 
         for frame in frames:
@@ -1125,6 +1248,7 @@ class MediaSession:
                 reason=MediaFailureReason.TASK_EXCEPTION.value,
                 error_type=type(exc).__name__,
             )
+            await self._notify_failure(MediaFailureReason.TASK_EXCEPTION, "asr_task_error")
         finally:
             _log_event(
                 "asr turn finished",
@@ -1193,6 +1317,7 @@ class MediaSession:
                 state=self._state.value,
                 reason=MediaFailureReason.TRACK_ENDED.value,
             )
+            await self._fail_media(MediaFailureReason.TRACK_ENDED, "audio_track_ended")
         except asyncio.CancelledError:
             raise
         except MediaFormatError as exc:
@@ -1205,6 +1330,7 @@ class MediaSession:
                 reason=MediaFailureReason.FORMAT_ERROR.value,
                 error_type=type(exc).__name__,
             )
+            await self._notify_failure(MediaFailureReason.FORMAT_ERROR, "audio_format_error")
         except Exception as exc:
             _log_event(
                 "audio track failed",
@@ -1215,6 +1341,7 @@ class MediaSession:
                 reason=MediaFailureReason.TASK_EXCEPTION.value,
                 error_type=type(exc).__name__,
             )
+            await self._notify_failure(MediaFailureReason.TASK_EXCEPTION, "audio_track_task_error")
 
     def _process_uplink_frame(self, frame: av.AudioFrame) -> None:
         for canonical in self._normalizer.feed(frame):
@@ -1270,6 +1397,7 @@ class MediaSession:
             return
 
         self._state = MediaState.CLOSING
+        self._cancel_ice_watchdog()
         _log_event(
             "media session closing",
             trace_id=self.trace_id,
@@ -1386,6 +1514,7 @@ class MediaSessionRegistry:
         config: MediaConfig | None = None,
         asr_provider: ASRProvider | None = None,
         on_asr_event: AsrEventCallback | None = None,
+        on_media_failed: MediaFailureCallback | None = None,
     ) -> MediaSession:
         """建立会话占位；不创建 PC、不做鉴权、不解析 WS。"""
         self._ensure_loop()
@@ -1399,6 +1528,7 @@ class MediaSessionRegistry:
             media_config,
             asr_provider=asr_provider,
             on_asr_event=on_asr_event,
+            on_media_failed=on_media_failed,
         )
         self._sessions[connection_id] = session
         _log_event(
@@ -1472,6 +1602,7 @@ __all__ = [
     "MediaConfig",
     "MediaConfigError",
     "MediaError",
+    "MediaFailureCallback",
     "MediaFailureReason",
     "MediaFormatError",
     "MediaLoopMismatch",
