@@ -22,6 +22,7 @@ import contextlib
 import json
 import logging
 import socket
+import ssl
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -129,10 +130,12 @@ class FakeConnection:
 
     subprotocol = "binary"
 
-    def __init__(self, reply: list[str | bytes] | None = None) -> None:
+    def __init__(self, reply: list[str | bytes] | None = None, *, delay: float = 0.0) -> None:
         self.sent: list[str | bytes] = []
         self.closed = False
         self.reply = reply
+        # 每帧之间的间隔：用来验证「空闲超时按帧重置」而不是整段预算
+        self.delay = delay
         self._end_seen = asyncio.Event()
 
     def __aiter__(self) -> AsyncIterator[str | bytes]:
@@ -143,7 +146,9 @@ class FakeConnection:
             await asyncio.Event().wait()  # 永不回帧，只能靠 receive_timeout 收口
         else:
             await self._end_seen.wait()  # 吃完 is_end 再回帧，贴近真实时序
-            for message in self.reply:
+            for index, message in enumerate(self.reply):
+                if self.delay and index > 0:
+                    await asyncio.sleep(self.delay)
                 yield message
 
     async def send(self, message: str | bytes) -> None:
@@ -189,7 +194,16 @@ def test_build_asr_unknown_provider_falls_back_to_mock(
 def test_build_asr_funasr_defaults_to_local_7002() -> None:
     provider = build_asr(Settings(asr_provider="funasr", asr_base_url="   "))
     assert isinstance(provider, FunASRWSProvider)
-    assert provider.url == "ws://localhost:7002"  # 7001 是 laya 的口，别串
+    assert (
+        provider.url == "wss://localhost:7002"
+    )  # 7001 是 laya 的口，别串；镜像开 TLS，默认必须 wss
+    assert provider.insecure is False  # 默认不跳过证书校验，自签证书要显式开 ASR_INSECURE
+
+
+def test_build_asr_funasr_passes_insecure_from_settings() -> None:
+    provider = build_asr(Settings(asr_provider="funasr", asr_insecure=True))
+    assert isinstance(provider, FunASRWSProvider)
+    assert provider.insecure is True
 
 
 def test_build_asr_funasr_honours_configured_base_url() -> None:
@@ -443,6 +457,62 @@ async def test_funasr_connect_kwargs_pin_ping_and_subprotocol(
     assert [event.kind for event in events] == [ASREventKind.FINAL]
 
 
+# ------------------------------ TLS 上下文 ------------------------------
+def test_ssl_context_none_for_plain_ws() -> None:
+    # ws:// 明文：给 websockets 传 SSLContext 会直接报错，必须 None
+    assert asr._ssl_context_for("ws://funasr.test:7002", insecure=True) is None
+
+
+def test_ssl_context_defers_to_system_trust_by_default() -> None:
+    # 安全默认：不传上下文，由 websockets 用系统信任链校验
+    assert asr._ssl_context_for("wss://funasr.test:7002", insecure=False) is None
+
+
+def test_ssl_context_skips_verification_when_insecure() -> None:
+    context = asr._ssl_context_for("wss://funasr.test:7002", insecure=True)
+
+    assert context is not None
+    assert context.check_hostname is False
+    assert context.verify_mode == ssl.CERT_NONE
+
+
+async def test_funasr_insecure_wss_passes_lenient_ssl_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture: dict[str, object] = {}
+    connection = FakeConnection([json.dumps({"mode": "2pass-offline", "text": "好的"})])
+
+    async def fake_connect(uri: str, **kwargs: object) -> FakeConnection:
+        capture["kwargs"] = kwargs
+        return connection
+
+    monkeypatch.setattr(asr.websockets, "connect", fake_connect)
+    await _collect(FunASRWSProvider(url="wss://funasr.test:10095", insecure=True), chunks=2)
+
+    kwargs = capture["kwargs"]
+    assert isinstance(kwargs, dict)
+    context = kwargs["ssl"]
+    assert isinstance(context, ssl.SSLContext)
+    assert context.verify_mode == ssl.CERT_NONE
+
+
+async def test_funasr_secure_wss_uses_system_trust(monkeypatch: pytest.MonkeyPatch) -> None:
+    capture: dict[str, object] = {}
+    connection = FakeConnection([json.dumps({"mode": "2pass-offline", "text": "好的"})])
+
+    async def fake_connect(uri: str, **kwargs: object) -> FakeConnection:
+        capture["kwargs"] = kwargs
+        return connection
+
+    monkeypatch.setattr(asr.websockets, "connect", fake_connect)
+    await _collect(FunASRWSProvider(url="wss://funasr.test:10095"), chunks=2)
+
+    kwargs = capture["kwargs"]
+    assert isinstance(kwargs, dict)
+    # 不跳过校验时必须传 None（让库自己建带校验的上下文），而不是自建一个空上下文
+    assert kwargs["ssl"] is None
+
+
 async def test_funasr_receive_timeout_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     connection = FakeConnection(reply=None)  # 对端永不回帧
 
@@ -458,8 +528,38 @@ async def test_funasr_receive_timeout_is_unavailable(monkeypatch: pytest.MonkeyP
 
     assert [event.kind for event in events] == [ASREventKind.ERROR]
     assert isinstance(events[0].error, ASRUnavailable)
-    assert "没有等到终稿" in str(events[0].error)
+    # 文案刻意点明「下一帧」：超时是按帧重置的空闲预算，不是整段总时长
+    assert "没有等到下一帧" in str(events[0].error)
     assert elapsed >= 0.2  # 真的是等到点才收口，不是立刻放弃
+    assert connection.closed is True
+
+
+async def test_funasr_receive_timeout_resets_on_each_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 空闲超时的关键语义：只要还在出帧就一直续命，整段耗时超过 timeout 也不算超时
+    connection = FakeConnection(
+        [
+            json.dumps({"mode": "2pass-online", "text": "欢"}),
+            json.dumps({"mode": "2pass-online", "text": "欢迎"}),
+            json.dumps({"mode": "2pass-offline", "text": "欢迎"}),
+        ],
+        delay=0.15,
+    )
+
+    async def fake_connect(uri: str, **kwargs: object) -> FakeConnection:
+        return connection
+
+    monkeypatch.setattr(asr.websockets, "connect", fake_connect)
+    provider = FunASRWSProvider(url="ws://funasr.test:7002", receive_timeout=0.2)
+
+    started = time.monotonic()
+    events = await _collect(provider, chunks=1)
+    elapsed = time.monotonic() - started
+
+    kinds = [event.kind for event in events]
+    assert kinds == [ASREventKind.PARTIAL, ASREventKind.PARTIAL, ASREventKind.FINAL]
+    assert elapsed > 0.2  # 整段比 timeout 长，但每段间隔都短，所以不该被判超时
     assert connection.closed is True
 
 

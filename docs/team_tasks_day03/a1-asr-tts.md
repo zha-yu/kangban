@@ -1,6 +1,6 @@
 # A1 · ASR/TTS 适配层
 
-> 状态：进行中（验收缺 1 条：N8 FunASR 真链路未出字）　｜　版本：v1.2　｜　日期：2026-11-05
+> 状态：已完成　｜　版本：v1.3　｜　日期：2026-11-05
 > 关联：docs/team_tasks_day03/README.md（分工总览）
 > 上游依据：day-03 计划 T1（asr/tts 协议+工厂+置信度进 trace）｜adhoc 方案 §M1 侧链｜技术文档 Day 3 清单
 > 变更记录见文末
@@ -100,3 +100,25 @@
 本卡曾标为「已完成」，但验收第 3 条 **FunASR 连通 spike 真实出字** 从未达成（镜像两轮共 41 分钟未拉全）。按验收定义，3 条中缺 1 条不能算完成，状态已退回 **进行中（v1.2）**。
 
 这不是措辞问题：缺的正是「语音能不能真的变成文字」这一条，mock 与单测都无法替代。补齐前本卡不得标已完成。
+
+### N8 达成（2026-11-05 19:27）
+
+镜像拉完后，**经项目自己的 `build_asr()` + `ASRProvider.stream()`** 连真实 FunASR（`wss://silvermate-funasr:10095`，`ASR_INSECURE=true`），5.55 s wav（93 帧 × 60 ms）得到 **7 条 partial + 1 条 FINAL**：
+
+```
+[partial +15159 ms] 欢迎大
+...
+[final   +47024 ms] 欢迎大家来体验达摩院推出的语音识别模型。
+partials=7  probe_exit=0
+```
+
+**验收三条现在齐了**：pytest 全绿（audio 单点 81 passed / 带库全量 340 passed）✅ ｜ TTS 出 16k PCM ✅ ｜ FunASR 真链路出字 ✅。
+
+过程中修了两处适配器缺陷（均有回归用例，见计划 v1.4）：
+
+| # | 现象 | 根因 | 处理 |
+| --- | --- | --- | --- |
+| 1 | `ws://` 连不上，报 `did not receive a valid HTTP response` | 镜像**默认开 TLS**（不传 `--certfile` 也开），原判断「官方脚本注释掉＝不开 TLS」是错的 | 默认改 `wss://`，新增 `Settings.asr_insecure` + `_ssl_context_for()`，生产换真证书后关掉 |
+| 2 | 首轮真链路在 `+15043 ms` 报「没等到终稿」，其实 partial 一直在出 | `asyncio.timeout(15)` 包的是**整段接收循环**，而 2pass-offline 在 CPU 上要 17~30 s 重跑 | 改**按帧重置的空闲超时**、上限 45 s，文案改「N s 内没有等到下一帧（含终稿）」 |
+
+**给下游的偏差登记**：本地 CPU 基线首包 partial ≈ 15.2 s、final ≈ 47 s，**远超 PRD 的 300 ms 首包预算**——本地基线不承担该预算，云 API 才承担（口径不变，只登记偏差）。

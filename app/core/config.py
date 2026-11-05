@@ -92,6 +92,9 @@ class Settings(BaseSettings):
     asr_language: str = "zh-CN"
     asr_timeout_ms: int = 300
     asr_emit_confidence: bool = True
+    # FunASR runtime 镜像默认开 TLS 且内置自签证书（容器日志 "SSL is opened!"）。
+    # 置 true 才跳过证书校验；公网/正式环境应换真证书并把这里关掉。
+    asr_insecure: bool = False
 
     # ---------------------------- 语音合成 TTS ----------------------------
     tts_provider: str = ""

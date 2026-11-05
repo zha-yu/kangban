@@ -193,7 +193,14 @@ docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:a
 | 数据保留 | `AUDIO_RETENTION_HOURS` `SCHEDULER_TIMEZONE` | 原始音频默认 72h 自动清理 |
 | 前端构建期 | `VITE_API_BASE_URL` `VITE_PAD_WS_URL` `VITE_ENABLE_3D` `VITE_ENABLE_WEBRTC` | 以 `VITE_` 前缀暴露给浏览器 |
 
-**本地 ASR 基线（FunASR）**：**不新增变量**，复用现有 `ASR_*` 字段——`ASR_PROVIDER=funasr`、`ASR_BASE_URL=ws://localhost:7002`（宿主端口见下表 `funasr` 行，容器内 FunASR runtime 监听 10095）。`docker-compose.yml` 里的 funasr 服务默认**不开 TLS**（官方 `run_server_2pass.sh` 中 `--certfile`/`--keyfile` 同样被注释掉），所以用 `ws://`；若改成 wss，需同时给容器补 `--certfile`/`--keyfile` 并把地址改成 `wss://`。云 API 仍是主实现，FunASR 只作本地基线与降级备份（见 `docs/plans/task-a1-ASR与TTS适配层.md`）。
+**本地 ASR 基线（FunASR）**：**不新增地址类变量**，复用现有 `ASR_*` 字段——`ASR_PROVIDER=funasr`、`ASR_BASE_URL=wss://localhost:7002`、`ASR_INSECURE=true`（宿主端口见下表 `funasr` 行，容器内 FunASR runtime 监听 10095）。
+
+⚠️ **这个服务默认开 TLS，且用的是镜像内置自签证书**（容器启动日志固定打印 `SSL is opened!` + `certfile ../../../ssl_key/server.crt`）。所以：
+- 用 `ws://` 连会被直接掐断，报 `did not receive a valid HTTP response`——**必须用 `wss://`**；
+- 自签证书需要 `ASR_INSECURE=true` 才能握手成功；生产环境应换成真证书并把该开关置回 `false`；
+- 部分环境下 Docker 的端口发布（宿主 `7002` → 容器 `10095`）从宿主侧不可达，此时让调用方加入同一 compose 网络、直接用容器名访问 `wss://silvermate-funasr:10095`（实战验证用的就是这条路）。
+
+云 API 仍是主实现，FunASR 只作本地基线与降级备份（见 `docs/plans/task-a1-ASR与TTS适配层.md`）。
 
 ### 服务与端口
 
