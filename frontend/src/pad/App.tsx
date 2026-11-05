@@ -32,14 +32,14 @@ function MainScreen({ onLogout }: { onLogout: () => void }) {
     const client = new RealtimeClient({
       onStatus: setStatus,
       onSubtitle: (text, source) => setSubtitle({ text, source }),
-      onAuthFail: onLogout, // 会话过期/无效 → 回登录页（T-H 兜底口径）
+      onAuthFail: onLogout, // 会话过期/无效 → 回登录页（T-H 方案 A 定案）
       onNeedManualRetry: () => setNeedRetry(true), // 连续 5 次重连失败 → 出按钮
       audioEl: audioRef.current,
     });
     clientRef.current = client;
     void client.start(session.access_token);
 
-    // T-H 兜底口径（无 refresh 通道）：会话中途到期的主动守护——
+    // T-H 方案 A 定案（无 refresh 通道，过期回登录）：会话中途到期的主动守护——
     // 30s 周期 + 页面回前台时校验 expires_at，过期即清会话回登录页；
     // WS 4401/auth_fail 与 REST 401 由各自链路回调 onLogout 兜住
     const expiryGuard = setInterval(() => {
