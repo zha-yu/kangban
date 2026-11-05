@@ -3,11 +3,11 @@
 > ⚠️ **本文件由 `scripts/update_progress.py` 自动生成，不要手改**——改任务卡首部的 `> 状态：` 行，再跑一次脚本（或直接提交，pre-commit 钩子会自动刷新）。
 > 刻意不写生成时间与提交哈希：那两样每次提交都会变，会让看板变成噪音。提交历史看 `git log`。
 
-## 总览：**1 / 5** 张任务卡已收口
+## 总览：**0 / 5** 张任务卡已收口
 
 | # | 任务卡 | 状态 | 文件 |
 | --- | --- | --- | --- |
-| 1 | A1 · ASR/TTS 适配层 | ✅ 已完成（N8 真链路未达成，见文末收口记录） | `docs/team_tasks_day03/a1-asr-tts.md` |
+| 1 | A1 · ASR/TTS 适配层 | 🚧 进行中（验收缺 1 条：N8 FunASR 真链路未出字） | `docs/team_tasks_day03/a1-asr-tts.md` |
 | 2 | A2 · 信令 WS 与鉴权 | 🚧 进行中 | `docs/team_tasks_day03/a2-signaling-ws.md` |
 | 3 | A3 · WebRTC 媒体层 | 🚧 进行中 | `docs/team_tasks_day03/a3-webrtc-media.md` |
 | 4 | A4 · pad 前端 | 🚧 进行中 | `docs/team_tasks_day03/a4-pad-frontend.md` |
