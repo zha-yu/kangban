@@ -61,14 +61,14 @@ function MainScreen({ onLogout }: { onLogout: () => void }) {
   return (
     <div className="flex h-full flex-col">
       {/* TTS 下行播放（WebRTC 收轨） */}
-      <audio ref={audioRef} autoPlay />
+      <audio ref={audioRef} />
 
       {/* 顶栏：状态条（1920×1080 布局，左侧安全边距）+ 退出（自检用） */}
       <header className="flex items-center justify-between px-12 pt-8">
         <StatusBar status={status} />
         <button
           onClick={onLogout}
-          className="rounded-xl bg-slate-800 px-5 py-4 text-xl text-slate-400 active:bg-slate-700"
+          className="rounded-2xl border border-line bg-surface px-5 py-4 text-xl text-ink-muted active:bg-surface-sunken"
         >
           退出登录
         </button>
@@ -78,10 +78,10 @@ function MainScreen({ onLogout }: { onLogout: () => void }) {
           min-h-0 + min() 尺寸：1920×1080 为基线，小视口下先收缩本区，保证大字幕不被截断 */}
       <main className="flex min-h-0 flex-1 items-center justify-center">
         <div
-          className="flex items-center justify-center rounded-full bg-slate-800/60"
+          className="flex items-center justify-center rounded-full border border-brand-line bg-brand-soft"
           style={{ height: "min(560px, 48vh)", width: "min(560px, 48vh)" }}
         >
-          <span className="text-4xl text-slate-500">数字人占位</span>
+          <span className="text-4xl text-ink-muted">数字人占位</span>
         </div>
       </main>
 
@@ -95,7 +95,7 @@ function MainScreen({ onLogout }: { onLogout: () => void }) {
                 setNeedRetry(false);
                 clientRef.current?.retry();
               }}
-              className="rounded-2xl bg-amber-500 px-12 py-6 text-4xl font-bold text-white active:bg-amber-600"
+              className="rounded-2xl bg-brand px-12 py-6 text-4xl font-bold text-ink-inverse active:bg-brand-strong"
             >
               重新连接
             </button>

@@ -1,6 +1,8 @@
 @import "tailwindcss";
+@import "../theme/tokens.css";
 
-/* pad 基座：1920×1080 全屏演示（PRD §2.1），禁选中防长者误触拖蓝 */
+/* pad 基座：1920×1080 全屏演示（PRD §2.1），禁选中防长者误触拖蓝
+   全端浅底低饱和（A″ 月白青瓷）；无深色块、无深色模式 */
 html,
 body,
 #root {
@@ -14,6 +16,6 @@ body,
     "Microsoft YaHei",
     system-ui,
     sans-serif;
-  background: #0f172a;
-  color: #f8fafc;
+  background: var(--color-canvas);
+  color: var(--color-ink);
 }

@@ -70,33 +70,33 @@ export function LoginPage({ onLoggedIn }: LoginPageProps) {
       onSubmit={handleSubmit}
       className="mx-auto flex h-full w-[720px] flex-col justify-center gap-8"
     >
-      <h1 className="text-center text-6xl font-bold">康伴</h1>
-      <p className="text-center text-2xl text-slate-400">
+      <h1 className="text-center text-6xl font-bold text-brand">康伴</h1>
+      <p className="text-center text-2xl text-ink-muted">
         请输入设备编号与设备密钥登录
       </p>
 
       <label className="flex flex-col gap-2">
-        <span className="text-2xl">设备编号 device_id</span>
+        <span className="text-2xl">设备编号</span>
         <input
           value={deviceId}
           onChange={(e) => setDeviceId(e.target.value)}
           disabled={locked}
-          className="h-16 rounded-2xl bg-slate-800 px-6 text-3xl outline-none focus:ring-2 focus:ring-cyan-400 disabled:opacity-50"
+          className="h-16 rounded-2xl border border-line bg-surface px-6 text-3xl text-ink outline-none placeholder:text-ink-subtle focus:ring-2 focus:ring-brand disabled:opacity-50"
         />
       </label>
 
       <label className="flex flex-col gap-2">
-        <span className="text-2xl">设备密钥 device_secret</span>
+        <span className="text-2xl">设备密钥</span>
         <input
           value={deviceSecret}
           onChange={(e) => setDeviceSecret(e.target.value)}
           disabled={locked}
-          className="h-16 rounded-2xl bg-slate-800 px-6 text-3xl outline-none focus:ring-2 focus:ring-cyan-400 disabled:opacity-50"
+          className="h-16 rounded-2xl border border-line bg-surface px-6 text-3xl text-ink outline-none placeholder:text-ink-subtle focus:ring-2 focus:ring-brand disabled:opacity-50"
         />
       </label>
 
       {error && (
-        <p role="alert" className="text-2xl font-semibold text-amber-300">
+        <p role="alert" className="text-2xl font-semibold text-danger-ink">
           {loginErrorText(error)}
         </p>
       )}
@@ -104,13 +104,13 @@ export function LoginPage({ onLoggedIn }: LoginPageProps) {
       <button
         type="submit"
         disabled={submitting || locked}
-        className="h-20 rounded-2xl bg-cyan-500 text-3xl font-bold text-slate-900 active:bg-cyan-400 disabled:opacity-50"
+        className="h-20 rounded-2xl bg-brand text-3xl font-bold text-ink-inverse active:bg-brand-strong disabled:opacity-50"
       >
         {locked ? `请等待 ${countdown} 秒后重试` : submitting ? "登录中…" : "登录"}
       </button>
 
       {MOCK_ENABLED && (
-        <p className="text-center text-xl text-slate-500">
+        <p className="text-center text-xl text-ink-subtle">
           mock 模式：密钥输 401 / 429 触发对应错误，其余成功
         </p>
       )}
