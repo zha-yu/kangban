@@ -70,6 +70,7 @@ langfuse-data/
 # ---------- 6. 媒体与 3D 大文件（走 nginx 静态目录或 Git LFS，不进普通提交）----------
 assets/media/
 static/media/
+static/mock/
 *.vrm
 *.glb
 *.fbx
@@ -110,3 +111,4 @@ spikes/**/output/
 pytest-of-*/
 tts-spike-*/
 .probe/
+seeds/
