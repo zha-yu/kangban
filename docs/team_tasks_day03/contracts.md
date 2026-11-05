@@ -1,6 +1,6 @@
 # Day 3 模块间接口契约（代码级定义）
 
-> 状态：待契约会确认　｜　版本：v1.0　｜　日期：2026-11-05
+> 状态：C1 已冻结并交付；C2 / C3 待各自冻结人确认　｜　版本：v1.1　｜　日期：2026-11-05
 > 关联：docs/team_tasks_day03/README.md §3（契约清单与冻结人）
 > 上游依据：day-03 计划 v1.5 §2.3（ASR 契约与置信度口径）｜adhoc-20261105 方案 v1.3 M1–M3｜接口契约_身份与权限.md E4
 > 变更记录见文末
@@ -172,7 +172,7 @@ Authorization: Bearer <device access_token>   # E4 签发；elder_id 不由客�
 
 | 契约 | 冻结人 | 状态 | 备注 |
 | --- | --- | --- | --- |
-| C1 | A1 | 待确认 | 会上确认后拷入 app/audio/asr.py |
+| C1 | A1 | **已冻结**（2026-11-05 09:30 前） | 已逐字拷入 `app/audio/asr.py` 行 39–92 并随 `a4cb857` 提交；A2/A3/A5 用 `from app.audio import build_asr, build_tts, ASREvent, ASREventKind, ASRResult` 消费。消费约定见 `app/audio/__init__.py` 模块 docstring |
 | C2 | A2 | 待确认 | 会上确认后拷入 app/audio/signaling.py；设备会话 refresh 核对结论随卡登记 |
 | C3 | A5 | 已冻结 | reply 形状定稿为 audio_url（非直返 PCM），TTS 决议落定后实现；类型已拷入 app/api/audio.py |
 
@@ -181,3 +181,4 @@ Authorization: Bearer <device access_token>   # E4 签发；elder_id 不由客�
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-05 | 初稿：C1/C2/C3 代码级定义，待契约会确认 |
+| v1.1 | 2026-11-05 | C1 由 A1 冻结并落地（`app/audio/asr.py` 行 39–92，随 `a4cb857` 提交）；C2/C3 仍待各自冻结人确认 |
