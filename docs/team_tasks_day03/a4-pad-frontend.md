@@ -22,7 +22,7 @@
 4. TEN-VAD WASM 接入（移植教师模块，参照 `spikes/reference/asr/src/asr/web/vad/`，WASM 资产 `spikes/reference/asr/funasr-runtime-resources/models/sherpa-onnx/sherpa-onnx-wasm-simd-v2.0.1-ten-vad/`）：speechstart → 发 `asr_start`（preRoll 随帧补发）；speechend（0.8s 静音）→ `asr_end`；**加载失败回落服务端 webrtcvad**（开关 + 降级标记）
 5. WebRTC 客户端：getUserMedia（AEC/NS/AGC 开启）→ offer → 经 C2 信令换 answer/ICE → 收音频轨播 TTS
 6. 打断：检测到本地说话 → 停止 TTS 播放渲染，字幕切换
-7. 静默刷新/过期处理：按 A2 的设备会话 refresh 核对结论执行（无 refresh 通道则过期回登录页）
+7. 过期处理（A2 核对结论已出，见其 v1.1：**设备会话无 refresh 通道**）：收到 WS `auth_fail code=expired`（关闭码 4401）或 REST 401 → 用本机 device_code 重调 E4 `POST /api/device-sessions` 换新 token → 重连 WS，全程对长者无感、不弹窗；**仅当 E4 换证本身失败**（设备已被解绑/锁定）才回登录页并提示联系护工；**禁止调 E2 refresh**（设备 token 调它必失败）
 
 ## 验收标准
 
@@ -54,6 +54,7 @@
 | --- | --- | --- |
 | v1.0 | 2026-11-05 | 初稿 |
 | v1.1 | 2026-11-05 | 教师参考模块入库 `spikes/reference/asr/`，TEN-VAD 参照与 WASM 资产路径落定 |
+| v1.2 | 2026-11-05 | 同步 A2 核对结论（v1.1）：设备会话无 refresh 通道，交付物 7 过期处理精确化为「先重走 E4 无感换证 → 重连 WS；仅 E4 换证失败才回登录页」，并明确禁止调 E2 refresh |
 | v1.2 | 2026-11-05 | 主理人裁决：登录错误映射统一 401 口径（设备不存在/密钥不匹配/已锁定同码，防存在性探测），废除原「404 重输/403 停用」两行；依据 E4 实测（错密钥与未知设备均 401）与接口契约文档 E4 行；同步修订 adhoc-20261105 §2.4 |
 | v1.3 | 2026-11-05 | 新增「实现留痕」节：登记 vad-assets 双份存储技术债（spikes 原件 + frontend/public 副本，~12.7MB），原因与备选去重方案留档，主理人已知情 |
 | v1.4 | 2026-11-05 | T-H 落地留痕：A2 refresh 结论未出，A4 先按「无 refresh → 过期回登录」兜底口径实现（载入门控 + 30s/visibilitychange 守护 + 4401/401 回登录），待契约会结论对齐 |
