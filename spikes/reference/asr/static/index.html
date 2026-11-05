@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>康伴 · 语音通话</title>
+  <style>
+    :root {
+      --primary: #236455;
+      --primary-light: #2d7a66;
+      --primary-dark: #1a4a3f;
+      --accent: #6db79a;
+      --danger: #d9645a;
+      --warning: #e8c75a;
+      --bg: #f3f6f3;
+      --card: #ffffff;
+      --text: #193a36;
+      --text-secondary: #607971;
+      --border: #dce5dd;
+      --shadow: 0 4px 24px rgba(35, 100, 85, 0.08);
+      --shadow-hover: 0 8px 32px rgba(35, 100, 85, 0.15);
+      --radius: 20px;
+      --radius-sm: 12px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: Inter, "Microsoft YaHei", "PingFang SC", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ========== Header ========== */
+    header {
+      height: 72px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 5%;
+      background: rgba(250, 252, 249, 0.9);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 20px;
+      font-weight: 700;
+    }
+
+    .logo {
+      width: 44px;
+      height: 44px;
+      background: linear-gradient(135deg, var(--primary), var(--primary-light));
+      color: white;
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      box-shadow: 0 4px 12px rgba(35, 100, 85, 0.25);
+    }
+
+    .brand-sub {
+      font-weight: 400;
+      color: #8c9b90;
+      font-size: 13px;
+      margin-left: 4px;
+    }
+
+    .status-badge {
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      background: #e6eee7;
+      color: var(--text-secondary);
+      transition: all 0.3s;
+    }
+
+    .status-badge.online {
+      background: linear-gradient(135deg, var(--primary), var(--accent));
+      color: white;
+      box-shadow: 0 4px 12px rgba(35, 100, 85, 0.25);
+    }
+
+    .status-badge.in-call {
+      background: linear-gradient(135deg, var(--danger), #c94a40);
+      color: white;
+      box-shadow: 0 4px 12px rgba(217, 100, 90, 0.3);
+    }
+
+    /* ========== Main Layout ========== */
+    main {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 40px 24px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 480px;
+    }
+
+    /* ========== Cards ========== */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 32px;
+      box-shadow: var(--shadow);
+      transition: box-shadow 0.3s;
+    }
+
+    .card:hover {
+      box-shadow: var(--shadow-hover);
+    }
+
+    /* ========== Login Section ========== */
+    .login-section {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+
+    .login-section h1 {
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: 8px;
+      background: linear-gradient(135deg, var(--text), var(--primary));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .login-section p {
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+
+    .form-group {
+      margin-bottom: 20px;
+      text-align: left;
+    }
+
+    label {
+      display: block;
+      color: var(--text-secondary);
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 8px;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      padding: 14px 18px;
+      font: inherit;
+      font-size: 15px;
+      border-radius: var(--radius-sm);
+      border: 1.5px solid var(--border);
+      background: #fbfcfa;
+      transition: all 0.2s;
+    }
+
+    input[type="text"]:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(35, 100, 85, 0.1);
+    }
+
+    /* ========== Buttons ========== */
+    button {
+      font: inherit;
+      cursor: pointer;
+      border: 0;
+      border-radius: var(--radius-sm);
+      padding: 14px 24px;
+      font-size: 14px;
+      font-weight: 600;
+      transition: all 0.2s;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--primary), var(--primary-light));
+      color: white;
+      box-shadow: 0 4px 12px rgba(35, 100, 85, 0.25);
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(35, 100, 85, 0.35);
+    }
+
+    .btn-secondary {
+      background: #e6eee7;
+      color: var(--primary);
+    }
+
+    .btn-secondary:hover {
+      background: #d4e0d8;
+    }
+
+    .btn-danger {
+      background: linear-gradient(135deg, var(--danger), #c94a40);
+      color: white;
+      box-shadow: 0 4px 12px rgba(217, 100, 90, 0.25);
+    }
+
+    .btn-danger:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(217, 100, 90, 0.35);
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none !important;
+    }
+
+    .btn-block {
+      width: 100%;
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .btn-group button {
+      flex: 1;
+    }
+
+    /* ========== Call Section ========== */
+    .call-section {
+      display: none;
+    }
+
+    .call-section.active {
+      display: block;
+    }
+
+    .target-input {
+      display: flex;
+      gap: 12px;
+    }
+
+    .target-input input {
+      flex: 1;
+    }
+
+    /* ========== Ring Box (Incoming Call) ========== */
+    .ring-box {
+      display: none;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: var(--card);
+      border-radius: var(--radius);
+      padding: 40px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+      text-align: center;
+      z-index: 1000;
+      animation: ring-pop 0.3s ease-out;
+      border: 2px solid var(--primary);
+    }
+
+    @keyframes ring-pop {
+      0% { transform: translate(-50%, -50%) scale(0.8); opacity: 0; }
+      100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+    }
+
+    .ring-box.show {
+      display: block;
+    }
+
+    .ring-icon {
+      width: 80px;
+      height: 80px;
+      background: linear-gradient(135deg, var(--primary), var(--accent));
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 24px;
+      animation: ring-pulse 1.5s infinite;
+    }
+
+    @keyframes ring-pulse {
+      0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(35, 100, 85, 0.4); }
+      50% { transform: scale(1.05); box-shadow: 0 0 0 20px rgba(35, 100, 85, 0); }
+    }
+
+    .ring-icon svg {
+      width: 36px;
+      height: 36px;
+      stroke: white;
+    }
+
+    .ring-box h2 {
+      font-size: 20px;
+      margin-bottom: 8px;
+    }
+
+    .ring-box .caller-name {
+      color: var(--primary);
+      font-weight: 700;
+      font-size: 24px;
+      margin-bottom: 24px;
+    }
+
+    .ring-actions {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+    }
+
+    /* ========== In Call Overlay ========== */
+    .in-call-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(13, 42, 35, 0.95);
+      z-index: 999;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: white;
+    }
+
+    .in-call-overlay.show {
+      display: flex;
+    }
+
+    .call-avatar {
+      width: 120px;
+      height: 120px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--primary), var(--accent));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 48px;
+      font-weight: 700;
+      margin-bottom: 24px;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.05); }
+    }
+
+    .call-status {
+      font-size: 18px;
+      margin-bottom: 8px;
+      opacity: 0.9;
+    }
+
+    .call-timer {
+      font-size: 32px;
+      font-weight: 300;
+      font-variant-numeric: tabular-nums;
+      margin-bottom: 40px;
+    }
+
+    .call-actions {
+      display: flex;
+      gap: 24px;
+    }
+
+    .call-action-btn {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+    }
+
+    .call-action-btn svg {
+      width: 28px;
+      height: 28px;
+    }
+
+    .btn-hangup {
+      background: var(--danger);
+    }
+
+    .btn-mute {
+      background: rgba(255, 255, 255, 0.2);
+    }
+
+    .btn-mute.muted {
+      background: var(--warning);
+    }
+
+    /* ========== Audio Visualization ========== */
+    .audio-visual {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      margin-bottom: 32px;
+      height: 40px;
+    }
+
+    .audio-bar {
+      width: 4px;
+      background: var(--accent);
+      border-radius: 2px;
+      animation: audio-wave 1s infinite ease-in-out;
+    }
+
+    .audio-bar:nth-child(1) { animation-delay: 0s; height: 20px; }
+    .audio-bar:nth-child(2) { animation-delay: 0.1s; height: 30px; }
+    .audio-bar:nth-child(3) { animation-delay: 0.2s; height: 40px; }
+    .audio-bar:nth-child(4) { animation-delay: 0.3s; height: 30px; }
+    .audio-bar:nth-child(5) { animation-delay: 0.4s; height: 20px; }
+
+    @keyframes audio-wave {
+      0%, 100% { transform: scaleY(1); }
+      50% { transform: scaleY(0.5); }
+    }
+
+    /* ========== Hidden Elements ========== */
+    #remoteAudio {
+      display: none;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    /* ========== Responsive ========== */
+    @media (max-width: 480px) {
+      .card { padding: 24px; }
+      .ring-box { padding: 24px; width: 90%; }
+      .ring-actions { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div class="logo">伴</div>
+      <span>康伴</span>
+      <span class="brand-sub">/ 语音通话</span>
+    </div>
+    <div class="status-badge" id="statusBadge">未登录</div>
+  </header>
+
+  <main>
+    <div class="container">
+      <!-- 登录区域 -->
+      <div class="card" id="loginCard">
+        <div class="login-section">
+          <h1>语音通话</h1>
+          <p>输入你的 UID 登录，开始高清语音通话</p>
+        </div>
+
+        <div class="form-group">
+          <label for="myUid">我的 UID</label>
+          <input type="text" id="myUid" value="web001" placeholder="输入你的标识">
+        </div>
+
+        <button class="btn-primary btn-block" onclick="login()">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
+            <polyline points="10 17 15 12 10 7"/>
+            <line x1="15" y1="12" x2="3" y2="12"/>
+          </svg>
+          登录到信令服务
+        </button>
+      </div>
+
+      <!-- 呼叫区域（登录后显示） -->
+      <div class="card call-section" id="callCard">
+        <div class="form-group">
+          <label for="targetUid">呼叫目标 UID</label>
+          <div class="target-input">
+            <input type="text" id="targetUid" value="agent001" placeholder="输入对方标识">
+            <button class="btn-primary" onclick="callRemote()">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
+              </svg>
+              呼叫
+            </button>
+          </div>
+        </div>
+
+        <div class="btn-group">
+          <button class="btn-secondary" onclick="cancelCall()">取消呼叫</button>
+          <button class="btn-danger" id="hangBtn" onclick="hangup()" disabled>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"/>
+              <line x1="23" y1="1" x2="1" y2="23"/>
+            </svg>
+            挂断
+          </button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- 来电弹窗 -->
+  <div class="ring-box" id="ringBox">
+    <div class="ring-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
+      </svg>
+    </div>
+    <h2>来电</h2>
+    <div class="caller-name" id="callerName">未知</div>
+    <div class="ring-actions">
+      <button class="btn-primary" onclick="acceptCall()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="20 6 9 17 4 12"/>
+        </svg>
+        接听
+      </button>
+      <button class="btn-danger" onclick="rejectCall()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="18" y1="6" x2="6" y2="18"/>
+          <line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+        拒接
+      </button>
+    </div>
+  </div>
+
+  <!-- 通话中覆盖层 -->
+  <div class="in-call-overlay" id="inCallOverlay">
+    <div class="audio-visual">
+      <div class="audio-bar"></div>
+      <div class="audio-bar"></div>
+      <div class="audio-bar"></div>
+      <div class="audio-bar"></div>
+      <div class="audio-bar"></div>
+    </div>
+    <div class="call-avatar" id="callAvatar">A</div>
+    <div class="call-status">通话中</div>
+    <div class="call-timer" id="callTimer">00:00</div>
+    <div class="call-actions">
+      <button class="call-action-btn btn-mute" id="muteBtn" onclick="toggleMute()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+        </svg>
+      </button>
+      <button class="call-action-btn btn-hangup" onclick="hangup()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"/>
+          <line x1="23" y1="1" x2="1" y2="23"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <audio id="remoteAudio" autoplay playsinline></audio>
+
+  <script>
+    // WebSocket 连接
+    const ws = new WebSocket(`wss://${location.hostname}:8765/ws`);
+    const remoteAudio = document.getElementById('remoteAudio');
+
+    let myUid = "";
+    let pc = null;
+    let localStream = null;
+    let callerId = null;
+    let callTimer = null;
+    let callStartTime = null;
+    let timerInterval = null;
+    let isMuted = false;
+    const CALL_TIMEOUT = 20000;
+
+    // 响铃
+    let audioCtx = null;
+    let ringOsc = null;
+
+    function startRing() {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      ringOsc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      ringOsc.type = "sine";
+      ringOsc.frequency.value = 800;
+      gain.gain.value = 0.15;
+      ringOsc.connect(gain);
+      gain.connect(audioCtx.destination);
+      ringOsc.start();
+    }
+
+    function stopRing() {
+      if (ringOsc) { ringOsc.stop(); ringOsc = null; }
+    }
+
+    // 心跳
+    setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "ping" }));
+      }
+    }, 12000);
+
+    // 更新状态徽章
+    function updateStatus(status, text) {
+      const badge = document.getElementById('statusBadge');
+      badge.className = 'status-badge ' + status;
+      badge.textContent = text;
+    }
+
+    // 登录
+    function login() {
+      myUid = document.getElementById("myUid").value.trim();
+      if (!myUid) { alert("请输入 UID"); return; }
+      ws.send(JSON.stringify({ type: "login", uid: myUid }));
+      document.getElementById('loginCard').classList.add('hidden');
+      document.getElementById('callCard').classList.add('active');
+      updateStatus('online', '在线 · ' + myUid);
+    }
+
+    // 发起呼叫
+    function callRemote() {
+      const target = document.getElementById("targetUid").value.trim();
+      if (!target) { alert("请输入目标 UID"); return; }
+      ws.send(JSON.stringify({ type: "invite", from: myUid, to: target }));
+      updateStatus('in-call', '呼叫中...');
+      callTimer = setTimeout(() => {
+        alert("呼叫超时，对方未接听");
+        cancelCall();
+      }, CALL_TIMEOUT);
+    }
+
+    function cancelCall() {
+      clearTimeout(callTimer);
+      const target = document.getElementById("targetUid").value.trim();
+      ws.send(JSON.stringify({ type: "cancel", from: myUid, to: target }));
+      updateStatus('online', '在线 · ' + myUid);
+    }
+
+    // 创建 offer
+    async function createAndSendOffer(targetUid) {
+      pc = new RTCPeerConnection({ iceServers: [] });
+      localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+      pc.ontrack = e => { remoteAudio.srcObject = e.streams[0]; };
+      pc.onicecandidate = e => {
+        if (e.candidate) {
+          ws.send(JSON.stringify({ type: "candidate", from: myUid, to: targetUid, candidate: e.candidate }));
+        }
+      };
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      ws.send(JSON.stringify({ ...offer, type: "offer", from: myUid, to: targetUid }));
+
+      // 显示通话中界面
+      showInCallUI(targetUid);
+    }
+
+    // 接听
+    async function acceptCall() {
+      clearTimeout(callTimer);
+      stopRing();
+      document.getElementById("ringBox").classList.remove("show");
+      ws.send(JSON.stringify({ type: "accept", from: myUid, to: callerId }));
+      await createAndSendOffer(callerId);
+    }
+
+    // 拒接
+    function rejectCall() {
+      clearTimeout(callTimer);
+      stopRing();
+      ws.send(JSON.stringify({ type: "reject", from: myUid, to: callerId }));
+      document.getElementById("ringBox").classList.remove("show");
+      callerId = null;
+      updateStatus('online', '在线 · ' + myUid);
+    }
+
+    // 挂断
+    function hangup() {
+      stopRing();
+      if (pc) pc.close();
+      if (localStream) localStream.getTracks().forEach(t => t.stop());
+      pc = null;
+      localStream = null;
+      isMuted = false;
+
+      hideInCallUI();
+
+      if (callerId) {
+        ws.send(JSON.stringify({ type: "hangup", from: myUid, to: callerId }));
+      }
+      updateStatus('online', '在线 · ' + myUid);
+      document.getElementById('hangBtn').disabled = true;
+    }
+
+    // 显示通话中界面
+    function showInCallUI(remoteUid) {
+      document.getElementById('inCallOverlay').classList.add('show');
+      document.getElementById('callAvatar').textContent = remoteUid.charAt(0).toUpperCase();
+      callStartTime = Date.now();
+      timerInterval = setInterval(updateCallTimer, 1000);
+      document.getElementById('hangBtn').disabled = false;
+      updateStatus('in-call', '通话中 · ' + remoteUid);
+    }
+
+    function hideInCallUI() {
+      document.getElementById('inCallOverlay').classList.remove('show');
+      if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+    }
+
+    function updateCallTimer() {
+      const elapsed = Math.floor((Date.now() - callStartTime) / 1000);
+      const mins = String(Math.floor(elapsed / 60)).padStart(2, '0');
+      const secs = String(elapsed % 60).padStart(2, '0');
+      document.getElementById('callTimer').textContent = `${mins}:${secs}`;
+    }
+
+    // 静音切换
+    function toggleMute() {
+      if (!localStream) return;
+      isMuted = !isMuted;
+      localStream.getAudioTracks().forEach(track => { track.enabled = !isMuted; });
+      const btn = document.getElementById('muteBtn');
+      btn.classList.toggle('muted', isMuted);
+    }
+
+    // WebSocket 消息处理
+    ws.onmessage = async (ev) => {
+      const msg = JSON.parse(ev.data);
+      switch (msg.type) {
+        case "invite":
+          callerId = msg.from;
+          document.getElementById("callerName").textContent = callerId;
+          document.getElementById("ringBox").classList.add("show");
+          startRing();
+          callTimer = setTimeout(() => { alert("来电超时"); rejectCall(); }, CALL_TIMEOUT);
+          break;
+
+        case "accept":
+          clearTimeout(callTimer);
+          await createAndSendOffer(msg.from);
+          break;
+
+        case "answer":
+          await pc.setRemoteDescription(new RTCSessionDescription(msg));
+          break;
+
+        case "candidate":
+          if (pc) await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+          break;
+
+        case "reject":
+          clearTimeout(callTimer);
+          alert("对方拒接");
+          updateStatus('online', '在线 · ' + myUid);
+          break;
+
+        case "hangup":
+          clearTimeout(callTimer);
+          alert("对方挂断");
+          hangup();
+          break;
+
+        case "cancel":
+          clearTimeout(callTimer);
+          stopRing();
+          document.getElementById("ringBox").classList.remove("show");
+          callerId = null;
+          updateStatus('online', '在线 · ' + myUid);
+          break;
+
+        case "error":
+          clearTimeout(callTimer);
+          if (msg.reason === "busy") alert("对方正在通话中");
+          else if (msg.reason === "offline") alert("对方不在线");
+          updateStatus('online', '在线 · ' + myUid);
+          break;
+
+        case "pong":
+          break;
+      }
+    };
+
+    // 页面加载完成后聚焦输入框
+    document.getElementById('myUid').focus();
+  </script>
+</body>
+</html>

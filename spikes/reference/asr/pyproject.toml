@@ -1,0 +1,41 @@
+[project]
+name = "asr"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "幽梦", email = "tianqihou@qq.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "aiortc>=1.15.0",
+    "edge-tts>=6.1.9",
+    "fastapi>=0.162.0",
+    "numpy>=2.5.4",
+    "python-multipart>=0.0.33",
+    "sherpa-onnx>=2.0.1",
+    "sounddevice>=0.5.6",
+    "uvicorn>=0.54.0",
+    "websockets>=17.4",
+]
+
+[project.scripts]
+voice = "asr.voice:main"
+voice-web = "asr.webapp:main"
+signaling = "asr.signaling:main"
+voice-agent = "asr.agent:main"
+
+[build-system]
+requires = ["uv_build>=0.12.10,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.17.3",
+]
+
+[[tool.uv.index]]
+name = "tsinghua"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
+trust-host = "pypi.tuna.tsinghua.edu.cn"

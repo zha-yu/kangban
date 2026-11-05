@@ -14,6 +14,8 @@
 固定：`app/audio/vad.py`、`app/api/audio.py`（降级路由）、`tests/`（Day 3 新增用例）、README 第 7 节验收记录
 弹性支援：与被支援人协商，接管其写作域内具体任务（所有权不转移）
 
+Day 4 预告（本卡不实施）：CAM++ 声纹 spike 参照 `spikes/reference/asr/src/asr/providers/voiceprint*`，模型 `spikes/reference/asr/funasr-runtime-resources/models/sherpa-onnx/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx`；教师阈值 0.55 与本项目硬性数值 0.85 两套口径，Day 4 用真实录音重标。
+
 ## 前置依赖
 
 无（与 A1/A2 平行）。**产出 C3 契约**（utterance REST 形状）09:30 前定稿，A4 据此做降级模式。
@@ -47,3 +49,4 @@
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-05 | 初稿 |
+| v1.1 | 2026-11-05 | 教师参考模块入库 `spikes/reference/asr/`，登记 Day 4 声纹 spike 参照路径 |
