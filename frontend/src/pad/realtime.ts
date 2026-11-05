@@ -95,6 +95,8 @@ export class RealtimeClient {
         break;
       case "tts_text":
         this.ttsPlaying = true;
+        this.cb.audioEl.muted = false; // 真 TTS 到了才出声
+        void this.cb.audioEl.play().catch(() => {});
         this.cb.onSubtitle(msg.text, "reply");
         this.cb.onStatus("speaking");
         break;
@@ -128,6 +130,7 @@ export class RealtimeClient {
           // 不等服务端；服务端 A3 收到 asr_start 停写轨清缓冲
           if (this.ttsPlaying) {
             this.ttsPlaying = false;
+            this.cb.audioEl.muted = true; // 打断即静音，输出通路立即关闭
             this.cb.audioEl.pause();
             this.cb.onSubtitle("", "final");
           }
@@ -158,6 +161,8 @@ export class RealtimeClient {
       }
     };
     pc.ontrack = (e) => {
+      // 听写阶段不出声：静默挂载，收到 tts_text 才放开（用户裁决 2026-11-05）
+      this.cb.audioEl.muted = true;
       this.cb.audioEl.srcObject = e.streams[0] ?? null;
       this.cb.audioEl.onended = () => {
         this.ttsPlaying = false;

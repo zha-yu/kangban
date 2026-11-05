@@ -61,7 +61,7 @@ function MainScreen({ onLogout }: { onLogout: () => void }) {
   return (
     <div className="flex h-full flex-col">
       {/* TTS 下行播放（WebRTC 收轨） */}
-      <audio ref={audioRef} autoPlay />
+      <audio ref={audioRef} />
 
       {/* 顶栏：状态条（1920×1080 布局，左侧安全边距）+ 退出（自检用） */}
       <header className="flex items-center justify-between px-12 pt-8">
