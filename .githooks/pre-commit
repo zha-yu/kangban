@@ -1,0 +1,32 @@
+#!/bin/sh
+# 提交前自动刷新 Day 3 进度看板 docs/team_tasks_day03/PROGRESS.md
+#
+# 启用一次即可（每个 clone 各来一次）：
+#     git config core.hooksPath .githooks
+#
+# 行为：重算 PROGRESS.md → 与本次提交一起入库。任务卡状态改了却忘了刷新，
+# 会在提交那一刻被补上；生成失败则中止提交（宁可拦住，也不留过期看板）。
+
+set -e
+
+root=$(git rev-parse --show-toplevel)
+py=""
+for cand in "$root/.venv/Scripts/python.exe" "$root/.venv/bin/python" python3 python; do
+    if [ -x "$cand" ] || command -v "$cand" >/dev/null 2>&1; then
+        py="$cand"
+        break
+    fi
+done
+
+if [ -z "$py" ]; then
+    echo "[progress] 未找到 python，跳过进度刷新（不阻塞提交）" >&2
+    exit 0
+fi
+
+if ! "$py" "$root/scripts/update_progress.py" --quiet; then
+    echo "[progress] 生成 docs/team_tasks_day03/PROGRESS.md 失败，已中止提交" >&2
+    exit 1
+fi
+
+git -C "$root" add docs/team_tasks_day03/PROGRESS.md
+exit 0

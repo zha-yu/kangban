@@ -1,4 +1,4 @@
-# 本地依赖服务最小版（task-3）：仅 postgres + redis。
+# 本地依赖服务最小版（task-3）：postgres + redis，Day 3 任务卡 a1 追加 funasr（本地 ASR 基线）。
 # 完整 7 服务版（nginx / coturn / backend / laya / weather-mcp / mock-operations-mcp）按大纲留到 Day 10。
 # 口令默认值与 .env.example / app/core/config.py 的本地默认一致；生产值一律经 .env 覆盖，不写死在这里。
 services:
@@ -32,5 +32,66 @@ services:
       timeout: 5s
       retries: 10
 
+  funasr:
+    # 本地 ASR 基线（FunASR runtime，2pass 双通路流式）。宿主端口 7002 —— 7001 已登记给 laya
+    # （见 docs/plans/task-a1-ASR与TTS适配层.md §4.4 与 §9-1），不要再抢。
+    # 镜像内 FunASR runtime 默认监听 10095；本服务**不开 TLS**（官方 run_server_2pass.sh 里
+    # --certfile/--keyfile 同样是注释掉的），所以客户端用 ws:// 而不是 wss://。
+    image: registry.cn-hangzhou.aliyuncs.com/funasr_repo/funasr:funasr-runtime-sdk-online-cpu-0.1.12
+    container_name: silvermate-funasr
+    init: true
+    restart: unless-stopped
+    ports:
+      # 宿主端口可经环境变量改写（默认 7002，与 README §6 端口约定一致）。
+      - "${FUNASR_HOST_PORT:-7002}:10095"
+    volumes:
+      # 首次启动按 --download-model-dir 下载到具名卷，之后复用；模型不进镜像层、也不落仓库目录。
+      - funasr_models:/workspace/models
+    working_dir: /workspace/FunASR/runtime/websocket/build/bin
+    # 镜像内 run_server_2pass.sh 会把识别程序丢到后台并退出；这里直接前台起同一个可执行文件，
+    # 让 Docker 能跟踪退出状态、restart 与日志（与参考 compose 同一做法）。
+    entrypoint: ["/workspace/FunASR/runtime/websocket/build/bin/funasr-wss-server-2pass"]
+    command:
+      - --download-model-dir
+      - /workspace/models
+      - --vad-dir
+      - damo/speech_fsmn_vad_zh-cn-16k-common-onnx
+      - --model-dir
+      - damo/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-onnx
+      - --online-model-dir
+      - damo/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online-onnx
+      - --punc-dir
+      - damo/punc_ct-transformer_zh-cn-common-vad_realtime-vocab272727-onnx
+      - --lm-dir
+      - damo/speech_ngram_lm_zh-cn-ai-wesp-fst
+      - --itn-dir
+      - thuduj12/fst_itn_zh
+      - --port
+      - "10095"
+      - --decoder-thread-num
+      - "4"
+      - --model-thread-num
+      - "1"
+      - --io-thread-num
+      - "1"
+    healthcheck:
+      # 纯 TCP 探活：本服务不开 TLS，所以不做 TLS 握手（参考 compose 那版是为了 wss 才握手的）。
+      # 首次要下载 + 加载模型（几 GB、几分钟），start_period 给足 180s；之后每 10s 一次，
+      # 连续 6 次失败才标 unhealthy。健康检查失败不会自动重启容器，慢机器上「先 unhealthy 后
+      # healthy」属正常，重看 docker compose ps 即可。
+      test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('127.0.0.1', 10095), timeout=5).close()"]
+      start_period: 180s
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    # 限核：ASR 推理是 CPU 密集，别让它把 postgres/redis 和本地开发抢死（deploy 段在非 swarm
+    # 的 docker compose v2 下同样生效）。
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+    stop_grace_period: 30s
+
 volumes:
   postgres_data:
+  funasr_models:

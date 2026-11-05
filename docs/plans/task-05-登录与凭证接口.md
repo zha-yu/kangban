@@ -278,19 +278,25 @@ async def test_login_wrong_password_returns_401() -> None:
 
 ```python
 async def test_fake_token_returns_401() -> None:
-    response = await client.get("/api/sessions/current",
-        headers={"Authorization": "Bearer fake.fake.fake"})
+    response = await client.get(
+        "/api/sessions/current", headers={"Authorization": "Bearer fake.fake.fake"}
+    )
     assert response.status_code == 401
+
 
 async def test_expired_token_returns_401() -> None:
     # SecurityManager 签发 1 秒过期 token
     expired_jwt = SecurityManager.create_access_token(
-        sub=f"staff:{TEST_STAFF_ID}", kind="staff", role="admin",
-        tv=0, expires_in_seconds=1,
+        sub=f"staff:{TEST_STAFF_ID}",
+        kind="staff",
+        role="admin",
+        tv=0,
+        expires_in_seconds=1,
     )
     await asyncio.sleep(2)
-    response = await client.get("/api/sessions/current",
-        headers={"Authorization": f"Bearer {expired_jwt}"})
+    response = await client.get(
+        "/api/sessions/current", headers={"Authorization": f"Bearer {expired_jwt}"}
+    )
     assert response.status_code == 401
     assert response.json()["code"] == "TOKEN_EXPIRED"
 ```
@@ -303,8 +309,7 @@ async def test_current_identity_returns_role() -> None:
     assert login_resp.status_code == 200
     token = login_resp.json()["access_token"]
 
-    resp = await client.get("/api/sessions/current",
-        headers={"Authorization": f"Bearer {token}"})
+    resp = await client.get("/api/sessions/current", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
     body = resp.json()
     assert body["kind"] == "staff"
@@ -316,17 +321,21 @@ async def test_current_identity_returns_role() -> None:
 
 ```python
 async def test_device_session_returns_device_id() -> None:
-    resp = await client.post("/api/device-sessions", json={
-        "device_id": str(TEST_DEVICE_ID),
-        "device_secret": TEST_DEVICE_SECRET,   # 长期令牌明文
-    })
+    resp = await client.post(
+        "/api/device-sessions",
+        json={
+            "device_id": str(TEST_DEVICE_ID),
+            "device_secret": TEST_DEVICE_SECRET,  # 长期令牌明文
+        },
+    )
     assert resp.status_code == 200
     body = resp.json()
     assert body["device"]["id"] == str(TEST_DEVICE_ID)
 
     # 用拿到的设备会话 token 再访问 /current
-    cur = await client.get("/api/sessions/current",
-        headers={"Authorization": f"Bearer {body['access_token']}"})
+    cur = await client.get(
+        "/api/sessions/current", headers={"Authorization": f"Bearer {body['access_token']}"}
+    )
     assert cur.status_code == 200
     assert cur.json()["kind"] == "device"
     assert cur.json()["id"] == str(TEST_DEVICE_ID)
@@ -342,14 +351,16 @@ async def test_disabled_account_old_token_returns_401() -> None:
 
     # 直接在 DB 里把 token_version +1（模拟 admin 禁用账号）
     await db.execute(
-        update(StaffAccount).where(StaffAccount.staff_id == TEST_STAFF_ID)
+        update(StaffAccount)
+        .where(StaffAccount.staff_id == TEST_STAFF_ID)
         .values(token_version=StaffAccount.token_version + 1, status="disabled")
     )
     await db.commit()
 
     # Then: 旧 token → 401
-    resp = await client.get("/api/sessions/current",
-        headers={"Authorization": f"Bearer {old_token}"})
+    resp = await client.get(
+        "/api/sessions/current", headers={"Authorization": f"Bearer {old_token}"}
+    )
     assert resp.status_code == 401
     assert resp.json()["code"] == "TOKEN_REVOKED"
 ```
@@ -362,17 +373,16 @@ async def test_refresh_generates_new_access() -> None:
     refresh_token = login_resp.json()["refresh_token"]
     old_access = login_resp.json()["access_token"]
 
-    refresh_resp = await client.post("/api/sessions/refresh",
-        json={"refresh_token": refresh_token})
+    refresh_resp = await client.post("/api/sessions/refresh", json={"refresh_token": refresh_token})
     assert refresh_resp.status_code == 200
     new_access = refresh_resp.json()["access_token"]
     assert new_access != old_access
 
     # token_version 没变，新旧都能用
     for t in (old_access, new_access):
-        r = await client.get("/api/sessions/current",
-            headers={"Authorization": f"Bearer {t}"})
+        r = await client.get("/api/sessions/current", headers={"Authorization": f"Bearer {t}"})
         assert r.status_code == 200
+
 
 async def test_refresh_after_tv_invalidation_old_access_401() -> None:
     """refresh 后再 tv+1，旧 access → 401（AC-24 贯穿）"""
@@ -381,13 +391,15 @@ async def test_refresh_after_tv_invalidation_old_access_401() -> None:
 
     # tv+1
     await db.execute(
-        update(StaffAccount).where(StaffAccount.staff_id == TEST_STAFF_ID)
+        update(StaffAccount)
+        .where(StaffAccount.staff_id == TEST_STAFF_ID)
         .values(token_version=StaffAccount.token_version + 1)
     )
     await db.commit()
 
-    resp = await client.get("/api/sessions/current",
-        headers={"Authorization": f"Bearer {old_access}"})
+    resp = await client.get(
+        "/api/sessions/current", headers={"Authorization": f"Bearer {old_access}"}
+    )
     assert resp.status_code == 401
 ```
 

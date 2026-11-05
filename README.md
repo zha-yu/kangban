@@ -161,6 +161,17 @@ docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:a
 
 ---
 
+### 5.3 本机已知环境坑（2026-11-05 实测）
+
+| 现象 | 根因 | 规避 |
+| --- | --- | --- |
+| 仓库根冒出 `pytest-of-Administrator/` | 本机 `TEMP` 是 8.3 短名（`ADMINI~1`），`tempfile.gettempdir()` 校验失败后回退到 CWD，pytest 的 tmp 工厂于是落在仓库根 | 已加 `.gitignore` §12；要根治可给 pytest 传 `--basetemp` 指向长路径目录 |
+| 仓库外写不动（`%LOCALAPPDATA%\Temp`、`~/.cache` 报 `WinError 5`） | 工具沙箱只放开工作区 | 临时产物一律写仓库内已被忽略的目录（如 `spikes/**/out/`） |
+| `uv run alembic` 报 `UnicodeDecodeError: 'gbk' codec can't decode byte 0x89` | configparser 用平台 locale 读 `alembic.ini` | **`alembic.ini` 必须 ASCII-only**，注释里不许出现中文/全角 |
+| 容器内 edge-tts 转码报 `TTSUnavailable("ffmpeg not found")` | `python:3.12-slim` 不带 ffmpeg | 设计内行为：生产走云端 TTS，edge 只是宿主机兜底；容器跑测试时相关用例自动 skip |
+| 容器在两次工具调用之间被回收（`docker ps -a` 显示 `Exited (0)`） | 环境在调用结束后回收容器 | 「起库 → 另开一次调用跑测试」必然失败；改成**库与测试同容器、一次调用跑完** |
+| `docker run ... bash -s <<'SH'` 返回空输出 | heredoc 经 `wsl` 工具传递被吞 | 用 `wsl-write` 落脚本到 `/tmp/*.sh`，再 `-v /tmp/x.sh:/v.sh:ro` 挂进容器执行 |
+
 ## 6. 配置说明
 
 所有密钥只走环境变量，由 Pydantic Settings 从 `.env` 加载；`.env.example` 只有占位符。**三份基线文档没有枚举任何环境变量名与端口**，下表是本项目自定义并回填文档的约定。
@@ -182,6 +193,15 @@ docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:a
 | 数据保留 | `AUDIO_RETENTION_HOURS` `SCHEDULER_TIMEZONE` | 原始音频默认 72h 自动清理 |
 | 前端构建期 | `VITE_API_BASE_URL` `VITE_PAD_WS_URL` `VITE_ENABLE_3D` `VITE_ENABLE_WEBRTC` | 以 `VITE_` 前缀暴露给浏览器 |
 
+**本地 ASR 基线（FunASR）**：**不新增地址类变量**，复用现有 `ASR_*` 字段——`ASR_PROVIDER=funasr`、`ASR_BASE_URL=wss://localhost:7002`、`ASR_INSECURE=true`（宿主端口见下表 `funasr` 行，容器内 FunASR runtime 监听 10095）。
+
+⚠️ **这个服务默认开 TLS，且用的是镜像内置自签证书**（容器启动日志固定打印 `SSL is opened!` + `certfile ../../../ssl_key/server.crt`）。所以：
+- 用 `ws://` 连会被直接掐断，报 `did not receive a valid HTTP response`——**必须用 `wss://`**；
+- 自签证书需要 `ASR_INSECURE=true` 才能握手成功；生产环境应换成真证书并把该开关置回 `false`；
+- 部分环境下 Docker 的端口发布（宿主 `7002` → 容器 `10095`）从宿主侧不可达，此时让调用方加入同一 compose 网络、直接用容器名访问 `wss://silvermate-funasr:10095`（实战验证用的就是这条路）。
+
+云 API 仍是主实现，FunASR 只作本地基线与降级备份（见 `docs/plans/task-a1-ASR与TTS适配层.md`）。
+
 ### 服务与端口
 
 | 服务 | 端口 | 说明 |
@@ -191,6 +211,7 @@ docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:a
 | backend（FastAPI + aiortc） | 8000 | `/health` 健康检查；WebSocket 信令 |
 | frontend（nginx） | 80 / 443 | 静态资源 + HTTPS 入口 + 媒体直连 |
 | laya | 7001 | 本地 System One 推理服务 |
+| funasr | 7002 | 本地 ASR 基线（FunASR runtime） |
 | weather-mcp | 7101 | `get_weather` |
 | mock-operations-mcp | 7102 | 工单 / 家属通知 |
 | coturn | 3478 / 5349 | TURN/STUN，跨网段才需要 |
@@ -231,6 +252,39 @@ docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:a
 - `ruff format --check app tests` 在 `app/api/auth.py`、`app/services/auth_service.py`、`tests/test_auth_api.py` 三处红，属 task-5 合入代码；
 - `mypy app` 在 `app/api/elders.py:86`（`Awaitable` 与父类 `Coroutine` 不兼容）和 `app/services/device_service.py`（可空列传给非空字段）两处红，属 task-6 合入代码；
 - 人工逐行审查 `app/main.py` 的 router 装配与 `tests/test_auth_attacks.py` 后，task-7 方可置为 ✅。
+
+### 7.2 Day 3 验收记录（2026-11-05）
+
+A5 角色，Blocks 1–4 全部落盘并通过质量门；核心交付为**按住说话降级链路**（WebRTC 主链路不可用时的唯一回退）+ webrtcvad 服务端兜底 VAD + Mock ASR/TTS 依赖注入工厂 + 攻击面+降级话术三场景覆盖。
+
+| DoD 项 | 结论 | 取证 |
+| --- | --- | --- |
+| C3 契约 TypedDict 冻结 | ✅ | `app/api/audio.py` 顶部 `UtteranceReply` / `UtteranceResponse`；`docs/team_tasks_day03/contracts.md` C3 标记已冻结 |
+| webrtcvad 兜底包装层（帧常量 + 前置校验 + VadSession） | ✅ | `app/audio/vad.py`；spikes/vad/spike_webrtcvad.py 已验证底层 webrtcvad 原生抛 `_webrtcvad.Error`（非 ValueError），包装层靠 `valid_rate_and_frame_length` 前置拦截 |
+| VadSession 状态机（preRoll + 静音/说话双状态机 + 30s 强制切段） | ✅ | `feed_frame` / `flush` / `reset` / `is_speech` 四对外契约 |
+| `POST /api/audio/utterance` 完整链路 | ✅ | 鉴权 → WAV 头真实时长校验（不信任客户端 `duration_ms`）→ Mock ASR → Day 3 写死话术 → Mock TTS → `audio_url` |
+| Mock ASR/TTS 依赖注入（支持测试 override unavailable 场景） | ✅ | `_get_default_asr` / `_get_default_tts` 两个 FastAPI 依赖函数；端点签名 Depends 参数；`test_audio_security.py` 通过 `app.dependency_overrides[...] = mock_*_factory(unavailable=True)` 控制 |
+| 降级话术四常量集中 | ✅ | `DEGRADE_TEMPLATES` dict：`asr_unavailable` / `tts_unavailable` / `llm_timeout` / `tool_breaker`，每条 ≤40 字 |
+| Day 3 Mock 链路与后续批次边界清晰 | ✅ | Block 3 注释明确：ASR/TTS/回复分别在 Day 6 接真链路；不引入第二种 VAD 形态；不碰 services/models |
+| `ruff check app tests` 干净 | ✅ | `All checks passed!`（清理脏 `__pycache__` 后重跑） |
+| `pytest` 全绿 | ✅ | **292 passed, 0 failed, 0 skip**（比 Day 2 的 270 增 22：vad 12 + utterance 5 + security 5） |
+| 接口覆盖率 ≥70% | ✅ | **TOTAL 85%**（PRD FR-TC-06 门槛）；audio.py 98%、vad.py 95% |
+| 攻击面增量：伪造 token → 401 | ✅ | `test_fake_token_401` |
+| 攻击面增量：revoked token_hash 轮换 → 401 | ✅ | `test_revoked_device_token_401`（改 DB `device.token_hash` 模拟解绑） |
+| 降级话术场景 1：ASR 不可用 → 503 + 话术 | ✅ | `test_asr_unavailable_503` |
+| 降级话术场景 2：TTS 不可用 → 200 + `audio_url=null` + 话术前缀 | ✅ | `test_tts_unavailable_200` |
+| 降级话术场景 3：ASR+TTS 双不可用 → ASR 先抛 503 | ✅ | `test_asr_then_tts_both_unavailable_asr_wins` |
+| 边界：损坏 WAV 头不 crash | ✅ | `test_corrupt_wav_header_not_crash`（伪造 96 字节 "RIFF\x00..." → `_wav_duration_ms` 内部 `wave.Error` 返回 0 → 正常继续 → 200） |
+| 边界：elder_id 从设备绑定注入，客户端传参被忽略（禁区 9） | ✅ | `test_client_elder_id_ignored`（FastAPI 根本没这参数，自动忽略） |
+
+Day 3 调试中发现并修复的 4 个坑（详见会话，均已写进代码注释/测试）：
+
+| # | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| 1 | 全 0 静音帧 webrtcvad aggressiveness=2 随机判为 speech | webrtcvad 对极低能量帧判定不稳定 | 测试改用低能量非零帧（幅值 5 的 1Hz 正弦波） |
+| 2 | 连续浊音后静音门限 27 帧不够 | webrtcvad 有内置 hangover（句末保护），前 3 帧静音仍判为 speech | 测试补偿 3 帧；生产代码不修（90ms 延迟可接受） |
+| 3 | FastAPI v2 `Form(default=None)` 不能放 `Annotated` 里 | v2 行为变更 | 改 `duration_ms: int \| None = Form(default=None)` |
+| 4 | `Depends` 参数不能放在有默认值的 `Form` 参数之后 | Python 语法限制 | 把 `asr`/`tts` 挪到前面 |
 
 ---
 
