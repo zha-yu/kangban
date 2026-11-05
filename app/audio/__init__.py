@@ -37,13 +37,13 @@ from app.audio.asr import (
     ASRUnavailable,
     FunASRWSProvider,
     MockASRProvider,
+    TTSProvider,
     build_asr,
 )
 from app.audio.tts import (
     CloudTTSProvider,
     EdgeTTSProvider,
     MockTTSProvider,
-    TTSProvider,
     TTSUnavailable,
     build_tts,
 )
