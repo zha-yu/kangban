@@ -63,7 +63,7 @@ uv run --with websockets python spikes/funasr/ws_probe.py --url wss://127.0.0.1:
 
 ---
 
-## 4. 镜像拉取记录（N7 实测 · 未拉完）
+## 4. 镜像拉取记录（N7 实测 · 最终拉完）
 
 | 项 | 结果 |
 | --- | --- |
@@ -118,48 +118,69 @@ docker run --rm -p 7002:10095 -v "$PWD":/w -w /w python:3.12-slim \
 
 ## 6. N8 真链路结论
 
-### 结论：**未达成 —— 镜像未就绪**（不是「跑通了但指标不好」，是**根本没跑起来**）
+### 结论：**已达成 —— 真实链路出字**（经项目自己的 `build_asr()` + `ASRProvider.stream()`）
+
+镜像是 19:05 前后拉完的（明细见 §4）。之后**不是**用 `ws_probe.py` 单验，而是直接走仓库代码：
+
+```
+provider=FunASRWSProvider url=wss://silvermate-funasr:10095 insecure=True
+wav=spikes/reference/asr/examples/asr_example_zh.wav pcm_bytes=177528 frames=93
+[partial +15159 ms] 欢迎大
+[partial +15294 ms] 家来
+[partial +15411 ms] 体验达
+[partial +15560 ms] 摩院推
+[partial +15724 ms] 出的语
+[partial +15893 ms] 音识
+[partial +16094 ms] 别模
+[final   +47024 ms] 欢迎大家来体验达摩院推出的语音识别模型。
+partials=7 final='欢迎大家来体验达摩院推出的语音识别模型。'  probe_exit=0
+```
 
 | 项 | 实测 |
 | --- | --- |
-| 容器能否启动 | **否**。`docker images` 里没有 funasr 镜像，`docker compose up -d funasr` 无从起 |
-| 镜像拉取 | 两轮共 ≈41 分钟，`timeout 900` 杀过一轮、续拉一轮到 16:44 手动停止，仍未完成（明细见 §4） |
-| partial / final 条数 | **无数据**（没有容器，没有出字） |
-| 首包 ms / final ms | **无数据** |
-| final 文本 | **无数据** |
-| `ws_probe.py` 状态 | 代码写完、`--help` 级静态自检通过，但**从未对真容器跑过** —— 因此**不声称它「验证通过」**，只声称「已就绪，待镜像可用后首跑」 |
+| 容器能否启动 | **能**。模型加载完成，日志出现 `asr model init finished. listen on port:10095` |
+| 连接方式 | **必须 `wss://`**（镜像默认自签 TLS）；宿主直连 `127.0.0.1:7002` 会 `[WinError 1225]`，实际用同 compose 网络 `wss://silvermate-funasr:10095` |
+| partial / final 条数 | **7 / 1** |
+| 首包 partial | ≈ **15.2 s**（含分段发送 5.55 s 音频的时间） |
+| final | ≈ **47.0 s**（2pass-offline 在 CPU 上重跑整段，属预期） |
+| final 文本 | `欢迎大家来体验达摩院推出的语音识别模型。`（与 `spikes/reference/asr/examples/asr_example_zh.wav` 内容一致） |
+| 首包 vs 300 ms 预算 | **差 50 倍**，只登记偏差：本地基线不承担 PRD 的 300 ms 首包预算（云 API 才承担，见 §8-2） |
 
-**没有伪造任何出字结果。** 按计划 `docs/plans/task-a1-ASR与TTS适配层.md` §7 **P-A1-1** 如实登记「未完成 + 原因」，
-降级路径由主理人裁决（当日以 Mock + 云端骨架交付，真链路留作待办）。
+**这期间改了两处代码（都已带回归用例）**：
 
-**后续待办（镜像拉通后按顺序做，不需要改代码）**：
+1. **默认走 `wss://` + 新增 `ASR_INSECURE`**：`FUNASR_DEFAULT_URL` 改 `wss://localhost:7002`；`_ssl_context_for()` 按 URL scheme 与 `insecure` 决定是否用宽松校验上下文；`build_asr()` 透传 `config.asr_insecure`。
+2. **接收超时从「整段预算」改成「按帧重置的空闲超时」，15 s → 45 s**：首轮真链路在 `+15043 ms` 被误杀（日志报「15.0s 内没有等到终稿」），但其实 partial 一直在出。offline 重跑耗时随音频长度增长，总预算必然误杀正常终稿。
 
-1. `docker pull <镜像>` 拉到 `docker images` 里出现该 tag；
-2. `docker compose up -d funasr` → 等 `docker compose ps funasr` 显示 `(healthy)`（首次还要下几 GB 模型，见 §2）；
-3. `uv run --with websockets python spikes/funasr/ws_probe.py --text "<期望文本>"`；
-4. 把「首包(partial) / final / final 文本」三项填回本表，并删掉这一整段「未达成」结论；
-5. 首包若 > 300 ms：**只登记偏差，不改「云 API 为主实现」口径**（计划 §7 P-A1-6、§9-2）。
+**没有伪造任何出字结果**：以上是原样粘贴的探针输出，`probe_exit=0`。
 
-**首次起容器可能踩的三个坑**（尚未实测，来自参考配方与镜像行为，供后续排查）：
+**复现步骤（一次调用内跑完，别拆成多次）**：
 
-| 现象 | 先查什么 |
+1. `docker compose up -d funasr`；
+2. **等日志出现 `listen on port`**——不要等 healthcheck：它只是 TCP 探活，端口通了 server 可能还在加载模型（此时 TLS 握手会挂）；
+3. 同网络跑探针（宿主 `127.0.0.1:7002` 在这台机器上连不通，别试）：
+   `docker run --rm --network silvermate_default -e PYTHONPATH=/w -e ASR_URL=wss://silvermate-funasr:10095 -v <repo>:/w -w /w python:3.12-slim sh -c "pip install -q websockets pydantic pydantic-settings; python /w/.probe/verify_asr_live.py"`。
+
+**实测踩到的四个坑**：
+
+| 现象 | 真相 |
 | --- | --- |
-| 一直 `(unhealthy)` | `docker compose logs funasr`：模型还在下载（几 GB）；`start_period` 只覆盖 180s，慢机器上「先 unhealthy 后 healthy」属正常 |
-| 容器起后立刻退出 | 日志里模型名是否 404 / ModelScope 不可达；必要时先去掉 `--lm-dir`、`--itn-dir` 两个可选模型再试 |
-| 健康检查报 `python3: not found` | 该镜像若不带 python3，把健康检查换成 `sh -c 'exec 3<>/dev/tcp/127.0.0.1/10095'` 之类；**改这一处不影响服务本身** |
+| `docker compose ps` 显示 `(healthy)` 但连不上 | healthcheck 是纯 TCP `socket.create_connection`，**不代表 server 就绪**；加载模型期间连进来会 `TLS handshake failed` |
+| `ws://` 报 `did not receive a valid HTTP response` | 镜像**默认开 TLS**（不传 `--certfile` 也开），必须 `wss://` + `ASR_INSECURE=true` |
+| 宿主 `127.0.0.1:7002` 连不上（`WinError 1225`） | 端口发布在本机不可用（与 postgres 那次同源），只能走 compose 网络里的容器名 |
+| `-v /tmp/x.sh:/x.sh:ro` 之后 `/tmp/x.sh` 变成目录 | WSL 会重启且 `/tmp` 被清空；改用「挂目录」而不是「挂单个文件」 |
 
 ---
 
 ## 7. 与 `spikes/reference/asr/compose.yaml` 的差异（故意的，逐条说明）
 
-参考 compose 是老师侧跑通过的配方，但它的形态是「网页 demo + TLS + 10096」。本仓库要的是「本地基线 + 7002 + 纯 ws」，
+参考 compose 是老师侧跑通过的配方，但它的形态是「网页 demo + TLS + 10096」。本仓库要的是「本地基线 + 7002 + 自签 TLS」，
 所以有意做了下面这些改动 —— 不是抄漏了：
 
 | 项 | 参考 compose | 本仓库 | 为什么 |
 | --- | --- | --- | --- |
 | 镜像 tag | `...-0.1.13` | `...-0.1.12` | 任务卡指定 0.1.12 优先；若拉不动再退 0.1.13（记录在 §4） |
 | 宿主端口 | `10096` | `7002` | 7001 给 laya；7002 与 README §6 端口表一致 |
-| TLS | 传 `--certfile`/`--keyfile`，客户端 `wss://`，健康检查做 TLS 握手 | **不传**，客户端 `ws://`，健康检查纯 TCP | 官方 `run_server_2pass.sh` 里这两行本来就是注释掉的；本地基线不需要证书信任链（参考侧还得配 `FUNASR_INSECURE=1`） |
+| TLS | 传 `--certfile`/`--keyfile`，客户端 `wss://`，健康检查做 TLS 握手 | **保留镜像默认**（不传参数即 `SSL is opened!`），客户端 `wss://` + `ASR_INSECURE=true`，健康检查纯 TCP | 原以为官方脚本注释掉＝不开 TLS，**实测证明错了**：不传参数镜像仍自签开 TLS（日志 `using TLS mode: Mozilla Intermediate`），`ws://` 直接报 `did not receive a valid HTTP response`。本地基线用自签 + 跳过校验，生产换真证书并关 `ASR_INSECURE` |
 | `privileged: true` | 有 | **无** | 参考 README 自述是「保留原 `docker run` 命令的 privileged」，不是能力需求。ONNX CPU 推理不需要特权；`AGENTS.md` §5 把 compose 列为高风险文件，按最小权限起。**若 N8 起不来再按需加回** |
 | 模型目录 | 宿主目录 `./funasr-runtime-resources/models` | 具名卷 `funasr_models` | 宿主目录属于 `spikes/reference/`（只读参考，不该被写入模型）；具名卷与 `postgres_data` 风格一致 |
 | `--hotword` | 挂 `models/hotwords.txt` | 省略 | 仓库内没有该文件；缺文件可能让服务起不来。热词等有需求再加 |
