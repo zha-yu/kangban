@@ -44,7 +44,9 @@
 ## 实现留痕（偏离说明与技术债）
 
 - **vad-assets 双份存储（技术债，待 Day 4+ 部署定型时处置）**：TEN-VAD WASM 资产（~12.7MB，5 文件）在 `spikes/reference/asr/.../sherpa-onnx/`（原件）与 `frontend/public/vad-assets/`（前端可服务副本）各存一份。原因：Vite 只能从 `frontend/public/` 对外提供静态文件，够不着 spikes 目录；复制是零配置的可靠做法。代价：仓库体积 +12.7MB，原件更新需手动同步副本。备选去重方案：vite dev middleware + nginx `location /vad-assets/ alias` 指向 spikes。2026-11-05 主理人已知情，取「简单可靠」优先。
-- **T-H 按「无 refresh → 过期回登录」兜底口径先行（待 A2 结论对齐）**：A2 的设备会话 refresh 核对结论截至本卡 v1.4 尚未随卡登记（contracts.md v1.0 标注待契约会确认），A4 先落地兜底：①载入时 `sessionValid()` 门控；②会话中 30s 周期 + visibilitychange 校验 `expires_at`，过期即清会话回登录；③WS 4401/auth_fail 与 REST 401 均回调回登录。若契约会产出 refresh 通道结论，仅需替换 expires_at 校验为预刷新逻辑，回登录分支保留。
+- **T-H 已定案：无 refresh 通道，过期 → 回登录（方案 A，主理人 2026-11-05 裁决）**：实现为终态——①载入时 `sessionValid()` 门控；②会话中 30s 周期 + visibilitychange 校验 `expires_at`，过期即清会话回登录；③WS 4401/auth_fail 与 REST 401 均回调回登录。原「待 A2 refresh 结论对齐」的预刷新层不再需要。
+- **preRoll 补发侧归属（A2 裁决 2026-11-05）：服务端不回溯轨道，pad 自己补发**——speechstart 发 `asr_start` 后，AudioWorklet 把 preRoll 环形缓冲（10 帧）经 WebRTC 输出轨回放补发（C2 WS 为纯 JSON 文本帧无音频帧消息，轨回放是唯一不动契约的通道）；A1 侧将收到的补发帧拼进识别流。已实现：worklet 内置环形缓冲 + `flush_preRoll` 命令；主线程环形缓冲保留给 C3 降级 WAV，两者独立。回放期间实时样本按重采样相位正常累计、回放后补齐，输出总数守恒。
+- **打断双层口径（A2 裁决 2026-11-05）：前端立即停播 + 服务端停写轨**——前端 speechstart 同一刻本地 `audio.pause()`，不等任何服务端消息（已实现）；A3 收到 `asr_start` 停止写轨并清缓冲。⚠ A3 媒体层尚未落码（`set_media_handler` 空位），联调前服务端不会实际中断 TTS，前端行为不受影响。
 
 ## 变更记录
 
@@ -55,3 +57,5 @@
 | v1.2 | 2026-11-05 | 主理人裁决：登录错误映射统一 401 口径（设备不存在/密钥不匹配/已锁定同码，防存在性探测），废除原「404 重输/403 停用」两行；依据 E4 实测（错密钥与未知设备均 401）与接口契约文档 E4 行；同步修订 adhoc-20261105 §2.4 |
 | v1.3 | 2026-11-05 | 新增「实现留痕」节：登记 vad-assets 双份存储技术债（spikes 原件 + frontend/public 副本，~12.7MB），原因与备选去重方案留档，主理人已知情 |
 | v1.4 | 2026-11-05 | T-H 落地留痕：A2 refresh 结论未出，A4 先按「无 refresh → 过期回登录」兜底口径实现（载入门控 + 30s/visibilitychange 守护 + 4401/401 回登录），待契约会结论对齐 |
+| v1.5 | 2026-11-05 | 主理人裁决：设备会话**不设 refresh 通道，过期 → 重新登录（方案 A）**，T-H 兜底实现即终态，预刷新层取消；同步修订 adhoc-20261105 §3.3（删除「token 预刷新阈值」常量行） |
+| v1.6 | 2026-11-05 | A2 裁决落地：①preRoll 补发侧归属=pad——worklet 新增轨上回放补发（`flush_preRoll`），修正原「服务端轨内回溯」理解；②打断双层口径定案——前端本地立即停播（已实现）+ A3 收 asr_start 停写轨（A3 未落码，联调前不生效），前端不等服务端。收口会四项待办中第 1、2 项就此关闭 |
