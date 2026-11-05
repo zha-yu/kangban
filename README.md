@@ -212,6 +212,26 @@ docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:a
 
 硬性数值（`MAX_TOOL_CALLS=8`、0.85 阈值、用药四次触达、19:00–20:00 采集窗口、72h 音频保留等）在 [`AGENTS.md`](AGENTS.md) §7 有完整清单，**改动需走评审**。
 
+### 7.1 Day 2 验收记录（2026-11-05）
+
+三层评审顺序：AI 自审 diff → `pytest` 全绿 → 人工抽查 `auth` / JWT 与 `0002` 迁移（AGENTS §5）。
+
+| DoD 项 | 结论 | 取证 |
+| --- | --- | --- |
+| `alembic upgrade head` / `downgrade -1` 双向可跑 | ✅ | 升降级闭环后 `alembic current` = `0003_fix_day1_ck_names (head)` |
+| 错密码 401 / 伪造 token 401 / 停用后旧 token 401 | ✅ | `tests/test_auth_api.py`（含 `test_login_wrong_password_returns_401`、`test_fake_token_returns_401`、`test_disabled_account_old_token_401`） |
+| `/auth/me` 解角色、设备 token 解 `device_id` | ✅ | `test_current_identity_staff` / `test_device_session_success`；Iter 1 实测返回 `{kind: staff, role: admin, ...}` |
+| 非管理员 `POST /elders` 403、护工查非负责长者 403 | ✅ | `test_t02`、`test_t04`/`test_t05` + `tests/test_auth_attacks.py` |
+| 3 条攻击用例入库（伪造 / 越权建档 / 设备重放） | ✅ | `tests/test_auth_attacks.py`，全部走真实依赖与真实库 |
+| `pytest` 全绿、`ruff check app tests` 干净 | ✅ | 270 passed；`All checks passed!` |
+| Iter 1 演示一次走通 | ✅ | 登录 200 → 解角色 200 → 建档 201 → 读 200 → 改 200 → 列表 200 → 归档 200；日志 18 处携带同一 `trace_id` |
+
+遗留（不属本卡，已发回对应主责人）：
+
+- `ruff format --check app tests` 在 `app/api/auth.py`、`app/services/auth_service.py`、`tests/test_auth_api.py` 三处红，属 task-5 合入代码；
+- `mypy app` 在 `app/api/elders.py:86`（`Awaitable` 与父类 `Coroutine` 不兼容）和 `app/services/device_service.py`（可空列传给非空字段）两处红，属 task-6 合入代码；
+- 人工逐行审查 `app/main.py` 的 router 装配与 `tests/test_auth_attacks.py` 后，task-7 方可置为 ✅。
+
 ---
 
 ## 8. 已知限制与降级矩阵
