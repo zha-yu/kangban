@@ -82,6 +82,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(auth_api.router, prefix="/api")
     application.include_router(elders.router)
     application.include_router(devices.router)
+    application.include_router(audio_api.router)  # /api/audio 降级上传（C3，路由自带前缀）
     application.include_router(signaling.router)  # /ws/signal 无 /api 前缀（契约裁决 A-03）
 
     # ---------- 全局 exception handler（契约 §7） ----------
