@@ -662,6 +662,14 @@ critical_path:
   - "CLOSE"
 
 handoffs:
+  - at: "11:30"
+    from: "A3"
+    to: "A5"
+    item: "30 ms 帧 handoff（G2）"
+    required_evidence:
+      - "30 ms 帧 960 B / 480 samples，来自同一 20 ms 规范流"
+      - "逐帧喂入 A5 VadSession，A3 不复制判定算法"
+      - "speech_start/speech_end 经 on_vad_event 回调，segment 仅 speechend 且只留内存"
   - at: "12:00"
     from: "A3"
     to: "A3"

@@ -10,10 +10,13 @@
   `RTCIceCandidate` JSON 字符串和原始 SDP candidate）、ICE 超时看门狗与失败回调；
 - `begin_turn` / `end_turn`：600 ms preRoll、60 ms ASR 帧、A1 `ASRProvider.stream()`；
 - `enqueue_tts_pcm` / `barge_in`：TTS 16→48 kHz 写轨、有界队列、播放代际；
-- 音频纯工具：PyAV 有状态重采样、20 ms 规范帧、60/30 ms 双缓冲。
+- 音频纯工具：PyAV 有状态重采样、20 ms 规范帧、60/30 ms 双缓冲；
+- A3 → A5 帧交接：30 ms 帧喂给 `app.audio.vad.VadSession`，判决结果经
+  `on_vad_event` 以 `speech_start` / `speech_end` 事件回调出去（A3 不复制 VAD 算法）；
+- A2 的 `/ws/signal` handler 接线（offer / ice / asr_start / asr_end）。
 
-**尚未接**：A2 的 `/ws/signal` 实际路由、A5 的服务端 VAD 判定回调、真实浏览器
-H1–H3 联调。本文件不直接发 WebSocket、不切 REST、不写业务回复。
+**尚未接**：真实浏览器 H1–H3 联调；服务端 VAD 事件的上层策略（C2 尚无对应客户端
+消息，A2 当前只记录事件）。本文件不直接发 WebSocket、不切 REST、不写业务回复。
 
 约束（与 A3 任务卡一致）：
 
@@ -50,6 +53,7 @@ from aiortc.mediastreams import MediaStreamError, MediaStreamTrack
 from aiortc.sdp import candidate_from_sdp
 
 from app.audio.asr import ASRError, ASREvent, ASREventKind, ASRProvider, build_asr
+from app.audio.vad import VadSession
 from app.core.config import Settings, get_settings
 
 if TYPE_CHECKING:
@@ -92,6 +96,30 @@ _LOOPBACK_ICE_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _ICE_URL_SCHEMES = frozenset({"stun", "turn", "turns"})
 
 AsrEventCallback = Callable[[str, ASREvent], Awaitable[None]]
+
+
+# ------------------------------------------------------------------ VAD 交接事件
+# A3 只供 30 ms 帧，判决由 A5 的 VadSession 完成；本层只把状态跃迁翻译成事件，
+# 不复制阈值、不重算语音判定。segment 仅在 SPEECH_END 时携带，只留在内存。
+
+
+class VadEventKind(StrEnum):
+    """服务端 VAD 判决事件（供 A2 在端侧 VAD 兜底时消费）。"""
+
+    SPEECH_START = "speech_start"
+    SPEECH_END = "speech_end"
+
+
+@dataclass(frozen=True, slots=True)
+class VadEvent:
+    """一次 VAD 判决跃迁；segment 为 A5 切出的完整语音段（含其 600 ms preRoll）。"""
+
+    kind: VadEventKind
+    segment: bytes | None = None
+
+
+# A2 消费；本层不发明 C2 客户端消息，也不替 A2 决定是否开/关 ASR turn。
+VadEventCallback = Callable[[str, VadEvent], Awaitable[None]]
 
 
 # ------------------------------------------------------------------ 状态与异常
@@ -664,8 +692,9 @@ class MediaSession:
 
     已接：running loop 捕获、PC 创建、offer/answer、ICE candidate 缓存/添加、ICE 超时
     看门狗与失败回调、收轨重采样分帧、600 ms preRoll、`begin_turn`/`end_turn`、ASR 事件
-    回调、TTS 16→48 kHz 写轨、`barge_in` 播放代际、幂等关闭与资源观测。
-    未接：真实浏览器/A2 WS 联调、A5 VAD 判定回调；H1/H2/H3 仍待联调。
+    回调、TTS 16→48 kHz 写轨、`barge_in` 播放代际、幂等关闭与资源观测；30 ms 帧喂
+    A5 `VadSession` 并经 `on_vad_event` 回调判决事件。
+    未接：真实浏览器/A2 WS 联调；服务端 VAD 事件的上层策略（C2 未冻结对应消息）。
     """
 
     def __init__(
@@ -677,6 +706,7 @@ class MediaSession:
         asr_provider: ASRProvider | None = None,
         on_asr_event: AsrEventCallback | None = None,
         on_media_failed: MediaFailureCallback | None = None,
+        on_vad_event: VadEventCallback | None = None,
     ) -> None:
         if not connection_id:
             raise ValueError("connection_id must not be empty")
@@ -696,6 +726,9 @@ class MediaSession:
         self._asr_provider = asr_provider
         self._on_asr_event = on_asr_event
         self._on_media_failed = on_media_failed
+        self._on_vad_event = on_vad_event
+        # A5 的判决器：仅在有 on_vad_event 消费者时惰性创建，避免无兜底需求的连接白跑 VAD。
+        self._vad_judge: VadSession | None = None
         self._ice_timeout_task: asyncio.Task[None] | None = None
         self._failure_close_task: asyncio.Task[None] | None = None
         self._pre_roll = PreRollBuffer()
@@ -1416,6 +1449,64 @@ class MediaSession:
         for asr in asr_frames:
             self._pre_roll.append(asr)
             self._push_asr_frame(asr.data)
+        for vad in vad_frames:
+            self._feed_vad_frame(vad)
+
+    def _feed_vad_frame(self, frame: PcmFrame) -> None:
+        """把 30 ms 帧交给 A5 的 VadSession，只翻译状态跃迁，不复制判定逻辑。"""
+        if self._on_vad_event is None:
+            return
+        judge = self._vad_judge
+        if judge is None:
+            judge = VadSession(aggressiveness=self.config.vad_aggressiveness)
+            self._vad_judge = judge
+
+        was_speech = judge.is_speech
+        segment = judge.feed_frame(frame.data)
+        if not was_speech and judge.is_speech:
+            self._schedule_vad_event(VadEvent(kind=VadEventKind.SPEECH_START))
+        if segment is not None:
+            self._schedule_vad_event(VadEvent(kind=VadEventKind.SPEECH_END, segment=segment))
+
+    def _schedule_vad_event(self, event: VadEvent) -> None:
+        # 帧循环是同步路径：事件用同 loop 任务派发，避免在 recv 路径里 await 回调。
+        if self._on_vad_event is None or self._state in (
+            MediaState.CLOSING,
+            MediaState.CLOSED,
+            MediaState.FAILED,
+        ):
+            return
+        try:
+            self.spawn(self._emit_vad_event(event))
+        except MediaClosedError:
+            return
+
+    async def _emit_vad_event(self, event: VadEvent) -> None:
+        # 只记录事件类型与字节数，不打印原始音频内容。
+        _log_event(
+            "vad event",
+            trace_id=self.trace_id,
+            connection_id=self.connection_id,
+            turn_id=self._turn_id,
+            state=self._state.value,
+            reason=event.kind.value,
+            segment_bytes=len(event.segment) if event.segment is not None else 0,
+        )
+        callback = self._on_vad_event
+        if callback is None:
+            return
+        try:
+            await callback(self.connection_id, event)
+        except Exception as exc:
+            _log_event(
+                "vad event callback failed",
+                trace_id=self.trace_id,
+                connection_id=self.connection_id,
+                turn_id=self._turn_id,
+                state=self._state.value,
+                reason="callback_error",
+                error_type=type(exc).__name__,
+            )
 
     def _push_asr_frame(self, data: bytes) -> None:
         queue = self._asr_queue
@@ -1474,6 +1565,9 @@ class MediaSession:
         self._normalizer.reset()
         self._splitter.reset()
         self._pre_roll.clear()
+        if self._vad_judge is not None:
+            self._vad_judge.reset()
+            self._vad_judge = None
         self._playback_turn_id = None
         self._playback_generation += 1
         self._drain_playback_queue()
@@ -1570,6 +1664,7 @@ class MediaSessionRegistry:
         asr_provider: ASRProvider | None = None,
         on_asr_event: AsrEventCallback | None = None,
         on_media_failed: MediaFailureCallback | None = None,
+        on_vad_event: VadEventCallback | None = None,
     ) -> MediaSession:
         """建立会话占位；不创建 PC、不做鉴权、不解析 WS。"""
         self._ensure_loop()
@@ -1584,6 +1679,7 @@ class MediaSessionRegistry:
             asr_provider=asr_provider,
             on_asr_event=on_asr_event,
             on_media_failed=on_media_failed,
+            on_vad_event=on_vad_event,
         )
         self._sessions[connection_id] = session
         _log_event(
@@ -1697,6 +1793,27 @@ def _asr_callback(device_id: str, trace_id: str) -> AsrEventCallback:
     return _on_asr_event
 
 
+def _vad_callback(trace_id: str) -> VadEventCallback:
+    """A3 → A2 的 VAD 事件出口。
+
+    C2 尚未冻结服务端 VAD 的客户端消息，因此这里只记录事件；是否据此开/关
+    ASR turn 或触发兜底打断，由 A2 在契约补齐后决定，A3 不越权。
+    """
+
+    async def _on_vad_event(connection_id: str, event: VadEvent) -> None:
+        _log_event(
+            "vad event delivery",
+            trace_id=trace_id,
+            connection_id=connection_id,
+            turn_id=None,
+            state="-",
+            reason=event.kind.value,
+            segment_bytes=len(event.segment) if event.segment is not None else 0,
+        )
+
+    return _on_vad_event
+
+
 def _failure_callback(
     registry: MediaSessionRegistry, device_id: str, trace_id: str
 ) -> MediaFailureCallback:
@@ -1740,6 +1857,7 @@ async def _handle_offer(
         conn.trace_id,
         on_asr_event=_asr_callback(device_id, conn.trace_id),
         on_media_failed=_failure_callback(registry, device_id, conn.trace_id),
+        on_vad_event=_vad_callback(conn.trace_id),
     )
 
     async def _close_on_disconnect() -> None:
@@ -1870,6 +1988,9 @@ __all__ = [
     "PcmFrame",
     "PcmFramer",
     "PreRollBuffer",
+    "VadEvent",
+    "VadEventCallback",
+    "VadEventKind",
     "handle_signal_message",
     "install_signaling_handler",
     "uninstall_signaling_handler",
