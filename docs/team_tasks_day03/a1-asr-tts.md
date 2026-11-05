@@ -1,6 +1,6 @@
 # A1 · ASR/TTS 适配层
 
-> 状态：进行中　｜　版本：v1.0　｜　日期：2026-11-05
+> 状态：已完成（N8 真链路未达成，见文末收口记录）　｜　版本：v1.1　｜　日期：2026-11-05
 > 关联：docs/team_tasks_day03/README.md（分工总览）
 > 上游依据：day-03 计划 T1（asr/tts 协议+工厂+置信度进 trace）｜adhoc 方案 §M1 侧链｜技术文档 Day 3 清单
 > 变更记录见文末
@@ -48,3 +48,37 @@
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-05 | 初稿 |
+| v1.1 | 2026-11-05 | 状态转「已完成」；补收口记录 |
+
+## 收口记录（2026-11-05）
+
+**提交**：`a4cb857` `feat(audio): Day3 A1 ASR/TTS 适配层`（17 files, +2593/−4）
+**计划件**：`docs/plans/task-a1-ASR与TTS适配层.md` v1.2、`docs/plans/task-a1-DAG.md` v1.2
+
+### 交付对照任务卡
+
+| 交付物 | 状态 | 落点 |
+| --- | --- | --- |
+| ① C1 契约冻结 | ✅ | `app/audio/asr.py` 行 39–92，逐字对齐 `contracts.md` §C1；09:30 前交付 A2/A3/A5 |
+| ② FunASR 适配器 | ✅（代码） | `FunASRWSProvider`：握手 2pass、`subprotocols=["binary"]`、`ping_interval=None`、`asyncio.timeout(15)`、`is_speaking/is_end` 收尾 |
+| ③ 错误二分类 | ✅ | `ASRUnavailable`（可退避）/ `ASRProtocolError`（直接降级），各有用例 |
+| ④ Mock 与工厂分派 | ✅ | `build_asr()` / `build_tts()`，`mock\|funasr\|cloud` 与 `mock\|edge\|cloud`，未知值 warning 归一到 mock |
+| ⑤ 云 API 骨架 | ✅ | `CloudASRProvider` / `CloudTTSProvider`，等教师 key |
+
+### 实测
+
+- `ruff check .` → All checks passed
+- `ruff format --check .` → 49 files already formatted
+- 单点：`tests/test_audio_asr.py` **33 passed**、`tests/test_audio_tts.py` **38 passed**
+- 全量（带库一次性容器）：**337 passed, 4 skipped**（skip 为容器无 ffmpeg 的真转码用例）
+
+### 未达成
+
+**N8 FunASR 真链路**：镜像两轮共 41 分钟未拉全（12 层中 3 层解压完成），`ws_probe.py` 未对真容器跑过。
+已按 P-A1-1 在 `spikes/funasr/README.md` §4/§6 如实记录，后续 5 步待办也写在那里。**未伪造任何出字结果。**
+
+### 给下游的三条硬话
+
+1. `ASRProvider.stream()` 必须 `async for` 读到自然结束；提前退出用 `contextlib.aclosing`。
+2. `FINAL` / `ERROR` 恒为最后一个事件。
+3. `confidence` 在 FunASR 链路恒为 `None`，只进 trace，不参与业务决策。
