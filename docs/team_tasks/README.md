@@ -15,12 +15,7 @@
 | `task-4` | Step2 鉴权内核（security / 依赖注入 / runtime_context） | B | 🚧 进行中（判定层 `16513da` + 人员/工牌/设备接线全部落地，剩 T5 测试收口与 T6 人审） | `task-1` ✅ | `app/core/security.py`、`app/core/auth.py`、`app/core/runtime_context.py`、`tests/test_security.py` |
 | `task-5` | Step3 登录与凭证接口 | C | ✅ 已完成 | `task-3` ✅、`task-4` ✅ | `app/api/schemas/auth.py`、`app/services/auth_service.py`、`app/api/auth.py`、`tests/test_auth_api.py`、`app/main.py`（router 注册 + 全局 handler） |
 | `task-6` | Step4 长者 CRUD + 设备绑定 + 范围过滤 | D | ✅ 已完成（2026-11-04） | `task-3` ✅、`task-4` ✅ | `app/services/{elder,device}_service.py`、`app/api/{elders,devices}.py`、`tests/test_elders_api.py` |
-| `task-7` | Step5 验收收口（攻击用例 + router 注册 + DoD） | E | ⬜ 待认领 | `task-5` ✅、`task-6` ✅ | `tests/test_auth_attacks.py`、`app/main.py`、`app/api/__init__.py`、`README.md` |
-=======
-| `task-4` | Step2 鉴权内核（security / 依赖注入 / runtime_context） | B | 🚧 进行中（判定层 `16513da` + 接线 `2107292` + T5 测试收口 `92ea5ae` 全部落地，227 条 0 skip、鉴权三模块覆盖 99.45%；剩 T6 人工逐行审查） | `task-1` ✅ | `app/core/security.py`、`app/core/auth.py`、`app/core/runtime_context.py`、`tests/test_security.py` |
-| `task-5` | Step3 登录与凭证接口 | C | 🔒 锁定 | `task-3`、`task-4` | `app/services/auth_service.py`、`app/api/auth.py`、`tests/test_auth_api.py` |
-| `task-6` | Step4 长者 CRUD + 设备绑定 + 范围过滤 | D | ✅ 已完成（2026-11-04） | `task-3`、`task-4` | `app/services/{elder,device}_service.py`、`app/api/{elders,devices}.py`、`tests/test_elders_api.py` |
-| `task-7` | Step5 验收收口（攻击用例 + router 注册 + DoD） | E | 🔒 锁定 | `task-5`、`task-6` | `tests/test_auth_attacks.py`、`app/main.py`、`app/api/__init__.py`、`README.md` |
+| `task-7` | Step5 验收收口（攻击用例 + router 注册 + DoD） | E | ✅ 已完成 | `task-5` ✅、`task-6` ✅ | `tests/test_auth_attacks.py`、`app/main.py`、`app/api/__init__.py`、`README.md` |
 
 图例：⬜ 待认领 · 🚧 进行中 · ✅ 已完成 · 🔒 锁定（前置未完成） · ⛔ 阻塞
 
@@ -61,7 +56,7 @@ task-1 ✅ ─┬─► task-3 ✅ 已完成（A）
 task-3 ✅ ─┐
 task-4 ✅ ─┼─► task-5 ✅ 已完成（C）
            └─► task-6 ─┐
-                       └─► task-7 ⬜ 可认领（E，task-5 已解锁）
+                       └─► task-7 ✅ 已完成（A）
 
 task-2 全程独立，谁手快谁先做（模板库，不依赖任何卡）
 ```
