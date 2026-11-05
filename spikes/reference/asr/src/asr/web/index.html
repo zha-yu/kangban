@@ -1,0 +1,631 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>康伴 · 语音空间</title>
+  <style>
+    :root {
+      font-family: Inter, "Microsoft YaHei", sans-serif;
+      color: #193a36;
+      background: #f3f6f3;
+      font-synthesis: none
+    }
+
+    * {
+      box-sizing: border-box
+    }
+
+    body {
+      margin: 0
+    }
+
+    header {
+      height: 82px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 5%;
+      border-bottom: 1px solid #dae4de;
+      background: #fafcf9
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 20px;
+      font-weight: 700
+    }
+
+    .logo {
+      background: #236455;
+      color: white;
+      border-radius: 12px;
+      padding: 10px;
+      font-size: 21px
+    }
+
+    .tag {
+      font-size: 12px;
+      color: #607971;
+      background: #e6eee7;
+      border-radius: 30px;
+      padding: 8px 13px
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 44px auto;
+      padding: 0 24px
+    }
+
+    .eyebrow {
+      font-size: 11px;
+      letter-spacing: 3px;
+      color: #648477
+    }
+
+    h1 {
+      font-size: 34px;
+      letter-spacing: -1px;
+      margin: 12px 0
+    }
+
+    p {
+      color: #6c8078;
+      font-size: 14px;
+      line-height: 1.8
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 330px 1fr;
+      gap: 24px;
+      margin-top: 30px
+    }
+
+    .card {
+      background: #fff;
+      border: 1px solid #dce5dd;
+      border-radius: 20px;
+      padding: 26px
+    }
+
+    h2 {
+      font-size: 17px;
+      margin: 0 0 8px
+    }
+
+    .num {
+      font-size: 11px;
+      color: #648477;
+      margin-bottom: 16px;
+      letter-spacing: 2px
+    }
+
+    label {
+      display: block;
+      color: #4c655c;
+      font-size: 13px;
+      margin: 24px 0 9px
+    }
+
+    label.toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 18px
+    }
+
+    .toggle input[type=checkbox] {
+      width: auto;
+      margin-right: 10px
+    }
+
+    .toggle .switch {
+      position: relative;
+      width: 40px;
+      height: 22px;
+      background: #cbd7cf;
+      border-radius: 22px;
+      cursor: pointer;
+      transition: .2s
+    }
+
+    .toggle .switch::after {
+      content: '';
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 16px;
+      height: 16px;
+      background: #fff;
+      border-radius: 50%;
+      transition: .2s
+    }
+
+    .toggle input[type=checkbox] {
+      display: none
+    }
+
+    .toggle input[type=checkbox]:checked+.switch {
+      background: #245f50
+    }
+
+    .toggle input[type=checkbox]:checked+.switch::after {
+      transform: translateX(18px)
+    }
+
+    .toggle-label {
+      flex: 1;
+      color: #4c655c;
+      font-size: 13px;
+      margin: 0
+    }
+
+    input {
+      width: 100%;
+      padding: 12px 14px;
+      font: inherit;
+      font-size: 14px;
+      border-radius: 9px;
+      border: 1px solid #d4dfd5;
+      background: #fbfcfa;
+      accent-color: #236455
+    }
+
+    select {
+      width: 100%;
+      padding: 12px 14px;
+      font: inherit;
+      font-size: 14px;
+      border-radius: 9px;
+      border: 1px solid #d4dfd5;
+      background: #fbfcfa;
+      color: #193a36;
+      accent-color: #236455
+    }
+
+    button {
+      font: inherit;
+      cursor: pointer;
+      border: 0;
+      border-radius: 10px;
+      padding: 13px 18px;
+      font-size: 14px;
+      transition: .15s
+    }
+
+    button:disabled {
+      opacity: .45;
+      cursor: not-allowed
+    }
+
+    button:focus-visible,
+    input:focus-visible {
+      outline: 3px solid #8ac4ad;
+      outline-offset: 3px
+    }
+
+    .secondary {
+      background: #e9f0e9;
+      color: #245647;
+      width: 100%;
+      margin-top: 15px
+    }
+
+    .primary {
+      color: white;
+      background: #245f50;
+      min-width: 180px
+    }
+
+    .stop {
+      background: #f5e8df;
+      color: #915336;
+      margin-left: 10px
+    }
+
+    .profile {
+      margin: 18px 0;
+      padding: 14px;
+      background: #f3f6f0;
+      border-radius: 10px;
+      font-size: 13px;
+      line-height: 1.8
+    }
+
+    .hint {
+      font-size: 12px;
+      margin-bottom: 0
+    }
+
+    .session {
+      min-height: 520px;
+      display: flex;
+      flex-direction: column
+    }
+
+    .session-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start
+    }
+
+    .badge {
+      background: #edf2ed;
+      padding: 6px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      color: #557062
+    }
+
+    .orb-area {
+      display: flex;
+      align-items: center;
+      flex-direction: column;
+      padding: 26px 0 12px
+    }
+
+    .orb {
+      height: 116px;
+      width: 116px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 30%, #d6e9d4, #8dbba3 65%, #659f86);
+      box-shadow: 0 0 0 16px #f1f6ec, 0 0 0 32px #f8faf5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 30px
+    }
+
+    .orb svg {
+      width: 38px;
+      stroke: #275a48
+    }
+
+    .active .orb {
+      animation: breathe 1.5s ease-in-out infinite
+    }
+
+    @keyframes breathe {
+      50% {
+        box-shadow: 0 0 0 22px #ebf3e6, 0 0 0 38px #f8faf5
+      }
+    }
+
+    #state {
+      font-size: 18px;
+      margin: 16px 0 4px
+    }
+
+    #detail {
+      font-size: 13px;
+      color: #718177;
+      min-height: 22px
+    }
+
+    .actions {
+      text-align: center;
+      margin: 8px 0 16px
+    }
+
+    .statusline {
+      font-size: 12px;
+      text-align: center;
+      color: #718177
+    }
+
+    .results {
+      margin-top: 24px
+    }
+
+    .result-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center
+    }
+
+    .text {
+      font-size: 20px;
+      line-height: 1.9;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      min-height: 72px;
+      padding-top: 20px
+    }
+
+    .empty {
+      color: #a0aaa2;
+      font-size: 15px
+    }
+
+    #live {
+      color: #739080;
+      font-size: 17px;
+      line-height: 1.8;
+      white-space: pre-wrap
+    }
+
+    .error {
+      background: #fff1e9;
+      color: #9b4b2e;
+      padding: 12px 16px;
+      border-radius: 10px;
+      margin-top: 20px;
+      font-size: 14px;
+      white-space: pre-wrap
+    }
+
+    footer {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      color: #7e9185;
+      padding: 24px 0 30px;
+      gap: 20px
+    }
+
+    .steps {
+      display: flex;
+      gap: 20px;
+      font-size: 12px;
+      color: #809286;
+      margin-top: 22px
+    }
+
+    .steps span {
+      flex: 1;
+      border-top: 2px solid #d5e1d4;
+      padding-top: 10px
+    }
+
+    .steps span.current {
+      border-color: #39765e;
+      color: #245f50
+    }
+
+    @media(max-width:760px) {
+      header {
+        padding: 0 24px
+      }
+
+      .grid {
+        grid-template-columns: 1fr
+      }
+
+      main {
+        margin-top: 28px
+      }
+
+      h1 {
+        font-size: 28px
+      }
+
+      .card {
+        padding: 22px
+      }
+
+      footer {
+        flex-direction: column
+      }
+
+      .tag {
+        font-size: 10px
+      }
+
+      .session {
+        min-height: 440px
+      }
+    }
+
+    /* 新增：音量表 + 波形 */
+    .vu-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 10px;
+      font-size: 11px;
+      color: #648477
+    }
+
+    .vu-label {
+      width: 58px;
+      letter-spacing: 1px
+    }
+
+    .vu-bar {
+      flex: 1;
+      height: 10px;
+      background: #e6eee7;
+      border-radius: 6px;
+      overflow: hidden;
+      position: relative
+    }
+
+    .vu-fill {
+      height: 100%;
+      width: 0;
+      background: linear-gradient(90deg, #6db79a 0%, #e8c75a 70%, #d9645a 100%);
+      border-radius: 6px;
+      transition: width .05s linear
+    }
+
+    .vu-markers {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      justify-content: space-between;
+      padding: 0 2px;
+      pointer-events: none
+    }
+
+    .vu-markers span {
+      display: block;
+      width: 1px;
+      height: 100%;
+      background: rgba(0, 0, 0, .08)
+    }
+
+    canvas.wave {
+      width: 100%;
+      height: 60px;
+      margin-top: 6px;
+      border-radius: 10px;
+      background: #0d2a23
+    }
+
+    .audio-clips {
+      margin-top: 18px
+    }
+
+    .audio-clips h3 {
+      font-size: 13px;
+      color: #4c655c;
+      margin: 0 0 10px
+    }
+
+    .clip {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px;
+      background: #f3f6f0;
+      border-radius: 10px;
+      margin-bottom: 8px;
+      font-size: 13px
+    }
+
+    .clip audio {
+      display: none
+    }
+
+    .clip-name {
+      color: #648477;
+      font-size: 11px;
+      white-space: nowrap
+    }
+
+    .clip a {
+      color: #245f50;
+      text-decoration: none;
+      font-size: 12px
+    }
+
+    .play-btn {
+      background: #245f50;
+      color: white;
+      border: 0;
+      border-radius: 20px;
+      padding: 8px 14px;
+      font-size: 13px;
+      cursor: pointer;
+      white-space: nowrap;
+      min-width: 70px
+    }
+
+    .play-btn:hover {
+      background: #1d4b41
+    }
+  </style>
+</head>
+
+<body>
+  <header>
+    <div class="brand"><span class="logo">伴</span>康伴<span style="font-weight:400;color:#8c9b90;font-size:13px">/
+        语音空间</span></div><a class="tag" href="/vad/" style="text-decoration:none">端侧 VAD 示例 ↗</a>
+  </header>
+  <main>
+    <div class="eyebrow">A VOICE THAT FEELS FAMILIAR</div>
+    <h1>听见你，才开始对话。</h1>
+    <p>浏览器检测人声 → 声纹确认身份 → 实时语音识别。</p>
+    <div class="grid">
+      <aside class="card">
+        <div class="num">01 / 声纹档案</div>
+        <h2>让康伴认识你的声音</h2>
+        <p>在安静的环境中，自然说话 6 秒。<br>例如介绍自己，或说说今天的计划。</p>
+        <label for="audioInput">麦克风（输入设备）</label>
+        <select id="audioInput"><option value="">默认麦克风</option></select>
+        <p class="hint" id="inputHint">更改将在下次唤醒 / 录入时生效。点此下拉会请求麦克风权限以列出设备。</p>
+        <label for="name">用户名称</label><input id="name" maxlength="40"
+          placeholder="输入你的称呼" autocomplete="off"><button id="enroll" class="secondary">录入 / 更新声纹</button>
+        <div id="profile" class="profile">正在读取声纹档案…</div><label for="threshold">验证阈值 <output
+            id="thresholdValue">0.55</output></label><input id="threshold" type="range" min="0.30" max="0.90"
+          step="0.01" value="0.55">
+        <p class="hint">阈值越高，验证越严格。建议用本人和其他人的录音测试后调整。</p><label for="vadThreshold">VAD 人声检测阈值 <output
+            id="vadThreshValue">0.35</output></label><input id="vadThreshold" type="range" min="0.10" max="0.90"
+          step="0.01" value="0.35">
+        <p class="hint">越低越敏感（容易触发人声），越高越严格（只响应大声说话）。"说话没反应"就把它调低。</p><label class="toggle"><span
+            class="toggle-label">跳过声纹验证（直接进入识别）</span><input type="checkbox" id="skipVerify"><span
+            class="switch"></span></label>
+        <p class="hint" id="skipHint">开启后无需录入声纹即可直接测试 ASR，适合开发调试阶段。</p>
+      </aside>
+      <section class="card session" id="session">
+        <div class="session-head">
+          <div>
+            <div class="num">02 / 唤醒与识别</div>
+            <h2>开始一次语音对话</h2>
+          </div><span class="badge" id="badge">等待唤醒</span>
+        </div>
+        <div class="orb-area">
+          <div class="orb"><svg viewBox="0 0 40 40" fill="none" stroke-width="2" aria-hidden="true">
+              <rect x="15" y="6" width="10" height="19" rx="5" />
+              <path d="M10 19v2a10 10 0 0 0 20 0v-2M20 31v5M14 36h12" />
+            </svg></div><strong id="state" aria-live="polite">准备好就说句话</strong>
+          <div id="detail">正在加载浏览器端 VAD 模型…</div>
+          <div id="inputInfo" class="hint" style="margin-top:6px"></div>
+        </div><canvas class="wave" id="wave" width="720" height="60" aria-label="实时波形"></canvas>
+        <div class="vu-row"><span class="vu-label">音量</span>
+          <div class="vu-bar">
+            <div class="vu-fill" id="vuFill"></div>
+            <div class="vu-markers">
+              <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+            </div>
+          </div><span class="vu-label" id="vuDb">-60 dB</span>
+        </div>
+        <div class="actions"><button class="primary" id="wake" disabled>唤醒并开始说话</button><button class="stop" id="stop"
+            disabled>结束</button></div>
+        <div class="statusline" id="score">声纹通过后，才会发送音频进行识别</div>
+        <div class="steps"><span id="step1">01 声纹验证</span><span id="step2">02 实时识别</span><span id="step3">03 完成对话</span>
+        </div>
+      </section>
+    </div>
+    <div id="error" class="error" role="alert" hidden></div>
+    <section class="card results">
+      <div class="result-head">
+        <h2>识别内容</h2><button id="clear" class="secondary" style="width:auto;margin:0;padding:7px 12px">清空</button>
+      </div>
+      <div id="final" class="text empty" aria-live="polite">你的话会出现在这里…</div>
+      <div id="live" aria-live="polite"></div>
+      <div class="audio-clips" id="clips"></div>
+    </section>
+    <footer><span>音频经本地后端处理 · 声纹档案保存在本机</span><span>每次唤醒独立验证 · 点击按钮模拟唤醒词</span></footer>
+  </main>
+  <script src="/vad-assets/sherpa-onnx-vad.js"></script>
+  <script src="/vad/ten-vad.js"></script>
+  <script src="/app.js"></script>
+  <script>
+    // Emscripten 生成的 sherpa-onnx-wasm-main-vad.js 会读取这个全局 Module。
+    // 必须在加载 WASM 文件之前预创建并挂上回调，否则 Emscripten 初始化完
+    // 不会通知我们（Module.runtimeInitialized 也不会有）。
+    window.Module = {
+      locateFile: path => '/vad-assets/' + path,
+      setStatus: status => console.log('[WASM]', status),
+      onAbort: reason => {
+        console.error('[WASM] onAbort', reason);
+        const evt = new CustomEvent('wasm-failed', { detail: reason });
+        window.dispatchEvent(evt);
+      },
+      onRuntimeInitialized: () => {
+        console.log('[WASM] onRuntimeInitialized ✅');
+        const evt = new CustomEvent('wasm-ready');
+        window.dispatchEvent(evt);
+      },
+    };
+  </script>
+  <script src="/vad-assets/sherpa-onnx-wasm-main-vad.js"></script>
+</body>
+
+</html>
