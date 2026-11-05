@@ -246,6 +246,39 @@ docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:a
 - `mypy app` 在 `app/api/elders.py:86`（`Awaitable` 与父类 `Coroutine` 不兼容）和 `app/services/device_service.py`（可空列传给非空字段）两处红，属 task-6 合入代码；
 - 人工逐行审查 `app/main.py` 的 router 装配与 `tests/test_auth_attacks.py` 后，task-7 方可置为 ✅。
 
+### 7.2 Day 3 验收记录（2026-11-05）
+
+A5 角色，Blocks 1–4 全部落盘并通过质量门；核心交付为**按住说话降级链路**（WebRTC 主链路不可用时的唯一回退）+ webrtcvad 服务端兜底 VAD + Mock ASR/TTS 依赖注入工厂 + 攻击面+降级话术三场景覆盖。
+
+| DoD 项 | 结论 | 取证 |
+| --- | --- | --- |
+| C3 契约 TypedDict 冻结 | ✅ | `app/api/audio.py` 顶部 `UtteranceReply` / `UtteranceResponse`；`docs/team_tasks_day03/contracts.md` C3 标记已冻结 |
+| webrtcvad 兜底包装层（帧常量 + 前置校验 + VadSession） | ✅ | `app/audio/vad.py`；spikes/vad/spike_webrtcvad.py 已验证底层 webrtcvad 原生抛 `_webrtcvad.Error`（非 ValueError），包装层靠 `valid_rate_and_frame_length` 前置拦截 |
+| VadSession 状态机（preRoll + 静音/说话双状态机 + 30s 强制切段） | ✅ | `feed_frame` / `flush` / `reset` / `is_speech` 四对外契约 |
+| `POST /api/audio/utterance` 完整链路 | ✅ | 鉴权 → WAV 头真实时长校验（不信任客户端 `duration_ms`）→ Mock ASR → Day 3 写死话术 → Mock TTS → `audio_url` |
+| Mock ASR/TTS 依赖注入（支持测试 override unavailable 场景） | ✅ | `_get_default_asr` / `_get_default_tts` 两个 FastAPI 依赖函数；端点签名 Depends 参数；`test_audio_security.py` 通过 `app.dependency_overrides[...] = mock_*_factory(unavailable=True)` 控制 |
+| 降级话术四常量集中 | ✅ | `DEGRADE_TEMPLATES` dict：`asr_unavailable` / `tts_unavailable` / `llm_timeout` / `tool_breaker`，每条 ≤40 字 |
+| Day 3 Mock 链路与后续批次边界清晰 | ✅ | Block 3 注释明确：ASR/TTS/回复分别在 Day 6 接真链路；不引入第二种 VAD 形态；不碰 services/models |
+| `ruff check app tests` 干净 | ✅ | `All checks passed!`（清理脏 `__pycache__` 后重跑） |
+| `pytest` 全绿 | ✅ | **292 passed, 0 failed, 0 skip**（比 Day 2 的 270 增 22：vad 12 + utterance 5 + security 5） |
+| 接口覆盖率 ≥70% | ✅ | **TOTAL 85%**（PRD FR-TC-06 门槛）；audio.py 98%、vad.py 95% |
+| 攻击面增量：伪造 token → 401 | ✅ | `test_fake_token_401` |
+| 攻击面增量：revoked token_hash 轮换 → 401 | ✅ | `test_revoked_device_token_401`（改 DB `device.token_hash` 模拟解绑） |
+| 降级话术场景 1：ASR 不可用 → 503 + 话术 | ✅ | `test_asr_unavailable_503` |
+| 降级话术场景 2：TTS 不可用 → 200 + `audio_url=null` + 话术前缀 | ✅ | `test_tts_unavailable_200` |
+| 降级话术场景 3：ASR+TTS 双不可用 → ASR 先抛 503 | ✅ | `test_asr_then_tts_both_unavailable_asr_wins` |
+| 边界：损坏 WAV 头不 crash | ✅ | `test_corrupt_wav_header_not_crash`（伪造 96 字节 "RIFF\x00..." → `_wav_duration_ms` 内部 `wave.Error` 返回 0 → 正常继续 → 200） |
+| 边界：elder_id 从设备绑定注入，客户端传参被忽略（禁区 9） | ✅ | `test_client_elder_id_ignored`（FastAPI 根本没这参数，自动忽略） |
+
+Day 3 调试中发现并修复的 4 个坑（详见会话，均已写进代码注释/测试）：
+
+| # | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| 1 | 全 0 静音帧 webrtcvad aggressiveness=2 随机判为 speech | webrtcvad 对极低能量帧判定不稳定 | 测试改用低能量非零帧（幅值 5 的 1Hz 正弦波） |
+| 2 | 连续浊音后静音门限 27 帧不够 | webrtcvad 有内置 hangover（句末保护），前 3 帧静音仍判为 speech | 测试补偿 3 帧；生产代码不修（90ms 延迟可接受） |
+| 3 | FastAPI v2 `Form(default=None)` 不能放 `Annotated` 里 | v2 行为变更 | 改 `duration_ms: int \| None = Form(default=None)` |
+| 4 | `Depends` 参数不能放在有默认值的 `Form` 参数之后 | Python 语法限制 | 把 `asr`/`tts` 挪到前面 |
+
 ---
 
 ## 8. 已知限制与降级矩阵
