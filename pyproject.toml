@@ -40,6 +40,9 @@ dependencies = [
     # 本包是 daanzu 维护的同源 fork，import 名仍是 webrtcvad、API 完全一致，
     # 自带 cp310–cp314 的 Windows/macOS/Linux 预编译 wheel，并修了内存泄漏与越界读。
     "webrtcvad-wheels>=2.0.14",
+    # PyAV 是 aiortc 的硬运行时依赖（webrtc.py 直接 import av）。aiortc 包声明里把 av 放在 extra 里，
+    # Docker 构建和 `pip install .` 时不会自动拉取，必须显式声明。
+    "av>=13.0",
     # ---- 鉴权 ----
     "pyjwt[crypto]>=2.9",
     "bcrypt>=4.2",

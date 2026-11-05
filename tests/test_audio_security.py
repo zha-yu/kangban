@@ -26,7 +26,8 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from app.api import audio as audio_api
-from app.api.audio import mock_asr_factory, mock_tts_factory
+from app.audio.asr import ASRProvider, ASRUnavailable
+from app.audio.tts import TTSProvider, TTSUnavailable
 from app.core.auth import (
     CredentialExpiredError,
     CredentialInvalidError,
@@ -249,6 +250,20 @@ def _make_corrupt_wav() -> bytes:
     return b"RIFF" + b"\x00" * 96  # 96 字节全零，wave.open 无法解析
 
 
+class _ASRUnavailableProvider(ASRProvider):
+    """模拟 ASR 不可用：stream() 直接抛 ASRUnavailable。"""
+
+    async def stream(self, audio: AsyncIterator[bytes]) -> AsyncIterator:
+        raise ASRUnavailable("test: asr unavailable")
+
+
+class _TTSUnavailableProvider(TTSProvider):
+    """模拟 TTS 不可用：synthesize() 直接抛 TTSUnavailable。"""
+
+    async def synthesize(self, text: str) -> bytes:
+        raise TTSUnavailable("test: tts unavailable")
+
+
 # ---------------------------------------------------------------------------
 # D1 · ASR 不可用 → 503 + 降级话术
 # ---------------------------------------------------------------------------
@@ -261,7 +276,7 @@ async def test_asr_unavailable_503(
     """override _get_default_asr → unavailable=True → 期望 503。"""
 
     async def _asr_unavailable():
-        return mock_asr_factory(unavailable=True)
+        return _ASRUnavailableProvider()
 
     sec_app.dependency_overrides[audio_api._get_default_asr] = _asr_unavailable
 
@@ -292,7 +307,7 @@ async def test_tts_unavailable_200(
     """override _get_default_tts → unavailable=True → 期望 200 + audio_url=null。"""
 
     async def _tts_unavailable():
-        return mock_tts_factory(unavailable=True)
+        return _TTSUnavailableProvider()
 
     sec_app.dependency_overrides[audio_api._get_default_tts] = _tts_unavailable
 
@@ -323,10 +338,10 @@ async def test_asr_then_tts_both_unavailable_asr_wins(
     """ASR 先调、先抛 → 直接 503；TTS 根本不会被调。"""
 
     async def _asr_down():
-        return mock_asr_factory(unavailable=True)
+        return _ASRUnavailableProvider()
 
     async def _tts_down():
-        return mock_tts_factory(unavailable=True)
+        return _TTSUnavailableProvider()
 
     sec_app.dependency_overrides[audio_api._get_default_asr] = _asr_down
     sec_app.dependency_overrides[audio_api._get_default_tts] = _tts_down

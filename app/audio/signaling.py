@@ -21,6 +21,9 @@ A2 单元（docs/plans/task-a2-信令WS与鉴权.md）的四件事：**连接、
   （`deliver` / `deliver_asr_event` / `set_media_handler`）；A3 不得触碰
   WebSocket 实例、注册表与连接内部状态。
 """
+
+from __future__ import annotations
+
 """C2 · 信令 WS 消息表（冻结人 A2，消费方 A3/A4）。
 
 本文件当前只落 **消息类型**，不实现 `/ws/signal`、鉴权、心跳或断线清理；
@@ -29,8 +32,6 @@ A2 单元（docs/plans/task-a2-信令WS与鉴权.md）的四件事：**连接、
 传输：`WS /ws/signal`，文本帧 JSON，每消息一个对象。
 方向：C→S 客户端发，S→C 服务端发。`token` 只进首帧 `auth`，不进 URL。
 """
-
-from __future__ import annotations
 
 import asyncio
 import contextlib
@@ -42,7 +43,6 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal, TypedDict
 from uuid import UUID
-from typing import Literal, TypedDict
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
