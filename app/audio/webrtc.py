@@ -25,16 +25,26 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import uuid
 from collections import deque
-from collections.abc import Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from enum import StrEnum
+from fractions import Fraction
 from typing import Any
 
 import av
-from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection
+from aiortc import (
+    RTCConfiguration,
+    RTCIceServer,
+    RTCPeerConnection,
+    RTCSessionDescription,
+)
+from aiortc.mediastreams import MediaStreamError, MediaStreamTrack
 
+from app.audio.asr import ASRError, ASREvent, ASREventKind, ASRProvider, build_asr
 from app.core.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
@@ -59,8 +69,18 @@ VAD_FRAME_BYTES = 960
 PRE_ROLL_MS = 600
 PRE_ROLL_FRAMES = PRE_ROLL_MS // ASR_FRAME_MS  # 10 个 60 ms 帧
 
+# 下行占位：answer 必须带音频 m-line；TTS 写轨在 M4 接入前先输出静音。
+DOWNLINK_SAMPLE_RATE = 48_000
+DOWNLINK_FRAME_MS = 20
+DOWNLINK_FRAME_SAMPLES = 960
+
+# 一个 turn 最多缓存 500 个 60 ms 帧（30 秒语音），超出即背压并记录丢弃。
+MAX_ASR_QUEUE_FRAMES = 500
+
 _LOOPBACK_ICE_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _ICE_URL_SCHEMES = frozenset({"stun", "turn", "turns"})
+
+AsrEventCallback = Callable[[str, ASREvent], Awaitable[None]]
 
 
 # ------------------------------------------------------------------ 状态与异常
@@ -484,17 +504,67 @@ def validate_downlink_pcm(pcm: bytes) -> None:
         raise MediaFormatError("downlink PCM must not contain a RIFF/WAVE header")
 
 
+# ------------------------------------------------------------------ 下行占位轨与 ASR 帧迭代
+
+
+class SilentAudioTrack(MediaStreamTrack):
+    """下行静音占位音轨。
+
+    `answer` 必须带音频 m-line，浏览器才会接受 `sendrecv`；TTS 写轨尚未接入前先输出
+    48 kHz/20 ms/960 sample 静音。M4 接入 TTS 后由真实 PCM 队列替换本类。
+    """
+
+    kind = "audio"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._pts = 0
+
+    async def recv(self) -> av.AudioFrame:
+        if self.readyState != "live":
+            raise MediaStreamError
+        # 按实时节奏出帧，避免 aiortc 发送器空转占满 CPU。
+        await asyncio.sleep(DOWNLINK_FRAME_MS / 1000)
+        if self.readyState != "live":
+            raise MediaStreamError
+        frame = av.AudioFrame(format="s16", layout="mono", samples=DOWNLINK_FRAME_SAMPLES)
+        frame.sample_rate = DOWNLINK_SAMPLE_RATE
+        frame.pts = self._pts
+        frame.time_base = Fraction(1, DOWNLINK_SAMPLE_RATE)
+        self._pts += DOWNLINK_FRAME_SAMPLES
+        return frame
+
+
+async def _asr_frame_iterator(queue: asyncio.Queue[bytes | None]) -> AsyncIterator[bytes]:
+    """把会话队列暴露成 C1 `ASRProvider.stream(audio)` 需要的异步迭代器。"""
+    while True:
+        item = await queue.get()
+        if item is None:
+            return
+        yield item
+
+
 # ------------------------------------------------------------------ 会话与 registry
 
 
 class MediaSession:
-    """一个 `connection_id` 的媒体会话骨架。
+    """一个 `connection_id` 的媒体会话。
 
-    当前只负责：running loop 捕获、PC 创建、任务登记、幂等关闭、状态与资源观测。
-    不处理 offer/answer/ICE/ASR/TTS —— 这些等 C1/C2 冻结后由 M3–M5 补。
+    已接：running loop 捕获、PC 创建、offer/answer、收轨重采样分帧、600 ms preRoll、
+    `begin_turn` 启动 ASR、ASR 事件回调、幂等关闭与资源观测。
+    未接：ICE candidate 的显式收发（aiortc 1.15 先把本地 candidate 写进 answer SDP）、
+    `end_turn` flush、TTS PCM 写轨与 `barge_in` —— 等 A2/A4 联调与 M4/M5 再接。
     """
 
-    def __init__(self, connection_id: str, trace_id: str, config: MediaConfig) -> None:
+    def __init__(
+        self,
+        connection_id: str,
+        trace_id: str,
+        config: MediaConfig,
+        *,
+        asr_provider: ASRProvider | None = None,
+        on_asr_event: AsrEventCallback | None = None,
+    ) -> None:
         if not connection_id:
             raise ValueError("connection_id must not be empty")
         try:
@@ -510,6 +580,19 @@ class MediaSession:
         self._turn_id: str | None = None
         self._pc: RTCPeerConnection | None = None
         self._tasks: set[asyncio.Task[None]] = set()
+        self._asr_provider = asr_provider
+        self._on_asr_event = on_asr_event
+        self._pre_roll = PreRollBuffer()
+        self._splitter = DualFrameSplitter()
+        self._normalizer = AudioNormalizer()
+        self._asr_queue: asyncio.Queue[bytes | None] | None = None
+        self._asr_task: asyncio.Task[None] | None = None
+        self._audio_track: MediaStreamTrack | None = None
+        self._playback_track: SilentAudioTrack | None = None
+        self._offer_seen = False
+        self._asr_frames_total = 0
+        self._vad_frames_total = 0
+        self._asr_dropped_frames = 0
 
     @property
     def state(self) -> MediaState:
@@ -527,6 +610,18 @@ class MediaSession:
     def peer_connection(self) -> RTCPeerConnection | None:
         return self._pc
 
+    @property
+    def asr_frames_received(self) -> int:
+        return self._asr_frames_total
+
+    @property
+    def vad_frames_received(self) -> int:
+        return self._vad_frames_total
+
+    @property
+    def asr_frames_dropped(self) -> int:
+        return self._asr_dropped_frames
+
     def create_peer_connection(self) -> RTCPeerConnection:
         """创建 aiortc PC；一个连接只允许一个，重复创建是状态错误。"""
         self._ensure_loop()
@@ -536,6 +631,10 @@ class MediaSession:
 
         servers = self.config.ice_servers()
         self._pc = RTCPeerConnection(RTCConfiguration(iceServers=servers))
+        # 先挂下行占位轨：浏览器 offer 为 sendrecv 时，answer 才会回传音频 m-line。
+        self._playback_track = SilentAudioTrack()
+        self._pc.addTrack(self._playback_track)
+        self._install_handlers(self._pc)
         _log_event(
             "peer connection created",
             trace_id=self.trace_id,
@@ -547,6 +646,308 @@ class MediaSession:
             host_only=not servers,
         )
         return self._pc
+
+    def _install_handlers(self, pc: RTCPeerConnection) -> None:
+        """挂 track / connectionstate 处理器；不直接发 WS、不写业务逻辑。"""
+
+        @pc.on("track")
+        def _on_track(track: MediaStreamTrack) -> None:
+            if track.kind != "audio":
+                track.stop()
+                return
+            if self._state in (MediaState.CLOSING, MediaState.CLOSED):
+                track.stop()
+                return
+            self._audio_track = track
+            self.spawn(self._consume_track(track))
+
+        @pc.on("connectionstatechange")
+        async def _on_connection_state_change() -> None:
+            self._sync_connection_state(pc.connectionState)
+
+    def _sync_connection_state(self, connection_state: str) -> None:
+        if connection_state == "connected":
+            self._state = MediaState.CONNECTED
+        elif connection_state == "failed":
+            self._state = MediaState.FAILED
+        # 不把 "closed" 直接写成 CLOSED：aiortc 可能自行关闭连接，A2 仍需调用
+        # close 才能取消任务/清缓冲；close 自己负责把状态落到 CLOSED。
+        _log_event(
+            "peer connection state changed",
+            trace_id=self.trace_id,
+            connection_id=self.connection_id,
+            turn_id=self._turn_id,
+            state=self._state.value,
+            reason="connection_state",
+            connection_state=connection_state,
+        )
+
+    async def handle_offer(self, sdp: str) -> str:
+        """A2 传入浏览器 offer；返回 answer SDP。重复 offer 直接拒绝（D4）。"""
+        self._ensure_loop()
+        self._ensure_open()
+        if not isinstance(sdp, str) or not sdp.strip():
+            raise MediaFormatError("offer SDP must not be empty")
+        if self._offer_seen:
+            raise MediaStateError("duplicate offer for this connection")
+
+        pc = self._pc
+        if pc is None:
+            pc = self.create_peer_connection()
+
+        _log_event(
+            "offer received",
+            trace_id=self.trace_id,
+            connection_id=self.connection_id,
+            turn_id=self._turn_id,
+            state=self._state.value,
+            reason="offer_received",
+            sdp_length=len(sdp),
+            mline_count=sdp.count("m="),
+            has_fingerprint="a=fingerprint:" in sdp,
+        )
+        try:
+            await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type="offer"))
+        except Exception as exc:
+            self._state = MediaState.FAILED
+            raise MediaFormatError("offer SDP was rejected") from exc
+        self._offer_seen = True
+        self._state = MediaState.OFFER_RECEIVED
+
+        try:
+            answer = await pc.createAnswer()
+            await pc.setLocalDescription(answer)
+        except Exception as exc:
+            self._state = MediaState.FAILED
+            raise MediaFormatError("answer creation failed") from exc
+
+        self._state = MediaState.ANSWER_CREATED
+        local = pc.localDescription
+        if local is None:
+            raise MediaStateError("answer SDP is not available")
+        _log_event(
+            "answer created",
+            trace_id=self.trace_id,
+            connection_id=self.connection_id,
+            turn_id=self._turn_id,
+            state=self._state.value,
+            reason="answer_created",
+            sdp_length=len(local.sdp),
+            mline_count=local.sdp.count("m="),
+        )
+        return local.sdp
+
+    async def begin_turn(self) -> str:
+        """开始新 ASR turn：生成 turn_id，先补 600 ms preRoll，再持续喂 60 ms 帧。"""
+        self._ensure_loop()
+        self._ensure_open()
+        self._cancel_turn(reason="turn_replaced")
+        # 上一 turn 的 <60 ms 残片不再跨 turn 复用；preRoll 仍保留最近 600 ms。
+        self._splitter.reset()
+
+        turn_id = uuid.uuid4().hex
+        self._turn_id = turn_id
+        queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=MAX_ASR_QUEUE_FRAMES)
+        self._asr_queue = queue
+        pre_roll_frames = self._pre_roll.recent()
+        for frame in pre_roll_frames:
+            queue.put_nowait(frame.data)
+
+        provider = self._asr_provider or build_asr()
+        self._asr_provider = provider
+        self._asr_task = self.spawn(self._consume_asr(turn_id, provider, queue))
+        _log_event(
+            "asr turn started",
+            trace_id=self.trace_id,
+            connection_id=self.connection_id,
+            turn_id=turn_id,
+            state=self._state.value,
+            reason="turn_started",
+            pre_roll_frames=len(pre_roll_frames),
+            pre_roll_ms=sum(frame.duration_ms for frame in pre_roll_frames),
+        )
+        return turn_id
+
+    def _cancel_turn(self, *, reason: str) -> None:
+        old_turn = self._turn_id
+        if self._asr_task is not None:
+            self._asr_task.cancel()
+            self._asr_task = None
+        if self._asr_queue is not None:
+            with contextlib.suppress(asyncio.QueueFull):
+                self._asr_queue.put_nowait(None)
+            self._asr_queue = None
+        self._turn_id = None
+        if old_turn is not None:
+            _log_event(
+                "asr turn cancelled",
+                trace_id=self.trace_id,
+                connection_id=self.connection_id,
+                turn_id=old_turn,
+                state=self._state.value,
+                reason=reason,
+            )
+
+    async def _consume_asr(
+        self,
+        turn_id: str,
+        provider: ASRProvider,
+        queue: asyncio.Queue[bytes | None],
+    ) -> None:
+        try:
+            try:
+                events = await provider.stream(_asr_frame_iterator(queue))
+            except ASRError as exc:
+                await self._emit_asr_event(
+                    turn_id, ASREvent(kind=ASREventKind.ERROR, result=None, error=exc)
+                )
+                return
+            async for event in events:
+                await self._emit_asr_event(turn_id, event)
+        except asyncio.CancelledError:
+            raise
+        except ASRError as exc:
+            await self._emit_asr_event(
+                turn_id, ASREvent(kind=ASREventKind.ERROR, result=None, error=exc)
+            )
+        except Exception as exc:
+            _log_event(
+                "asr task failed",
+                trace_id=self.trace_id,
+                connection_id=self.connection_id,
+                turn_id=turn_id,
+                state=self._state.value,
+                reason=MediaFailureReason.TASK_EXCEPTION.value,
+                error_type=type(exc).__name__,
+            )
+        finally:
+            _log_event(
+                "asr turn finished",
+                trace_id=self.trace_id,
+                connection_id=self.connection_id,
+                turn_id=turn_id,
+                state=self._state.value,
+                reason="turn_finished",
+            )
+
+    async def _emit_asr_event(self, turn_id: str, event: ASREvent) -> None:
+        # 不打印转写文本；只记录长度、is_final 与 confidence（允许 None）。
+        if event.error is not None:
+            extra: dict[str, object] = {
+                "error_type": type(event.error).__name__,
+                "text_len": 0,
+                "confidence": None,
+            }
+        elif event.result is not None:
+            extra = {
+                "is_final": event.result.is_final,
+                "text_len": len(event.result.text),
+                "confidence": event.result.confidence,
+            }
+        else:
+            extra = {"text_len": 0, "confidence": None}
+        _log_event(
+            "asr event",
+            trace_id=self.trace_id,
+            connection_id=self.connection_id,
+            turn_id=turn_id,
+            state=self._state.value,
+            reason=event.kind.value,
+            **extra,
+        )
+
+        if self._on_asr_event is None:
+            return
+        try:
+            await self._on_asr_event(turn_id, event)
+        except Exception as exc:
+            _log_event(
+                "asr event callback failed",
+                trace_id=self.trace_id,
+                connection_id=self.connection_id,
+                turn_id=turn_id,
+                state=self._state.value,
+                reason="callback_error",
+                error_type=type(exc).__name__,
+            )
+
+    async def _consume_track(self, track: MediaStreamTrack) -> None:
+        try:
+            while True:
+                frame = await track.recv()
+                if not isinstance(frame, av.AudioFrame):
+                    raise MediaFormatError("audio track returned a non-audio frame")
+                self._process_uplink_frame(frame)
+        except MediaStreamError:
+            self._flush_uplink_tail()
+            _log_event(
+                "audio track ended",
+                trace_id=self.trace_id,
+                connection_id=self.connection_id,
+                turn_id=self._turn_id,
+                state=self._state.value,
+                reason=MediaFailureReason.TRACK_ENDED.value,
+            )
+        except asyncio.CancelledError:
+            raise
+        except MediaFormatError as exc:
+            _log_event(
+                "audio format error",
+                trace_id=self.trace_id,
+                connection_id=self.connection_id,
+                turn_id=self._turn_id,
+                state=self._state.value,
+                reason=MediaFailureReason.FORMAT_ERROR.value,
+                error_type=type(exc).__name__,
+            )
+        except Exception as exc:
+            _log_event(
+                "audio track failed",
+                trace_id=self.trace_id,
+                connection_id=self.connection_id,
+                turn_id=self._turn_id,
+                state=self._state.value,
+                reason=MediaFailureReason.TASK_EXCEPTION.value,
+                error_type=type(exc).__name__,
+            )
+
+    def _process_uplink_frame(self, frame: av.AudioFrame) -> None:
+        for canonical in self._normalizer.feed(frame):
+            asr_frames, vad_frames = self._splitter.feed(canonical)
+            self._dispatch_frames(asr_frames, vad_frames)
+
+    def _flush_uplink_tail(self) -> None:
+        for canonical in self._normalizer.flush():
+            asr_frames, vad_frames = self._splitter.feed(canonical)
+            self._dispatch_frames(asr_frames, vad_frames)
+        asr_frames, vad_frames = self._splitter.flush()
+        self._dispatch_frames(asr_frames, vad_frames)
+
+    def _dispatch_frames(self, asr_frames: list[PcmFrame], vad_frames: list[PcmFrame]) -> None:
+        self._asr_frames_total += len(asr_frames)
+        self._vad_frames_total += len(vad_frames)
+        for asr in asr_frames:
+            self._pre_roll.append(asr)
+            self._push_asr_frame(asr.data)
+
+    def _push_asr_frame(self, data: bytes) -> None:
+        queue = self._asr_queue
+        if queue is None or self._turn_id is None:
+            return
+        try:
+            queue.put_nowait(data)
+        except asyncio.QueueFull:
+            self._asr_dropped_frames += 1
+            if self._asr_dropped_frames == 1 or self._asr_dropped_frames % 10 == 0:
+                _log_event(
+                    "asr frame dropped",
+                    trace_id=self.trace_id,
+                    connection_id=self.connection_id,
+                    turn_id=self._turn_id,
+                    state=self._state.value,
+                    reason=MediaFailureReason.BACKPRESSURE.value,
+                    dropped_frames=self._asr_dropped_frames,
+                )
 
     def spawn(self, coro: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
         """把媒体任务绑定到创建时的 loop，并登记到会话；关闭时统一取消。"""
@@ -574,12 +975,24 @@ class MediaSession:
             pending_tasks=len(self._tasks),
         )
 
+        self._cancel_turn(reason="closed")
         tasks = list(self._tasks)
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
+
+        self._normalizer.reset()
+        self._splitter.reset()
+        self._pre_roll.clear()
+        if self._audio_track is not None:
+            self._audio_track.stop()
+            self._audio_track = None
+        if self._playback_track is not None:
+            self._playback_track.stop()
+            self._playback_track = None
+        self._asr_provider = None
 
         if self._pc is not None:
             try:
@@ -663,6 +1076,8 @@ class MediaSessionRegistry:
         trace_id: str,
         *,
         config: MediaConfig | None = None,
+        asr_provider: ASRProvider | None = None,
+        on_asr_event: AsrEventCallback | None = None,
     ) -> MediaSession:
         """建立会话占位；不创建 PC、不做鉴权、不解析 WS。"""
         self._ensure_loop()
@@ -670,7 +1085,13 @@ class MediaSessionRegistry:
             raise MediaStateError(f"media session {connection_id} already exists")
 
         media_config = config or MediaConfig.from_settings(get_settings())
-        session = MediaSession(connection_id, trace_id, media_config)
+        session = MediaSession(
+            connection_id,
+            trace_id,
+            media_config,
+            asr_provider=asr_provider,
+            on_asr_event=on_asr_event,
+        )
         self._sessions[connection_id] = session
         _log_event(
             "media session created",
@@ -723,6 +1144,10 @@ __all__ = [
     "CANONICAL_FRAME_BYTES",
     "CANONICAL_FRAME_MS",
     "CANONICAL_FRAME_SAMPLES",
+    "DOWNLINK_FRAME_MS",
+    "DOWNLINK_FRAME_SAMPLES",
+    "DOWNLINK_SAMPLE_RATE",
+    "MAX_ASR_QUEUE_FRAMES",
     "PRE_ROLL_FRAMES",
     "PRE_ROLL_MS",
     "SAMPLE_WIDTH_BYTES",
