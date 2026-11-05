@@ -103,3 +103,10 @@ spikes/**/output/
 # ---------- 11. AI / 笔记工具本地配置目录（不入库）----------
 .workbuddy/
 .obsidian/
+
+# ---------- 12. pytest / 临时探针目录 ----------
+# 本机 TEMP 是 8.3 短名（ADMINI~1），tempfile.gettempdir() 会回退到 CWD，
+# pytest 的 tmp_path 工厂因此把 pytest-of-<user>/ 落在仓库根；探针脚本同理。
+pytest-of-*/
+tts-spike-*/
+.probe/

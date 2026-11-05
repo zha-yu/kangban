@@ -131,19 +131,21 @@ async def seeded_db(test_session: AsyncSession) -> dict[str, Any]:
     await test_session.flush()
 
     # 关系绑定
-    test_session.add_all([
-        ElderStaffAssignment(
-            elder_id=elder.elder_id,
-            staff_id=staff.staff_id,
-            relation="primary_care",
-        ),
-        ElderGuardian(
-            elder_id=elder.elder_id,
-            guardian_id=guardian.guardian_id,
-            relation="daughter",
-            status="active",
-        ),
-    ])
+    test_session.add_all(
+        [
+            ElderStaffAssignment(
+                elder_id=elder.elder_id,
+                staff_id=staff.staff_id,
+                relation="primary_care",
+            ),
+            ElderGuardian(
+                elder_id=elder.elder_id,
+                guardian_id=guardian.guardian_id,
+                relation="daughter",
+                status="active",
+            ),
+        ]
+    )
     await test_session.flush()  # 不 commit！留在事务里和测试请求共享
 
     return {
@@ -155,9 +157,7 @@ async def seeded_db(test_session: AsyncSession) -> dict[str, Any]:
 
 
 @pytest.fixture
-async def app_for_test(
-    test_session: AsyncSession, seeded_db: dict[str, Any]
-) -> FastAPI:
+async def app_for_test(test_session: AsyncSession, seeded_db: dict[str, Any]) -> FastAPI:
     """注册 auth.router + 全局 exception handler + override get_session。"""
     from fastapi.responses import JSONResponse
 
@@ -214,9 +214,7 @@ async def app_for_test(
 async def ac(app_for_test: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
     """httpx.AsyncClient —— ASGITransport 跑在 pytest 的 async 循环里，不跨循环。"""
     transport = httpx.ASGITransport(app=app_for_test)
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://testserver"
-    ) as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
         yield client
 
 
@@ -261,9 +259,7 @@ async def test_fake_token_returns_401(ac: httpx.AsyncClient) -> None:
     assert resp.status_code == 401
 
 
-async def test_expired_token_returns_401(
-    ac: httpx.AsyncClient, seeded_db: dict[str, Any]
-) -> None:
+async def test_expired_token_returns_401(ac: httpx.AsyncClient, seeded_db: dict[str, Any]) -> None:
     from datetime import datetime
 
     from app.core.security import KIND_STAFF, TYP_ACCESS, _build_payload
@@ -291,9 +287,7 @@ async def test_expired_token_returns_401(
 # ---------------------------------------------------------------------------
 
 
-async def test_current_identity_staff(
-    ac: httpx.AsyncClient, seeded_db: dict[str, Any]
-) -> None:
+async def test_current_identity_staff(ac: httpx.AsyncClient, seeded_db: dict[str, Any]) -> None:
     login = await ac.post(
         "/api/sessions",
         json={"phone": _TEST_PHONE, "password": _TEST_PASSWORD},
@@ -314,9 +308,7 @@ async def test_current_identity_staff(
     assert str(seeded_db["elder_id"]) in body["scope_elder_ids"]
 
 
-async def test_current_identity_guardian(
-    ac: httpx.AsyncClient, seeded_db: dict[str, Any]
-) -> None:
+async def test_current_identity_guardian(ac: httpx.AsyncClient, seeded_db: dict[str, Any]) -> None:
     login = await ac.post(
         "/api/sessions",
         json={"phone": "13900000001", "password": _TEST_PASSWORD},
@@ -340,9 +332,7 @@ async def test_current_identity_guardian(
 # ---------------------------------------------------------------------------
 
 
-async def test_device_session_success(
-    ac: httpx.AsyncClient, seeded_db: dict[str, Any]
-) -> None:
+async def test_device_session_success(ac: httpx.AsyncClient, seeded_db: dict[str, Any]) -> None:
     resp = await ac.post(
         "/api/device-sessions",
         json={
