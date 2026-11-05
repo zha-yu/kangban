@@ -77,6 +77,9 @@ DOWNLINK_FRAME_SAMPLES = 960
 
 # 一个 turn 最多缓存 500 个 60 ms 帧（30 秒语音），超出即背压并记录丢弃。
 MAX_ASR_QUEUE_FRAMES = 500
+# 下行播放队列最多 15 秒音频（750 个 20 ms 帧）；超限整段拒绝。
+MAX_PLAYBACK_FRAMES = 750
+DOWNLINK_FRAME_BYTES = DOWNLINK_FRAME_SAMPLES * SAMPLE_WIDTH_BYTES
 
 _LOOPBACK_ICE_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _ICE_URL_SCHEMES = frozenset({"stun", "turn", "turns"})
@@ -141,6 +144,10 @@ class MediaFormatError(MediaError):
 
 class MediaConfigError(MediaError):
     """媒体配置不合法（只含数值边界，不回显凭据）。"""
+
+
+class MediaBackpressureError(MediaError):
+    """下行 TTS 队列超过上限；整段拒绝，不做部分入队或静默截断。"""
 
 
 # ------------------------------------------------------------------ 结构化日志
@@ -508,17 +515,53 @@ def validate_downlink_pcm(pcm: bytes) -> None:
 # ------------------------------------------------------------------ 下行占位轨与 ASR 帧迭代
 
 
-class SilentAudioTrack(MediaStreamTrack):
-    """下行静音占位音轨。
+def _tts_pcm_to_48k_frames(pcm: bytes) -> list[PcmFrame]:
+    """16 kHz/16 bit/mono raw PCM → 48 kHz/20 ms/1920 B 帧。
 
-    `answer` 必须带音频 m-line，浏览器才会接受 `sendrecv`；TTS 写轨尚未接入前先输出
-    48 kHz/20 ms/960 sample 静音。M4 接入 TTS 后由真实 PCM 队列替换本类。
+    TTS 是整段输入，每次新起一个有状态 resampler，避免跨越两段回复残留重采样状态。
+    """
+    source = av.AudioFrame(format="s16", layout="mono", samples=len(pcm) // SAMPLE_WIDTH_BYTES)
+    source.sample_rate = TARGET_SAMPLE_RATE
+    source.planes[0].update(pcm)
+
+    resampler = av.AudioResampler(format="s16", layout="mono", rate=DOWNLINK_SAMPLE_RATE)
+    raw = bytearray()
+
+    def _collect(outputs: list[av.AudioFrame]) -> None:
+        for output in outputs:
+            # AudioPlane 可能带对齐填充，必须按 samples 截断。
+            raw.extend(bytes(output.planes[0])[: output.samples * SAMPLE_WIDTH_BYTES])
+
+    _collect(resampler.resample(source))
+    _collect(resampler.resample(None))
+
+    frames: list[PcmFrame] = []
+    for start in range(0, len(raw) - DOWNLINK_FRAME_BYTES + 1, DOWNLINK_FRAME_BYTES):
+        frames.append(
+            PcmFrame(
+                data=bytes(raw[start : start + DOWNLINK_FRAME_BYTES]),
+                sample_rate=DOWNLINK_SAMPLE_RATE,
+            )
+        )
+    remainder = len(raw) % DOWNLINK_FRAME_BYTES
+    if remainder:
+        tail = bytes(raw[-remainder:]) + b"\x00" * (DOWNLINK_FRAME_BYTES - remainder)
+        frames.append(PcmFrame(data=tail, sample_rate=DOWNLINK_SAMPLE_RATE))
+    return frames
+
+
+class PlaybackAudioTrack(MediaStreamTrack):
+    """下行 TTS 播放轨：队列有帧就播，空队列补 48 kHz 静音。
+
+    队列由 `MediaSession` 持有并在 `barge_in` 时清空；本类只负责实时出帧、PTS 单调递增。
+    同一时刻最多允许 1 个在途 20 ms 帧完成，下一帧起新内容/静音。
     """
 
     kind = "audio"
 
-    def __init__(self) -> None:
+    def __init__(self, queue: asyncio.Queue[PcmFrame]) -> None:
         super().__init__()
+        self._queue = queue
         self._pts = 0
 
     async def recv(self) -> av.AudioFrame:
@@ -528,8 +571,23 @@ class SilentAudioTrack(MediaStreamTrack):
         await asyncio.sleep(DOWNLINK_FRAME_MS / 1000)
         if self.readyState != "live":
             raise MediaStreamError
+
         frame = av.AudioFrame(format="s16", layout="mono", samples=DOWNLINK_FRAME_SAMPLES)
         frame.sample_rate = DOWNLINK_SAMPLE_RATE
+
+        pcm: bytes | None = None
+        if not self._queue.empty():
+            item = self._queue.get_nowait()
+            if (
+                item.sample_rate == DOWNLINK_SAMPLE_RATE
+                and item.channels == 1
+                and item.sample_width == SAMPLE_WIDTH_BYTES
+                and item.sample_count == DOWNLINK_FRAME_SAMPLES
+            ):
+                pcm = item.data
+        if pcm is not None:
+            frame.planes[0].update(pcm)
+
         frame.pts = self._pts
         frame.time_base = Fraction(1, DOWNLINK_SAMPLE_RATE)
         self._pts += DOWNLINK_FRAME_SAMPLES
@@ -552,8 +610,9 @@ class MediaSession:
     """一个 `connection_id` 的媒体会话。
 
     已接：running loop 捕获、PC 创建、offer/answer、ICE candidate 缓存/添加、收轨重采样
-    分帧、600 ms preRoll、`begin_turn`/`end_turn`、ASR 事件回调、幂等关闭与资源观测。
-    未接：TTS PCM 写轨、`barge_in` 与播放代际 —— 等 M4/M5 再接。
+    分帧、600 ms preRoll、`begin_turn`/`end_turn`、ASR 事件回调、TTS 16→48 kHz 写轨、
+    `barge_in` 播放代际、幂等关闭与资源观测。
+    未接：真实浏览器/A2 WS 联调、A5 VAD 判定回调；H1/H2/H3 仍待联调。
     """
 
     def __init__(
@@ -588,7 +647,10 @@ class MediaSession:
         self._asr_queue: asyncio.Queue[bytes | None] | None = None
         self._asr_task: asyncio.Task[None] | None = None
         self._audio_track: MediaStreamTrack | None = None
-        self._playback_track: SilentAudioTrack | None = None
+        self._playback_queue: asyncio.Queue[PcmFrame] = asyncio.Queue(maxsize=MAX_PLAYBACK_FRAMES)
+        self._playback_track: PlaybackAudioTrack | None = None
+        self._playback_turn_id: str | None = None
+        self._playback_generation = 0
         self._offer_seen = False
         self._pending_ice: list[tuple[str, str | None, int | None]] = []
         self._pending_ice_keys: set[tuple[str, str | None, int | None]] = set()
@@ -625,6 +687,14 @@ class MediaSession:
     def asr_frames_dropped(self) -> int:
         return self._asr_dropped_frames
 
+    @property
+    def playback_generation(self) -> int:
+        return self._playback_generation
+
+    @property
+    def playback_queue_depth(self) -> int:
+        return self._playback_queue.qsize()
+
     def create_peer_connection(self) -> RTCPeerConnection:
         """创建 aiortc PC；一个连接只允许一个，重复创建是状态错误。"""
         self._ensure_loop()
@@ -634,8 +704,8 @@ class MediaSession:
 
         servers = self.config.ice_servers()
         self._pc = RTCPeerConnection(RTCConfiguration(iceServers=servers))
-        # 先挂下行占位轨：浏览器 offer 为 sendrecv 时，answer 才会回传音频 m-line。
-        self._playback_track = SilentAudioTrack()
+        # 先挂下行播放轨：浏览器 offer 为 sendrecv 时，answer 才会回传音频 m-line。
+        self._playback_track = PlaybackAudioTrack(self._playback_queue)
         self._pc.addTrack(self._playback_track)
         self._install_handlers(self._pc)
         _log_event(
@@ -860,6 +930,7 @@ class MediaSession:
 
         turn_id = uuid.uuid4().hex
         self._turn_id = turn_id
+        self._playback_turn_id = turn_id
         queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=MAX_ASR_QUEUE_FRAMES)
         self._asr_queue = queue
         pre_roll_frames = self._pre_roll.recent()
@@ -925,6 +996,82 @@ class MediaSession:
             state=self._state.value,
             reason="turn_ended",
         )
+
+    async def enqueue_tts_pcm(self, turn_id: str, pcm: bytes) -> None:
+        """TTS 16 kHz raw PCM → 48 kHz/20 ms 帧入有界队列；旧 turn 与超限整段拒绝。"""
+        self._ensure_loop()
+        self._ensure_open()
+        if self._playback_track is None:
+            raise MediaStateError("peer connection is not created")
+
+        if self._playback_turn_id is None or turn_id != self._playback_turn_id:
+            _log_event(
+                "tts pcm rejected",
+                trace_id=self.trace_id,
+                connection_id=self.connection_id,
+                turn_id=turn_id,
+                state=self._state.value,
+                reason="stale_turn",
+            )
+            raise MediaStateError("stale turn for TTS playback")
+
+        validate_downlink_pcm(pcm)
+        frames = _tts_pcm_to_48k_frames(pcm)
+        queue = self._playback_queue
+        if queue.qsize() + len(frames) > MAX_PLAYBACK_FRAMES:
+            _log_event(
+                "tts backpressure",
+                trace_id=self.trace_id,
+                connection_id=self.connection_id,
+                turn_id=turn_id,
+                state=self._state.value,
+                reason=MediaFailureReason.BACKPRESSURE.value,
+                queued_frames=queue.qsize(),
+                incoming_frames=len(frames),
+            )
+            raise MediaBackpressureError("TTS playback queue is full")
+
+        for frame in frames:
+            queue.put_nowait(frame)
+        _log_event(
+            "tts pcm enqueued",
+            trace_id=self.trace_id,
+            connection_id=self.connection_id,
+            turn_id=turn_id,
+            state=self._state.value,
+            reason="tts_enqueued",
+            frames=len(frames),
+            duration_ms=sum(frame.duration_ms for frame in frames),
+            queue_depth=queue.qsize(),
+        )
+
+    def barge_in(self) -> None:
+        """打断下行播放：递增播放代际、清空队列、旧 turn 后续入队全部拒绝。"""
+        self._ensure_loop()
+        self._ensure_open()
+        old_turn = self._playback_turn_id
+        self._playback_generation += 1
+        cleared = self._drain_playback_queue()
+        self._playback_turn_id = None
+        _log_event(
+            "playback barged",
+            trace_id=self.trace_id,
+            connection_id=self.connection_id,
+            turn_id=old_turn,
+            state=self._state.value,
+            reason="barge_in",
+            cleared_frames=cleared,
+            generation=self._playback_generation,
+        )
+
+    def _drain_playback_queue(self) -> int:
+        cleared = 0
+        while True:
+            try:
+                self._playback_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return cleared
+            cleared += 1
 
     def _cancel_turn(self, *, reason: str) -> None:
         old_turn = self._turn_id
@@ -1144,6 +1291,9 @@ class MediaSession:
         self._normalizer.reset()
         self._splitter.reset()
         self._pre_roll.clear()
+        self._playback_turn_id = None
+        self._playback_generation += 1
+        self._drain_playback_queue()
         if self._audio_track is not None:
             self._audio_track.stop()
             self._audio_track = None
@@ -1302,10 +1452,12 @@ __all__ = [
     "CANONICAL_FRAME_BYTES",
     "CANONICAL_FRAME_MS",
     "CANONICAL_FRAME_SAMPLES",
+    "DOWNLINK_FRAME_BYTES",
     "DOWNLINK_FRAME_MS",
     "DOWNLINK_FRAME_SAMPLES",
     "DOWNLINK_SAMPLE_RATE",
     "MAX_ASR_QUEUE_FRAMES",
+    "MAX_PLAYBACK_FRAMES",
     "PRE_ROLL_FRAMES",
     "PRE_ROLL_MS",
     "SAMPLE_WIDTH_BYTES",
@@ -1315,6 +1467,7 @@ __all__ = [
     "VAD_FRAME_SAMPLES",
     "AudioNormalizer",
     "DualFrameSplitter",
+    "MediaBackpressureError",
     "MediaClosedError",
     "MediaConfig",
     "MediaConfigError",
