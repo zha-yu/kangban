@@ -49,6 +49,7 @@ dependencies = [
     "opentelemetry-instrumentation-fastapi>=0.49b0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.28",
     "langfuse>=2.54",
+    "websockets>=17.4",
 ]
 
 # uv：本项目是应用而非可分发包，不需要 build-system，也不安装自身
@@ -110,6 +111,9 @@ known-first-party = ["app"]
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+# 文档不作为格式化对象：md 里的 code block 一旦被 ruff 重排，就会改写契约文档的
+# 列对齐与人工排版（`docs/team_tasks_day03/contracts.md` 是三个人对着读的定稿）。
+exclude = ["*.md"]
 
 # ---------------------------------------------------------------------------
 # pytest：覆盖率口径来自 PRD FR-TC-06（核心 Tool 与权限 100%，接口 ≥70%）

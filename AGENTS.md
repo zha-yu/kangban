@@ -313,3 +313,12 @@ docker exec silvermate-app-verify python -c "import urllib.request as u; r=u.url
 | `docs/plans/` | 怎么做、分几步、谁负责哪步 | 低（改文件内变更记录） |
 | `docs/接口契约_*.md` | 对外口径：字段、判定、端点 | 高（走裁决 + 变更记录） |
 | 三份基线文档 | 事实与验收 | 高（正文可改，必须同提交补修订记录） |
+
+### 10.5 进度看板自动刷新（不用手写）
+
+每日任务目录下有一份**自动生成**的 `PROGRESS.md`（如 `docs/team_tasks_day03/PROGRESS.md`），内容 = 各任务卡首部 `> 状态：` 行的汇总 + 计划件状态 + 今日提交。
+
+- **不要手改进度文件**，它会被下一次生成覆盖。要动进度，改任务卡的 `> 状态：` 行。
+- 生成器：`scripts/update_progress.py`（纯标准库）。`--check` 只检查是否过期。
+- **自动触发**：仓库带 `core.hooksPath = .githooks`，`pre-commit` 钩子每次提交都会重算并把 `PROGRESS.md` 加进本次提交；生成失败则中止提交（宁可不提，也不留过期看板）。新 clone 后跑一次 `git config core.hooksPath .githooks` 即可。
+- 任务卡状态取值固定为 `未开始 / 进行中 / 已完成 / 已取消 / 待确认`，脚本据此上图标；不要自创状态词，否则图标会落成 `❔`。
