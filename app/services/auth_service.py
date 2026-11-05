@@ -174,28 +174,19 @@ async def login_with_phone(
 
     # --- 1. 查 staff_accounts ---
     staff_row = (
-        (await session.execute(
-            select(StaffAccount).where(StaffAccount.phone == phone)
-        ))
-        .scalar_one_or_none()
-    )
+        await session.execute(select(StaffAccount).where(StaffAccount.phone == phone))
+    ).scalar_one_or_none()
     guardian_row = None
     if staff_row is None:
         guardian_row = (
-            (await session.execute(
-                select(GuardianAccount).where(GuardianAccount.phone == phone)
-            ))
-            .scalar_one_or_none()
-        )
+            await session.execute(select(GuardianAccount).where(GuardianAccount.phone == phone))
+        ).scalar_one_or_none()
     elif (
         settings.app_env != "prod"
     ):  # prod 也检查一次留日志，非 prod 显式拦截帮助开发排查唯一约束漏落库
         guardian_row = (
-            (await session.execute(
-                select(GuardianAccount).where(GuardianAccount.phone == phone)
-            ))
-            .scalar_one_or_none()
-        )
+            await session.execute(select(GuardianAccount).where(GuardianAccount.phone == phone))
+        ).scalar_one_or_none()
         if guardian_row is not None:
             logger.error(
                 "phone collision across staff and guardian tables: phone=%s",
@@ -210,9 +201,7 @@ async def login_with_phone(
 
     # --- 2. 验密码 ---
     if not verify_password(password, target.password_hash):
-        logger.info(
-            "login failed: phone=%s password mismatch", _mask_phone(phone)
-        )
+        logger.info("login failed: phone=%s password mismatch", _mask_phone(phone))
         raise AuthInvalidError("用户名或密码错误")
 
     # --- 3. 状态检查 ---
@@ -279,18 +268,16 @@ async def refresh_access_token(
     kind, _, raw_id = sub.partition(":")
     if kind == KIND_STAFF:
         row = (
-            (await session.execute(
+            await session.execute(
                 select(StaffAccount).where(StaffAccount.staff_id == uuid.UUID(raw_id))
-            ))
-            .scalar_one_or_none()
-        )
+            )
+        ).scalar_one_or_none()
     elif kind == KIND_GUARDIAN:
         row = (
-            (await session.execute(
+            await session.execute(
                 select(GuardianAccount).where(GuardianAccount.guardian_id == uuid.UUID(raw_id))
-            ))
-            .scalar_one_or_none()
-        )
+            )
+        ).scalar_one_or_none()
     else:
         raise AuthInvalidError("refresh token type 不符")
 
@@ -337,9 +324,8 @@ async def exchange_device_token(
     解绑即失效靠 token_hash 轮换（tv 前缀不匹配），不需要黑名单。
     """
     device_row = (
-        (await session.execute(select(Device).where(Device.device_id == device_id)))
-        .scalar_one_or_none()
-    )
+        await session.execute(select(Device).where(Device.device_id == device_id))
+    ).scalar_one_or_none()
     if device_row is None:
         logger.warning("device-session rejected: device_id=%s not found", device_id)
         raise AuthInvalidError("设备不存在")
@@ -352,23 +338,20 @@ async def exchange_device_token(
 
     # 设备状态：只有 locked 拒（契约 S-21）
     if device_row.status == "locked":
-        logger.warning(
-            "device-session rejected: device locked, device_id=%s", device_id
-        )
+        logger.warning("device-session rejected: device locked, device_id=%s", device_id)
         raise AuthRevokedError("设备已锁定")
 
     # 没绑定长者 + 房间内也没在住长者 → 拒（契约 E4）
     elder_id = device_row.elder_id
     if elder_id is None:
         occupied_beds = (
-            (await session.execute(
+            await session.execute(
                 select(func.count(Bed.bed_id)).where(
                     Bed.room_id == device_row.room_id,
                     Bed.elder_id.is_not(None),
                 )
-            ))
-            .scalar_one()
-        )
+            )
+        ).scalar_one()
         if occupied_beds == 0:
             logger.warning(
                 "device-session rejected: device has no elder binding "
@@ -416,22 +399,23 @@ async def get_current_identity(
 
     if identity.kind == KIND_STAFF:
         row = (
-            (await session.execute(
+            await session.execute(
                 select(StaffAccount).where(StaffAccount.staff_id == uuid.UUID(identity.staff_id))
-            ))
-            .scalar_one_or_none()
-        )
+            )
+        ).scalar_one_or_none()
         if row is None:
             raise AuthRevokedError("账号已不存在")
         name = row.name
         # admin 全量权限 → scope 为空列表
         if row.role != "admin":
             assignments = (
-                (await session.execute(
-                    select(ElderStaffAssignment.elder_id).where(
-                        ElderStaffAssignment.staff_id == row.staff_id
+                (
+                    await session.execute(
+                        select(ElderStaffAssignment.elder_id).where(
+                            ElderStaffAssignment.staff_id == row.staff_id
+                        )
                     )
-                ))
+                )
                 .scalars()
                 .all()
             )
@@ -439,23 +423,24 @@ async def get_current_identity(
 
     elif identity.kind == KIND_GUARDIAN:
         row = (
-            (await session.execute(
+            await session.execute(
                 select(GuardianAccount).where(
                     GuardianAccount.guardian_id == uuid.UUID(identity.guardian_id)
                 )
-            ))
-            .scalar_one_or_none()
-        )
+            )
+        ).scalar_one_or_none()
         if row is None:
             raise AuthRevokedError("账号已不存在")
         name = row.name
         bindings = (
-            (await session.execute(
-                select(ElderGuardian.elder_id).where(
-                    ElderGuardian.guardian_id == row.guardian_id,
-                    ElderGuardian.status == "active",
+            (
+                await session.execute(
+                    select(ElderGuardian.elder_id).where(
+                        ElderGuardian.guardian_id == row.guardian_id,
+                        ElderGuardian.status == "active",
+                    )
                 )
-            ))
+            )
             .scalars()
             .all()
         )
@@ -469,13 +454,12 @@ async def get_current_identity(
     elif identity.kind == "staff_card":
         # 工牌：elder_id 从 device 来（S-17），staff_id 走 staff_accounts 拿 name
         name_row = (
-            (await session.execute(
+            await session.execute(
                 select(StaffAccount.name).where(
                     StaffAccount.staff_id == uuid.UUID(identity.staff_id)
                 )
-            ))
-            .scalar_one_or_none()
-        )
+            )
+        ).scalar_one_or_none()
         name = name_row
         if identity.elder_id:
             scope_elder_ids = [str(identity.elder_id)]

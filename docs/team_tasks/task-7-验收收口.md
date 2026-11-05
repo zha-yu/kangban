@@ -2,7 +2,7 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 状态 | 🟡 已收口（2026-11-05；代码与用例齐备，2 项验证待复跑，见文末收口记录） |
+| 状态 | ✅ 已完成（2026-11-05；全量 `270 passed`、ruff 全绿，复跑配方见文末） |
 | 认领人 | — |
 | 主责 | E（文档与验收） |
 | 前置 | `task-5`、`task-6` |
@@ -37,8 +37,8 @@ uv run ruff check app tests
 - [x] 非管理员 `POST /elders` 403、护工查非负责长者 403——用例已在 `tests/test_elders_api.py` 入库
 - [x] ≥5 次小步 commit——`git log` 中 Day 2 相关提交 20+ 次
 - [x] 3 条攻击用例入库——`tests/test_auth_attacks.py`（350 行）
-- [ ] `pytest` 全绿——**未达成**，见下方收口记录的实测数字
-- [ ] `ruff format --check` 干净——**未达成**，3 个文件待重排
+- [x] `pytest` 全绿——**270 passed**（2026-11-05 复跑：一次性容器内真实 PostgreSQL 17，迁移跑满后再跑全量）
+- [x] `ruff format --check` 干净——`67 files already formatted`（`ruff format .` 重排 4 个文件后）
 
 ## 禁止触碰
 
@@ -66,3 +66,36 @@ uv run ruff check app tests
 3. `downgrade -1` 本次未复跑。
 
 **结论**：代码、用例、路由装配、迁移均齐备，差的是一条「环境与夹具修好后的干净全绿」。建议把 P-03 修法与 `ruff format` 一并放进 task-4 的 T6 人审，复跑通过后本卡转 ✅。
+
+---
+
+## 复跑记录（2026-11-05 15:28 · 本卡转 ✅）
+
+之前失败的两条，根因都不在代码，在「本机没有常驻可连的 PostgreSQL」：
+
+- 每次 `docker run` 起的库，会在工具调用结束后的几分钟内被回收——`docker ps -a` 显示 `Exited (0)`，`docker inspect` 的 `ExitCode=0`、`OOMKilled=false`，日志收尾是 `LOG: received fast shutdown request` → `database system is shut down`。所以「先起库、再另开一次调用跑 pytest」必然连不上。
+- Windows 侧 Docker 引擎（npipe）不可用，只能用 WSL 内的 docker。
+
+**复跑配方（库与测试同容器，一次调用跑完，约 4–5 分钟）**
+
+```bash
+docker run --rm -v /tmp/sm_verify.sh:/v.sh:ro \
+  -v /mnt/e/project_month/silvermate:/w -w /w \
+  python:3.12-slim bash /v.sh
+```
+
+`/tmp/sm_verify.sh` 只做五件事：apt 装 `postgresql` → 起库并建 `silvermate` 角色/库 → pip 装依赖 → 导出 `DATABASE_URL` 与 `JWT_SECRET` 后 `alembic upgrade head` → `pytest -q`。
+
+**实测两轮（`ruff format` 前 / 后）**
+
+| 轮次 | 结果 |
+| --- | --- |
+| 第一轮（format 前） | `270 passed, 2 warnings in 24.54s` |
+| 第二轮（format 后） | `270 passed, 2 warnings in 23.53s` |
+
+- 迁移三档全部跑过：`0001_day1` → `0002_day2` → `0003_fix_day1_ck_names`，`alembic current` = `0003_fix_day1_ck_names (head)`。
+- `ruff check app tests` → `All checks passed!`；`ruff format --check .` → `67 files already formatted`。
+  - 被重排的 4 个文件：`app/api/auth.py`、`app/services/auth_service.py`、`tests/test_auth_api.py`、`docs/plans/task-05-登录与凭证接口.md`。
+- 此前登记的 `214 passed, 45 skipped, 11 errors` 与 `262 passed, 8 failed` 两组数字，分别是「无库」与「无 `.env`」两种环境问题，不是代码缺陷。
+- 仍未复跑：`downgrade -1`（不阻塞本卡 DoD，留到 Day 3 迁移演练）。
+- P-03（conftest 跨事件循环复用模块级 engine）仍待 task-4 的 T6 修；本轮全绿是在 P-03 **未修**的前提下取得的，说明它影响的是「跳过判定」而非功能正确性。

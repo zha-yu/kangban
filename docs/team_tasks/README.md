@@ -15,7 +15,7 @@
 | `task-4` | Step2 鉴权内核（security / 依赖注入 / runtime_context） | B | 🚧 进行中（判定层 `16513da` + 人员/工牌/设备接线全部落地，剩 T5 测试收口与 T6 人审） | `task-1` ✅ | `app/core/security.py`、`app/core/auth.py`、`app/core/runtime_context.py`、`tests/test_security.py` |
 | `task-5` | Step3 登录与凭证接口 | C | ✅ 已完成 | `task-3` ✅、`task-4` ✅ | `app/api/schemas/auth.py`、`app/services/auth_service.py`、`app/api/auth.py`、`tests/test_auth_api.py`、`app/main.py`（router 注册 + 全局 handler） |
 | `task-6` | Step4 长者 CRUD + 设备绑定 + 范围过滤 | D | ✅ 已完成（2026-11-04） | `task-3` ✅、`task-4` ✅ | `app/services/{elder,device}_service.py`、`app/api/{elders,devices}.py`、`tests/test_elders_api.py` |
-| `task-7` | Step5 验收收口（攻击用例 + router 注册 + DoD） | E | 🟡 已收口（2 项验证待复跑） | `task-5` ✅、`task-6` ✅ | `tests/test_auth_attacks.py`、`app/main.py`、`app/api/__init__.py`、`README.md` |
+| `task-7` | Step5 验收收口（攻击用例 + router 注册 + DoD） | E | ✅ 已完成（270 passed，ruff 全绿） | `task-5` ✅、`task-6` ✅ | `tests/test_auth_attacks.py`、`app/main.py`、`app/api/__init__.py`、`README.md` |
 
 图例：⬜ 待认领 · 🚧 进行中 · ✅ 已完成 · 🔒 锁定（前置未完成） · ⛔ 阻塞
 
@@ -88,7 +88,7 @@ task-2 全程独立，谁手快谁先做（模板库，不依赖任何卡）
 - [x] 非管理员 `POST /elders` → 403；护工查非负责长者 → 403（AC-18）
 - [x] 写操作测试都有「回查 DB」断言；≥3 条 elders 用例
 - [x] 3 条攻击用例入库；`ruff check app tests` 干净 —— task-7 收口（2026-11-05：`tests/test_auth_attacks.py` 已入库，ruff check 通过）
-- [ ] `pytest` 全绿 —— 未达成，见 `task-7` 收口记录（P-03 夹具缺陷 + 本机 Docker 引擎掉线）
+- [x] `pytest` 全绿 —— 270 passed（2026-11-05 复跑：库与测试同容器，迁移跑满后全量通过，见 `task-7` 复跑记录）
 - [ ] `ruff format --check` 干净 —— 未达成，3 个文件待重排
 - [x] `git log` ≥5 次小步 commit —— 满足
 - [x] ~~`docs/prompts/` 有 6 个模板~~ —— 2026-11-05 主理人裁决取消（模板由人工自写，task-2 已取消）

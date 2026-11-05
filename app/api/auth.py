@@ -141,9 +141,7 @@ async def refresh(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> RefreshResponse | JSONResponse:
     try:
-        result = await auth_service.refresh_access_token(
-            session, refresh_token=body.refresh_token
-        )
+        result = await auth_service.refresh_access_token(session, refresh_token=body.refresh_token)
     except Exception as exc:
         return _handle_service_exception(exc)
 
