@@ -1,6 +1,6 @@
 # Day 3 模块间接口契约（代码级定义）
 
-> 状态：待契约会确认　｜　版本：v1.0　｜　日期：2026-11-05
+> 状态：C2 已冻结，C1/C3 待确认　｜　版本：v1.1　｜　日期：2026-11-05
 > 关联：docs/team_tasks_day03/README.md §3（契约清单与冻结人）
 > 上游依据：day-03 计划 v1.5 §2.3（ASR 契约与置信度口径）｜adhoc-20261105 方案 v1.3 M1–M3｜接口契约_身份与权限.md E4
 > 变更记录见文末
@@ -148,6 +148,17 @@ class ErrorMsg(TypedDict):         # S→C，服务端降级/异常通知
 
 **语义约定**：首帧必须 `auth`（300ms 超时 → 4401 + 审计）；`auth` 前的任何其他消息直接 4401；trace_id 在 auth 通过时绑定，全连接日志携带；WS 断开清理 ASR 会话/TTS 在途任务/帧缓冲（PeerConnection 由 A3 自行关闭）。
 
+### C2 契约会裁决记录（2026-11-05，A2 冻结）
+
+四个开放点的当会裁决（已冻结，后续改动走群通告 + 双方任务卡留痕）：
+
+1. **心跳方向**：维持单向——客户端 20s 发 `ping`，服务端回 `pong`；45s 无**任何**帧（业务帧同样续命）判死。服务端不做主动探测；A4 若需下行活性检测再走契约变更补 S→C ping。
+2. **auth 后重复发 auth**：按非法凭证处理 → `auth_fail code=invalid` + 4401 关闭（防连接内换 token 旁路）。
+3. **同 device_id 二次连接**：踢旧留新——新连接接管注册表槽位，旧连接以自定义关闭码 4002 关闭；注册表操作加锁防竞态。
+4. **非法/未知消息**：回 `error code=internal`（脱敏长者可读话术）**不关连接**，打 warn 日志（含 trace_id）；连续异常仅观测不熔断。
+
+另：设备会话无 refresh 通道（E2 仅收人账号 refresh_token，已核实 `app/api/auth.py`）——WS 层不做设备 token 续期，临期/过期统一 `auth_fail code=expired`，客户端重走 E4 换证。结论已同步 A4 卡（a4-pad-frontend v1.2 交付物 7）。
+
 ## C3 · 降级 REST 契约（冻结人：A5，消费方：A4）
 
 ```
@@ -173,7 +184,7 @@ Authorization: Bearer <device access_token>   # E4 签发；elder_id 不由客�
 | 契约 | 冻结人 | 状态 | 备注 |
 | --- | --- | --- | --- |
 | C1 | A1 | 待确认 | 会上确认后拷入 app/audio/asr.py |
-| C2 | A2 | 待确认 | 会上确认后拷入 app/audio/signaling.py；设备会话 refresh 核对结论随卡登记 |
+| C2 | A2 | 已确认（v1.0 原样冻结） | 四开放点裁决见「C2 契约会裁决记录」；已拷入 app/audio/signaling.py 顶部 |
 | C3 | A5 | 待确认 | reply 形状依赖 TTS 决议（audio_url vs 直返 PCM），会上定夺 |
 
 ## 变更记录
@@ -181,3 +192,4 @@ Authorization: Bearer <device access_token>   # E4 签发；elder_id 不由客�
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-05 | 初稿：C1/C2/C3 代码级定义，待契约会确认 |
+| v1.1 | 2026-11-05 | C2 冻结：确认表状态更新 + 新增「C2 契约会裁决记录」（心跳单向 / 重复 auth 拒 / 踢旧留新 / 非法消息不关连接）+ 登记设备会话无 refresh 结论；C2 正文 TypedDict 未改动一字 |
