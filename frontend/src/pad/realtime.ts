@@ -16,6 +16,8 @@ export interface RealtimeCallbacks {
   onStatus: (status: PadStatus) => void;
   onSubtitle: (text: string, source: SubtitleSource) => void;
   onAuthFail: () => void;
+  /** 连续 5 次自动重连失败：上层出「重新连接」按钮，用户点击后调 retry() */
+  onNeedManualRetry: () => void;
   /** TTS 下行播放元素（登录点击后已有用户手势，autoplay 可用） */
   audioEl: HTMLAudioElement;
 }
@@ -27,6 +29,8 @@ export class RealtimeClient {
   private pc: RTCPeerConnection | null = null;
   private unbindDeviceChange: (() => void) | null = null;
   private starting = false;
+  /** TTS 是否在播（打断判定用；tts_text 置位，打断/新一轮 partial 复位） */
+  private ttsPlaying = false;
 
   constructor(private cb: RealtimeCallbacks) {}
 
@@ -39,8 +43,14 @@ export class RealtimeClient {
       if (state === "connecting" || state === "closed") this.cb.onStatus("disconnected");
     };
     this.socket.onAuthFail = this.cb.onAuthFail;
+    this.socket.onGiveUp = this.cb.onNeedManualRetry;
     this.socket.onServerSignal = (msg) => void this.handleSignal(msg);
     this.socket.connect();
+  }
+
+  /** 「重新连接」按钮：复位信令状态机并重连（会话组件不重建） */
+  retry(): void {
+    this.socket?.retry();
   }
 
   async stop(): Promise<void> {
@@ -71,6 +81,7 @@ export class RealtimeClient {
         }
         break;
       case "asr_partial":
+        this.ttsPlaying = false; // 新一轮识别，打断态复位
         this.cb.onSubtitle(msg.text, "partial");
         this.cb.onStatus("listening");
         break;
@@ -79,6 +90,7 @@ export class RealtimeClient {
         this.cb.onStatus("thinking");
         break;
       case "tts_text":
+        this.ttsPlaying = true;
         this.cb.onSubtitle(msg.text, "reply");
         this.cb.onStatus("speaking");
         break;
@@ -108,6 +120,13 @@ export class RealtimeClient {
     try {
       this.vad = await TenVad.load({
         onSpeechStart: () => {
+          // T-F 打断：TTS 在播时本地开口 → 立即停播 + 清回复字幕（契约：
+          // 无独立 interrupt 消息，asr_start 即打断信号，服务端以新会话感知）
+          if (this.ttsPlaying) {
+            this.ttsPlaying = false;
+            this.cb.audioEl.pause();
+            this.cb.onSubtitle("", "final");
+          }
           this.cb.onStatus("listening");
           this.socket?.send({ type: "asr_start" });
         },
@@ -135,6 +154,9 @@ export class RealtimeClient {
     };
     pc.ontrack = (e) => {
       this.cb.audioEl.srcObject = e.streams[0] ?? null;
+      this.cb.audioEl.onended = () => {
+        this.ttsPlaying = false;
+      };
       void this.cb.audioEl.play().catch(() => {
         this.cb.onSubtitle("点击屏幕后开始播放语音", "notice");
       });

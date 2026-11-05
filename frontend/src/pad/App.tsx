@@ -5,6 +5,7 @@ import type { DeviceSession } from "./session";
 import { sessionValid, loadSession, clearSession } from "./session";
 import { StatusBar } from "./components/StatusBar";
 import { BigSubtitle } from "./components/BigSubtitle";
+import { HoldToTalk } from "./components/HoldToTalk";
 import { LoginPage } from "./pages/LoginPage";
 import { RealtimeClient } from "./realtime";
 import "./index.css";
@@ -21,7 +22,9 @@ function MainScreen({ onLogout }: { onLogout: () => void }) {
     text: "",
     source: "final",
   });
+  const [needRetry, setNeedRetry] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const clientRef = useRef<RealtimeClient | null>(null);
 
   useEffect(() => {
     const session = loadSession();
@@ -30,10 +33,25 @@ function MainScreen({ onLogout }: { onLogout: () => void }) {
       onStatus: setStatus,
       onSubtitle: (text, source) => setSubtitle({ text, source }),
       onAuthFail: onLogout, // 会话过期/无效 → 回登录页（T-H 兜底口径）
+      onNeedManualRetry: () => setNeedRetry(true), // 连续 5 次重连失败 → 出按钮
       audioEl: audioRef.current,
     });
+    clientRef.current = client;
     void client.start(session.access_token);
+
+    // T-H 兜底口径（无 refresh 通道）：会话中途到期的主动守护——
+    // 30s 周期 + 页面回前台时校验 expires_at，过期即清会话回登录页；
+    // WS 4401/auth_fail 与 REST 401 由各自链路回调 onLogout 兜住
+    const expiryGuard = setInterval(() => {
+      if (!sessionValid()) onLogout();
+    }, 30_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && !sessionValid()) onLogout();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
+      clearInterval(expiryGuard);
+      document.removeEventListener("visibilitychange", onVisible);
       void client.stop();
     };
     // onLogout 由调用方保证稳定；此处仅随挂载启停
@@ -50,7 +68,7 @@ function MainScreen({ onLogout }: { onLogout: () => void }) {
         <StatusBar status={status} />
         <button
           onClick={onLogout}
-          className="rounded-xl bg-slate-800 px-4 py-2 text-xl text-slate-400 active:bg-slate-700"
+          className="rounded-xl bg-slate-800 px-5 py-4 text-xl text-slate-400 active:bg-slate-700"
         >
           退出登录
         </button>
@@ -70,6 +88,29 @@ function MainScreen({ onLogout }: { onLogout: () => void }) {
       {/* 底部：大字幕区（partial/final/reply/notice 同位切换） */}
       <footer className="pb-16">
         <BigSubtitle text={subtitle.text} source={subtitle.source} />
+        {needRetry && (
+          <div className="mt-6 text-center">
+            <button
+              onClick={() => {
+                setNeedRetry(false);
+                clientRef.current?.retry();
+              }}
+              className="rounded-2xl bg-amber-500 px-12 py-6 text-4xl font-bold text-white active:bg-amber-600"
+            >
+              重新连接
+            </button>
+          </div>
+        )}
+        {/* T-G 降级入口：主链路断开时按住说话走 C3 REST 整段上传 */}
+        {status === "disconnected" && (
+          <div className="mt-6 text-center">
+            <HoldToTalk
+              token={loadSession()?.access_token ?? ""}
+              onSubtitle={(text, source) => setSubtitle({ text, source })}
+              onAuthFail={onLogout}
+            />
+          </div>
+        )}
       </footer>
     </div>
   );

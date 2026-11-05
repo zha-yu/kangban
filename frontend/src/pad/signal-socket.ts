@@ -18,6 +18,8 @@ const PING_INTERVAL_MS = 20_000;
 const DEAD_THRESHOLD_MS = 45_000;
 const DEAD_CHECK_INTERVAL_MS = 5_000;
 const BACKOFF_STEPS_MS = [1_000, 2_000, 4_000, 8_000, 15_000];
+/** 连续失败达到该次数 → 停止自动重连，状态条出「点击重试」（adhoc §3.3） */
+const MAX_AUTO_RETRIES = 5;
 
 export class SignalSocket {
   private ws: WebSocket | null = null;
@@ -26,12 +28,15 @@ export class SignalSocket {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private lastFrameAt = 0;
   private backoffIndex = 0;
+  private failCount = 0;
   private stopped = false;
 
   onStateChange: ((state: SocketState) => void) | null = null;
   onServerSignal: ((msg: ServerSignal) => void) | null = null;
   /** 认证失效（4401 / auth_fail）：调用方应回登录页，不做退避重连 */
   onAuthFail: (() => void) | null = null;
+  /** 连续 5 次自动重连失败：停止重连，由用户手动触发 retry() */
+  onGiveUp: (() => void) | null = null;
 
   constructor(private token: string) {}
 
@@ -59,6 +64,7 @@ export class SignalSocket {
       if (!msg) return; // 非 JSON/type 未知：记 trace 后丢弃，不白屏
       if (msg.type === "auth_ok") {
         this.backoffIndex = 0; // 认证成功，重连退避复位
+        this.failCount = 0;
         this.setState("ready");
       } else if (msg.type === "auth_fail") {
         this.stop();
@@ -76,10 +82,17 @@ export class SignalSocket {
         this.onAuthFail?.();
         return;
       }
-      // 异常断开 → 退避重连
-      const delay = BACKOFF_STEPS_MS[Math.min(this.backoffIndex, BACKOFF_STEPS_MS.length - 1)];
+      // 异常断开 → 退避重连（±20% 随机抖动，防雪崩）
+      const base = BACKOFF_STEPS_MS[Math.min(this.backoffIndex, BACKOFF_STEPS_MS.length - 1)];
       this.backoffIndex++;
-      this.reconnectTimer = setTimeout(() => this.connect(), delay);
+      this.failCount++;
+      if (this.failCount >= MAX_AUTO_RETRIES) {
+        this.setState("closed");
+        this.onGiveUp?.();
+        return;
+      }
+      const jitter = base * (0.8 + Math.random() * 0.4);
+      this.reconnectTimer = setTimeout(() => this.connect(), Math.round(jitter));
     };
 
     ws.onerror = () => {
@@ -95,6 +108,14 @@ export class SignalSocket {
 
   get ready(): boolean {
     return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  /** 「点击重试」后调用：复位计数并重新连接 */
+  retry(): void {
+    this.failCount = 0;
+    this.backoffIndex = 0;
+    this.stopped = false;
+    this.connect();
   }
 
   stop(): void {
