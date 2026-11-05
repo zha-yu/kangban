@@ -123,10 +123,11 @@ FUNASR_CONNECT_TIMEOUT_S: Final[float] = 5.0
 FUNASR_END_OF_SPEECH: Final[dict[str, bool]] = {"is_speaking": False}
 FUNASR_END_OF_STREAM: Final[dict[str, bool]] = {"is_end": True}
 
-# Mock 脚本夹具：app/ 不反向 import tests/（AGENTS §2 分层单向），只按固定路径读文件。
-_MOCK_SCRIPT_PATH: Final[Path] = (
-    Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "asr_script.py"
-)
+# Mock 脚本夹具放在**包内**（app/audio/fixtures/），不是 tests/。
+# 原因：MockASRProvider 是 ASR_PROVIDER 未配置时的默认实现，运行时必须读得到；
+# 生产镜像里没有 tests/，放那里会让默认配置在第一次 ASR 调用时抛 FileNotFoundError
+# （2026-11-05 代码审查 P0-1）。tests/fixtures/asr_script.py 现在只是再导出。
+_MOCK_SCRIPT_PATH: Final[Path] = Path(__file__).resolve().parent / "fixtures" / "asr_script.py"
 DEFAULT_MOCK_SCRIPT: Final[str] = "ASR_MOCK_SCRIPT"
 
 
@@ -211,7 +212,8 @@ class MockASRProvider(ASRProvider):
         self._script = list(script) if script is not None else None
         self._latency_ms = latency_ms
         self._raise_error = raise_error
-        self._drain_task: asyncio.Task[None] | None = None
+        # 刻意**不**把 drain task 存到实例上：同一个 provider 实例被并发 stream() 时，
+        # 实例字段会被后者覆盖，前一个生成器收尾时取消的是别人的任务（2026-11-05 审查 P0-3）。
 
     @property
     def script(self) -> list[MockASRStep]:
@@ -230,7 +232,7 @@ class MockASRProvider(ASRProvider):
         first_packet_ms: float | None = None
         last_text_len = 0
         last_is_final = False
-        self._drain_task = asyncio.create_task(_drain_audio(audio))
+        drain = asyncio.create_task(_drain_audio(audio))
         try:
             for step in self.script:
                 if self._latency_ms > 0:
@@ -248,9 +250,9 @@ class MockASRProvider(ASRProvider):
                 if step.is_final:
                     return
         finally:
-            self._drain_task.cancel()
+            drain.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await self._drain_task
+                await drain
             record_asr(
                 provider=self.name,
                 source="mock",
@@ -393,6 +395,8 @@ class FunASRWSProvider(ASRProvider):
         last: ASREvent = _error_event(ASRUnavailable("FunASR 未产出任何结果"))
         receiver = asyncio.create_task(self._receive(connection, events))
         sender = asyncio.create_task(self._send_audio(connection, audio))
+        # 盯住上行：音频源抛错必须立刻变成 ERROR 事件（见 _watch_sender 的说明）。
+        watcher = asyncio.create_task(self._watch_sender(sender, events))
         try:
             while (event := await events.get()) is not None:
                 if first_packet_ms is None:
@@ -403,9 +407,9 @@ class FunASRWSProvider(ASRProvider):
                     # FINAL 与 ERROR 都是终态：ERROR 之后连接已经不可信，别再读第二段故障
                     return
         finally:
-            for task in (receiver, sender):
+            for task in (receiver, sender, watcher):
                 task.cancel()
-            await asyncio.gather(receiver, sender, return_exceptions=True)
+            await asyncio.gather(receiver, sender, watcher, return_exceptions=True)
             await _safe_close(connection)
             record_asr(
                 provider=self.name,
@@ -446,6 +450,28 @@ class FunASRWSProvider(ASRProvider):
             await connection.send(chunk)
         await connection.send(json.dumps(FUNASR_END_OF_SPEECH))
         await connection.send(json.dumps(FUNASR_END_OF_STREAM))
+
+    async def _watch_sender(
+        self, sender: asyncio.Task[None], events: asyncio.Queue[ASREvent | None]
+    ) -> None:
+        """盯住上行发送任务：**音频源**中途抛错必须立刻变成 ERROR 事件。
+
+        不盯的后果（2026-11-05 代码审查 P0-2）：异常留在 `sender` 里，被收尾的
+        `gather(return_exceptions=True)` 一并吞掉，消费方只能等到 `_receive` 的 15s 超时，
+        收到的报错是「FunASR 没等到终稿」—— 与真实原因（A3 的帧流断了）完全无关。
+
+        连接类异常（`ConnectionClosed` / `WebSocketException`）不在这里报：下行断开由
+        `_receive` 负责产出 ERROR，这里再报一次就是同一故障的重复告警。
+        """
+        try:
+            await sender
+        except asyncio.CancelledError:
+            raise
+        except (ConnectionClosed, WebSocketException):
+            return
+        except Exception as exc:  # 音频源来自调用方，异常类型不受本模块控制
+            logger.warning("FunASR 上行音频中断：%s", exc, exc_info=exc)
+            events.put_nowait(_error_event(ASRUnavailable(f"上行音频中断：{exc}")))
 
 
 class CloudASRProvider(ASRProvider):

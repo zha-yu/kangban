@@ -467,3 +467,92 @@ async def test_funasr_receive_timeout_is_unavailable(monkeypatch: pytest.MonkeyP
 async def test_cloud_provider_is_not_wired_yet() -> None:
     with pytest.raises(ASRUnavailable, match="尚未接入"):
         await CloudASRProvider().stream(_silence(1))
+
+
+# ------------------- 代码审查回归（2026-11-05 P0 三条） -------------------
+
+
+def test_mock_script_lives_inside_package() -> None:
+    """P0-1 回归：Mock 夹具必须随包发布，不能指向 `tests/`。
+
+    `MockASRProvider` 是 `ASR_PROVIDER` 未配置时的**默认实现**；生产镜像里没有 `tests/`，
+    夹具放在那里就等于默认配置在第一次 ASR 调用时抛 `FileNotFoundError`。
+    """
+    path = asr._MOCK_SCRIPT_PATH
+
+    assert path.exists(), f"Mock 夹具缺失：{path}"
+    assert "tests" not in path.parts, f"Mock 夹具不该在 tests/ 下：{path}"
+    assert Path(asr.__file__).resolve().parent in path.parents, (
+        f"Mock 夹具必须在 app/audio/ 包内：{path}"
+    )
+    assert load_mock_script(), "默认脚本必须能被 load_mock_script() 解析出步骤"
+
+
+async def test_audio_source_error_surfaces_as_error_event(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """P0-2 回归：音频源抛错要**立刻**变成 ERROR 事件，不能拖到 15s 超时。
+
+    修之前：异常留在 sender 任务里被 `gather(return_exceptions=True)` 吞掉，消费方只能等到
+    `receive_timeout`，收到的错误是「FunASR …内没有等到终稿」—— 指向了对端，与真实原因无关。
+    修之后：错误事件是 `ASRUnavailable("上行音频中断：…")`，一眼看出问题在 A3 的帧流。
+    """
+    caplog.set_level(logging.WARNING, logger="app.audio.asr")
+    connection = FakeConnection(reply=None)  # 对端永不回帧，排除「对端先出错」这条干扰
+
+    async def fake_connect(uri: str, **kwargs: object) -> FakeConnection:
+        return connection
+
+    async def broken_audio() -> AsyncIterator[bytes]:
+        yield b"\x00" * asr.FRAME_BYTES
+        raise RuntimeError("A3 的帧流断了")
+
+    monkeypatch.setattr(asr.websockets, "connect", fake_connect)
+    provider = FunASRWSProvider(url="ws://funasr.test:7002", receive_timeout=30.0)
+
+    started = time.monotonic()
+    events = await provider.stream(broken_audio())
+    collected = [event async for event in events]
+    elapsed = time.monotonic() - started
+
+    assert [event.kind for event in collected] == [ASREventKind.ERROR]
+    error = collected[0].error
+    assert isinstance(error, ASRUnavailable)
+    assert "上行音频中断" in str(error)
+    assert "帧流断了" in str(error)
+    assert elapsed < 5.0, f"必须立刻收口，不能等 receive_timeout；实际 {elapsed:.2f}s"
+    assert any(
+        record.name == "app.audio.asr" and "上行音频中断" in record.getMessage()
+        for record in caplog.records
+    ), "音频源故障必须留日志，否则线上仍然查不到原因"
+
+
+async def test_mock_concurrent_streams_do_not_clobber() -> None:
+    """P0-3 回归：同一 provider 实例并发 `stream()` 不能互相踩 drain task。
+
+    修之前 drain task 存在 `self._drain_task` 上，第二次 `stream()` 会覆盖它；第一个生成器
+    收尾时取消的是**别人的**任务 → 自己的 drain 永远挂着（asyncio 会在 GC 时报
+    "Task was destroyed but it is pending"），而它的音频生产者一直卡在 yield 上。
+    """
+    provider = MockASRProvider()
+
+    async def consume(audio: AsyncIterator[bytes]) -> list[ASREvent]:
+        events = await provider.stream(audio)
+        return [event async for event in events]
+
+    first, second = await asyncio.gather(consume(_silence(3)), consume(_silence(3)))
+
+    for collected in (first, second):
+        assert collected, "两个并发流都必须产出事件"
+        assert collected[-1].kind is ASREventKind.FINAL
+        assert collected[-1].result is not None
+
+    leaked = [
+        task
+        for task in asyncio.all_tasks()
+        if task is not asyncio.current_task()
+        and not task.done()
+        and getattr(task.get_coro(), "__qualname__", "").endswith("_drain_audio")
+    ]
+    assert leaked == [], f"drain task 泄漏：{leaked}"

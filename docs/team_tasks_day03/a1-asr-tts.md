@@ -82,3 +82,15 @@
 1. `ASRProvider.stream()` 必须 `async for` 读到自然结束；提前退出用 `contextlib.aclosing`。
 2. `FINAL` / `ERROR` 恒为最后一个事件。
 3. `confidence` 在 FunASR 链路恒为 `None`，只进 trace，不参与业务决策。
+
+### 补充：代码审查修复（2026-11-05 17:45，v1.1 之后）
+
+收口后做了一轮代码审查，揪出 3 个 P0，已修并补回归用例（详见 `docs/plans/task-a1-ASR与TTS适配层.md` §10 v1.3）：
+
+| # | 问题 | 后果（修之前） | 修法 |
+| --- | --- | --- | --- |
+| P0-1 | Mock 夹具在 `tests/fixtures/` | mock 是默认 provider，生产镜像无 `tests/` → 首次 ASR 调用 `FileNotFoundError` | 迁入 `app/audio/fixtures/`，`tests/fixtures/` 退化为再导出 |
+| P0-2 | 上行音频异常被 `gather(return_exceptions=True)` 吞掉 | A3 帧流断了要等 15s，报「FunASR 未等到终稿」，排障指向错误对象 | 新增 `_watch_sender`，立刻产 `ERROR(ASRUnavailable("上行音频中断…"))` + `logger.warning` |
+| P0-3 | Mock 的 drain task 存实例字段 | 同实例并发 `stream()` 互相覆盖，取消错任务，drain 泄漏 | 改局部变量 |
+
+**仍未做（有意推迟）**：契约与实现拆分（`app/audio/contracts.py`）、PCM 常量收口（`FRAME_BYTES` vs `PCM_FRAME_BYTES` 名字近义、含义差 960 倍）。这两项等 A2/A3 开工前做，避免现在动契约模块搅乱下游。**A2/A3/A5 接契约时请注意第 4、5 条缺陷尚未消除。**
