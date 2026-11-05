@@ -11,10 +11,16 @@
 | `task-1` | Step0 身份与权限契约冻结 | A–E 全员 | ✅ 已完成（`707bdf6`） | — | `docs/接口契约_身份与权限.md` |
 | `task-2` | 提示词模板库 v1（6 个模板） | E | ⬜ 待认领 | — | `docs/prompts/` |
 | `task-3` | Step1 库与模型基座（5 表 + `0002` 迁移 + conftest） | A | ✅ 已完成 | `task-1` ✅ | `docker-compose.yml`、`app/db.py`、`app/models/`、`alembic/versions/`、`tests/conftest.py` |
+
 | `task-4` | Step2 鉴权内核（security / 依赖注入 / runtime_context） | B | 🚧 进行中（判定层 `16513da` + 人员/工牌/设备接线全部落地，剩 T5 测试收口与 T6 人审） | `task-1` ✅ | `app/core/security.py`、`app/core/auth.py`、`app/core/runtime_context.py`、`tests/test_security.py` |
 | `task-5` | Step3 登录与凭证接口 | C | ✅ 已完成 | `task-3` ✅、`task-4` ✅ | `app/api/schemas/auth.py`、`app/services/auth_service.py`、`app/api/auth.py`、`tests/test_auth_api.py`、`app/main.py`（router 注册 + 全局 handler） |
 | `task-6` | Step4 长者 CRUD + 设备绑定 + 范围过滤 | D | ✅ 已完成（2026-11-04） | `task-3` ✅、`task-4` ✅ | `app/services/{elder,device}_service.py`、`app/api/{elders,devices}.py`、`tests/test_elders_api.py` |
 | `task-7` | Step5 验收收口（攻击用例 + router 注册 + DoD） | E | ⬜ 待认领 | `task-5` ✅、`task-6` ✅ | `tests/test_auth_attacks.py`、`app/main.py`、`app/api/__init__.py`、`README.md` |
+=======
+| `task-4` | Step2 鉴权内核（security / 依赖注入 / runtime_context） | B | 🚧 进行中（判定层 `16513da` + 接线 `2107292` + T5 测试收口 `92ea5ae` 全部落地，227 条 0 skip、鉴权三模块覆盖 99.45%；剩 T6 人工逐行审查） | `task-1` ✅ | `app/core/security.py`、`app/core/auth.py`、`app/core/runtime_context.py`、`tests/test_security.py` |
+| `task-5` | Step3 登录与凭证接口 | C | 🔒 锁定 | `task-3`、`task-4` | `app/services/auth_service.py`、`app/api/auth.py`、`tests/test_auth_api.py` |
+| `task-6` | Step4 长者 CRUD + 设备绑定 + 范围过滤 | D | ✅ 已完成（2026-11-04） | `task-3`、`task-4` | `app/services/{elder,device}_service.py`、`app/api/{elders,devices}.py`、`tests/test_elders_api.py` |
+| `task-7` | Step5 验收收口（攻击用例 + router 注册 + DoD） | E | 🔒 锁定 | `task-5`、`task-6` | `tests/test_auth_attacks.py`、`app/main.py`、`app/api/__init__.py`、`README.md` |
 
 图例：⬜ 待认领 · 🚧 进行中 · ✅ 已完成 · 🔒 锁定（前置未完成） · ⛔ 阻塞
 
@@ -23,7 +29,7 @@
 > （ruff / mypy / pytest / alembic 升降级闭环），详见 `docs/plans/task-03-库与模型基座.md`。
 > conftest 实际为主库事务回滚隔离（卡面「silvermate_test」未采用，决策在计划文档）。
 
-> 交接说明（task-4，2026-11-04，B；T4b-2 接线后更新）：`app/core/auth.py` 已可用于路由层——
+> 交接说明（task-4，2026-11-04，B；T5 测试收口后更新）：`app/core/auth.py` 已可用于路由层——
 > `Depends(get_current_principal)` / `current_staff` / `current_guardian` / `current_device` /
 > `require_roles("admin")`，异常系 `AuthError` 五类各带契约 §7 的 `code`。
 > **`task-5` / `task-6` 请注意三件事**：① 401/403 的**响应体与 `WWW-Authenticate` 头是 `task-5` 的异常处理器**
@@ -33,6 +39,11 @@
 > ③ 工牌**仍未比对** `staff_tokens.scope` 与载荷 `scope`（契约 S-22）：Day 9 的 E14 之前必须先定
 > `scope` 的存储口径，否则「刷卡能干什么」没有可判定的依据。
 > 另：本卡在 `tests/test_security.py` 内临时自建 `auth_db` 夹具绕开 P-03，A 修 conftest 后会删掉。
+> **给 T6 人审与 `task-7`（攻击测试）的测试口径**：227 条用例分四层（纯函数 / 假会话只验「查了哪张表、
+> 绑了什么值」/ `TestClient` 走完整 ASGI 依赖链 / 真实 PostgreSQL 事务回滚），鉴权三模块行覆盖 99.45%
+> （`security.py` 100%）。**覆盖率只说明走到了，变红才说明守住了**——每条用例的自检口径是
+> 「把它守卫的那行判定删掉，用例必须变红」。剩余 2 行是**故意不补**的死代码/双保险，理由写在测试文件末尾
+> 「T5 交付证据 · 未覆盖行清单」，其中 `AuthError(code=…)` 这条 kwarg 全仓库无人传入，请人审时决定删或留。
 
 > 交付说明（task-5，2026-11-04，C）：四个 auth 端点（`POST /api/sessions`、`POST /api/sessions/refresh`、`GET /api/sessions/current`、`POST /api/device-sessions`）+ `auth_service` 唯一写库层 + 9 个全局 exception handler + 11 条集成测试全部落地并合入。**契约优先**：端点路径以 `docs/接口契约_身份与权限.md` 为准，未沿用大纲里的 `/auth/*` 旧路径。task-7 的 router 注册职责提前合入（auth router 必须注册才能跑通端点验证，与 E 确认）。测试门禁：task-5 11 passed + task-4 回归 193 passed = **204 passed, 0 failed, 0 skipped**，ruff 全绿。运行时服务端 9 条 curl 全过，错误路径统一 `{detail, code, trace_id}` JSON 响应。详见 `docs/plans/task-05-登录与凭证接口.md`。
 
