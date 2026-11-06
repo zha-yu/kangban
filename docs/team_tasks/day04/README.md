@@ -105,6 +105,13 @@ flowchart TD
 | [task-03-3D展示后端.md](task-03-3D展示后端.md) | A3 | W1 3D 展示 | config 唯一录入人、seed、nginx 托管、avatar-config |
 | [task-04-VAD主链与遗留修复.md](task-04-VAD主链与遗留修复.md) | A4 | W4/W5 + a0 | 先清 a0 三问题，再接兜底 VAD 主链、metrics 打点 |
 | [task-05-Day4前端联调.md](task-05-Day4前端联调.md) | F1（前端） | Day 4 前端全量 | P0=pad 联调主线（3D/唤醒词/声纹录入/身份确认/对话收尾，对接 C4–C7）；P1=口型 + 双端登录页；与 task-01~04 在 14:30 窗口逐条咬合 |
+| [task-06-护工工单看板.md](task-06-护工工单看板.md) | F2（前端） | console 第 3 批首项 | 护工工单看板 Mock 先行 + 浅色侧栏骨架（后端工单接口未交付，页面按 PRD §4.7 / 技术文档 §3.4 口径开发，集中留切换点） |
+| [task-07-负责长者列表.md](task-07-负责长者列表.md) | F3（前端） | console 第 3 批次项 | 负责长者列表与详情，真实对接已交付 E7/E6 接口（首个非 Mock 业务页），侧栏「负责长者」项启用 |
+| [task-08-告警通知中心.md](task-08-告警通知中心.md) | F4（前端） | console 第 3 批次项 | 护工告警通知中心，Mock 先行（notifications 表 Day 8 未交付），AC-23 状态机交互（送达≠确认） |
+| [task-09-健康代填.md](task-09-健康代填.md) | F5（前端） | console 第 3 批次项 | 健康采集代填表，提交 Mock（health_records Day 8 未交付）+ 负责长者下拉真实 E7；阈值常量按 PRD §4.6 |
+| [task-10-药单只读.md](task-10-药单只读.md) | F6（前端） | console 第 3 批收尾项 | 护工药单只读列表，Mock 先行（medication_plans Day 7 未交付）+ 长者下拉真实 E7；零写操作（§4.5 权限） |
+| [task-11-复核队列.md](task-11-复核队列.md) | F7（前端） | console 医生批次首项 | 健康记录复核队列，Mock 先行（health_records Day 8 未交付）；确认/纠错新版本 + 版本链（AC-22） |
+| [task-12-药单维护.md](task-12-药单维护.md) | F8（前端） | console 医生批次次项 | 医生药单增改停查，Mock 先行与护工只读页共享 store；AC-27 version+1 快照语义 |
 
 各卡自验准入后进联调窗口；执行期以各卡 `> 状态：` 行为准（PROGRESS 看板自动汇总）。
 
@@ -137,3 +144,10 @@ flowchart TD
 | v1.5 | 2026-11-06 | 约定 2 补机制说明：`VOICEPRINT_BASE_URL` 支持指向局域网共享推理实例（IP 仅群内分发不入仓库），不可用自动降级不阻塞，队友可自起容器 |
 | v1.6 | 2026-11-06 | 新增 task-05 双端登录页（前端独立卡，不占四人后端分工）：console/family 两个独立登录模块 + MPA 双入口与 MUI 主题装配，对接 Day 2 已交付的 E1/E2/E3 鉴权接口，含任务拆解 F0–F4、验收 A/B/C 三组与手动测试矩阵 |
 | v1.7 | 2026-11-06 | **task-05 重写并更名 task-05-Day4前端联调.md**（v2.0）：范围从「仅双端登录」修正为 Day 4 前端全量——P0 为 pad 联调主线（3D 加载降级/唤醒词入口/声纹录入引导/身份确认大按钮/对话收尾，对接 C4–C7），P1 为口型与双端登录；验收扩为 A–F 六组 |
+| v1.8 | 2026-11-06 | 新增 task-06 护工工单看板（F2，console 第 3 批首项）：Mock 先行 + 浅色侧栏骨架；重开权限按 PRD §4.7 收窄为管理员（前端页面方案 §3.2 冲突以 PRD 为准，f2 计划 D3 留痕） |
+| v1.9 | 2026-11-06 | 新增 task-07 负责长者列表与详情（F3，console 第 3 批次项）：真实对接已交付 E7/E6，首个非 Mock 业务页；侧栏「负责长者」项启用 |
+| v2.0 | 2026-11-06 | 新增 task-08 告警通知中心（F4，console 第 3 批次项）：Mock 先行（notifications 表 Day 8 未交付），AC-23 状态机交互（送达≠确认、已读≠确认） |
+| v2.1 | 2026-11-06 | 新增 task-09 健康采集代填表（F5，console 第 3 批次项）：提交 Mock（health_records Day 8 未交付）+ 负责长者下拉真实 E7；source 按 §3.4 枚举（AC-32 行文 staff_report 冲突不采用，f5 D2 留痕） |
+| v2.2 | 2026-11-06 | 新增 task-10 药单只读（F6，console 第 3 批收尾项）：Mock 先行（medication_plans Day 7 未交付）+ 长者下拉真实 E7；零写操作按 §4.5 权限有意决策（护工只读） |
+| v2.3 | 2026-11-06 | 新增 task-11 健康记录复核队列（F7，console 医生批次首项）：Mock 先行（health_records Day 8 未交付）；确认/纠错新版本 + 版本链（AC-22/FR-HLT-04）；review_note 为 Mock 自裁字段（表无此列，f7 D4 留痕） |
+| v2.4 | 2026-11-06 | 新增 task-12 药单维护（F8，console 医生批次次项）：医生增改停查（§4.5），与护工只读页共享 Mock store；修改 = version+1（AC-27），停用二次确认无删除语义 |

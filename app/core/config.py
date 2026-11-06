@@ -176,9 +176,10 @@ class Settings(BaseSettings):
     voiceprint_extract_timeout_seconds: float = 5.0
     voiceprint_embedding_dimension: int = 192  # CAM++ 固定 192 维（spikes/voiceprint/ 验证）
     # Fernet 密钥：embedding 加密落库用。必须 32 字节 base64 编码；生产经 .env 注入，
-    # .env.example 只放占位符（AGENTS §4.2 红线）。本地开发可临时用下方默认值。
+    # .env.example 只放占位符（AGENTS §4.2 红线）。默认值是合法 32 字节 key、仅供
+    # 本地开发兜底（此前默认串解码后 37 字节，Fernet 初始化必炸 500）。
     voiceprint_fernet_key: str = (
-        "a2UgDRGn_p87xenqzrJowY5jGICyTCm-ZN3mXY-i55g="
+        "ZGV2LXZvaWNlcHJpbnQtZmVybmV0LWtleS1sb2NhbDE="
     )
 
     @property

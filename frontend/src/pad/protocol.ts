@@ -51,13 +51,25 @@ export interface AsrEndMsg {
   type: "asr_end";
 }
 
+/** client_diag 的 stage 取值（C5 契约：3D / WebRTC / 链路诊断） */
+export type ClientDiagStage = "vrm_load" | "webrtc" | "vad" | "asr";
+
+/** C5 追加（v2）：客户端诊断上行，仅日志、服务端不回执；error 必须已脱敏 */
+export interface ClientDiagMsg {
+  type: "client_diag";
+  stage: ClientDiagStage;
+  ok: boolean;
+  error: string;
+}
+
 export type ClientSignal =
   | AuthMsg
   | OfferMsg
   | IceMsg
   | PingMsg
   | AsrStartMsg
-  | AsrEndMsg;
+  | AsrEndMsg
+  | ClientDiagMsg;
 
 /* ---- S→C 服务端下发 ---- */
 
