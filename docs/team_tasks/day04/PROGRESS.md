@@ -19,7 +19,7 @@
 | --- | --- |
 | `docs/plans/day-04-3D与身份闭环.md` | ❔ 草稿 |
 | `docs/plans/day04/a3-3D展示后端.md` | ✅ 已完成 |
-| `docs/plans/day04/a3-DAG.md` | 🚧 进行中 |
+| `docs/plans/day04/a3-DAG.md` | ✅ 已完成 |
 
 ## 契约冻结：**C4 / C5 / C6 / C7 均已定稿（主理人裁决提前冻结，晨会签字确认）**
 
