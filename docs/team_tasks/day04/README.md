@@ -109,6 +109,7 @@ flowchart TD
 | [task-07-负责长者列表.md](task-07-负责长者列表.md) | F3（前端） | console 第 3 批次项 | 负责长者列表与详情，真实对接已交付 E7/E6 接口（首个非 Mock 业务页），侧栏「负责长者」项启用 |
 | [task-08-告警通知中心.md](task-08-告警通知中心.md) | F4（前端） | console 第 3 批次项 | 护工告警通知中心，Mock 先行（notifications 表 Day 8 未交付），AC-23 状态机交互（送达≠确认） |
 | [task-09-健康代填.md](task-09-健康代填.md) | F5（前端） | console 第 3 批次项 | 健康采集代填表，提交 Mock（health_records Day 8 未交付）+ 负责长者下拉真实 E7；阈值常量按 PRD §4.6 |
+| [task-10-药单只读.md](task-10-药单只读.md) | F6（前端） | console 第 3 批收尾项 | 护工药单只读列表，Mock 先行（medication_plans Day 7 未交付）+ 长者下拉真实 E7；零写操作（§4.5 权限） |
 
 各卡自验准入后进联调窗口；执行期以各卡 `> 状态：` 行为准（PROGRESS 看板自动汇总）。
 
@@ -145,3 +146,4 @@ flowchart TD
 | v1.9 | 2026-11-06 | 新增 task-07 负责长者列表与详情（F3，console 第 3 批次项）：真实对接已交付 E7/E6，首个非 Mock 业务页；侧栏「负责长者」项启用 |
 | v2.0 | 2026-11-06 | 新增 task-08 告警通知中心（F4，console 第 3 批次项）：Mock 先行（notifications 表 Day 8 未交付），AC-23 状态机交互（送达≠确认、已读≠确认） |
 | v2.1 | 2026-11-06 | 新增 task-09 健康采集代填表（F5，console 第 3 批次项）：提交 Mock（health_records Day 8 未交付）+ 负责长者下拉真实 E7；source 按 §3.4 枚举（AC-32 行文 staff_report 冲突不采用，f5 D2 留痕） |
+| v2.2 | 2026-11-06 | 新增 task-10 药单只读（F6，console 第 3 批收尾项）：Mock 先行（medication_plans Day 7 未交付）+ 长者下拉真实 E7；零写操作按 §4.5 权限有意决策（护工只读） |
