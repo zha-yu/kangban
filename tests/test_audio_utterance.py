@@ -10,9 +10,11 @@
 from __future__ import annotations
 
 import io
+import os
 import struct
 import wave
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -345,6 +347,40 @@ async def test_utterance_success(
     assert "reply" in body and "text" in body["reply"] and "audio_url" in body["reply"]
     # Day 3 写死话术
     assert "您说的是" in body["reply"]["text"]
+
+
+@pytest.mark.asyncio
+async def test_utterance_p1_2_real_asr_tts_chain(
+    ac_audio: httpx.AsyncClient,
+    real_device_token: str,
+) -> None:
+    """a0-P1-2 收口：默认依赖链（build_asr/build_tts → Mock 形状）的链路行为。
+
+    - text 与所说内容一致（Mock 口径 = 固定脚本终稿，原样透传不造词）；
+    - audio_url 为真实落盘文件（/static/mock/tts_*.wav 且文件可读、合法 WAV），
+      不再是 Day 3 前期写死的假地址 http://static.example.com/mock.mp3。
+    """
+    wav = _make_wav(16_000)  # 1s
+    resp = await ac_audio.post(
+        "/api/audio/utterance",
+        headers={"Authorization": f"Bearer {real_device_token}"},
+        files={"audio": ("test.wav", wav, "audio/wav")},
+    )
+    assert resp.status_code == 200, f"got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body["text"] == "今天天气怎么样"  # app/audio/fixtures/asr_script.py 终稿
+
+    audio_url = body["reply"]["audio_url"]
+    assert audio_url, "TTS 正常时 audio_url 不应为 null"
+    assert not audio_url.endswith("mock.mp3"), f"假地址残留: {audio_url}"
+    assert audio_url.startswith("/static/mock/tts_")
+
+    # 落盘文件真实存在且是合法 WAV（16k/mono/16bit，与 _tts_synthesize 口径一致）
+    path = Path(os.getcwd()) / "static" / "mock" / audio_url.rsplit("/", 1)[-1]
+    assert path.exists(), f"audio_url 指向的文件未落盘: {path}"
+    with wave.open(str(path), "rb") as w:
+        assert w.getnframes() > 0
+        assert w.getframerate() == 16_000
 
 
 @pytest.mark.asyncio
