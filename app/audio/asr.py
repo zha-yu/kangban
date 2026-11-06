@@ -383,6 +383,7 @@ class FunASRWSProvider(ASRProvider):
         receive_timeout: float = FUNASR_RECEIVE_TIMEOUT_S,
         connect_timeout: float = FUNASR_CONNECT_TIMEOUT_S,
         insecure: bool = False,
+        hotwords: str = "",
     ) -> None:
         self._url = url
         self._receive_timeout = receive_timeout
@@ -390,6 +391,8 @@ class FunASRWSProvider(ASRProvider):
         # 只对 wss 生效：镜像自带自签证书，不跳过校验就握不上手（报 certificate verify failed）。
         # ws 明文连接不受影响，传 True 也不会放宽任何东西。
         self._insecure = insecure
+        # 热词（"词 权重" 空格分隔）：空 → 握手不带 hotwords 字段，回落原行为（adhoc-20261106）。
+        self._hotwords = hotwords.strip()
 
     @property
     def url(self) -> str:
@@ -404,7 +407,10 @@ class FunASRWSProvider(ASRProvider):
         connection = await self._connect()
         try:
             # 先握手再返回生成器：连不上/握手失败必须在 `await stream()` 这层就炸。
-            await connection.send(json.dumps(FUNASR_HANDSHAKE))
+            handshake: dict[str, object] = dict(FUNASR_HANDSHAKE)
+            if self._hotwords:
+                handshake["hotwords"] = self._hotwords
+            await connection.send(json.dumps(handshake))
         except (ConnectionClosed, WebSocketException) as exc:
             await _safe_close(connection)
             raise ASRUnavailable(f"FunASR 握手帧发送失败：{exc}") from exc
@@ -560,6 +566,7 @@ def build_asr(settings: Settings | None = None) -> ASRProvider:
         return FunASRWSProvider(
             url=config.asr_base_url.strip() or FUNASR_DEFAULT_URL,
             insecure=config.asr_insecure,
+            hotwords=config.asr_hotwords,
         )
     if kind == "cloud":
         return CloudASRProvider(

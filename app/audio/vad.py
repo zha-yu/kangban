@@ -62,7 +62,7 @@ class VadSession:
     """webrtcvad 单轮语音切段器。
 
     生命周期：
-        session = VadSession(aggressiveness=2)
+        session = VadSession(aggressiveness=3)
         session.feed_frame(frame_bytes_30ms)   # 逐帧喂入
         ...
         speech_segment = session.flush()        # 结束会话，返回累计语音段（含 preRoll）
@@ -73,7 +73,9 @@ class VadSession:
     - 非法帧长 → warning + skip，绝不让 `_webrtcvad.Error` 冒泡。
     """
 
-    aggressiveness: int = 2
+    # adhoc-20261106：2→3（0~3 档里最强的抗噪判定），配合端侧 TEN-VAD threshold 0.6
+    # 收窄收音范围，减少远处他人语音被误切段送进 ASR。
+    aggressiveness: int = 3
     min_speech_frames: int = 3  # 连续 3 帧 → speechstart
     silence_frames: int = 27  # 连续 27 帧 → speechend（810ms 静音）
 

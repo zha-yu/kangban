@@ -34,7 +34,7 @@
 | `docs/plans/day04/a4-VAD主链与遗留修复.md` | ❔ 已冻结 |
 | `docs/plans/day04/day-04-3D与身份闭环.md` | ❔ 草稿 |
 | `docs/plans/day04/f1-Day4前端联调.md` | 🚧 进行中 |
-| `docs/plans/day04/f1-vad-worker隔离.md` | ❔ 草稿 |
+| `docs/plans/day04/f1-vad-worker隔离.md` | ✅ 已完成 |
 | `docs/plans/day04/f1-双端登录页.md` | ✅ 已完成 |
 | `docs/plans/day04/f2-护工工单看板.md` | ✅ 已完成 |
 | `docs/plans/day04/f3-负责长者列表.md` | ✅ 已完成 |

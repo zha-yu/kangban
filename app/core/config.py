@@ -100,6 +100,9 @@ class Settings(BaseSettings):
     asr_language: str = "zh-CN"
     asr_timeout_ms: int = 300
     asr_emit_confidence: bool = True
+    # FunASR 热词（"词 权重" 空格分隔，权重 1~100）：空 → 握手不带 hotwords 字段，回落原行为
+    # （adhoc-20261106 收音与识别优化）。镜像模型是否启用 seaco 解码未确认，字段不生效也无害。
+    asr_hotwords: str = ""
     # FunASR runtime 镜像默认开 TLS 且内置自签证书（容器日志 "SSL is opened!"）。
     # 置 true 才跳过证书校验；公网/正式环境应换真证书并把这里关掉。
     asr_insecure: bool = False

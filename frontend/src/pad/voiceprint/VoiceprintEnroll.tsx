@@ -16,6 +16,8 @@ import { MicCaptureError } from "../audio/capture";
 import { StatusBadge } from "../components/StatusBadge";
 import { TaskShell } from "../components/TaskShell";
 import {
+  AMBIENT_CHECK_MS,
+  AMBIENT_NOISY_AVG,
   SEGMENT_MAX_MS,
   SEGMENT_MIN_MS,
   SegmentRecorder,
@@ -78,6 +80,10 @@ export function VoiceprintEnroll({ token, onDone, onAuthFail }: VoiceprintEnroll
   const [digits, setDigits] = useState(randomDigits);
   const [failText, setFailText] = useState("");
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [level, setLevel] = useState(0);
+  const [ambient, setAmbient] = useState<{ checked: boolean; noisy: boolean } | null>(
+    null,
+  );
 
   const segment = SEGMENTS[step];
 
@@ -85,16 +91,39 @@ export function VoiceprintEnroll({ token, onDone, onAuthFail }: VoiceprintEnroll
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
 
-  // 段内实时计时：录音中每 100ms 读一次 recorder 计时
+  // 段内实时计时 + 电平：录音中每 100ms 读一次 recorder 状态
   useEffect(() => {
     if (phase !== "recording") return;
-    const timer = setInterval(() => setElapsedMs(recorder.elapsedMs), 100);
+    const timer = setInterval(() => {
+      setElapsedMs(recorder.elapsedMs);
+      setLevel(recorder.level);
+    }, 100);
     return () => clearInterval(timer);
   }, [phase, recorder]);
+
+  // 录前环境自检：进页面开麦采 3s 均值电平，偏吵只提示不阻断（启发式，adhoc-20261106）。
+  // StrictMode 双跑：cleanup cancelAmbient 作废前一次采样，第二次重采；失败不阻塞录入。
+  useEffect(() => {
+    let cancelled = false;
+    void recorder
+      .sampleAmbient(AMBIENT_CHECK_MS)
+      .then((sample) => {
+        if (cancelled || sample === null) return;
+        setAmbient({ checked: true, noisy: sample.avg > AMBIENT_NOISY_AVG });
+      })
+      .catch(() => {
+        if (!cancelled) setAmbient({ checked: true, noisy: false });
+      });
+    return () => {
+      cancelled = true;
+      recorder.cancelAmbient();
+    };
+  }, [recorder]);
 
   async function handleStart(): Promise<void> {
     setFailText("");
     setElapsedMs(0);
+    setLevel(0);
     if (segment.index === 2) setDigits(randomDigits());
     setPhase("recording");
     try {
@@ -248,6 +277,18 @@ export function VoiceprintEnroll({ token, onDone, onAuthFail }: VoiceprintEnroll
     >
       <p className="text-2xl leading-relaxed text-ink-muted">{segment.hint}</p>
 
+      {/* 录前环境自检结果（只提示不阻断，adhoc-20261106） */}
+      {ambient?.checked && ambient.noisy && !recording && (
+        <div className="mt-4 flex items-center gap-4">
+          <StatusBadge tone="warning" size="md">
+            环境有点吵
+          </StatusBadge>
+          <p className="text-xl leading-relaxed text-ink-muted">
+            请靠近设备、关小电视或收音机，再开始录音。
+          </p>
+        </div>
+      )}
+
       {segment.index === 1 && (
         <div className="mt-8 rounded-2xl border border-line bg-surface-sunken px-8 py-10">
           <p className="text-5xl font-bold leading-snug text-ink">{segment.sample}</p>
@@ -278,6 +319,16 @@ export function VoiceprintEnroll({ token, onDone, onAuthFail }: VoiceprintEnroll
           <p className="mt-3 text-xl text-ink-muted">
             录音中 {elapsedSec} 秒（说满 1 到 {SEGMENT_MAX_MS / 1000} 秒都有效，到点自动结束）
           </p>
+          {/* 实时电平条：帮长者自查是否离麦太远（adhoc-20261106） */}
+          <div className="mt-4">
+            <div className="h-4 w-full overflow-hidden rounded-full bg-line">
+              <div
+                className="h-full rounded-full bg-brand-soft transition-[width] duration-100 ease-linear"
+                style={{ width: `${Math.min(level * 400, 100)}%` }}
+              />
+            </div>
+            <p className="mt-3 text-xl text-ink-muted">声音大小：离麦克风越近，这个条越长</p>
+          </div>
         </div>
       )}
 

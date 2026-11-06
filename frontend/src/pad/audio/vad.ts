@@ -1,38 +1,31 @@
 /**
- * T-D 端侧 TEN-VAD（sherpa-onnx WASM）适配层。
- * 参照教师模块 spikes/reference/asr/src/asr/web/vad/ten-vad.js 移植为 TS；
- * 参数与事件口径 adhoc-20261105 §4.2：threshold 0.5 / silence 0.8s / minSpeech 0.25s /
- * maxSpeech 30s（强制切段不丢中段）/ window 256。
- * 回落：加载或初始化失败抛 VadUnavailableError，上层捕获后走服务端 webrtcvad 兜底（字幕连续）。
+ * T-D 端侧 TEN-VAD（sherpa-onnx WASM）适配层 —— Worker 封装版（f1-vad-worker隔离.md 方案 A）。
+ *
+ * 背景：/kws/ 与 /vad-assets/ 两套 emscripten 产物均为非 modularize 构建，顶层
+ * `class ExitStatus` 声明在同一全局作用域二次执行即抛 SyntaxError（KWS 先加载则 VAD 必炸）。
+ * wasm 运行时改在 /vad-assets/vad-worker.js 的独立全局作用域内加载，与主线程 KWS 互不可见；
+ * 编译/推理随之移出主线程（建连期不抢主线程，利好 AC-42 ≤1.5s）。
+ * 回落：init_error / 脚本错误 / 30s 超时均抛 VadUnavailableError，
+ * 上层（realtime.ts）捕获后走服务端 webrtcvad 兜底（字幕连续），主链路不断。
+ * 参数与事件口径不变：adhoc-20261105 §4.2（threshold 0.5 / silence 0.8s / minSpeech 0.25s /
+ * maxSpeech 30s / window 256 / 16k）。
  */
 
-/* ---- sherpa-onnx 全局接口（由 /vad-assets 脚本注入） ---- */
+/** Worker→主线程消息（vad-worker.js 协议，见计划 §2.2） */
+type VadWorkerOutMsg =
+  | { type: "ready" }
+  | { type: "init_error"; message: string }
+  | { type: "speech_start" }
+  | { type: "speech_end" };
 
-interface SherpaVadDetector {
-  handle: number;
-  acceptWaveform(samples: Float32Array): void;
-  isDetected(): boolean;
-  isEmpty(): boolean;
-  front(): { samples: Float32Array; start: number };
-  pop(): void;
-  flush?(): void;
-  reset?(): void;
-  free(): void;
-}
+/** 主线程→Worker 消息 */
+type VadWorkerInMsg =
+  | { type: "init" }
+  | { type: "feed"; pcm: Int16Array }
+  | { type: "reset" }
+  | { type: "free" };
 
-declare global {
-  // eslint-disable-next-line no-var
-  var createVad: (
-    module: unknown,
-    config: Record<string, unknown>,
-  ) => SherpaVadDetector;
-  // eslint-disable-next-line no-var
-  var Module: Record<string, unknown> | undefined;
-}
-
-const VAD_ASSETS = "/vad-assets";
-const WINDOW_SIZE = 256;
-/** WASM 加载超时（12MB wasm，vite dev 无 gzip 首次拉取 >20s，与 kws-detector 对齐 30s；超时即回落服务端 VAD） */
+/** WASM 加载超时（12MB wasm，vite dev 无 gzip 首次拉取较慢；超时即回落服务端 VAD） */
 const LOAD_TIMEOUT_MS = 30_000;
 
 export class VadUnavailableError extends Error {
@@ -41,136 +34,121 @@ export class VadUnavailableError extends Error {
   }
 }
 
-function loadScript(src: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const el = document.createElement("script");
-    el.src = src;
-    el.onload = () => resolve();
-    el.onerror = () => reject(new VadUnavailableError(`脚本加载失败: ${src}`));
-    document.head.appendChild(el);
-  });
-}
-
-async function loadSherpaRuntime(): Promise<void> {
-  if (typeof globalThis.createVad === "function" && globalThis.Module) return;
-  await loadScript(`${VAD_ASSETS}/sherpa-onnx-vad.js`);
-  // emscripten 约定：Module 配置须在主 wasm 脚本加载前挂到全局
-  globalThis.Module = {
-    locateFile: (path: string) => `${VAD_ASSETS}/${path}`,
-  };
-  await Promise.race([
-    new Promise<void>((resolve, reject) => {
-      const m = (globalThis.Module = {
-        ...globalThis.Module,
-        onRuntimeInitialized: () => resolve(),
-        onAbort: (reason: unknown) =>
-          reject(new VadUnavailableError(`WASM 初始化中止: ${String(reason)}`)),
-      });
-      globalThis.Module = m;
-      void loadScript(`${VAD_ASSETS}/sherpa-onnx-wasm-main-vad.js`).catch(reject);
-    }),
-    new Promise<never>((_, reject) =>
-      setTimeout(
-        () => reject(new VadUnavailableError("WASM 加载超时")),
-        LOAD_TIMEOUT_MS,
-      ),
-    ),
-  ]);
-}
-
 export interface TenVadCallbacks {
   onSpeechStart: () => void;
   onSpeechEnd: () => void;
 }
 
 export class TenVad {
-  private detector: SherpaVadDetector | null = null;
-  private pending = new Float32Array(WINDOW_SIZE);
-  private used = 0;
+  private worker: Worker | null = null;
   private active = false;
 
   private constructor(private callbacks: TenVadCallbacks) {}
 
-  /** 加载 WASM 并构建检测器；任何失败抛 VadUnavailableError（上层回落服务端 VAD） */
+  /** 建 Worker 并等待运行时就绪；任何失败抛 VadUnavailableError（上层回落服务端 VAD） */
   static async load(callbacks: TenVadCallbacks): Promise<TenVad> {
+    const vad = new TenVad(callbacks);
     try {
-      await loadSherpaRuntime();
+      await vad.initWorker();
     } catch (err) {
+      vad.free();
       throw err instanceof VadUnavailableError
         ? err
         : new VadUnavailableError(String(err));
     }
-    const vad = new TenVad(callbacks);
-    vad.createDetector();
     return vad;
   }
 
-  private createDetector(): void {
-    let detector: SherpaVadDetector;
-    try {
-      detector = globalThis.createVad(globalThis.Module, {
-        sileroVad: { model: "" },
-        tenVad: {
-          model: "ten-vad.onnx",
-          threshold: 0.5,
-          minSilenceDuration: 0.8,
-          minSpeechDuration: 0.25,
-          maxSpeechDuration: 30,
-          windowSize: WINDOW_SIZE,
-        },
-        sampleRate: 16000,
-        numThreads: 1,
-        provider: "cpu",
-        debug: 0,
-        bufferSizeInSeconds: 30,
-      });
-    } catch (err) {
-      throw new VadUnavailableError(`TEN-VAD 初始化失败: ${String(err)}`);
-    }
-    if (!detector.handle) throw new VadUnavailableError("TEN-VAD 初始化失败");
-    this.detector = detector;
+  private initWorker(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let worker: Worker;
+      try {
+        worker = new Worker("/vad-assets/vad-worker.js");
+      } catch (err) {
+        reject(new VadUnavailableError(`VAD Worker 创建失败: ${String(err)}`));
+        return;
+      }
+      const settle = (err: VadUnavailableError) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        worker.terminate();
+        reject(err);
+      };
+      const timer = setTimeout(
+        () => settle(new VadUnavailableError("VAD Worker 加载超时")),
+        LOAD_TIMEOUT_MS,
+      );
+      worker.onmessage = (e: MessageEvent<VadWorkerOutMsg>) => {
+        const msg = e.data;
+        if (msg.type === "ready") {
+          if (settled) return; // 超时后迟到的就绪：worker 已 terminate，弃用
+          settled = true;
+          clearTimeout(timer);
+          this.worker = worker;
+          this.attach(worker);
+          resolve();
+        } else if (msg.type === "init_error") {
+          settle(new VadUnavailableError(msg.message));
+        }
+        // speech_* 在就绪前不可能出现，忽略
+      };
+      worker.onerror = (e) => {
+        // 脚本级错误（资产 404、编译失败），与 init_error 互为兜底
+        settle(new VadUnavailableError(`VAD Worker 脚本错误: ${e.message || "unknown"}`));
+      };
+      worker.postMessage({ type: "init" } satisfies VadWorkerInMsg);
+    });
   }
 
-  /** 端侧是否处于说话态（打断判定步骤 9 复用） */
+  /** 就绪后接管消息：仅处理 speech 事件；运行期错误只留痕，由上层降级链路兜底 */
+  private attach(worker: Worker): void {
+    worker.onmessage = (e: MessageEvent<VadWorkerOutMsg>) => {
+      const msg = e.data;
+      if (msg.type === "speech_start") {
+        this.active = true;
+        this.callbacks.onSpeechStart();
+      } else if (msg.type === "speech_end") {
+        this.active = false;
+        this.callbacks.onSpeechEnd();
+      }
+    };
+    worker.onerror = (e) => {
+      console.warn("[vad] worker 运行期错误:", e.message || "unknown");
+    };
+  }
+
+  /** 端侧是否处于说话态（现网无同步消费方；跨线程镜像值，仅供展示级用途） */
   get speaking(): boolean {
     return this.active;
   }
 
-  /** 输入 16k PCM16 帧（60ms/960 点），内部缓冲到 256 点窗口喂模型 */
+  /** 输入 16k PCM16 帧（60ms/960 点）；buffer 每帧独立所有权（capture.ts transfer 语义），零拷贝转移给 worker */
   feed(pcm: Int16Array): void {
-    if (!this.detector) throw new VadUnavailableError("检测器已释放");
-    for (let i = 0; i < pcm.length; i++) {
-      this.pending[this.used++] = pcm[i] / 32768;
-      if (this.used === WINDOW_SIZE) {
-        this.feedWindow(this.pending);
-        this.pending = new Float32Array(WINDOW_SIZE);
-        this.used = 0;
-      }
-    }
-  }
-
-  private feedWindow(samples: Float32Array): void {
-    const d = this.detector;
-    if (!d) return;
-    d.acceptWaveform(samples);
-    const active = d.isDetected();
-    if (active !== this.active) {
-      this.active = active;
-      if (active) this.callbacks.onSpeechStart();
-      else this.callbacks.onSpeechEnd();
-    }
+    if (!this.worker) throw new VadUnavailableError("检测器已释放");
+    this.worker.postMessage(
+      { type: "feed", pcm } satisfies VadWorkerInMsg,
+      [pcm.buffer],
+    );
   }
 
   /** 释放并重建（新一轮会话前的状态复位） */
   reset(): void {
-    if (!this.detector) return;
-    if (typeof this.detector.reset === "function") this.detector.reset();
+    this.worker?.postMessage({ type: "reset" } satisfies VadWorkerInMsg);
     this.active = false;
-    this.used = 0;
   }
 
   free(): void {
-    this.detector?.free();
-    this.detector = null;
+    if (!this.worker) return;
+    const w = this.worker;
+    this.worker = null;
+    try {
+      w.postMessage({ type: "free" } satisfies VadWorkerInMsg);
+    } catch {
+      // worker 已死（如超时路径 terminate 过），忽略
+    }
+    // 兜底回收：即使 free 消息未及处理，terminate 保证 wasm 内存随线程释放
+    w.terminate();
   }
 }
