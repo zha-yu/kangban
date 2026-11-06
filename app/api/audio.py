@@ -130,11 +130,7 @@ async def _frame_iter(wav_bytes: bytes) -> AsyncIterator[bytes]:
             channels = w.getnchannels()
             sampwidth = w.getsampwidth()
 
-            if (
-                rate != PCM_SAMPLE_RATE
-                or channels != PCM_CHANNELS
-                or sampwidth != PCM_SAMPLE_WIDTH
-            ):
+            if rate != PCM_SAMPLE_RATE or channels != PCM_CHANNELS or sampwidth != PCM_SAMPLE_WIDTH:
                 raise ASRError(
                     f"wav format mismatch: got {rate}Hz/{channels}ch/{sampwidth * 8}bit, "
                     f"need {PCM_SAMPLE_RATE}Hz/{PCM_CHANNELS}ch/{PCM_SAMPLE_WIDTH * 8}bit"
