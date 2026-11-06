@@ -45,6 +45,7 @@ from app.models.staff import StaffAccount  # noqa: E402
 
 _PHONE_RE = re.compile(r"^1\d{10}$")
 _MIN_PASSWORD_LEN = 8
+_MAX_PASSWORD_LEN = 128
 _STAFF_ROLES = ("admin", "care_worker", "doctor")
 _ALL_ROLES = (*_STAFF_ROLES, "guardian")
 
@@ -81,24 +82,33 @@ def _validate(args: argparse.Namespace) -> str | None:
         return f"手机号格式不对：{args.phone}（要 11 位，1 开头）"
     if len(args.password) < _MIN_PASSWORD_LEN:
         return f"口令至少 {_MIN_PASSWORD_LEN} 位（当前 {len(args.password)} 位）"
+    if len(args.password) > _MAX_PASSWORD_LEN:
+        return f"口令最多 {_MAX_PASSWORD_LEN} 位（当前 {len(args.password)} 位）"
     if not args.name.strip():
         return "姓名不能为空"
     return None
 
 
 async def _find_existing(phone: str) -> tuple[str, uuid.UUID] | None:
-    """在两张账号表里查同号账号，返回 (kind, account_id)。"""
+    """在两张账号表里查同号账号，返回 (kind, account_id)。
+
+    只查 id 避免拉全列（密码哈希等），与 `staff_service._phone_taken` 口径一致。
+    """
     async for session in get_session():
         staff_hit = (
-            await session.execute(select(StaffAccount).where(StaffAccount.phone == phone))
+            await session.execute(
+                select(StaffAccount.staff_id).where(StaffAccount.phone == phone)
+            )
         ).scalar_one_or_none()
         if staff_hit is not None:
-            return "staff", staff_hit.staff_id
+            return "staff", staff_hit
         guardian_hit = (
-            await session.execute(select(GuardianAccount).where(GuardianAccount.phone == phone))
+            await session.execute(
+                select(GuardianAccount.guardian_id).where(GuardianAccount.phone == phone)
+            )
         ).scalar_one_or_none()
         if guardian_hit is not None:
-            return "guardian", guardian_hit.guardian_id
+            return "guardian", guardian_hit
     return None
 
 

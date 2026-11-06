@@ -316,3 +316,30 @@ async def test_bind_requires_token(client: AsyncClient) -> None:
         json={"guardian_id": str(G1), "relation": "女儿"},
     )
     assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------- P1 修复：disabled guardian 不能绑定
+
+
+async def test_bind_disabled_guardian_returns_409(
+    client: AsyncClient, seeded: AsyncConnection
+) -> None:
+    """disabled 状态的家属账号不能新增绑定。"""
+    session = AsyncSession(
+        bind=seeded, expire_on_commit=False, join_transaction_mode="create_savepoint"
+    )
+    row = (
+        await session.execute(
+            select(GuardianAccount).where(GuardianAccount.guardian_id == G4)
+        )
+    ).scalar_one()
+    row.status = "disabled"
+    await session.commit()
+
+    resp = await client.post(
+        f"/api/elders/{ELDER_ID}/guardians",
+        json={"guardian_id": str(G4), "relation": "儿子"},
+        headers=_admin_headers(),
+    )
+    assert resp.status_code == 409
+    assert resp.json()["code"] == "CONFLICT"

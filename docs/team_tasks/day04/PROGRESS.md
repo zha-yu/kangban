@@ -3,12 +3,12 @@
 > ⚠️ **本文件由 `scripts/update_progress.py` 自动生成，不要手改**——改任务卡首部的 `> 状态：` 行，再跑一次脚本（或直接提交，pre-commit 钩子会自动刷新）。
 > 刻意不写生成时间与提交哈希：那两样每次提交都会变，会让看板变成噪音。提交历史看 `git log`。
 
-## 总览：**1 / 6** 张任务卡已收口
+## 总览：**3 / 6** 张任务卡已收口
 
 | # | 任务卡 | 状态 | 文件 |
 | --- | --- | --- | --- |
-| 1 | Day 4 · a0 联调遗留问题修复 | 🚧 进行中 | `docs/team_tasks/day04/a0-联调遗留问题修复.md` |
-| 2 | Task 01 · 声纹身份闭环（A1，W2） | ⬜ 未开始 | `docs/team_tasks/day04/task-01-声纹身份闭环.md` |
+| 1 | Day 4 · a0 联调遗留问题修复 | ✅ 已完成 | `docs/team_tasks/day04/a0-联调遗留问题修复.md` |
+| 2 | Task 01 · 声纹身份闭环（A1，W2） | ✅ 已完成 | `docs/team_tasks/day04/task-01-声纹身份闭环.md` |
 | 3 | Task 02 · 信令追加与对话闭环（A2，W3） | ⬜ 未开始 | `docs/team_tasks/day04/task-02-信令与对话闭环.md` |
 | 4 | Task 03 · 3D 展示后端（A3，W1） | ✅ 已完成 | `docs/team_tasks/day04/task-03-3D展示后端.md` |
 | 5 | Task 04 · VAD 主链接入与遗留修复（A4，W4/W5 + a0） | 🚧 进行中 | `docs/team_tasks/day04/task-04-VAD主链与遗留修复.md` |

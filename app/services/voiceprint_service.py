@@ -116,10 +116,14 @@ async def extract_embedding_from_container(audio_bytes: bytes) -> np.ndarray:
         logger.warning("推理容器不可达：%s", exc)
         raise VoiceprintExtractUnavailable(f"声纹推理容器不可用：{exc}") from exc
 
-    if resp.status_code == 503:
-        detail = resp.json().get("detail", "推理容器暂不可用") if resp.content else "推理容器暂不可用"
-        raise VoiceprintExtractUnavailable(detail)
+    if resp.status_code >= 500:
+        # 5xx（502/503/504）都属于服务端临时错误 → 503 降级
+        detail = resp.text[:200] if resp.content else "推理容器暂不可用"
+        raise VoiceprintExtractUnavailable(
+            f"推理容器返回 {resp.status_code}: {detail}"
+        )
     if resp.status_code >= 400:
+        # 4xx 客户端错误（格式、参数）→ 422 validation_error
         detail = resp.text[:200]
         raise VoiceprintInvalidAudio(f"推理容器返回 {resp.status_code}: {detail}")
 

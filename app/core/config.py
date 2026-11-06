@@ -178,7 +178,7 @@ class Settings(BaseSettings):
     # Fernet 密钥：embedding 加密落库用。必须 32 字节 base64 编码；生产经 .env 注入，
     # .env.example 只放占位符（AGENTS §4.2 红线）。本地开发可临时用下方默认值。
     voiceprint_fernet_key: str = (
-        "ZGV2LXRlbXAgZmVybmV0IGtleSBmb3IgcGxheWdyb3VuZCBvbmx5"
+        "a2UgDRGn_p87xenqzrJowY5jGICyTCm-ZN3mXY-i55g="
     )
 
     @property
