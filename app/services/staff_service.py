@@ -79,6 +79,10 @@ class GuardianLimitExceededError(StaffServiceError):
     """该长者的 active 监护人已满 2 位。"""
 
 
+class GuardianDisabledError(StaffServiceError):
+    """家属账号已停用，不能新增绑定（P1 修复 2026-11-06）。"""
+
+
 def mask_phone(phone: str | None) -> str:
     """手机号脱敏：`13800000001` → `138****0001`（响应体与日志统一用它）。"""
     if not phone:
@@ -203,6 +207,12 @@ async def update_staff(
 
     取值合法性由请求模型（`Literal`）与表 CHECK 约束兜底，服务层不再重复判定；
     这里只保证「传了但值没变」不会误伤 —— 空 PATCH 与同值 PATCH 都不加版本号。
+
+    角色变更联动（P1 修复 2026-11-06）：
+    `doctor ↔ care_worker` 互转时，同步更新 `elder_staff_assignments.relation`
+    （`primary_care ↔ doctor`），否则 `relation` 与 `staff.role` 会漂移。
+    `admin ↔ 非 admin` 不涉及联动：admin 本就不参与绑定（裁决 D-01），
+    非 admin → admin 时既有 assignment 保留历史（不自动清）。
     """
     staff = (
         await session.execute(select(StaffAccount).where(StaffAccount.staff_id == staff_id))
@@ -212,6 +222,28 @@ async def update_staff(
 
     changed: list[str] = []
     if role is not None and role != staff.role:
+        # role 变更 → 同步 assignment.relation（doctor ↔ care_worker 互转）
+        old_role, new_role = staff.role, role
+        old_relation = _ROLE_TO_RELATION.get(old_role)
+        new_relation = _ROLE_TO_RELATION.get(new_role)
+        if (
+            old_relation is not None
+            and new_relation is not None
+            and old_relation != new_relation
+        ):
+            # 同一个 staff 的所有 assignment 的 relation 一起换
+            await session.execute(
+                ElderStaffAssignment.__table__.update()
+                .where(ElderStaffAssignment.staff_id == staff_id)
+                .values(relation=new_relation)
+            )
+            logger.info(
+                "assignment relation synced: staff_id=%s %s → %s",
+                staff_id,
+                old_relation,
+                new_relation,
+            )
+
         staff.role = role
         changed.append("role")
     if status is not None and status != staff.status:
@@ -270,11 +302,13 @@ async def bind_guardian(
 
     guardian = (
         await session.execute(
-            select(GuardianAccount.guardian_id).where(GuardianAccount.guardian_id == guardian_id)
+            select(GuardianAccount).where(GuardianAccount.guardian_id == guardian_id)
         )
     ).scalar_one_or_none()
     if guardian is None:
         raise GuardianNotFoundError(f"家属账号不存在：{guardian_id}")
+    if guardian.status != "active":
+        raise GuardianDisabledError(f"家属账号已停用（status={guardian.status}），不能绑定")
 
     existing = (
         await session.execute(
@@ -326,6 +360,7 @@ __all__ = [
     "ElderNotFoundError",
     "GuardianAccount",
     "GuardianAlreadyBoundError",
+    "GuardianDisabledError",
     "GuardianLimitExceededError",
     "GuardianNotFoundError",
     "StaffAccount",
