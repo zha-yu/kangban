@@ -88,6 +88,31 @@ def handle_request_validation(req: Request, exc: RequestValidationError) -> JSON
     )
 
 
+def handle_http_exception(req: Request, exc: HTTPException) -> JSONResponse:
+    """兜底：业务代码 raise HTTPException 也包成 ErrorResponse（契约 §7）。
+
+    模块级（同 handle_request_validation），便于测试 fixture 复用同一实现。
+    """
+    code_map = {
+        400: "BAD_REQUEST",
+        401: "TOKEN_INVALID",
+        403: "ROLE_FORBIDDEN",
+        404: "NOT_FOUND",
+        413: "PAYLOAD_TOO_LARGE",
+        422: "VALIDATION_ERROR",
+        503: "SERVICE_UNAVAILABLE",
+    }
+    code = code_map.get(exc.status_code, f"HTTP_{exc.status_code}")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ErrorResponse(
+            detail=str(exc.detail),
+            code=code,
+            trace_id=get_trace_id() or "-",
+        ).model_dump(),
+    )
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     """应用工厂：便于测试注入不同配置（`create_app(Settings(app_env="test"))`）。"""
     settings = settings or get_settings()
@@ -208,26 +233,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     # 兜底：业务代码 raise HTTPException 也包成 ErrorResponse（契约 §7）
-    @application.exception_handler(HTTPException)
-    async def _handle_http_exception(req: Request, exc: HTTPException) -> JSONResponse:
-        code_map = {
-            400: "BAD_REQUEST",
-            401: "TOKEN_INVALID",
-            403: "ROLE_FORBIDDEN",
-            404: "NOT_FOUND",
-            413: "PAYLOAD_TOO_LARGE",
-            422: "VALIDATION_ERROR",
-            503: "SERVICE_UNAVAILABLE",
-        }
-        code = code_map.get(exc.status_code, f"HTTP_{exc.status_code}")
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=ErrorResponse(
-                detail=str(exc.detail),
-                code=code,
-                trace_id=get_trace_id() or "-",
-            ).model_dump(),
-        )
+    application.add_exception_handler(HTTPException, handle_http_exception)
 
     # a0-F-01：统一 422 错误体（实现见模块级 handle_request_validation）
     application.add_exception_handler(RequestValidationError, handle_request_validation)

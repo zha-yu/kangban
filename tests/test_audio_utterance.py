@@ -17,7 +17,7 @@ from typing import Any
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import (
@@ -40,7 +40,7 @@ from app.core.auth import (
 from app.core.config import get_settings
 from app.core.security import TokenExpiredError, sha256_hex
 from app.db import get_session as _app_get_session
-from app.main import handle_request_validation
+from app.main import handle_http_exception, handle_request_validation
 from app.models.organization import Bed, Device, Elder, Room
 
 # ---------------------------------------------------------------------------
@@ -135,6 +135,8 @@ async def app_for_audio(
     app.include_router(auth_api.router, prefix="/api")  # a0-F-01：400 分支测试用
     # a0-F-01：裸 app 不走 create_app，手动注册全局 RequestValidationError handler
     app.add_exception_handler(RequestValidationError, handle_request_validation)
+    # a0-F-02：HTTPException 兜底（code_map 422→VALIDATION_ERROR），与生产同实现
+    app.add_exception_handler(HTTPException, handle_http_exception)
 
     async def _override_get_session():
         yield audio_test_session
@@ -411,6 +413,30 @@ async def test_missing_audio_422_unified_error_body(
     assert "trace_id" in body and isinstance(body["trace_id"], str)
     assert isinstance(body["detail"], str) and body["detail"]
     assert "body.audio" in body["detail"]  # loc 简化拼接，非原始数组
+
+
+@pytest.mark.asyncio
+async def test_garbage_bytes_422_not_503(
+    ac_audio: httpx.AsyncClient,
+    real_device_token: str,
+) -> None:
+    """a0-F-02：纯垃圾字节（非 WAV）→ 422 VALIDATION_ERROR，而非漏到 ASR 层炸 503。"""
+    resp = await ac_audio.post(
+        "/api/audio/utterance",
+        headers={"Authorization": f"Bearer {real_device_token}"},
+        files={"audio": ("garbage.wav", b"\x00" * 1024, "audio/wav")},
+    )
+    assert resp.status_code == 422, f"got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body["code"] == "VALIDATION_ERROR"
+
+    text_bytes = "这不是音频，是文本".encode()
+    resp = await ac_audio.post(
+        "/api/audio/utterance",
+        headers={"Authorization": f"Bearer {real_device_token}"},
+        files={"audio": ("garbage.wav", text_bytes, "audio/wav")},
+    )
+    assert resp.status_code == 422, f"got {resp.status_code}: {resp.text}"
 
 
 @pytest.mark.asyncio

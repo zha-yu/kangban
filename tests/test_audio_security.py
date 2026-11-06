@@ -15,7 +15,7 @@ from typing import Any
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -36,6 +36,7 @@ from app.core.auth import (
 from app.core.config import get_settings
 from app.core.security import TokenExpiredError, sha256_hex
 from app.db import get_session as _app_get_session
+from app.main import handle_http_exception
 from app.models.organization import Bed, Device, Elder, Room
 
 _DEVICE_SECRET_PLAIN = "device-long-secret-plain-abc123"
@@ -110,6 +111,8 @@ async def sec_seeded(sec_session: AsyncSession) -> dict[str, Any]:
 async def sec_app(sec_session: AsyncSession) -> FastAPI:
     app = FastAPI()
     app.include_router(audio_api.router)
+    # a0-F-02：HTTPException 兜底（code_map 422→VALIDATION_ERROR），与生产同实现
+    app.add_exception_handler(HTTPException, handle_http_exception)
 
     async def _override_get_session():
         yield sec_session
@@ -373,14 +376,16 @@ async def test_asr_then_tts_both_unavailable_asr_wins(
 
 
 # ---------------------------------------------------------------------------
-# A3 · 损坏 WAV 头 → 不 crash + 正常继续（duration_ms=0 不触发 413）
+# A3 · 损坏 WAV 头 → 入口 422 拒收（a0-F-02：格式校验前移，不漏 ASR 层）
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_corrupt_wav_header_not_crash(sec_ac: httpx.AsyncClient, sec_token: str) -> None:
-    """伪造 WAV 头 → _wav_duration_ms 内部 catch wave.Error 返回 0，不触发 413，
-    Mock ASR/TTS 继续工作 → 200。
+async def test_corrupt_wav_header_422(sec_ac: httpx.AsyncClient, sec_token: str) -> None:
+    """a0-F-02：伪造 WAV 头（垃圾字节）→ 入口拒收 422 VALIDATION_ERROR。
+
+    Day 3 旧口径是「解析失败归 0 → 200」；a0-F-02 改为格式校验前移：
+    非 WAV 字节不得漏到 ASR 层炸 503，必须给客户端明确的 422 统一错误体。
     """
     corrupt = _make_corrupt_wav()
     resp = await sec_ac.post(
@@ -388,9 +393,9 @@ async def test_corrupt_wav_header_not_crash(sec_ac: httpx.AsyncClient, sec_token
         headers={"Authorization": f"Bearer {sec_token}"},
         files={"audio": ("corrupt.wav", corrupt, "audio/wav")},
     )
-    # 必须不是 500（不 crash）；实际会走 Mock ASR/TTS 正常处理 → 200
-    assert resp.status_code != 500, f"corrupt WAV caused 500: {resp.text}"
-    assert resp.status_code == 200, f"got {resp.status_code}: {resp.text}"
+    assert resp.status_code == 422, f"got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body["code"] == "VALIDATION_ERROR"
 
 
 # ---------------------------------------------------------------------------
