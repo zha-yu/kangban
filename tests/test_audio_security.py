@@ -65,12 +65,23 @@ async def sec_engine() -> AsyncIterator[AsyncEngine]:
 
 @pytest.fixture
 async def sec_session(sec_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
-    sf = async_sessionmaker(sec_engine, expire_on_commit=False)
-    async with sf() as session:
-        try:
-            yield session
-        finally:
-            await session.rollback()
+    """外层事务包住整个用例：service 层（device-sessions 登录）的真实 commit 只释放
+    savepoint，结束整体回滚，共享 dev 库零残留（模式同 test_elders_api.client）。
+
+    不能用裸 session：登录 commit 会把种子数据落进共享库，文件组合顺序变化时
+    污染 elders 计数用例（2026-11-06 实测 +1 elder +1 device）。
+    """
+    async with sec_engine.connect() as conn:
+        trans = await conn.begin()
+        sf = async_sessionmaker(
+            bind=conn, expire_on_commit=False, join_transaction_mode="create_savepoint"
+        )
+        async with sf() as session:
+            try:
+                yield session
+            finally:
+                await session.rollback()
+        await trans.rollback()
 
 
 @pytest.fixture
