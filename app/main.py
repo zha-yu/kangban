@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -20,6 +21,7 @@ from app import __version__
 from app.api import audio as audio_api
 from app.api import auth as auth_api
 from app.api import devices, elders, health
+from app.api.elders import _is_request_format_error
 from app.api.schemas.auth import ErrorResponse
 from app.audio import signaling  # Day 3 T2：WS 信令路由（/ws/signal）
 from app.audio.webrtc import install_signaling_handler  # Day 3 T3：A3 媒体层接线
@@ -52,6 +54,38 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("application starting", extra={"app_env": app.state.settings.app_env})
     yield
     logger.info("application stopped")
+
+
+def handle_request_validation(req: Request, exc: RequestValidationError) -> JSONResponse:
+    """a0-F-01：RequestValidationError 统一错误体（模块级，便于测试 fixture 复用同一实现）。
+
+    elders/devices 走 ContractAPIRoute 已在路由层分流（格式错→400、字段错→422），
+    异常到不了这里；本 handler 兜住 audio/auth 等默认路由类的同款异常，避免
+    FastAPI 默认裸 422（无 code/trace_id）。§7 分类逻辑单一来源在
+    app/api/elders.py::_is_request_format_error，两边不得分叉。
+    """
+    if _is_request_format_error(exc):
+        return JSONResponse(
+            status_code=400,
+            content=ErrorResponse(
+                detail="malformed request",
+                code="BAD_REQUEST",
+                trace_id=get_trace_id() or "-",
+            ).model_dump(),
+        )
+    # detail 只取 loc + msg，不带 Pydantic 原始数组与 ctx（不回显内部细节）
+    detail = "; ".join(
+        "{}: {}".format(".".join(str(p) for p in error.get("loc") or ()), error.get("msg", ""))
+        for error in exc.errors()
+    )
+    return JSONResponse(
+        status_code=422,
+        content=ErrorResponse(
+            detail=detail or "request validation failed",
+            code="VALIDATION_ERROR",
+            trace_id=get_trace_id() or "-",
+        ).model_dump(),
+    )
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -194,6 +228,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 trace_id=get_trace_id() or "-",
             ).model_dump(),
         )
+
+    # a0-F-01：统一 422 错误体（实现见模块级 handle_request_validation）
+    application.add_exception_handler(RequestValidationError, handle_request_validation)
 
     # 未预期异常 → 500，不回显内部细节（AGENTS §8 失败分类）
     @application.exception_handler(Exception)
