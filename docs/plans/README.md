@@ -34,6 +34,8 @@
 | [day-04-3D与身份闭环.md](./day-04-3D与身份闭环.md) | Day 4 全量后端方案 v2.3：W1 3D 展示（avatar-config 三层降级、nginx 托管 VRM·两步走）、W2 声纹身份闭环（注册三接口、identity_ask/confirm、迁移 0004/0005·CAM++ 192 维、**设备绑定 1v1 候选集**、每会话首轮校验）、W3 上下文与 LLM 对话闭环（FR-DLG-05）、W4 VAD 正式切段、W5 唤醒词端侧 KWS P0（FR-UI-11/AC-42）；M1–M17 改造点、T1–T10 排期、R1–R13 风险、4 项自裁；显式排除 FR-3D-03/viseme/diarization；基线已同步修订（PRD v2.6、技术文档 v1.5） | 草稿 | 2026-11-06 |
 
 
+| [day04/a3-3D展示后端.md](./day04/a3-3D展示后端.md) | A3（Day 4 · 3D 展示后端）实施计划：现状九条实测、四项口径（version 内容指纹 / rotation 只来自 Settings / nginx 是否进 compose / services 归属）、T1–T7 七步（Settings→取值链服务→avatar-config 接口→seed 与 VRM 资产→nginx 托管→装配与测试→README）、验收命令与五条回退 | 草稿 | 2026-11-06 |
+
 ## 状态取值
 
 `草稿` → `进行中` → `已冻结`（计划执行完/定稿）｜`已废弃`（不删，留痕）

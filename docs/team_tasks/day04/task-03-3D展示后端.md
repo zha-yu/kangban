@@ -40,4 +40,5 @@ uv run pytest -q 全绿；ruff check app 通过
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.1 | 2026-11-06 | 澄清「禁触 services」的口径并记录两项裁决：①**允许 A3 新建** `app/services/persona_service.py`（day-04 README:65-67 显示 `app/services/` 本就有 A1/A2 多个 owner，禁的是互相修改既有文件，不是禁止新增）；约束为该文件只读、不 import 任何既有 service。②nginx **不进** compose，本卡只交 `deploy/nginx.conf` + 一次性容器验证，正式集成留 Day 10。详见 `docs/plans/day04/a3-3D展示后端.md` A-01/A-02 与 v1.4 |
 | v1.0 | 2026-11-06 | 初稿：自 day04 README v1.0 §3/§6 拆出 |
