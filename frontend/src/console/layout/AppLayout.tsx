@@ -22,7 +22,7 @@ const NAV_BY_ROLE: Record<string, NavItem[]> = {
     { key: "workorders", label: "工单看板", enabled: true },
     { key: "elders", label: "负责长者", enabled: true }, // task-07 交付
     { key: "health-form", label: "健康代填", enabled: true }, // task-09 交付（提交 Mock）
-    { key: "medication", label: "药单只读", enabled: false },
+    { key: "medication", label: "药单只读", enabled: true }, // task-10 交付（Mock，零写操作）
     { key: "alerts", label: "告警通知中心", enabled: true }, // task-08 交付（Mock）
   ],
   doctor: [

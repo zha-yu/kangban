@@ -755,6 +755,58 @@ body {
   color: var(--color-ink-muted);
 }
 
+/* ---- 药单只读（task-10 F6：Mock 药单 + 真实 E7 下拉，零写操作） ---- */
+.med-page {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.med-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.med-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.med-card.is-stopped {
+  opacity: 0.65;
+}
+
+.med-fields {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 4px 24px;
+}
+
+.med-fields > div {
+  display: flex;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.med-fields dt {
+  color: var(--color-ink-subtle);
+  flex-shrink: 0;
+}
+
+.med-fields dd {
+  margin: 0;
+  color: var(--color-ink);
+}
+
 /* ---- 操作弹窗 ---- */
 .dlg-mask {
   position: fixed;
