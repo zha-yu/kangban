@@ -50,6 +50,7 @@ from aiortc.mediastreams import MediaStreamError, MediaStreamTrack
 from aiortc.sdp import candidate_from_sdp
 
 from app.audio.asr import ASRError, ASREvent, ASREventKind, ASRProvider, build_asr
+from app.audio.vad import VadFallbackController
 from app.core.config import Settings, get_settings
 
 if TYPE_CHECKING:
@@ -92,6 +93,9 @@ _LOOPBACK_ICE_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _ICE_URL_SCHEMES = frozenset({"stun", "turn", "turns"})
 
 AsrEventCallback = Callable[[str, ASREvent], Awaitable[None]]
+
+# W4 服务端 VAD 兜底下游：兜底段产出后走与 asr_end 相同的对话链路（C6/A2 消费点）。
+VadSegmentCallback = Callable[[bytes], Awaitable[None]]
 
 
 # ------------------------------------------------------------------ 状态与异常
@@ -677,6 +681,7 @@ class MediaSession:
         asr_provider: ASRProvider | None = None,
         on_asr_event: AsrEventCallback | None = None,
         on_media_failed: MediaFailureCallback | None = None,
+        on_vad_segment: VadSegmentCallback | None = None,
     ) -> None:
         if not connection_id:
             raise ValueError("connection_id must not be empty")
@@ -696,6 +701,9 @@ class MediaSession:
         self._asr_provider = asr_provider
         self._on_asr_event = on_asr_event
         self._on_media_failed = on_media_failed
+        self._on_vad_segment = on_vad_segment
+        # W4：连接级 VAD 兜底控制器（默认未激活；由 client_diag{stage=vad} 驱动开关）。
+        self._vad_fallback = VadFallbackController(connection_id, trace_id)
         self._ice_timeout_task: asyncio.Task[None] | None = None
         self._failure_close_task: asyncio.Task[None] | None = None
         self._pre_roll = PreRollBuffer()
@@ -739,6 +747,20 @@ class MediaSession:
     @property
     def vad_frames_received(self) -> int:
         return self._vad_frames_total
+
+    @property
+    def vad_fallback_active(self) -> bool:
+        """服务端 VAD 兜底是否激活（W4，供诊断/测试查询）。"""
+        return self._vad_fallback.is_active
+
+    def set_vad_fallback_active(self, active: bool) -> None:
+        """激活/停用服务端 VAD 兜底（W4）。
+
+        由 A2 的 `client_diag{stage:"vad", ok:false}` 处理路径驱动；
+        本方法只切开关，不触碰建连/编解码/playback 任何逻辑。
+        """
+        self._ensure_loop()
+        self._vad_fallback.set_active(active)
 
     @property
     def asr_frames_dropped(self) -> int:
@@ -1413,9 +1435,45 @@ class MediaSession:
     def _dispatch_frames(self, asr_frames: list[PcmFrame], vad_frames: list[PcmFrame]) -> None:
         self._asr_frames_total += len(asr_frames)
         self._vad_frames_total += len(vad_frames)
+        # W4：兜底激活时把 30ms vad 帧喂入 VadFallbackController（未激活时 feed 恒 None）。
+        if self._vad_fallback.is_active and vad_frames:
+            for frame in vad_frames:
+                segment = self._vad_fallback.feed(frame.data)
+                if segment is not None and self._state is MediaState.OPEN:
+                    self.spawn(self._handle_vad_segment(segment))
         for asr in asr_frames:
             self._pre_roll.append(asr)
             self._push_asr_frame(asr.data)
+
+    async def _handle_vad_segment(self, segment: bytes) -> None:
+        """兜底语音段下游（C6/A2 对接点）：走与 asr_end 相同的对话链路。
+
+        S4 自验期由测试桩消费；真实 utterance 主链在联调窗口接入。
+        """
+        _log_event(
+            "vad fallback segment delivered",
+            trace_id=self.trace_id,
+            connection_id=self.connection_id,
+            turn_id=self._turn_id,
+            state=self._state.value,
+            reason="vad_fallback_segment",
+            segment_bytes=len(segment),
+        )
+        callback = self._on_vad_segment
+        if callback is None:
+            return
+        try:
+            await callback(segment)
+        except Exception as exc:
+            _log_event(
+                "vad segment callback failed",
+                trace_id=self.trace_id,
+                connection_id=self.connection_id,
+                turn_id=self._turn_id,
+                state=self._state.value,
+                reason=MediaFailureReason.TASK_EXCEPTION.value,
+                error_type=type(exc).__name__,
+            )
 
     def _push_asr_frame(self, data: bytes) -> None:
         queue = self._asr_queue
@@ -1453,6 +1511,11 @@ class MediaSession:
 
         self._state = MediaState.CLOSING
         self._cancel_ice_watchdog()
+        # W4：兜底残留先收口（在任务取消前直等回调，防末段被取消丢失）。
+        fallback_segment = self._vad_fallback.close()
+        if fallback_segment is not None:
+            with contextlib.suppress(Exception):
+                await self._handle_vad_segment(fallback_segment)
         _log_event(
             "media session closing",
             trace_id=self.trace_id,
@@ -1570,6 +1633,7 @@ class MediaSessionRegistry:
         asr_provider: ASRProvider | None = None,
         on_asr_event: AsrEventCallback | None = None,
         on_media_failed: MediaFailureCallback | None = None,
+        on_vad_segment: VadSegmentCallback | None = None,
     ) -> MediaSession:
         """建立会话占位；不创建 PC、不做鉴权、不解析 WS。"""
         self._ensure_loop()
@@ -1584,6 +1648,7 @@ class MediaSessionRegistry:
             asr_provider=asr_provider,
             on_asr_event=on_asr_event,
             on_media_failed=on_media_failed,
+            on_vad_segment=on_vad_segment,
         )
         self._sessions[connection_id] = session
         _log_event(
@@ -1870,6 +1935,7 @@ __all__ = [
     "PcmFrame",
     "PcmFramer",
     "PreRollBuffer",
+    "VadSegmentCallback",
     "handle_signal_message",
     "install_signaling_handler",
     "uninstall_signaling_handler",
