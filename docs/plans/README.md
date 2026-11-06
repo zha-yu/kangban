@@ -40,6 +40,7 @@
 | [day04/a3-3D展示后端.md](./day04/a3-3D展示后端.md) | A3（Day 4 · 3D 展示后端）实施计划：现状九条实测、四项口径（version 内容指纹 / rotation 只来自 Settings / nginx 是否进 compose / services 归属）、T1–T7 七步（Settings→取值链服务→avatar-config 接口→seed 与 VRM 资产→nginx 托管→装配与测试→README）、验收命令与五条回退 | 草稿 | 2026-11-06 |
 | [day04/a3-DAG.md](./day04/a3-DAG.md) | A3 的独立 DAG 执行路径件：7 节点 9 边依赖图（mermaid + ASCII）、边表（硬/软依赖与传递物）、关键路径 180 min vs 串行 265 min、并行 2 条线与两处写锁（config.py 归 T1、main.py 归 T6） | 进行中 | 2026-11-06 |
 | [day04/f2-护工工单看板.md](./day04/f2-护工工单看板.md) | console 第 3 批首项（task-06，F2）执行计划：护工工单看板 Mock 先行 + 浅色侧栏骨架；五项决策（范围/骨架/重开仅管理员/escalated 纯展示/不做边界）、S1–S4 步骤与验收清单 | 已完成 | 2026-11-06 |
+| [day04/f3-负责长者列表.md](./day04/f3-负责长者列表.md) | console 第 3 批次项（task-07，F3）执行计划：负责长者列表与详情**真实对接 E7/E6**（首个非 Mock 业务页）；四项决策与验收清单 | 已完成 | 2026-11-06 |
 
 ## 状态取值
 

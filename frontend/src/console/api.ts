@@ -219,6 +219,25 @@ export async function fetchCurrent(): Promise<CurrentIdentity> {
   return (await res.json()) as CurrentIdentity;
 }
 
+/** 通用鉴权 GET（task-07 F3）：复用 authedFetch（401 自动续期重放），错误归一为 ApiError */
+export async function apiGet<T>(path: string): Promise<T> {
+  let res: Response;
+  try {
+    res = await authedFetch(path);
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    throw new ApiError("network", NETWORK_ERROR_TEXT);
+  }
+  if (!res.ok) {
+    // 401：refresh 已在 authedFetch 内尝试并失败 → 登录态已清；其余统一网络文案
+    if (res.status === 401) {
+      throw new ApiError("invalid", INVALID_CREDENTIAL_TEXT);
+    }
+    throw new ApiError("network", NETWORK_ERROR_TEXT);
+  }
+  return (await res.json()) as T;
+}
+
 /** 退出登录：清本入口 localStorage 回登录页（task-05 §3 要点 6） */
 export function logout(): void {
   clearSession();

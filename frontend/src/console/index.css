@@ -592,6 +592,56 @@ body {
   color: var(--color-ink-muted);
 }
 
+/* ---- 负责长者（task-07 F3：真实对接 E7/E6） ---- */
+.elder-page {
+  max-width: 980px;
+  margin: 0 auto;
+}
+
+.elder-detail {
+  margin: 12px 0 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px 24px;
+}
+
+.elder-detail-row {
+  display: flex;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.elder-detail-row dt {
+  color: var(--color-ink-subtle);
+  flex-shrink: 0;
+}
+
+.elder-detail-row dd {
+  margin: 0;
+  color: var(--color-ink);
+  word-break: break-all;
+}
+
+.elder-pager {
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.elder-pager .btn-secondary.btn-sm {
+  min-height: 40px;
+  padding: 0 14px;
+  font-size: 14px;
+}
+
+.elder-pager-info {
+  font-size: 13px;
+  color: var(--color-ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---- 操作弹窗 ---- */
 .dlg-mask {
   position: fixed;

@@ -15,11 +15,12 @@ interface NavItem {
   enabled: boolean;
 }
 
-/** 按前端页面方案 §3.2 三角色职责拆分；顺序即页面方案行文顺序 */
+/** 按前端页面方案 §3.2 三角色职责拆分；顺序即页面方案行文顺序。
+    enabled 跟随批次交付进度：task-06 工单看板、task-07 负责长者已交付。 */
 const NAV_BY_ROLE: Record<string, NavItem[]> = {
   care_worker: [
-    { key: "workorders", label: "工单看板", enabled: true }, // 本卡交付
-    { key: "elders", label: "负责长者", enabled: false },
+    { key: "workorders", label: "工单看板", enabled: true },
+    { key: "elders", label: "负责长者", enabled: true }, // task-07 交付
     { key: "health-form", label: "健康代填", enabled: false },
     { key: "medication", label: "药单只读", enabled: false },
     { key: "alerts", label: "告警通知中心", enabled: false },
@@ -44,9 +45,11 @@ interface AppLayoutProps {
   /** 主区内容；医生/管理员批次未到时由 App 传占位内容 */
   children: React.ReactNode;
   onLogout: () => void;
+  /** 已交付菜单项点击回调（task-07：侧栏页面间切换） */
+  onNavigate?: (key: string) => void;
 }
 
-export function AppLayout({ principal, activeKey, children, onLogout }: AppLayoutProps) {
+export function AppLayout({ principal, activeKey, children, onLogout, onNavigate }: AppLayoutProps) {
   const items = NAV_BY_ROLE[principal.role ?? ""] ?? [];
   const enabledItems = items.filter((it) => it.enabled);
 
@@ -67,7 +70,10 @@ export function AppLayout({ principal, activeKey, children, onLogout }: AppLayou
                 href="#"
                 className={`app-nav-item${it.key === activeKey ? " is-active" : ""}`}
                 aria-current={it.key === activeKey ? "page" : undefined}
-                onClick={(e) => e.preventDefault()}
+                onClick={(e) => {
+                  e.preventDefault();
+                  onNavigate?.(it.key);
+                }}
               >
                 {it.label}
               </a>
