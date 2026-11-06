@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -16,6 +17,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app import __version__
 from app.api import audio as audio_api
@@ -145,6 +147,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(audio_api.router)  # /api/audio 降级上传（C3，路由自带前缀）
     application.include_router(signaling.router)  # /ws/signal 无 /api 前缀（契约裁决 A-03）
     install_signaling_handler()  # A3 注册 offer/ice/asr_start/asr_end 上行处理器
+
+    # TTS 落盘目录挂载（dev 兜底）：audio.py 把 TTS WAV 存 `<cwd>/static/mock/` 并返回
+    # `/static/mock/*.wav`，nginx（Day 10）上线前由这里保证 URL 可取；
+    # check_dir=False——目录由 utterance 写入时惰性创建，启动时不存在不报错。
+    application.mount(
+        "/static",
+        StaticFiles(directory=os.path.join(os.getcwd(), "static"), check_dir=False),
+        name="static",
+    )
 
     # ---------- 全局 exception handler（契约 §7） ----------
     # auth_service 层异常（双重保险：auth.py 路由已捕获，这里兜底）
