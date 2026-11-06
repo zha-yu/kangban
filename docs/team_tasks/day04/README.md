@@ -71,10 +71,11 @@ flowchart TD
 
 **开工前已定约定（2026-11-06 主理人裁决，执行期不再议）**：
 1. **LLM = minimax**：key 已到位，`LLM_PROVIDER` 走泛化分支（OpenAI 兼容端点，httpx 直连不引 SDK）；待办——技术文档 §1.4 选型行补「minimax（OpenAI 兼容）」字样，随首次提交走修订记录。
-2. **声纹独立容器**：`deploy/voiceprint/` 推理容器（端口 7003，只做 `/extract`），比对在主服务进程内；主服务 pyproject 不新增 torch（task-01 v1.1）。
+2. **声纹独立容器**：`deploy/voiceprint/` 推理容器（端口 7003，只做 `/extract`），比对在主服务进程内；主服务 pyproject 不新增 torch（task-01 v1.1）。**端点可外指**：`VOICEPRINT_BASE_URL` 支持指向任意可达的推理容器——默认走 compose 网络内 `voiceprint:7003`（本地起容器），也可在各自 `.env` 配局域网 IP 直连他人共享实例（IP 只经群内分发，禁止写进仓库任何文件，AGENTS §5）；共享实例不可用时自动走 503 → 主动确认降级链，不阻塞他人开发；队友亦可 `docker compose up -d voiceprint` 自起（镜像自包含，跨架构注意 `--platform`）。
 3. **ENCRYPTION_KEY**（Fernet）：本地 `.env` 生成、不入 Git，`.env.example` 只放占位符（AGENTS 红线 §4.2 既有口径）。
 4. **VRM 资产**：AvatarSample_A 由 A3 下载预置（CC0，≤15MB），属 task-03 交付物。
 5. **迁移合入顺序**：0004 无依赖先合；0005 等 A1 午站会（12:30）通报 spike 结论后再合。
+6. **个人实施计划落位**：四人如需为各自任务卡写实施计划，统一放 `docs/plans/day04/`（命名如 `a1-声纹身份.md`，小写代号 + 中文主题），并在 `docs/plans/README.md` 索引同提交登记；不要放 team_tasks 或对话里（AGENTS §10.1）。
 
 ---
 
@@ -131,3 +132,5 @@ flowchart TD
 | v1.1 | 2026-11-06 | §6 交付物/验收细节拆为四张任务卡（task-01～04，沿 day02 命名规范），README 保留总览与链接表 |
 | v1.2 | 2026-11-06 | 主理人两项开工前裁决落盘：① LLM 定 minimax（key 已到位，OpenAI 兼容泛化分支）；② 声纹定独立容器（deploy/voiceprint，端口 7003，主服务不装 torch）。另登记 ENCRYPTION_KEY 生成约定、VRM 资产归属 A3、迁移 0004/0005 合入顺序；新增 §3「开工前已定约定」段 |
 | v1.3 | 2026-11-06 | **契约提前定稿**：新增 contracts.md v1.0（C4–C7 代码级定义 + C5 五项开放点裁决：大按钮点选 / 30s 起点为 ask 下发 / ask_id 不匹配忽略 / generic 经 identity_result 通知 / metrics 三打点位；C6 复用 C2/C3 零新消息类型）；§4/§5/§7 与三张卡前置依赖同步，晨会改为签字确认 |
+| v1.4 | 2026-11-06 | §3 新增约定 6：个人实施计划统一放 `docs/plans/day04/` 并登记 plans 索引（AGENTS §10.1 已同步立通用规则） |
+| v1.5 | 2026-11-06 | 约定 2 补机制说明：`VOICEPRINT_BASE_URL` 支持指向局域网共享推理实例（IP 仅群内分发不入仓库），不可用自动降级不阻塞，队友可自起容器 |
