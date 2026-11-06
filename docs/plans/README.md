@@ -34,7 +34,11 @@
 | [day04/f1-双端登录页.md](./day04/f1-双端登录页.md) | Day 4 task-05（F1 前端独立卡）执行计划：MPA 双入口 + console/family 两独立登录模块 + token 存储/401 自动刷新 + 375px 响应式；含 E1 实际端点差异登记、S0–S6 步骤自检与 R1–R6 风险；执行中主理人裁决弃用 MUI（改纯 React + 原生 CSS，v1.1 留痕）。**task-05 扩为 Day 4 前端全量后，由 f1-Day4前端联调.md 续接** | 已完成 | 2026-11-06 |
 | [day04/f1-Day4前端联调.md](./day04/f1-Day4前端联调.md) | Day 4 task-05（v2.1，Day 4 前端全量）执行计划：W0–W6 七步——pad 五项 P0（3D 展示/唤醒词/声纹录入/身份确认/对话收尾，对接 C4–C7）+ 口型 P1 + 双端登录回归；继承登录线已完成事实与「弃用 MUI」裁决；R1–R7 风险（KWS 体积/VRM0 朝向/资产未就绪 Mock 先行） | 进行中 | 2026-11-06 |
 | [day-04-3D与身份闭环.md](./day-04-3D与身份闭环.md) | Day 4 全量后端方案 v2.3：W1 3D 展示（avatar-config 三层降级、nginx 托管 VRM·两步走）、W2 声纹身份闭环（注册三接口、identity_ask/confirm、迁移 0004/0005·CAM++ 192 维、**设备绑定 1v1 候选集**、每会话首轮校验）、W3 上下文与 LLM 对话闭环（FR-DLG-05）、W4 VAD 正式切段、W5 唤醒词端侧 KWS P0（FR-UI-11/AC-42）；M1–M17 改造点、T1–T10 排期、R1–R13 风险、4 项自裁；显式排除 FR-3D-03/viseme/diarization；基线已同步修订（PRD v2.6、技术文档 v1.5） | 草稿 | 2026-11-06 |
+| [day04/task-01-声纹身份.md](./day04/task-01-声纹身份.md) | Day 4 A1 单元声纹身份闭环执行计划：T0 晨会契约冻结 → T1 CAM++ spike（192 维 + cosine 分布，12:30 午站会通报）→ T2 迁移 0004（voiceprints + conversation_threads，含 CHECK 与唯一约束）→ T3 ORM → T4 独立推理容器（deploy/voiceprint/ 端口 7003，主服务不装 torch）→ T5 迁移 0005（embedding vector(N)）→ T6 voiceprint_service（Fernet 加密 + 原始音频即弃）→ T7 REST 三接口（samples/status/delete）→ T8 identity_service（每会话首轮强制 + 静默复检，候选集恒 1 位）→ T9 门禁 → T10 联调收口；10 条风险预案 + 验收标准逐子任务对齐 PRD FR-VPR-01~03 | 草稿 | 2026-11-06 |
 
+
+| [day04/a3-3D展示后端.md](./day04/a3-3D展示后端.md) | A3（Day 4 · 3D 展示后端）实施计划：现状九条实测、四项口径（version 内容指纹 / rotation 只来自 Settings / nginx 是否进 compose / services 归属）、T1–T7 七步（Settings→取值链服务→avatar-config 接口→seed 与 VRM 资产→nginx 托管→装配与测试→README）、验收命令与五条回退 | 草稿 | 2026-11-06 |
+| [day04/a3-DAG.md](./day04/a3-DAG.md) | A3 的独立 DAG 执行路径件：7 节点 9 边依赖图（mermaid + ASCII）、边表（硬/软依赖与传递物）、关键路径 180 min vs 串行 265 min、并行 2 条线与两处写锁（config.py 归 T1、main.py 归 T6） | 进行中 | 2026-11-06 |
 
 ## 状态取值
 
