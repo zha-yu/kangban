@@ -20,7 +20,33 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DAY_DIR = ROOT / "docs" / "team_tasks_day03"
+
+
+def _detect_day_dir() -> Path:
+    """自动选最新一天的看板目录。
+
+    兼容两种布局：嵌套 `docs/team_tasks/dayNN/`（day04 起）与旧版平铺
+    `docs/team_tasks_dayNN/`（day03），取 day 序号最大且存在的目录。
+    """
+    candidates: list[tuple[int, Path]] = []
+    nested = ROOT / "docs" / "team_tasks"
+    if nested.is_dir():
+        for d in nested.glob("day*"):
+            m = re.fullmatch(r"day(\d+)", d.name)
+            if d.is_dir() and m:
+                candidates.append((int(m.group(1)), d))
+    for d in (ROOT / "docs").glob("team_tasks_day*"):
+        m = re.fullmatch(r"team_tasks_day(\d+)", d.name)
+        if d.is_dir() and m:
+            candidates.append((int(m.group(1)), d))
+    if not candidates:
+        print("[error] docs 下没有找到任何 day 看板目录", file=sys.stderr)
+        raise SystemExit(2)
+    return max(candidates)[1]
+
+
+DAY_DIR = _detect_day_dir()
+DAY_NUM = re.search(r"(\d+)$", DAY_DIR.name)
 OUT = DAY_DIR / "PROGRESS.md"
 
 # 状态 → 图标与排序权重（越靠前越"完成"）
@@ -38,7 +64,7 @@ STATUS_RE = re.compile(r"^>\s*状态：\s*(.+?)\s*(?:[｜|]|$)", re.MULTILINE)
 TITLE_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 
 
-PLAN_GLOB = "docs/plans/task-a*.md"
+PLAN_GLOBS = ("docs/plans/task-a*.md", "docs/plans/day*/*.md")
 
 
 def style(status: str) -> tuple[str, int]:
@@ -81,17 +107,22 @@ def collect_cards() -> list[dict[str, str]]:
 
 def collect_plans() -> list[dict[str, str]]:
     rows = []
-    for path in sorted(ROOT.glob(PLAN_GLOB)):
-        title, status = parse_md(path)
-        icon, _ = style(status)
-        rows.append(
-            {
-                "file": path.relative_to(ROOT).as_posix(),
-                "title": title,
-                "status": status,
-                "icon": icon,
-            }
-        )
+    seen: set[Path] = set()
+    for pattern in PLAN_GLOBS:
+        for path in sorted(ROOT.glob(pattern)):
+            if path.name == "README.md" or path in seen:
+                continue
+            seen.add(path)
+            title, status = parse_md(path)
+            icon, _ = style(status)
+            rows.append(
+                {
+                    "file": path.relative_to(ROOT).as_posix(),
+                    "title": title,
+                    "status": status,
+                    "icon": icon,
+                }
+            )
     return rows
 
 
@@ -111,7 +142,7 @@ def build() -> str:
     total = len(cards)
 
     lines: list[str] = [
-        "# Day 3 进度看板",
+        f"# Day {DAY_NUM.group(1)} 进度看板",
         "",
         "> ⚠️ **本文件由 `scripts/update_progress.py` 自动生成，不要手改**——改任务卡首部的 `> 状态：` 行，"
         "再跑一次脚本（或直接提交，pre-commit 钩子会自动刷新）。",
@@ -152,7 +183,7 @@ def build() -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="生成 Day 3 进度看板")
+    parser = argparse.ArgumentParser(description="生成当前 Day 进度看板")
     parser.add_argument("--check", action="store_true", help="只检查是否过期，不写文件")
     parser.add_argument("--quiet", action="store_true", help="安静模式")
     args = parser.parse_args(argv)
@@ -174,11 +205,13 @@ def main(argv: list[str] | None = None) -> int:
     if content == old:
         if not args.quiet:
             print(f"[skip] {OUT.relative_to(ROOT)} 无变化")
+        print(OUT.relative_to(ROOT).as_posix())
         return 0
 
     OUT.write_text(content, encoding="utf-8", newline="\n")
     if not args.quiet:
         print(f"[write] {OUT.relative_to(ROOT)}")
+    print(OUT.relative_to(ROOT).as_posix())
     return 0
 
 
