@@ -52,6 +52,7 @@ from aiortc.sdp import candidate_from_sdp
 from app.audio.asr import ASRError, ASREvent, ASREventKind, ASRProvider, build_asr
 from app.audio.vad import VadFallbackController
 from app.core.config import Settings, get_settings
+from app.core.metrics import record_connection, stopwatch
 
 if TYPE_CHECKING:
     from app.audio.signaling import ConnectionContext
@@ -1813,7 +1814,10 @@ async def _handle_offer(
             await registry.close_session(device_id, reason="ws_disconnect")
 
     conn.disconnect_callbacks.append(_close_on_disconnect)
+    # W5/S5：建连打点（offer 到达 → answer 产出，AC-42 分段口径）。
+    offer_sw = stopwatch()
     answer = await session.handle_offer(sdp)
+    record_connection(connection_id=device_id, elapsed_ms=offer_sw.elapsed_ms())
     _deliver(device_id, {"type": "answer", "sdp": answer})
 
 
