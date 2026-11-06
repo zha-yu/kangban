@@ -230,7 +230,7 @@ class TestA304TailPadding:
     def test_10ms_tail_zero_padded(self) -> None:
         framer = PcmFramer(frame_bytes=CANONICAL_FRAME_BYTES, duration_ms=20)
         # 10 ms PCM16 = 320 B
-        tail = b"\xAB" * 320
+        tail = b"\xab" * 320
         frames = framer.feed(tail)
         assert frames == []
         padded = framer.flush()

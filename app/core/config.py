@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = 7
     elder_session_expire_hours: int = 24
 
+    # ---------------------------- 3D 数字人资产（Day 4 · A3） ----------------------------
+    # 三层取值链的第二层：personas.avatar_url 为空时才用这里的默认值。
+    # 库里与这里都存「相对路径」（如 /avatars/xxx.vrm）；响应层统一拼 public_base_url 成绝对 URL。
+    default_avatar_url: str = ""
+    default_fallback_avatar_url: str = ""  # 静态头像 PNG：3D 加载失败或超 5s 时前端使用（AC-15）
+    avatar_rotation_y_offset: float = 0.0  # 仅 VRM0 需要 π 补偿；VRM1 保持 0.0（见计划 S-02）
+    avatar_cache_version_salt: str = ""  # 想让前端强制失效缓存时改这个值，version 指纹会随之变化
+
     # ---------------------------- 数据库（业务表） ----------------------------
     database_url: str = "postgresql+asyncpg://silvermate:silvermate@localhost:5432/silvermate"
     database_pool_size: int = 10
