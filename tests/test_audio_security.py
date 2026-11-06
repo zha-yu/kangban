@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from app.api import audio as audio_api
-from app.audio.asr import ASRProvider, ASRUnavailable
+from app.audio.asr import ASRProvider, ASRUnavailable, MockASRProvider
 from app.audio.tts import TTSProvider, TTSUnavailable
 from app.core.auth import (
     CredentialExpiredError,
@@ -104,6 +104,9 @@ async def sec_app(sec_session: AsyncSession) -> FastAPI:
         yield sec_session
 
     app.dependency_overrides[_app_get_session] = _override_get_session
+    # 默认 Mock ASR：本文件默认验「正常路径 + 单点故障」，需要真 ASR 的用例
+    # 自己再覆盖 `_get_default_asr`。否则 `.env` 指到 funasr 时，容器状态会让用例红/绿。
+    app.dependency_overrides[audio_api._get_default_asr] = lambda: MockASRProvider()
 
     @app.exception_handler(CredentialInvalidError)
     async def _(_req, exc):

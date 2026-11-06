@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from app.api import audio as audio_api
+from app.audio.asr import MockASRProvider
 from app.core.auth import (
     CredentialExpiredError,
     CredentialInvalidError,
@@ -121,6 +122,10 @@ async def app_for_audio(
         yield audio_test_session
 
     app.dependency_overrides[_app_get_session] = _override_get_session
+    # ASR 固定用 Mock：本文件的用例断言的是「Mock 话术 + 契约形状」。
+    # 若沿用 `.env` 里的 ASR_PROVIDER（开发机上常被设成 funasr），用例就依赖外部容器状态，
+    # 容器没起时会退化成 503 —— 那是环境问题，不该让用例红。
+    app.dependency_overrides[audio_api._get_default_asr] = lambda: MockASRProvider()
 
     # 全局 exception handler —— audio.py 鉴权用 Depends(current_device)
     # 会走 get_current_principal → 抛 Credential*Error，必须这里兜
