@@ -17,8 +17,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app import __version__
-from app.api import auth as auth_api
 from app.api import audio as audio_api
+from app.api import auth as auth_api
 from app.api import devices, elders, health
 from app.api.schemas.auth import ErrorResponse
 from app.audio import signaling  # Day 3 T2：WS 信令路由（/ws/signal）
