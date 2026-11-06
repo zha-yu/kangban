@@ -214,3 +214,112 @@ class VadSession:
             trace_id,
         )
         return segment
+
+
+# ---------------------------------------------------------------------------
+# VadFallbackController · 服务端 VAD 兜底控制器（连接级）
+# ---------------------------------------------------------------------------
+
+
+class VadFallbackController:
+    """端侧 TEN-VAD 失效时的服务端兜底开关（W4，连接级持有）。
+
+    激活语义（S4 自裁项，随代码同提交留痕）：
+    - 以 `client_diag{stage: "vad", ok: false}`（C5 契约消息）为**唯一显式激活信号**；
+    - `ok=true` 或连接关闭即停用；
+    - 未收到 diag 时兜底不启用——不与端侧 VAD 双跑，避免双切段产生重复 utterance。
+
+    生命周期：
+        controller = VadFallbackController(connection_id, trace_id)
+        controller.set_active(True)            # diag ok=false 驱动
+        segment = controller.feed(frame)       # 逐 30ms 帧喂入；speechend 时吐完整段
+        controller.close()                     # 连接关闭：flush 残留，防 preRoll 丢失
+
+    产出段只打 `vad_fallback_segment` trace 日志（段字节数/时长/trace_id），
+    不落盘（AGENTS §4.10：不落未经脱敏的原始音频）。
+    """
+
+    def __init__(self, connection_id: str, trace_id: str | None = None) -> None:
+        self.connection_id = connection_id
+        self.trace_id = trace_id or get_trace_id() or "-"
+        self._session: VadSession | None = None
+        self._active = False
+        self._segments_emitted = 0
+
+    @property
+    def is_active(self) -> bool:
+        """兜底是否处于激活态（供诊断查询）。"""
+        return self._active
+
+    @property
+    def segments_emitted(self) -> int:
+        """本连接累计产出的兜底语音段数（供观测）。"""
+        return self._segments_emitted
+
+    def set_active(self, active: bool) -> None:
+        """切换兜底开关。
+
+        激活：新建干净 VadSession（连接级复用，跨 utterance 状态自续）；
+        停用：flush 并丢弃残留段——端侧 VAD 恢复后由它接管，服务端残留
+        （可能只有半句）继续产出会与端侧切段冲突，宁可丢弃。
+        """
+        if active == self._active:
+            return
+        self._active = active
+        if active:
+            self._session = VadSession()
+        else:
+            if self._session is not None:
+                # 丢弃返回值：停用语义 = 放弃服务端残留，见上注释
+                self._session.flush()
+            self._session = None
+        logger.info(
+            "vad fallback switched (active=%s, connection_id=%s, trace_id=%s)",
+            self._active,
+            self.connection_id,
+            self.trace_id,
+        )
+
+    def feed(self, frame: bytes) -> bytes | None:
+        """喂入 30ms / 16k / PCM16 帧。
+
+        未激活时恒返回 None（主链路零影响）；激活后委托 VadSession，
+        speechend 时吐完整语音段（含 preRoll）并打 `vad_fallback_segment` 日志。
+        """
+        if not self._active or self._session is None:
+            return None
+        segment = self._session.feed_frame(frame)
+        if segment is None:
+            return None
+        return self._emit(segment)
+
+    def close(self) -> bytes | None:
+        """连接关闭兜底收口：flush 残留段（若还在说话中则产出末段）。
+
+        对齐 VadSession.flush 契约：绝不能直接丢实例（preRoll 里可能有
+        最后 600ms 未处理的帧）。关闭后控制器不可再复用（重新激活会新建会话）。
+        """
+        if self._session is None:
+            self._active = False
+            return None
+        segment = self._session.flush()
+        self._session = None
+        self._active = False
+        if segment is not None:
+            return self._emit(segment)
+        return None
+
+    def _emit(self, segment: bytes) -> bytes:
+        """产出段统一出口：计数 + trace 日志（不落盘），原样返回给下游。"""
+        self._segments_emitted += 1
+        duration_ms = len(segment) * 1000 // (SAMPLE_RATE * 2)
+        logger.info(
+            "vad_fallback_segment (bytes=%d, duration_ms=%d, segments=%d, "
+            "connection_id=%s, trace_id=%s)",
+            len(segment),
+            duration_ms,
+            self._segments_emitted,
+            self.connection_id,
+            self.trace_id,
+        )
+        return segment

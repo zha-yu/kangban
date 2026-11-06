@@ -1,6 +1,6 @@
 # Day 4 模块间接口契约（代码级定义）
 
-> 状态：C4 / C5 / C6 / C7 均已定稿（主理人裁决提前冻结，晨会签字确认）　｜　版本：v1.0　｜　日期：2026-11-06
+> 状态：C4 / C5 / C6 / C7 均已定稿（主理人裁决提前冻结，晨会签字确认）　｜　版本：v1.2　｜　日期：2026-11-06
 > 关联：docs/team_tasks/day04/README.md §4（契约清单）｜docs/team_tasks_day03/contracts.md（C1–C3 上游契约，本日只消费不改）
 > 上游依据：docs/plans/day-04-3D与身份闭环.md v2.4（I1–I5/§3.0）｜PRD v2.6（FR-VPR/FR-3D/FR-DLG-05/AC-42）｜技术设计文档 v1.5
 > 变更记录见文末
@@ -56,12 +56,14 @@ class IdentityResultMsg(TypedDict):   # S→C，告知最终身份模式（前�
     source: Literal["voice", "confirm", "generic"]
     elder_id: str | None              # generic 时为 None
 
-class ClientDiagMsg(TypedDict):       # C→S，仅日志（3D/WebRTC/链路诊断），服务端不回执
+class ClientDiagMsg(TypedDict):       # C→S，服务端不回执；stage=vad 另有兜底激活语义（见块后补充）
     type: Literal["client_diag"]
     stage: Literal["vrm_load", "webrtc", "vad", "asr"]
     ok: bool
     error: str                        # 已脱敏
 ```
+
+**client_diag 语义补充（2026-11-06，随 W4 兜底落地同步，v1.1）**：`stage=vad, ok=false` 是服务端 VAD 兜底（`app/audio/vad.py` VadFallbackController）的**唯一显式激活信号**——A2 的 client_diag 处理路径据此调 `MediaSession.set_vad_fallback_active(True)`；`ok=true` 或连接关闭即停用（停用丢弃服务端残留，防端侧恢复后双切段冲突）；未收到 diag 不启用，不与端侧 TEN-VAD 双跑。`vrm_load/webrtc/asr` 三 stage 仅日志观测。
 
 **级联语义**（v2.2/v2.3 裁决口径）：会话首轮强制校验（identity_service 与绑定长者 1v1 比对，cosine ≥0.85 → `identity_result source=voice`）；会话内静默复检仅身份变化时干预（换人 → 旧 thread 结束、重走首轮校验）。
 
@@ -103,7 +105,7 @@ Authorization: Bearer <device access_token>
   "fallback_image_url": str | None,  # 静态头像
   "rotation_y_offset": float,        # VRM0 朝向补偿（弧度），VRM1 恒 0.0
   "version": int                     # persona.avatar_url 变更即递增；前端据此失效缓存
-                                     # ⚠ 实现为内容指纹、可回退，仅作缓存键；待主理人确认（见变更记录 v1.1）
+                                     # ⚠ 实现为内容指纹、可回退，仅作缓存键；待主理人确认（见变更记录 v1.2）
 }
 401/403 → 统一错误体 {detail, code, trace_id}
 
@@ -128,4 +130,5 @@ Authorization: Bearer <device access_token>
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-06 | 初稿即定稿：C4–C7 代码级定义 + C5 五个开放点裁决（确认交互=大按钮点选、30s 起点=ask 下发、ask_id 不匹配忽略、generic 经 identity_result 通知、metrics 三打点位）+ C6 复用 C2/C3 零新消息类型裁决；主理人要求提前冻结，晨会改为签字确认 |
-| v1.1 | 2026-11-06 | **待主理人确认**：C7 第 105 行原文写 `version`「persona.avatar_url 变更即递增」，A3 实现为四键内容的 crc32 指纹（`plan S-01`）——指纹**可回退**（实测 `/avatars/xiaoman.vrm` → `1794577085`，改回 `vrm1_sample.vrm` → 还原 `1686351657`），不满足「单调递增」。对消费方的约束据此明确：`version` 只作**不透明缓存键**，前端不得写成「新值 > 旧值才更新」的比较逻辑，正确用法是「值变了就重取」。申请把第 105 行措辞改为「persona.avatar_url（或 PUBLIC_BASE_URL / rotation 等任一取值来源）变化即变，实现为内容指纹、可回退，仅作缓存键」；字段名与类型不变，不影响已合入的前端挂载代码 |
+| v1.1 | 2026-11-06 | C5 正文补 client_diag 的 vad 兜底激活语义：Day 4 全面核验发现 v1.0「仅日志」表述与 W4 实现（fcb5e41，stage=vad ok=false 驱动 VadFallbackController）存在字面冲突；本版在 ClientDiagMsg 块后补语义段（激活/停用/双跑边界），不改消息类型与字段，冻结人 A2，由 A4 代记并随联调窗口群内通告追认 |
+| v1.2 | 2026-11-06 | **待主理人确认**：C7 第 105 行原文写 `version`「persona.avatar_url 变更即递增」，A3 实现为四键内容的 crc32 指纹（`plan S-01`）——指纹**可回退**（实测 `/avatars/xiaoman.vrm` → `1794577085`，改回 `vrm1_sample.vrm` → 还原 `1686351657`），不满足「单调递增」。对消费方的约束据此明确：`version` 只作**不透明缓存键**，前端不得写成「新值 > 旧值才更新」的比较逻辑，正确用法是「值变了就重取」。申请把第 105 行措辞改为「persona.avatar_url（或 PUBLIC_BASE_URL / rotation 等任一取值来源）变化即变，实现为内容指纹、可回退，仅作缓存键」；字段名与类型不变，不影响已合入的前端挂载代码 |

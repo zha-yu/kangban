@@ -15,7 +15,7 @@ from typing import Any
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -27,7 +27,7 @@ from sqlalchemy.pool import NullPool
 
 from app.api import audio as audio_api
 from app.audio.asr import ASRProvider, ASRUnavailable, MockASRProvider
-from app.audio.tts import TTSProvider, TTSUnavailable
+from app.audio.tts import MockTTSProvider, TTSProvider, TTSUnavailable
 from app.core.auth import (
     CredentialExpiredError,
     CredentialInvalidError,
@@ -36,6 +36,7 @@ from app.core.auth import (
 from app.core.config import get_settings
 from app.core.security import TokenExpiredError, sha256_hex
 from app.db import get_session as _app_get_session
+from app.main import handle_http_exception
 from app.models.organization import Bed, Device, Elder, Room
 
 _DEVICE_SECRET_PLAIN = "device-long-secret-plain-abc123"
@@ -65,12 +66,23 @@ async def sec_engine() -> AsyncIterator[AsyncEngine]:
 
 @pytest.fixture
 async def sec_session(sec_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
-    sf = async_sessionmaker(sec_engine, expire_on_commit=False)
-    async with sf() as session:
-        try:
-            yield session
-        finally:
-            await session.rollback()
+    """外层事务包住整个用例：service 层（device-sessions 登录）的真实 commit 只释放
+    savepoint，结束整体回滚，共享 dev 库零残留（模式同 test_elders_api.client）。
+
+    不能用裸 session：登录 commit 会把种子数据落进共享库，文件组合顺序变化时
+    污染 elders 计数用例（2026-11-06 实测 +1 elder +1 device）。
+    """
+    async with sec_engine.connect() as conn:
+        trans = await conn.begin()
+        sf = async_sessionmaker(
+            bind=conn, expire_on_commit=False, join_transaction_mode="create_savepoint"
+        )
+        async with sf() as session:
+            try:
+                yield session
+            finally:
+                await session.rollback()
+        await trans.rollback()
 
 
 @pytest.fixture
@@ -99,6 +111,8 @@ async def sec_seeded(sec_session: AsyncSession) -> dict[str, Any]:
 async def sec_app(sec_session: AsyncSession) -> FastAPI:
     app = FastAPI()
     app.include_router(audio_api.router)
+    # a0-F-02：HTTPException 兜底（code_map 422→VALIDATION_ERROR），与生产同实现
+    app.add_exception_handler(HTTPException, handle_http_exception)
 
     async def _override_get_session():
         yield sec_session
@@ -107,6 +121,12 @@ async def sec_app(sec_session: AsyncSession) -> FastAPI:
     # 默认 Mock ASR：本文件默认验「正常路径 + 单点故障」，需要真 ASR 的用例
     # 自己再覆盖 `_get_default_asr`。否则 `.env` 指到 funasr 时，容器状态会让用例红/绿。
     app.dependency_overrides[audio_api._get_default_asr] = lambda: MockASRProvider()
+
+    # 测试确定性：默认 pin Mock ASR/TTS（防 .env 渗入）；失败场景用例再用
+    # 同 key 覆盖为 unavailable provider（赋值即替换，本注释之后的 per-test override 优先）。
+    # 必须用零参工厂而非类本身：FastAPI 会把类的 __init__ 参数当可注入查询参数解析
+    app.dependency_overrides[audio_api._get_default_asr] = lambda: MockASRProvider()
+    app.dependency_overrides[audio_api._get_default_tts] = lambda: MockTTSProvider()
 
     @app.exception_handler(CredentialInvalidError)
     async def _(_req, exc):
@@ -359,14 +379,16 @@ async def test_asr_then_tts_both_unavailable_asr_wins(
 
 
 # ---------------------------------------------------------------------------
-# A3 · 损坏 WAV 头 → 不 crash + 正常继续（duration_ms=0 不触发 413）
+# A3 · 损坏 WAV 头 → 入口 422 拒收（a0-F-02：格式校验前移，不漏 ASR 层）
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_corrupt_wav_header_not_crash(sec_ac: httpx.AsyncClient, sec_token: str) -> None:
-    """伪造 WAV 头 → _wav_duration_ms 内部 catch wave.Error 返回 0，不触发 413，
-    Mock ASR/TTS 继续工作 → 200。
+async def test_corrupt_wav_header_422(sec_ac: httpx.AsyncClient, sec_token: str) -> None:
+    """a0-F-02：伪造 WAV 头（垃圾字节）→ 入口拒收 422 VALIDATION_ERROR。
+
+    Day 3 旧口径是「解析失败归 0 → 200」；a0-F-02 改为格式校验前移：
+    非 WAV 字节不得漏到 ASR 层炸 503，必须给客户端明确的 422 统一错误体。
     """
     corrupt = _make_corrupt_wav()
     resp = await sec_ac.post(
@@ -374,9 +396,9 @@ async def test_corrupt_wav_header_not_crash(sec_ac: httpx.AsyncClient, sec_token
         headers={"Authorization": f"Bearer {sec_token}"},
         files={"audio": ("corrupt.wav", corrupt, "audio/wav")},
     )
-    # 必须不是 500（不 crash）；实际会走 Mock ASR/TTS 正常处理 → 200
-    assert resp.status_code != 500, f"corrupt WAV caused 500: {resp.text}"
-    assert resp.status_code == 200, f"got {resp.status_code}: {resp.text}"
+    assert resp.status_code == 422, f"got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body["code"] == "VALIDATION_ERROR"
 
 
 # ---------------------------------------------------------------------------

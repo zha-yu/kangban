@@ -1,0 +1,13 @@
+# pnpm 在本仓库前端安装依赖时需要放行两件事（Day 3 首次装依赖时踩到，2026-11-05）
+#
+# 1) minimumReleaseAge：pnpm 默认拒绝解析"发布时间过新"的包，而 uv/pnpm 锁文件里
+#    锁定的 @babel/traverse、electron-to-chromium 等恰好落在窗口内，导致
+#    `pnpm install` 直接报错。这是团队共用的开发机，不是生产流水线，放行。
+minimumReleaseAge: 0
+#
+# 2) allowBuilds：pnpm 默认不执行依赖的安装脚本（供应链防护）。esbuild 需要跑
+#    自己的安装脚本才能落出对应平台的二进制，不放行会出现
+#    `ERR_PNPM_IGNORED_BUILDS esbuild@0.28.2`，随后 vite 启动失败。
+#    这里只放行 esbuild 一个，别的包仍然默认不执行安装脚本。
+allowBuilds:
+  esbuild: true
