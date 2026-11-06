@@ -275,13 +275,25 @@ async def verify_session_identity(
                 reason="low_confidence",
             )
 
-    # 3. 无音频首轮（pad 刚上线、用户还没开口）→ 主动确认（reason=no_audio）
-    logger.info("无音频首轮，请求确认（device=%s, elder=%s）", device_id, elder_id)
-    return IdentityDecision(
-        source="confirm",
+    # 3. 无音频首轮（pad 刚上线、用户还没开口）→ 直接开 device 终态 thread
+    #    信任设备绑定，后续 utterance 有音频时靠 recheck 补声纹确认（命中同一人 → 升 voice；
+    #    低于阈值 → 转主动确认）。避免 pad 启动默认态不必要地多一次 identity_ask。
+    logger.info(
+        "无音频首轮，开 device thread（device=%s, elder=%s）", device_id, elder_id
+    )
+    opened = await _open_thread(
+        session,
+        device_id=device_id,
         elder_id=elder_id,
-        thread_id=None,
-        reason="no_audio",
+        identity_source="device",
+        confidence=None,
+    )
+    return IdentityDecision(
+        source="device",
+        elder_id=elder_id,
+        thread_id=opened.row.thread_id,
+        started_at=opened.row.started_at,
+        session_seq=opened.session_seq,
     )
 
 

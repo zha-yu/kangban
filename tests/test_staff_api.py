@@ -341,3 +341,83 @@ async def test_update_unknown_staff_returns_404(client: AsyncClient) -> None:
         f"/api/staff/{uuid.uuid4()}", json={"status": "disabled"}, headers=_admin_headers()
     )
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------- P1 修复：角色变更联动 assignment.relation
+
+
+async def test_update_role_syncs_assignment_relation_doctor_to_worker(
+    client: AsyncClient, seeded: AsyncConnection
+) -> None:
+    """doctor 改 care_worker → ElderStaffAssignment.relation 从 'doctor' 变 'primary_care'。"""
+    # 先建一个有 assignment 的 doctor
+    create_resp = await client.post(
+        "/api/staff",
+        json=_payload(role="doctor", phone="13700000010", elder_ids=[str(ELDER_ID)]),
+        headers=_admin_headers(),
+    )
+    assert create_resp.status_code == 201
+    new_staff_id = uuid.UUID(create_resp.json()["staff_id"])
+
+    # 改角色
+    resp = await client.patch(
+        f"/api/staff/{new_staff_id}", json={"role": "care_worker"}, headers=_admin_headers()
+    )
+    assert resp.status_code == 200
+
+    # 验证 assignment.relation 同步
+    session = AsyncSession(bind=seeded, expire_on_commit=False)
+    row = (
+        await session.execute(
+            select(ElderStaffAssignment).where(ElderStaffAssignment.staff_id == new_staff_id)
+        )
+    ).scalar_one()
+    assert row.relation == "primary_care"
+
+
+async def test_update_role_syncs_assignment_relation_worker_to_doctor(
+    client: AsyncClient, seeded: AsyncConnection
+) -> None:
+    """care_worker 改 doctor → relation 从 'primary_care' 变 'doctor'。"""
+    create_resp = await client.post(
+        "/api/staff",
+        json=_payload(role="care_worker", phone="13700000011", elder_ids=[str(ELDER_ID)]),
+        headers=_admin_headers(),
+    )
+    assert create_resp.status_code == 201
+    new_staff_id = uuid.UUID(create_resp.json()["staff_id"])
+
+    resp = await client.patch(
+        f"/api/staff/{new_staff_id}", json={"role": "doctor"}, headers=_admin_headers()
+    )
+    assert resp.status_code == 200
+
+    session = AsyncSession(bind=seeded, expire_on_commit=False)
+    row = (
+        await session.execute(
+            select(ElderStaffAssignment).where(ElderStaffAssignment.staff_id == new_staff_id)
+        )
+    ).scalar_one()
+    assert row.relation == "doctor"
+
+
+async def test_update_role_noop_no_sync(client: AsyncClient, seeded: AsyncConnection) -> None:
+    """同值 PATCH 不加 token_version 也不碰 assignment（幂等分支）。"""
+    create_resp = await client.post(
+        "/api/staff",
+        json=_payload(role="doctor", phone="13700000012", elder_ids=[str(ELDER_ID)]),
+        headers=_admin_headers(),
+    )
+    new_staff_id = uuid.UUID(create_resp.json()["staff_id"])
+
+    # 传同值
+    resp = await client.patch(
+        f"/api/staff/{new_staff_id}", json={"role": "doctor"}, headers=_admin_headers()
+    )
+    assert resp.status_code == 200
+
+    session = AsyncSession(bind=seeded, expire_on_commit=False)
+    staff = (
+        await session.execute(select(StaffAccount).where(StaffAccount.staff_id == new_staff_id))
+    ).scalar_one()
+    assert staff.token_version == 0

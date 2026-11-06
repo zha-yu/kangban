@@ -43,9 +43,9 @@ class StaffResponse(BaseModel):
 
     staff_id: uuid.UUID
     name: str
-    role: str
+    role: StaffRole
     phone_masked: str
-    status: str
+    status: StaffStatus
 
 
 class GuardianCreateRequest(BaseModel):
@@ -62,7 +62,7 @@ class GuardianCreateResponse(BaseModel):
     guardian_id: uuid.UUID
     name: str
     phone_masked: str
-    status: str
+    status: StaffStatus
 
 
 class GuardianBindRequest(BaseModel):
@@ -78,7 +78,7 @@ class GuardianBindResponse(BaseModel):
     elder_id: uuid.UUID
     guardian_id: uuid.UUID
     relation: str
-    status: str
+    status: Literal["active", "unbound"]
 
 
 __all__ = [
