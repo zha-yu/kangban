@@ -1,6 +1,6 @@
 # A4 单元（task-04）· a0 遗留修复 + VAD 主链接入 + metrics 打点 · 工作推进计划
 
-> 状态：草稿　｜　版本：v1.0　｜　日期：2026-11-06
+> 状态：已冻结　｜　版本：v1.1　｜　日期：2026-11-06
 > 关联：docs/team_tasks/day04/task-04-VAD主链与遗留修复.md（任务卡）｜docs/team_tasks/day04/a0-联调遗留问题修复.md（修复卡）｜docs/team_tasks/day04/README.md（分工总览与 C5/C6 契约）｜docs/plans/day-04-3D与身份闭环.md v2.4（§3.0 图③、M13、R11）
 > 上游依据：PRD v2.6（FR-DLG-04/05、FR-UI-11、AC-42、§5.1 端到端 ≤1.5s）｜技术设计文档 v1.5（L983 app/audio VAD 切段、Day 4 落地清单）｜day-03-a5 交付物（vad.py/utterance 端点）
 > 变更记录见文末
@@ -277,3 +277,4 @@ S0 基线自检 → S1 F-01 → S2 F-02 → S3 P1-2 验证补测   （上午，a
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-06 | 初稿：现状基线 git 实证（P1-2 已修于 ab15551，F-01/F-02 未修，VAD 主链未接，metrics 不存在）；S0–S6 七步拆解（每步含操作步骤/交付物/自检标准）；交付物总表、任务卡验收逐条对照、R1–R6 风险登记（含 webrtc.py 跨界协调与兜底激活语义自裁项）、提交规范 |
+| v1.1 | 2026-11-06 | 执行收口冻结：S0–S6 全部完成（提交 1530b92/94f0baf/41e078c/ba937c5/a224579/eccf8f8/fcb5e41/0c88237/52d0415）；实际落点与计划的偏差仅两处——①S4 下游采用 `VadSegmentCallback` 回调接缝（计划写「回调分发」，一致）+ 连接级 controller 常驻 MediaSession（自裁，见 fcb5e41 正文）；②metrics 建连接线落在 webrtc `_handle_offer`（+4 行，计划口径「offer 到达处一行」）。联调窗口真音频验证留待 14:30–16:30，结果记 task-04 卡 |
