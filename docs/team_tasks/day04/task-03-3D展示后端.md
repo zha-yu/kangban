@@ -40,6 +40,7 @@ uv run pytest -q 全绿；ruff check app 通过
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.0 | 2026-11-06 | 初稿：自 day04 README v1.0 §3/§6 拆出 |
 | v1.1 | 2026-11-06 | 澄清「禁触 services」的口径并记录两项裁决：①**允许 A3 新建** `app/services/persona_service.py`（day-04 README:65-67 显示 `app/services/` 本就有 A1/A2 多个 owner，禁的是互相修改既有文件，不是禁止新增）；约束为该文件只读、不 import 任何既有 service。②nginx **不进** compose，本卡只交 `deploy/nginx.conf` + 一次性容器验证，正式集成留 Day 10。详见 `docs/plans/day04/a3-3D展示后端.md` A-01/A-02 与 v1.4 |
 | v1.2 | 2026-11-06 | 交付完成，状态改「已完成」。交付物：`app/services/persona_service.py`、`app/api/pad.py`、`app/main.py` 挂载、`scripts/seed_personas.py`、`deploy/nginx.conf`、`deploy/assets/`（README + `.gitkeep` + 10.7MB VRM）、`tests/test_pad_avatar.py`、README §6.1/§6.2/§7.3。验收证据见 README §7.3 与本计划 v1.5 |
-| v1.0 | 2026-11-06 | 初稿：自 day04 README v1.0 §3/§6 拆出 |
+| v1.3 | 2026-11-06 | 验收对账：卡面 5 条中 4 条全达（200/401、三层取值链、version 指纹、质量门），第 3 条**部分达标**——nginx 与 `Content-Type: model/gltf-binary` 已实测，但「>5s 前端竞速切静态头像（AC-15）」由前端承担、当前未实现（前端无 three-vrm 依赖、无代码调 `avatar-config`）。`fallback.png` 未预置，`fallback_image_url` 恒 `null`（C7 允许）。两项经主理人裁决**留到前端接入 3D 时一并补**，不在本卡计为漏项 |
