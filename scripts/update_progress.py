@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""生成 `docs/team_tasks_day03/PROGRESS.md`（Day 3 进度看板）。
+"""生成 `docs/team_tasks/day03/PROGRESS.md`（Day 3 进度看板）。
 
 单一事实源是各任务卡首部的 `> 状态：…` 行与 task-a*.md 计划件的同名行；
 本脚本只做搬运与渲染，**不要手改进度文件**（下次生成会被覆盖）。
@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DAY_DIR = ROOT / "docs" / "team_tasks_day03"
+DAY_DIR = ROOT / "docs" / "team_tasks" / "day03"
 OUT = DAY_DIR / "PROGRESS.md"
 
 # 状态 → 图标与排序权重（越靠前越"完成"）
@@ -38,7 +38,7 @@ STATUS_RE = re.compile(r"^>\s*状态：\s*(.+?)\s*(?:[｜|]|$)", re.MULTILINE)
 TITLE_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 
 
-PLAN_GLOB = "docs/plans/task-a*.md"
+PLAN_GLOB = "docs/plans/day03/task-a*.md"
 
 
 def style(status: str) -> tuple[str, int]:

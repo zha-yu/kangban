@@ -1,5 +1,5 @@
 #!/bin/sh
-# 提交前自动刷新 Day 3 进度看板 docs/team_tasks_day03/PROGRESS.md
+# 提交前自动刷新 Day 3 进度看板 docs/team_tasks/day03/PROGRESS.md
 #
 # 启用一次即可（每个 clone 各来一次）：
 #     git config core.hooksPath .githooks
@@ -24,9 +24,9 @@ if [ -z "$py" ]; then
 fi
 
 if ! "$py" "$root/scripts/update_progress.py" --quiet; then
-    echo "[progress] 生成 docs/team_tasks_day03/PROGRESS.md 失败，已中止提交" >&2
+    echo "[progress] 生成 docs/team_tasks/day03/PROGRESS.md 失败，已中止提交" >&2
     exit 1
 fi
 
-git -C "$root" add docs/team_tasks_day03/PROGRESS.md
+git -C "$root" add docs/team_tasks/day03/PROGRESS.md
 exit 0
