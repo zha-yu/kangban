@@ -86,13 +86,13 @@ class TtsTextMsgV2(TypedDict):        # S→C（C2 tts_text 的向后兼容扩�
 
 # REST 降级链路（C3）reply 形状不变：{"text": str, "reply": {"text": str, "audio_url": str | None}}
 
-class ThreadInfo(TypedDict):          # 服务端内部契约（闸门①），前端无感知
+class ThreadInfo(TypedDict):          # 服务端内部契约（闸门①），前端无感知；A1 identity_service 创建
     thread_id: str                    # 服务端生成；客户端/模型传入一律丢弃
-    elder_id: str
+    elder_id: str | None              # generic 时为 None；与 conversation_threads CHECK 对齐（B1 裁决 2026-11-06）
     session_seq: int                  # 会话内递增；换人 → 旧 thread ended_at 落库 + 新 thread
 ```
 
-**语义约定**：greeting 在 `auth_ok` + 身份确定（`identity_result`）后由服务端主动下发 `tts_text{text=personas.greeting}` + TTS 音频，**不依赖 LLM**（「打开 5 秒立起并开口说话」）；generic 身份的 greeting 用通用话术；上下文组装 = 固定前缀（`app/prompts/personas/`）+ Redis 最近 5 轮，Day 4 无记忆来源。
+**语义约定**：greeting 在 `auth_ok` + 身份确定（`identity_result`）后由服务端主动下发 `tts_text{text=personas.greeting}` + TTS 音频，**不依赖 LLM**（「打开 5 秒立起并开口说话」）；generic 身份的 greeting 用通用话术；上下文组装 = 固定前缀（`app/prompts/personas/`）+ Redis 最近 5 轮，Day 4 无记忆来源。`conversation_threads` 的创建/结束、`session_seq` 递增与 generic thread_id 由 A1 `identity_service` 服务端事务**独占完成**，A2 只消费 A1 `IdentityDecision` 的终态 `thread_id`（经 `identity_decision_to_result` 投影），不建 thread、不双写。A1 当前 `IdentityDecision` 未回传 `ThreadInfo`/`session_seq`，A2 不伪造 `session_seq`；回传方式待 A1/主理人确认。
 
 ## C7 · avatar-config REST 契约（冻结人：A3，消费方：pad 前端）
 
@@ -122,7 +122,7 @@ Authorization: Bearer <device access_token>
 | --- | --- | --- | --- |
 | C4 | A1 | **已定稿**（2026-11-06，主理人裁决提前冻结） | 晨会签字确认后拷入 `app/api/voiceprints.py` |
 | C5 | A1 提案 / A2 定稿 | **已定稿** | 五个开放点裁决见「C5 开放点裁决记录」；属 C2 契约追加，A2 合入前补 task-a2 契约变更记录 |
-| C6 | A2 | **已定稿** | 复用 C2/C3 零新消息类型，仅 tts_text 加可选 degraded 字段 |
+| C6 | A2 | **已定稿（v1.3 修订：`ThreadInfo.elder_id` 可空；thread 由 A1 identity_service 独占创建）** | 复用 C2/C3 零新消息类型，仅 tts_text 加可选 degraded 字段；A2 只消费 `ThreadInfo` |
 | C7 | A3 | **已定稿** | 晨会签字后前端即可开发挂载 |
 
 ## 变更记录
@@ -132,3 +132,5 @@ Authorization: Bearer <device access_token>
 | v1.0 | 2026-11-06 | 初稿即定稿：C4–C7 代码级定义 + C5 五个开放点裁决（确认交互=大按钮点选、30s 起点=ask 下发、ask_id 不匹配忽略、generic 经 identity_result 通知、metrics 三打点位）+ C6 复用 C2/C3 零新消息类型裁决；主理人要求提前冻结，晨会改为签字确认 |
 | v1.1 | 2026-11-06 | C5 正文补 client_diag 的 vad 兜底激活语义：Day 4 全面核验发现 v1.0「仅日志」表述与 W4 实现（fcb5e41，stage=vad ok=false 驱动 VadFallbackController）存在字面冲突；本版在 ClientDiagMsg 块后补语义段（激活/停用/双跑边界），不改消息类型与字段，冻结人 A2，由 A4 代记并随联调窗口群内通告追认 |
 | v1.2 | 2026-11-06 | **待主理人确认**：C7 第 105 行原文写 `version`「persona.avatar_url 变更即递增」，A3 实现为四键内容的 crc32 指纹（`plan S-01`）——指纹**可回退**（实测 `/avatars/xiaoman.vrm` → `1794577085`，改回 `vrm1_sample.vrm` → 还原 `1686351657`），不满足「单调递增」。对消费方的约束据此明确：`version` 只作**不透明缓存键**，前端不得写成「新值 > 旧值才更新」的比较逻辑，正确用法是「值变了就重取」。申请把第 105 行措辞改为「persona.avatar_url（或 PUBLIC_BASE_URL / rotation 等任一取值来源）变化即变，实现为内容指纹、可回退，仅作缓存键」；字段名与类型不变，不影响已合入的前端挂载代码 |
+| v1.3 | 2026-11-06 | **B1/B2 裁决**：`ThreadInfo.elder_id` 由 `str` 改为 `str | None`，generic 为 `None`，与 `conversation_threads` 的 CHECK 对齐；明确 `conversation_threads` 创建/结束、`session_seq` 递增与 generic thread_id 由 A1 `identity_service` 服务端事务**独占完成**，A2 只消费 `ThreadInfo`、不建 thread、不双写。C2/C3/C5 不变 |
+| v1.4 | 2026-11-06 | A1 `identity_service` 实际交付 `IdentityDecision(thread_id/confidence/reason/session_seq)`；A2 新增 `identity_decision_to_result` 适配（终态消费 `thread_id` 与 `session_seq`，`needs_confirm` → `IdentityConfirmationRequired`），不伪造序号。C6 类型不变 |

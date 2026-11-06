@@ -32,8 +32,9 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Annotated, Any, Literal, TypedDict
-from uuid import UUID
+from enum import StrEnum
+from typing import Annotated, Any, Literal, NotRequired, TypedDict
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,6 +47,11 @@ from app.core.auth import (
     resolve_principal,
 )
 from app.core.context import get_trace_id, new_trace_id, reset_trace_id, set_trace_id
+from app.core.metrics import (
+    record_identity_ask_sent,
+    record_identity_confirm_received,
+    record_identity_result_sent,
+)
 from app.core.runtime_context import Identity, reset_identity, set_identity
 from app.db import get_session
 from app.services.device_service import list_elder_candidates
@@ -64,6 +70,12 @@ WS_PING_INTERVAL_S = 20
 WS_DEAD_AFTER_S = 45
 # 判死检查轮询间隔（实现细节，测试 monkeypatch 用）
 _DEAD_CHECK_INTERVAL_S = 1.0
+
+# C5 身份确认：契约 timeout_s 恒 30；内部计时器单独命名，测试用受控时钟 monkeypatch
+IDENTITY_ASK_TIMEOUT_S = 30
+_IDENTITY_TIMEOUT_TEST_S = float(IDENTITY_ASK_TIMEOUT_S)
+# C5 client_diag 只允许四个阶段（contracts.md v1.0）
+_CLIENT_DIAG_STAGES = frozenset({"vrm_load", "webrtc", "vad", "asr"})
 
 # 自定义关闭码（4000–4999 为应用私有区间）
 WS_CLOSE_AUTH_FAILED = 4401  # 鉴权失败（契约定值）
@@ -102,12 +114,28 @@ __all__ = [
     "AuthFailMsg",
     "AuthMsg",
     "AuthOkMsg",
+    "ClientDiagMsg",
+    "DialogueFinalHandler",
     "ErrorMsg",
     "IceMsg",
+    "IdentityAskMsg",
+    "IdentityConfirmHandler",
+    "IdentityConfirmMsg",
+    "IdentityResultMsg",
+    "IdentityState",
+    "IdentityTimeoutHandler",
     "OfferMsg",
     "PingMsg",
     "PongMsg",
     "TtsTextMsg",
+    "apply_generic_identity",
+    "apply_voice_identity",
+    "begin_identity_recheck",
+    "dispatch_asr_event",
+    "request_identity_confirmation",
+    "set_dialogue_final_handler",
+    "set_identity_confirm_handler",
+    "set_identity_timeout_handler",
 ]
 
 
@@ -171,10 +199,14 @@ class AsrFinalMsg(TypedDict):
 
 
 class TtsTextMsg(TypedDict):
-    """S→C，大字幕渲染数字人回复（打断时前端立即停播）。"""
+    """S→C，大字幕渲染数字人回复（打断时前端立即停播）。
+
+    `degraded` 为 C6 的向后兼容扩展字段：True = LLM 降级模板话术，缺省 False。
+    """
 
     type: Literal["tts_text"]
     text: str
+    degraded: NotRequired[bool]
 
 
 class ErrorMsg(TypedDict):  # S→C，服务端降级/异常通知
@@ -183,7 +215,59 @@ class ErrorMsg(TypedDict):  # S→C，服务端降级/异常通知
     message: str  # 已脱敏的长者可读话术
 
 
+# ------------------------------------------------------------------ C5 契约追加（contracts.md v1.0 原样拷贝，属 C2 消息表增量）
+# 方向标记：C→S 客户端发，S→C 服务端发。
+
+
+class IdentityAskMsg(TypedDict):  # S→C，低置信/服务不可用时主动确认
+    type: Literal["identity_ask"]
+    ask_id: str  # 本次确认的唯一 id；confirm 必须回带
+    reason: Literal["low_confidence", "vp_unavailable"]
+    candidates: list[dict[str, str]]  # 契约 list[dict]；恒 1 位（设备绑定长者 1v1）
+    timeout_s: int  # 恒 30
+
+
+class IdentityConfirmMsg(TypedDict):  # C→S，pad 大按钮点选
+    type: Literal["identity_confirm"]
+    ask_id: str
+    elder_id: str  # 必须等于 candidates[0].elder_id；否则按未确认处理
+
+
+class IdentityResultMsg(TypedDict):  # S→C，告知最终身份模式
+    type: Literal["identity_result"]
+    source: Literal["voice", "confirm", "generic"]
+    elder_id: str | None  # generic 时为 None
+
+
+class ClientDiagMsg(TypedDict):  # C→S，仅日志（3D/WebRTC/链路诊断），服务端不回执
+    type: Literal["client_diag"]
+    stage: Literal["vrm_load", "webrtc", "vad", "asr"]
+    ok: bool
+    error: str  # 已脱敏
+
+
+class IdentityState(StrEnum):
+    """连接级身份状态（C5 状态机；每轮判定只允许一个最终结果）。"""
+
+    UNKNOWN = "unknown"  # 已鉴权、身份未定
+    ASKING = "asking"  # 已发 identity_ask，等待 confirm 或 30s 超时
+    IDENTIFIED = "identified"  # voice/confirm 已确定
+    GENERIC = "generic"  # 超时或无法确认，active_elder_id 恒 None
+    CLOSED = "closed"  # 断线/被新连接替代，计时已取消
+
+
 # ------------------------------------------------------------------ 连接上下文与注册表
+
+
+@dataclass(slots=True)
+class _TrackedFrame:
+    """下行帧 + 实际发送完成事件（C5 的 30s 计时必须等真实 send_text 成功）。
+
+    只有 identity_ask 需要回执；C2 普通下行仍是裸 dict，`deliver()` 的对外语义不变。
+    """
+
+    payload: dict[str, Any]
+    sent: asyncio.Event
 
 
 @dataclass
@@ -192,17 +276,33 @@ class ConnectionContext:
 
     `websocket` 是执行计划 §3 W1 字段清单之外的实现必需项：踢旧留新（裁决③）要拿到
     旧连接的 WebSocket 才能发 close 帧。对 A3 仍不暴露（只读上层字段即可）。
+
+    身份字段拆成两个：`bound_elder_id` 是设备绑定（来自鉴权），`active_elder_id`
+    是本轮确认的说话人（voice/confirm 才有值）。**generic 不得清空绑定关系**。
     """
 
     trace_id: str
     websocket: WebSocket
     device_id: str | None = None
-    elder_id: str | None = None
+    bound_elder_id: str | None = None
+    active_elder_id: str | None = None
+    elder_display_name: str | None = None
     room_id: str | None = None
     authed: bool = False
     last_frame_at: float = field(default_factory=time.monotonic)
-    downstream: asyncio.Queue[dict[str, Any]] = field(default_factory=asyncio.Queue)
+    downstream: asyncio.Queue[dict[str, Any] | _TrackedFrame] = field(default_factory=asyncio.Queue)
     disconnect_callbacks: list[Callable[[], object]] = field(default_factory=list)
+    # C5 状态机
+    identity_state: IdentityState = IdentityState.UNKNOWN
+    pending_ask_id: str | None = None
+    pending_ask_sent: asyncio.Event | None = None
+    identity_task: asyncio.Task[None] | None = None
+    identity_result_sent: bool = False
+
+    @property
+    def elder_id(self) -> str | None:
+        """C2 兼容读法：`auth_ok.elder_id` 展示的是**设备绑定长者**，不是本轮说话人。"""
+        return self.bound_elder_id
 
 
 # 进程内连接注册表：device_id → 连接上下文（契约会裁决③：同设备踢旧留新，操作加锁）
@@ -292,6 +392,57 @@ def deliver_asr_event(device_id: str, event: ASREvent) -> bool:
     return False
 
 
+# A3 媒体层在 FINAL 时 await 的 A2 编排入口；由 app 装配层注册，未注册时行为不变。
+DialogueFinalHandler = Callable[[str, str, str, str, bytes | None], Awaitable[None]]
+_dialogue_final_handler: DialogueFinalHandler | None = None
+
+
+def set_dialogue_final_handler(handler: DialogueFinalHandler | None) -> None:
+    """注册 FINAL → A2 对话编排的唯一 awaitable 回调；传 None 注销（测试/关闭用）。"""
+    global _dialogue_final_handler
+    _dialogue_final_handler = handler
+
+
+async def dispatch_asr_event(
+    device_id: str,
+    turn_id: str,
+    trace_id: str,
+    event: ASREvent,
+    audio_bytes: bytes | None = None,
+) -> bool:
+    """A3 ASR 事件统一出口：字幕先投递一次，FINAL 再 await A2 编排。
+
+    - PARTIAL/ERROR 只走字幕/错误映射，不触发 LLM；
+    - FINAL 字幕投递成功后调用注册的 `DialogueFinalHandler`，异常只记录不反抛，
+      避免破坏 C2 媒体回调；同一 FINAL 由 A2 内部按 (device_id, turn_id) 去重；
+    - `audio_bytes` 是 A3 VAD 切出的本 turn 语音段（WAV），仅供服务端声纹使用，
+      不落盘、不下发。
+    """
+    delivered = deliver_asr_event(device_id, event)
+    if event.kind is not ASREventKind.FINAL or not delivered:
+        return delivered
+
+    handler = _dialogue_final_handler
+    if handler is None:
+        return delivered
+
+    text = event.result.text if event.result else ""
+    try:
+        await handler(device_id, turn_id, trace_id, text, audio_bytes)
+    except Exception as exc:
+        # 只记录异常类型，不把 handler 内部消息/堆栈写进日志，避免敏感内容外泄
+        logger.error(
+            "dialogue_final_handler_failed",
+            extra={
+                "trace_id": trace_id,
+                "device_id": device_id,
+                "turn_id": turn_id,
+                "error_type": type(exc).__name__,
+            },
+        )
+    return delivered
+
+
 # ------------------------------------------------------------------ 内部实现
 
 
@@ -358,7 +509,7 @@ async def _authenticate(conn: ConnectionContext, session: AsyncSession) -> Ident
         return None
 
     conn.device_id = identity.device_id
-    conn.elder_id = identity.elder_id
+    conn.bound_elder_id = identity.elder_id
     conn.last_frame_at = time.monotonic()
     return identity
 
@@ -370,6 +521,8 @@ async def _register(conn: ConnectionContext) -> None:
         old = _registry.get(conn.device_id)
         _registry[conn.device_id] = conn
     if old is not None:
+        _cancel_identity_timer(old)
+        old.identity_state = IdentityState.CLOSED
         logger.warning(
             "ws_superseded",
             extra=_log_extra(old, reason="same_device_reconnect"),
@@ -382,8 +535,13 @@ async def _writer(conn: ConnectionContext) -> None:
     """单一 writer 协程：排空下行队列逐帧发送（绑定本连接所在 loop，P1 风险 A2 侧落点）。"""
     try:
         while True:
-            message = await conn.downstream.get()
-            await conn.websocket.send_text(json.dumps(message, ensure_ascii=False))
+            item = await conn.downstream.get()
+            if isinstance(item, _TrackedFrame):
+                await conn.websocket.send_text(json.dumps(item.payload, ensure_ascii=False))
+                # 只有真实 send_text 成功后才置位：C5 的 30s 计时从这里起算
+                item.sent.set()
+            else:
+                await conn.websocket.send_text(json.dumps(item, ensure_ascii=False))
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -423,6 +581,343 @@ async def _send_error(conn: ConnectionContext, code: str) -> None:
     )
 
 
+# ------------------------------------------------------------------ C5 身份状态机
+
+
+IdentityAskReason = Literal["low_confidence", "vp_unavailable"]
+IdentitySource = Literal["voice", "confirm", "generic"]
+_IDENTITY_CANDIDATE_FALLBACK_NAME = "本人"
+
+# 服务端 C5 → A1 identity_service 的接线回调；由 app 装配层注册。
+IdentityConfirmHandler = Callable[[str, str, str], Awaitable[None]]  # device, trace, elder
+IdentityTimeoutHandler = Callable[[str, str], Awaitable[None]]  # device, trace
+_identity_confirm_handler: IdentityConfirmHandler | None = None
+_identity_timeout_handler: IdentityTimeoutHandler | None = None
+
+
+def set_identity_confirm_handler(handler: IdentityConfirmHandler | None) -> None:
+    """注册合法 identity_confirm 的 A1 thread 创建回调；传 None 注销。"""
+    global _identity_confirm_handler
+    _identity_confirm_handler = handler
+
+
+def set_identity_timeout_handler(handler: IdentityTimeoutHandler | None) -> None:
+    """注册 30s 超时 generic 的 A1 thread 创建回调；传 None 注销。"""
+    global _identity_timeout_handler
+    _identity_timeout_handler = handler
+
+
+def _identity_candidates(conn: ConnectionContext) -> list[dict[str, str]]:
+    """C5 候选集：恒为设备绑定长者 1 位，客户端/模型输入不参与。"""
+    if conn.bound_elder_id is None:
+        return []
+    return [
+        {
+            "elder_id": conn.bound_elder_id,
+            "display_name": conn.elder_display_name or _IDENTITY_CANDIDATE_FALLBACK_NAME,
+        }
+    ]
+
+
+def _cancel_identity_timer(conn: ConnectionContext) -> None:
+    """取消 30s 计时；断线、被替代、合法 confirm/voice 都走这里。"""
+    task = conn.identity_task
+    conn.identity_task = None
+    conn.pending_ask_sent = None
+    if task is not None and not task.done() and task is not asyncio.current_task():
+        task.cancel()
+
+
+def _send_identity_result(
+    conn: ConnectionContext,
+    *,
+    source: IdentitySource,
+    elder_id: str | None,
+    ask_id: str | None = None,
+) -> bool:
+    """每会话每轮判定只发一次最终结果；generic 强制 elder_id=None。"""
+    if conn.identity_result_sent:
+        logger.warning(
+            "identity_result_ignored",
+            extra=_log_extra(conn, reason="duplicate_result", source=source),
+        )
+        return False
+
+    conn.identity_result_sent = True
+    if source == "generic":
+        # FR-VPR-03：通用模式不伪造默认长者，也不清空设备绑定关系
+        elder_id = None
+        conn.active_elder_id = None
+        conn.identity_state = IdentityState.GENERIC
+    else:
+        conn.active_elder_id = elder_id
+        conn.identity_state = IdentityState.IDENTIFIED
+
+    conn.downstream.put_nowait({"type": "identity_result", "source": source, "elder_id": elder_id})
+    logger.info(
+        "identity_result",
+        extra=_log_extra(conn, source=source, elder_id=elder_id or "-"),
+    )
+    record_identity_result_sent(ask_id=ask_id or "")
+    return True
+
+
+async def _identity_ask_timeout(
+    conn: ConnectionContext,
+    ask_id: str,
+    sent: asyncio.Event,
+) -> None:
+    """30s 从 ask **实际发送成功**起算；超时只发一次 generic。"""
+    try:
+        await sent.wait()
+        logger.info("identity_ask_sent", extra=_log_extra(conn, ask_id=ask_id))
+        await asyncio.sleep(_IDENTITY_TIMEOUT_TEST_S)
+    except asyncio.CancelledError:
+        raise
+
+    if (
+        conn.pending_ask_id != ask_id
+        or conn.identity_state is not IdentityState.ASKING
+        or conn.identity_result_sent
+    ):
+        return
+    conn.pending_ask_id = None
+    conn.pending_ask_sent = None
+    conn.identity_task = None
+    logger.info("identity_ask_timeout", extra=_log_extra(conn, ask_id=ask_id))
+
+    handler = _identity_timeout_handler
+    if handler is not None and conn.device_id is not None:
+        try:
+            await handler(conn.device_id, conn.trace_id)
+        except Exception as exc:
+            logger.error(
+                "identity_timeout_handler_failed",
+                extra=_log_extra(conn, error_type=type(exc).__name__),
+            )
+    _send_identity_result(conn, source="generic", elder_id=None, ask_id=ask_id)
+
+
+async def request_identity_confirmation(
+    device_id: str,
+    *,
+    reason: IdentityAskReason,
+) -> bool:
+    """A1 声纹级联的服务端入口：低置信/声纹不可用时下发 identity_ask。
+
+    只接受服务端 device_id 与本轮判定结果；客户端与模型不能调用此入口。
+    返回 True 表示 ask 已入队（30s 计时在真实发送成功后启动）。
+    """
+    conn = _registry.get(device_id)
+    if conn is None or not conn.authed:
+        return False
+    if reason not in ("low_confidence", "vp_unavailable"):
+        logger.warning("identity_ask_ignored", extra=_log_extra(conn, reason="invalid_reason"))
+        return False
+    if conn.identity_result_sent or conn.identity_state in (
+        IdentityState.ASKING,
+        IdentityState.IDENTIFIED,
+        IdentityState.GENERIC,
+    ):
+        logger.warning(
+            "identity_ask_ignored",
+            extra=_log_extra(conn, reason="identity_already_determined"),
+        )
+        return False
+
+    candidates = _identity_candidates(conn)
+    if not candidates:
+        # 无设备绑定长者时无法构造 1v1 候选集：直接通用模式，不伪造默认长者
+        logger.warning("identity_ask_ignored", extra=_log_extra(conn, reason="no_bound_elder"))
+        _send_identity_result(conn, source="generic", elder_id=None)
+        return False
+
+    ask_id = uuid4().hex
+    sent = asyncio.Event()
+    conn.pending_ask_id = ask_id
+    conn.pending_ask_sent = sent
+    conn.identity_state = IdentityState.ASKING
+    conn.downstream.put_nowait(
+        _TrackedFrame(
+            payload={
+                "type": "identity_ask",
+                "ask_id": ask_id,
+                "reason": reason,
+                "candidates": candidates,
+                "timeout_s": IDENTITY_ASK_TIMEOUT_S,
+            },
+            sent=sent,
+        )
+    )
+    conn.identity_task = asyncio.create_task(_identity_ask_timeout(conn, ask_id, sent))
+    logger.info(
+        "identity_ask_enqueued",
+        extra=_log_extra(conn, reason=reason, ask_id=ask_id),
+    )
+    record_identity_ask_sent(ask_id=ask_id, reason=reason)
+    return True
+
+
+async def apply_voice_identity(device_id: str, *, elder_id: str) -> bool:
+    """A1 声纹命中的服务端入口：elder_id 必须等于设备绑定长者，否则忽略。
+
+    声纹计算与 cosine 阈值属于 A1；本层只消费"已判定命中"这一事实，不接收相似度。
+    """
+    conn = _registry.get(device_id)
+    if conn is None or not conn.authed:
+        return False
+    if conn.identity_result_sent or conn.identity_state in (
+        IdentityState.IDENTIFIED,
+        IdentityState.GENERIC,
+    ):
+        logger.warning(
+            "identity_result_ignored",
+            extra=_log_extra(conn, reason="duplicate_voice_result"),
+        )
+        return False
+    if conn.bound_elder_id is None or elder_id != conn.bound_elder_id:
+        logger.warning(
+            "identity_result_ignored",
+            extra=_log_extra(conn, reason="voice_candidate_mismatch"),
+        )
+        return False
+
+    _cancel_identity_timer(conn)
+    conn.pending_ask_id = None
+    _send_identity_result(conn, source="voice", elder_id=conn.bound_elder_id)
+    return True
+
+
+async def apply_generic_identity(device_id: str) -> bool:
+    """A1 返回 generic 终态时，向客户端下发一次 identity_result(generic, null)。"""
+    conn = _registry.get(device_id)
+    if conn is None or not conn.authed:
+        return False
+    if conn.identity_result_sent or conn.identity_state in (
+        IdentityState.IDENTIFIED,
+        IdentityState.GENERIC,
+    ):
+        logger.warning(
+            "identity_result_ignored",
+            extra=_log_extra(conn, reason="duplicate_generic_result"),
+        )
+        return False
+
+    _cancel_identity_timer(conn)
+    conn.pending_ask_id = None
+    return _send_identity_result(conn, source="generic", elder_id=None)
+
+
+async def begin_identity_recheck(device_id: str) -> bool:
+    """换人/复检前复位 C5 轮次：保留设备绑定，清空本轮结果，允许再次下发。
+
+    A1 `recheck_session_identity` 返回新决策后调用；A2 不自行创建 thread。
+    """
+    conn = _registry.get(device_id)
+    if conn is None or not conn.authed:
+        return False
+    if conn.identity_state is IdentityState.CLOSED:
+        return False
+
+    _cancel_identity_timer(conn)
+    conn.pending_ask_id = None
+    conn.active_elder_id = None
+    conn.identity_result_sent = False
+    conn.identity_state = IdentityState.UNKNOWN
+    logger.info("identity_recheck_reset", extra=_log_extra(conn))
+    return True
+
+
+async def _handle_identity_confirm(conn: ConnectionContext, message: Mapping[str, Any]) -> None:
+    """C→S identity_confirm：错配/重复/候选外一律 warn + 忽略，不发 error、不关连接。"""
+    ask_id = message.get("ask_id")
+    elder_id = message.get("elder_id")
+    if not isinstance(ask_id, str) or not isinstance(elder_id, str):
+        logger.warning(
+            "ws_bad_message",
+            extra=_log_extra(conn, reason="identity_confirm_invalid"),
+        )
+        await _send_error(conn, "internal")
+        return
+
+    record_identity_confirm_received(ask_id=ask_id)
+
+    if (
+        conn.identity_state is not IdentityState.ASKING
+        or conn.pending_ask_id is None
+        or ask_id != conn.pending_ask_id
+    ):
+        logger.warning(
+            "identity_confirm_ignored",
+            extra=_log_extra(conn, reason="ask_mismatch_or_not_asking"),
+        )
+        return
+
+    if conn.bound_elder_id is None or elder_id != conn.bound_elder_id:
+        # 候选集外：保持 ASKING，继续等待合法确认或 30s 超时
+        logger.warning(
+            "identity_confirm_ignored",
+            extra=_log_extra(conn, reason="candidate_out_of_set"),
+        )
+        return
+
+    _cancel_identity_timer(conn)
+    conn.pending_ask_id = None
+
+    handler = _identity_confirm_handler
+    if handler is not None and conn.device_id is not None:
+        try:
+            await handler(conn.device_id, conn.trace_id, conn.bound_elder_id)
+        except Exception as exc:
+            logger.error(
+                "identity_confirm_handler_failed",
+                extra=_log_extra(conn, error_type=type(exc).__name__),
+            )
+    _send_identity_result(conn, source="confirm", elder_id=conn.bound_elder_id, ask_id=ask_id)
+
+
+async def _handle_client_diag(conn: ConnectionContext, message: Mapping[str, Any]) -> None:
+    """C→S client_diag：只写结构化安全字段，不回执、不落库、不进 metrics。"""
+    stage = message.get("stage")
+    ok = message.get("ok")
+    error = message.get("error")
+    if (
+        not isinstance(stage, str)
+        or stage not in _CLIENT_DIAG_STAGES
+        or not isinstance(ok, bool)
+        or not isinstance(error, str)
+    ):
+        logger.warning(
+            "ws_bad_message",
+            extra=_log_extra(conn, reason="client_diag_invalid"),
+        )
+        await _send_error(conn, "internal")
+        return
+
+    # 默认不记录客户端 error 原文（可能含敏感信息）；只记录长度与布尔状态
+    logger.info(
+        "client_diag",
+        extra=_log_extra(conn, stage=stage, ok=ok, error_len=len(error)),
+    )
+
+    # W4：stage=vad 的端侧自检结果驱动服务端 VAD 兜底（ok=false → 激活）
+    if stage == "vad" and conn.device_id is not None:
+        from app.audio import webrtc
+
+        try:
+            applied = webrtc.set_vad_fallback_for_device(conn.device_id, not ok)
+        except Exception as exc:
+            logger.warning(
+                "client_diag_vad_failed",
+                extra=_log_extra(conn, error_type=type(exc).__name__),
+            )
+            applied = False
+        logger.info(
+            "client_diag_vad",
+            extra=_log_extra(conn, ok=ok, active=not ok, applied=applied),
+        )
+
+
 async def _read_loop(conn: ConnectionContext) -> None:
     """auth 后的消息主循环（W4）：任何合法帧都刷新 last_frame_at（W3：业务帧同样续命）。"""
     websocket = conn.websocket
@@ -441,6 +936,12 @@ async def _read_loop(conn: ConnectionContext) -> None:
         msg_type = message["type"]
         if msg_type == "ping":
             conn.downstream.put_nowait({"type": "pong"})
+            continue
+        if msg_type == "identity_confirm":
+            await _handle_identity_confirm(conn, message)
+            continue
+        if msg_type == "client_diag":
+            await _handle_client_diag(conn, message)
             continue
         if msg_type == "auth":
             # 裁决②：连接内重复 auth 按非法凭证处理（防连接内换 token 旁路）
@@ -480,6 +981,14 @@ async def _cleanup(conn: ConnectionContext) -> None:
             # 只有槽位仍是本连接时才移除：踢旧场景下新连接已接管，不能误删
             if _registry.get(conn.device_id) is conn:
                 del _registry[conn.device_id]
+    # C5：断线必须取消 30s 计时并收敛状态，避免在已关闭连接上补发 generic
+    timer = conn.identity_task
+    _cancel_identity_timer(conn)
+    if timer is not None and not timer.done():
+        with contextlib.suppress(asyncio.CancelledError):
+            await timer
+    conn.identity_state = IdentityState.CLOSED
+    conn.pending_ask_id = None
     for callback in conn.disconnect_callbacks:
         try:
             outcome = callback()
@@ -520,6 +1029,12 @@ async def signal_endpoint(
         # room_id 只读复用 device_service（app/audio → services 单向依赖；不 import ORM）
         candidates = await list_elder_candidates(session, identity, UUID(identity.device_id))
         conn.room_id = str(candidates.room_id)
+        # C5 候选 display_name：只取**设备绑定长者**那一位，双人间另一位不进候选集
+        if identity.elder_id is not None:
+            for candidate in candidates.candidates:
+                if str(candidate.elder_id) == identity.elder_id:
+                    conn.elder_display_name = candidate.display_name
+                    break
         conn.authed = True
 
         await _register(conn)

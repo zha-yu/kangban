@@ -19,6 +19,8 @@ from app.audio.webrtc import (
     DOWNLINK_FRAME_SAMPLES,
     DOWNLINK_SAMPLE_RATE,
     MAX_PLAYBACK_FRAMES,
+    VAD_FRAME_BYTES,
+    VAD_FRAME_SAMPLES,
     AudioNormalizer,
     DualFrameSplitter,
     MediaBackpressureError,
@@ -32,6 +34,8 @@ from app.audio.webrtc import (
     PcmFrame,
     PcmFramer,
     PreRollBuffer,
+    VadEvent,
+    VadEventKind,
     _make_frame,
     _tts_pcm_to_48k_frames,
     validate_downlink_pcm,
@@ -476,3 +480,82 @@ class TestMediaSessionRegistry:
         with pytest.raises(MediaStateError):
             reg.create_session("c1", "t1", config=config)
         await reg.close_session("c1")
+
+
+# ===========================================================================
+# A3-13 · A3 → A5 30 ms 帧交接：VadSession 判决 → speech_start / speech_end
+# ===========================================================================
+
+
+def _vad_pcm16(samples: list[int]) -> bytes:
+    return struct.pack(f"<{len(samples)}h", *samples)
+
+
+def _vad_silence(index: int) -> bytes:
+    """30 ms 低能量帧：幅值 5 的 1 Hz 正弦（webrtcvad 稳定判为非语音）。"""
+    import math
+
+    return _vad_pcm16(
+        [
+            int(5 * math.sin(2 * math.pi * 1.0 * ((index * VAD_FRAME_SAMPLES + n) / 16_000)))
+            for n in range(VAD_FRAME_SAMPLES)
+        ]
+    )
+
+
+def _vad_voiced(index: int) -> bytes:
+    """30 ms 近似浊音帧：150 Hz 基频 + 谐波 + 3 Hz 包络（与 test_audio_vad 同算法）。"""
+    import math
+
+    samples: list[int] = []
+    for n in range(VAD_FRAME_SAMPLES):
+        t = (index * VAD_FRAME_SAMPLES + n) / 16_000
+        envelope = 0.6 + 0.4 * math.sin(2 * math.pi * 3.0 * t)
+        value = (
+            0.55 * math.sin(2 * math.pi * 150.0 * t)
+            + 0.25 * math.sin(2 * math.pi * 450.0 * t)
+            + 0.12 * math.sin(2 * math.pi * 1200.0 * t)
+            + 0.08 * math.sin(2 * math.pi * 2400.0 * t)
+        )
+        samples.append(int(max(-1.0, min(1.0, value * envelope)) * 20_000))
+    return _vad_pcm16(samples)
+
+
+class TestA313VadHandoff:
+    @pytest.mark.asyncio
+    async def test_30ms_frames_reach_vad_session_and_emit_events(self) -> None:
+        events: list[VadEvent] = []
+
+        async def _on_vad_event(connection_id: str, event: VadEvent) -> None:
+            assert connection_id == "c1"
+            events.append(event)
+
+        sess = MediaSession(
+            connection_id="c1",
+            trace_id="t1",
+            config=_config(),
+            on_vad_event=_on_vad_event,
+        )
+
+        frames: list[PcmFrame] = []
+        # 25 帧静音填满 A5 的 600 ms preRoll，再 5 帧浊音触发 speechstart。
+        frames.extend(_make_frame(_vad_silence(i), duration_ms=30) for i in range(25))
+        frames.extend(_make_frame(_vad_voiced(i), duration_ms=30) for i in range(5))
+        # 35 帧静音 ≥ 27 帧判定阈值 + webrtcvad hangover → speechend。
+        frames.extend(_make_frame(_vad_silence(30 + j), duration_ms=30) for j in range(35))
+
+        for frame in frames:
+            sess._dispatch_frames([], [frame])
+        await asyncio.sleep(0.05)
+
+        kinds = [event.kind for event in events]
+        assert VadEventKind.SPEECH_START in kinds
+        assert kinds[-1] is VadEventKind.SPEECH_END
+        segment = events[-1].segment
+        assert segment is not None
+        assert len(segment) % VAD_FRAME_BYTES == 0
+        assert len(segment) >= 5 * VAD_FRAME_BYTES
+        assert sess.vad_frames_received == len(frames)
+
+        await sess.close()
+        assert sess.pending_tasks == 0

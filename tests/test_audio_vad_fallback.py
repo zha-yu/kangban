@@ -21,15 +21,18 @@ import asyncio
 import logging
 import math
 import struct
+from collections.abc import AsyncIterator
 
 import pytest
 
+from app.audio import webrtc
+from app.audio.asr import ASREvent, ASREventKind, ASRProvider, ASRResult
 from app.audio.vad import (
     FRAME_SAMPLES,
     PRE_ROLL_FRAMES,
     VadFallbackController,
 )
-from app.audio.webrtc import MediaSession, _make_frame
+from app.audio.webrtc import MediaSession, PcmFrame, _make_frame
 
 # ---------------------------------------------------------------------------
 # 测试帧构造（与 tests/test_audio_vad.py 同算法）
@@ -299,3 +302,136 @@ class TestMediaSessionWiring:
         await sess.close()
         assert len(collected) == 1, "关闭应 flush 出末段交给下游"
         assert sess.vad_fallback_active is False
+
+
+# ---------------------------------------------------------------------------
+# 5. 兜底段下游：无外部回调时默认跑 ASR 并产出 FINAL（与 asr_end 同一链路）
+# ---------------------------------------------------------------------------
+
+
+class _StubASRProvider(ASRProvider):
+    """记录进入 ASR 的帧数，并按固定脚本回放事件。"""
+
+    def __init__(self, events: list[ASREvent]) -> None:
+        self.events = events
+        self.calls = 0
+        self.frames = 0
+
+    async def stream(self, audio: AsyncIterator[bytes]) -> AsyncIterator[ASREvent]:
+        self.calls += 1
+        return self._events(audio)
+
+    async def _events(self, audio: AsyncIterator[bytes]) -> AsyncIterator[ASREvent]:
+        async for _frame in audio:
+            self.frames += 1
+        for event in self.events:
+            yield event
+
+
+def _asr_event(kind: ASREventKind, text: str) -> ASREvent:
+    return ASREvent(
+        kind=kind,
+        result=ASRResult(
+            text=text,
+            is_final=kind is ASREventKind.FINAL,
+            confidence=None,
+        ),
+        error=None,
+    )
+
+
+def _utterance_frames() -> list[PcmFrame]:
+    """标准兜底 utterance：30 静音 + 5 浊音 + 35 静音（触发 speechend）。"""
+    frames = [_vad_frame(silence_frame(i)) for i in range(30)]
+    frames += [_vad_frame(voiced_frame(i)) for i in range(5)]
+    frames += [_vad_frame(silence_frame(30 + 5 + j)) for j in range(35)]
+    return frames
+
+
+class TestFallbackSegmentDownstream:
+    @pytest.mark.asyncio
+    async def test_segment_runs_asr_and_final_through_same_callback(self) -> None:
+        """无 on_vad_segment 时，兜底段默认走 ASR → PARTIAL/FINAL → 对话回调。"""
+        events: list[tuple[str, ASREvent]] = []
+        final_seen = asyncio.Event()
+
+        async def _on_asr(turn_id: str, event: ASREvent) -> None:
+            events.append((turn_id, event))
+            if event.kind is ASREventKind.FINAL:
+                final_seen.set()
+
+        provider = _StubASRProvider(
+            [
+                _asr_event(ASREventKind.PARTIAL, "你"),
+                _asr_event(ASREventKind.FINAL, "你好"),
+            ]
+        )
+        sess = MediaSession(
+            connection_id="c-asr",
+            trace_id="t-asr",
+            config=_config(),
+            asr_provider=provider,
+            on_asr_event=_on_asr,
+        )
+        sess.set_vad_fallback_active(True)
+        try:
+            sess._dispatch_frames([], _utterance_frames())
+            await asyncio.wait_for(final_seen.wait(), timeout=1.0)
+
+            assert [event.kind for _, event in events] == [
+                ASREventKind.PARTIAL,
+                ASREventKind.FINAL,
+            ]
+            turn_ids = {turn_id for turn_id, _ in events}
+            assert len(turn_ids) == 1, "PARTIAL 与 FINAL 必须属于同一个兜底 turn"
+            assert sess._playback_turn_id == turn_ids.pop()
+            assert provider.frames >= 1, "兜底段必须真正进入 ASR 帧流"
+            # FINAL 声纹音频留在会话内存，供 _asr_callback 生成 WAV 时取用
+            assert webrtc._latest_segments[sess.connection_id]
+        finally:
+            webrtc._latest_segments.pop(sess.connection_id, None)
+            await sess.close()
+
+    @pytest.mark.asyncio
+    async def test_segment_skipped_while_client_turn_active(self) -> None:
+        """客户端 ASR turn 进行中 → 兜底段跳过，避免同一句被双切段双识别。"""
+        provider = _StubASRProvider([_asr_event(ASREventKind.FINAL, "你好")])
+        sess = MediaSession(
+            connection_id="c-busy",
+            trace_id="t-busy",
+            config=_config(),
+            asr_provider=provider,
+        )
+        sess._turn_id = "client-turn"
+        try:
+            await sess._transcribe_vad_segment(b"\x00" * 960)
+            assert provider.calls == 0
+            assert sess._playback_turn_id is None
+        finally:
+            await sess.close()
+
+    @pytest.mark.asyncio
+    async def test_fallback_active_suppresses_local_vad_judge(self) -> None:
+        """兜底激活时只跑 VadFallbackController，不再并行跑本地 VadSession。"""
+        vad_events: list[object] = []
+
+        async def _on_vad(connection_id: str, event: object) -> None:
+            vad_events.append(event)
+
+        sess = MediaSession(
+            connection_id="c-single-vad",
+            trace_id="t-single-vad",
+            config=_config(),
+            on_vad_event=_on_vad,
+        )
+        try:
+            sess.set_vad_fallback_active(True)
+            sess._dispatch_frames([], [_vad_frame(silence_frame(0))])
+            assert sess._vad_judge is None
+            assert vad_events == []
+
+            sess.set_vad_fallback_active(False)
+            sess._dispatch_frames([], [_vad_frame(silence_frame(0))])
+            assert sess._vad_judge is not None
+        finally:
+            await sess.close()

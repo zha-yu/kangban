@@ -10,9 +10,13 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import OrderedDict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Literal
+from uuid import UUID
 
+import redis.asyncio as redis_asyncio
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,7 +28,11 @@ from app.api import ROUTERS
 from app.api.elders import _is_request_format_error
 from app.api.schemas.auth import ErrorResponse
 from app.audio import signaling  # Day 3 T2：WS 信令路由（/ws/signal）
-from app.audio.webrtc import install_signaling_handler  # Day 3 T3：A3 媒体层接线
+from app.audio.tts import TTSUnavailable, build_tts
+from app.audio.webrtc import (  # Day 3 T3：A3 媒体层接线
+    enqueue_tts_for_device,
+    install_signaling_handler,
+)
 from app.core.auth import (
     CredentialExpiredError,
     CredentialInvalidError,
@@ -36,24 +44,278 @@ from app.core.context import TRACE_HEADER, get_trace_id
 from app.core.logging import configure_logging
 from app.core.security import TokenExpiredError
 from app.core.trace import TraceIdMiddleware
+from app.db import session_factory
+from app.services import identity_service, voiceprint_service
 from app.services.auth_service import (
     AuthConflictError,
     AuthExpiredError,
     AuthInvalidError,
     AuthRevokedError,
 )
+from app.services.dialogue_service import (
+    DialogueOrchestrator,
+    DialogueService,
+    IdentityConfirmationRequired,
+    IdentityThreadResult,
+    RedisTurnStore,
+    identity_decision_to_result,
+)
+from app.services.llm_service import LLMService
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """进程级生命周期。Day 2 起在这里挂：DB 连接池、Redis、APScheduler。
+    """进程级生命周期：Redis/LLM/Dialogue 运行时与 FINAL seam 的唯一装配点。
 
-    现在只记日志 —— 不建连接，保证没有 PG/Redis 也能启动（1.4 验收口径）。
+    Redis / HTTP 客户端在本进程创建并关闭；两者都是懒连接，外部依赖未起时不阻塞
+    启动（`/health` 与 Day2 验收口径不变）。`conversation_threads` 仍由 A1
+    `identity_service` 独占创建，A2 只消费其 `IdentityDecision`。
     """
     logger = logging.getLogger("app.main")
-    logger.info("application starting", extra={"app_env": app.state.settings.app_env})
-    yield
-    logger.info("application stopped")
+    settings: Settings = app.state.settings
+
+    redis_client = redis_asyncio.from_url(
+        settings.redis_url, encoding="utf-8", decode_responses=False
+    )
+    llm_service = LLMService(settings)
+    tts_provider = build_tts(settings)
+    turn_store = RedisTurnStore(client=redis_client, key_prefix=settings.redis_key_prefix)
+    dialogue_service = DialogueService(llm=llm_service, store=turn_store)
+
+    # 每 (device_id, trace_id) 缓存已打开的 thread + 身份：同一 WS 会话内复用，
+    # 避免每个 FINAL 都新建 conversation_thread；换连接由新 trace_id 重新首轮校验。
+    thread_cache: OrderedDict[tuple[str, str], IdentityThreadResult] = OrderedDict()
+    thread_cache_max = 128
+
+    async def _publish_identity(
+        device_id: str, decision: identity_service.IdentityDecision
+    ) -> None:
+        """A1 终态 → C5 identity_result；confirm 分支由 signaling confirm 回调负责。"""
+        if decision.source == "voice" and decision.elder_id is not None:
+            await signaling.apply_voice_identity(device_id, elder_id=str(decision.elder_id))
+        elif decision.source == "generic":
+            await signaling.apply_generic_identity(device_id)
+
+    async def _resolve_identity(
+        *,
+        device_id: str,
+        turn_id: str,
+        text: str,
+        trace_id: str,
+        audio_bytes: bytes | None,
+    ) -> IdentityThreadResult:
+        # A1 identity_service 独占创建 thread；A2 只消费终态 IdentityDecision。
+        cache_key = (device_id, trace_id)
+        cached = thread_cache.get(cache_key)
+        if cached is not None:
+            thread_cache.move_to_end(cache_key)
+            # 后续 utterance 交给 A1 静默复检；无音频时沿用当前 thread
+            if audio_bytes is None:
+                return cached
+            async with session_factory() as session:
+                try:
+                    changed = await identity_service.recheck_session_identity(
+                        session,
+                        device_id=UUID(device_id),
+                        current_thread_id=cached.thread_id,
+                        audio_bytes=audio_bytes,
+                    )
+                except voiceprint_service.VoiceprintInvalidAudio:
+                    # 语音段过短/格式异常：不打断当前身份，继续沿用当前 thread
+                    logger.warning(
+                        "voiceprint_recheck_invalid_audio",
+                        extra={"trace_id": trace_id, "device_id": device_id},
+                    )
+                    return cached
+            if changed is None:
+                return cached
+            if changed.thread_id is None:
+                # 旧 thread 已在 A1 结束；清缓存，等 confirm/timeout 再建新 thread
+                thread_cache.pop(cache_key, None)
+            await signaling.begin_identity_recheck(device_id)
+            await _publish_identity(device_id, changed)
+            result = identity_decision_to_result(changed)
+            thread_cache[cache_key] = result
+            return result
+
+        async with session_factory() as session:
+            try:
+                decision = await identity_service.verify_session_identity(
+                    session,
+                    device_id=UUID(device_id),
+                    audio_bytes=audio_bytes,
+                )
+            except voiceprint_service.VoiceprintInvalidAudio:
+                # 声纹容器拒绝该段（过短/格式异常）时降级为无音频主动确认
+                logger.warning(
+                    "voiceprint_invalid_audio",
+                    extra={"trace_id": trace_id, "device_id": device_id},
+                )
+                decision = await identity_service.verify_session_identity(
+                    session,
+                    device_id=UUID(device_id),
+                    audio_bytes=None,
+                )
+        await _publish_identity(device_id, decision)
+        result = identity_decision_to_result(decision)
+        thread_cache[cache_key] = result
+        while len(thread_cache) > thread_cache_max:
+            thread_cache.popitem(last=False)
+        return result
+
+    async def _on_identity_confirm(device_id: str, trace_id: str, elder_id: str) -> None:
+        # signaling 已校验 elder_id == 设备绑定候选；A1 事务内开 confirm thread
+        async with session_factory() as session:
+            decision = await identity_service.open_thread_from_confirm(
+                session,
+                device_id=UUID(device_id),
+                confirmed_elder_id=UUID(elder_id),
+                candidate_elder_id=UUID(elder_id),
+            )
+        result = identity_decision_to_result(decision)
+        thread_cache[(device_id, trace_id)] = result
+        while len(thread_cache) > thread_cache_max:
+            thread_cache.popitem(last=False)
+
+    async def _on_identity_timeout(device_id: str, trace_id: str) -> None:
+        # 30s 超时：A1 开 generic thread；signaling 随后下发 identity_result(generic)
+        async with session_factory() as session:
+            decision = await identity_service.open_thread_as_generic_on_timeout(
+                session,
+                device_id=UUID(device_id),
+            )
+        result = identity_decision_to_result(decision)
+        thread_cache[(device_id, trace_id)] = result
+        while len(thread_cache) > thread_cache_max:
+            thread_cache.popitem(last=False)
+
+    orchestrator = DialogueOrchestrator(
+        service=dialogue_service,
+        identity_thread_resolver=_resolve_identity,
+    )
+
+    async def _on_dialogue_final(
+        device_id: str,
+        turn_id: str,
+        trace_id: str,
+        text: str,
+        audio_bytes: bytes | None,
+    ) -> None:
+        try:
+            reply = await orchestrator.handle_asr_final(
+                device_id=device_id,
+                trace_id=trace_id,
+                turn_id=turn_id,
+                text=text,
+                audio_bytes=audio_bytes,
+            )
+        except IdentityConfirmationRequired as exc:
+            # A1 reason=no_audio 等不在 C5 两值内时，线上统一按 low_confidence 询问；
+            # 原始 reason 只进服务端日志，不改变 C5 契约。
+            ask_reason: Literal["low_confidence", "vp_unavailable"] = (
+                "vp_unavailable" if exc.reason == "vp_unavailable" else "low_confidence"
+            )
+            logger.info(
+                "identity_confirmation_requested",
+                extra={
+                    "trace_id": trace_id,
+                    "device_id": device_id,
+                    "turn_id": turn_id,
+                    "reason": ask_reason,
+                    "original_reason": exc.reason,
+                },
+            )
+            await signaling.request_identity_confirmation(device_id, reason=ask_reason)
+            return
+        except Exception:
+            logger.exception(
+                "dialogue_final_failed",
+                extra={"trace_id": trace_id, "device_id": device_id, "turn_id": turn_id},
+            )
+            return
+
+        if reply is not None:
+            delivered = signaling.deliver(
+                device_id,
+                {"type": "tts_text", "text": reply.text, "degraded": reply.degraded},
+            )
+            logger.info(
+                "dialogue_reply_delivered",
+                extra={
+                    "trace_id": trace_id,
+                    "device_id": device_id,
+                    "turn_id": turn_id,
+                    "degraded": reply.degraded,
+                    "delivered": delivered,
+                    "text_len": len(reply.text),
+                },
+            )
+            if not delivered:
+                # WS 已断：正文都没送到，不再合成音频
+                logger.warning(
+                    "dialogue_text_not_delivered",
+                    extra={"trace_id": trace_id, "device_id": device_id, "turn_id": turn_id},
+                )
+                return
+
+            try:
+                pcm = await tts_provider.synthesize(reply.text)
+            except TTSUnavailable as exc:
+                # C1 降级边界：保留大字幕，不因 TTS 失败静默
+                logger.warning(
+                    "tts_unavailable",
+                    extra={
+                        "trace_id": trace_id,
+                        "device_id": device_id,
+                        "turn_id": turn_id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                return
+            except Exception as exc:
+                logger.error(
+                    "tts_failed",
+                    extra={
+                        "trace_id": trace_id,
+                        "device_id": device_id,
+                        "turn_id": turn_id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                return
+
+            audio_enqueued = await enqueue_tts_for_device(device_id, turn_id, pcm)
+            logger.info(
+                "dialogue_audio_enqueued",
+                extra={
+                    "trace_id": trace_id,
+                    "device_id": device_id,
+                    "turn_id": turn_id,
+                    "audio_enqueued": audio_enqueued,
+                    "pcm_bytes": len(pcm),
+                },
+            )
+
+    signaling.set_dialogue_final_handler(_on_dialogue_final)
+    signaling.set_identity_confirm_handler(_on_identity_confirm)
+    signaling.set_identity_timeout_handler(_on_identity_timeout)
+    app.state.redis = redis_client
+    app.state.llm_service = llm_service
+    app.state.tts_provider = tts_provider
+    app.state.dialogue_service = dialogue_service
+    app.state.dialogue_orchestrator = orchestrator
+
+    logger.info("application starting", extra={"app_env": settings.app_env})
+    try:
+        yield
+    finally:
+        signaling.set_dialogue_final_handler(None)
+        signaling.set_identity_confirm_handler(None)
+        signaling.set_identity_timeout_handler(None)
+        await llm_service.aclose()
+        # redis-py 的 asyncio 关闭方法；当前 stubs 尚未同步 aclose
+        await redis_client.aclose()  # type: ignore[attr-defined]
+        logger.info("application stopped")
 
 
 def handle_request_validation(req: Request, exc: RequestValidationError) -> JSONResponse:

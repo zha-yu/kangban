@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.models.conversation import ConversationThread
-from app.models.organization import Device
+from app.models.organization import Device, Elder
 from app.services import voiceprint_service as vs
 
 logger = logging.getLogger("identity_service")
@@ -57,6 +57,7 @@ class IdentityDecision:
     reason: ConfirmReason | None = None  # source=confirm/generic 时填；终态不填
     confidence: float | None = None  # source=voice 时 cosine 值；其他终态 None
     started_at: datetime | None = None  # thread.started_at（供下游日志/trace 用）
+    session_seq: int | None = None  # 终态时：personal 用 Elders.session_seq 新值；generic=0
 
     # 便捷属性
     @property
@@ -85,14 +86,10 @@ class IdentityDecision:
 # -----------------------------------------------------------
 
 
-async def resolve_device_elder(
-    session: AsyncSession, device_id: uuid.UUID
-) -> uuid.UUID | None:
+async def resolve_device_elder(session: AsyncSession, device_id: uuid.UUID) -> uuid.UUID | None:
     """候选集获取：设备 → 绑定长者（1v1，裁决 v2.3）。None 表示未绑定。"""
     row = (
-        await session.execute(
-            select(Device.elder_id).where(Device.device_id == device_id)
-        )
+        await session.execute(select(Device.elder_id).where(Device.device_id == device_id))
     ).scalar_one_or_none()
     if row is None:
         # row 可能是 None（elder_id 为 NULL）或 Device 行不存在
@@ -108,8 +105,16 @@ async def resolve_device_elder(
 # -----------------------------------------------------------
 
 
-def _new_thread_id() -> str:
-    """服务端生成 thread_id（32 字符 hex，可追踪，前端不可伪造）。"""
+@dataclass(frozen=True, slots=True)
+class _OpenedThread:
+    """一次 INSERT 的结果：thread 行 + 本次会话序号（generic 为 0）。"""
+
+    row: ConversationThread
+    session_seq: int
+
+
+def _new_generic_thread_id() -> str:
+    """generic 无 elder，无法用 (elder_id, session_seq) 拼；用服务端 UUID hex 保唯一。"""
     return uuid.uuid4().hex
 
 
@@ -120,17 +125,32 @@ async def _open_thread(
     elder_id: uuid.UUID | None,
     identity_source: IdentitySource,
     confidence: float | None,
-) -> ConversationThread:
-    """事务内 INSERT conversation_threads（闸门①唯一落点）。"""
-    thread_id = _new_thread_id()
+) -> _OpenedThread:
+    """事务内 INSERT conversation_threads（闸门①唯一落点）。
+
+    personal thread：同一事务内 `Elders.session_seq + 1` 并 `RETURNING`，thread_id 用
+    `(elder_id, session_seq)` 生成；generic 无 elder，session_seq=0、thread_id 用 UUID hex。
+    序号增量与 INSERT 在同一个 commit 里完成，避免并发下两个 thread 拿到同一 seq。
+    """
+    if elder_id is not None:
+        result = await session.execute(
+            update(Elder)
+            .where(Elder.elder_id == elder_id)
+            .values(session_seq=Elder.session_seq + 1)
+            .returning(Elder.session_seq)
+        )
+        session_seq = int(result.scalar_one())
+        thread_id = f"{elder_id}:{session_seq}"
+    else:
+        session_seq = 0
+        thread_id = _new_generic_thread_id()
+
     row = ConversationThread(
         thread_id=thread_id,
         elder_id=elder_id,
         device_id=device_id,
         identity_source=identity_source,
-        identity_confidence=(
-            Decimal(str(confidence)) if confidence is not None else None
-        ),
+        identity_confidence=(Decimal(str(confidence)) if confidence is not None else None),
     )
     session.add(row)
     await session.commit()
@@ -142,14 +162,13 @@ async def _open_thread(
             "elder_id": str(elder_id) if elder_id else None,
             "source": identity_source,
             "confidence": confidence,
+            "session_seq": session_seq,
         },
     )
-    return row
+    return _OpenedThread(row=row, session_seq=session_seq)
 
 
-async def _close_active_thread(
-    session: AsyncSession, *, device_id: uuid.UUID
-) -> None:
+async def _close_active_thread(session: AsyncSession, *, device_id: uuid.UUID) -> None:
     """同一设备当前未结束 thread 回填 ended_at（换人/退出发起新 thread 前调）。"""
 
     await session.execute(
@@ -188,9 +207,13 @@ async def verify_session_identity(
     # 1. 候选集：恒 1 位（裁决 v2.3）
     elder_id = await resolve_device_elder(session, device_id)
 
+    # 新会话首轮：先结束该设备所有未结束 thread，避免重连/重开后同设备出现多个
+    # 同时 active 的 conversation_threads（换人/退房同理，由 recheck 处理）。
+    await _close_active_thread(session, device_id=device_id)
+
     if elder_id is None:
         # 设备未绑长者 → generic（不挑时间点，直接降级）
-        row = await _open_thread(
+        opened = await _open_thread(
             session,
             device_id=device_id,
             elder_id=None,
@@ -200,17 +223,16 @@ async def verify_session_identity(
         return IdentityDecision(
             source="generic",
             elder_id=None,
-            thread_id=row.thread_id,
+            thread_id=opened.row.thread_id,
             reason="elder_unbound",
-            started_at=row.started_at,
+            started_at=opened.row.started_at,
+            session_seq=opened.session_seq,
         )
 
     # 2. 有音频 → 走声纹比对
     if audio_bytes is not None and len(audio_bytes) > 0:
         try:
-            match = await vs.cosine_compare_against_elder(
-                session, elder_id, audio_bytes
-            )
+            match = await vs.cosine_compare_against_elder(session, elder_id, audio_bytes)
         except vs.VoiceprintExtractUnavailable:
             # 推理容器不可用 → 主动确认（C5 reason=vp_unavailable）
             logger.warning("vp 容器不可用，降级主动确认（device=%s）", device_id)
@@ -223,7 +245,7 @@ async def verify_session_identity(
 
         if match.matched:
             # 命中 → 终态 voice
-            row = await _open_thread(
+            opened = await _open_thread(
                 session,
                 device_id=device_id,
                 elder_id=elder_id,
@@ -233,15 +255,18 @@ async def verify_session_identity(
             return IdentityDecision(
                 source="voice",
                 elder_id=elder_id,
-                thread_id=row.thread_id,
+                thread_id=opened.row.thread_id,
                 confidence=match.score,
-                started_at=row.started_at,
+                started_at=opened.row.started_at,
+                session_seq=opened.session_seq,
             )
         else:
             # 低置信 → 主动确认（C5 reason=low_confidence）
             logger.info(
                 "vp 低置信，请求确认（score=%.4f < %.2f, elder=%s）",
-                match.score, get_settings().voiceprint_similarity_threshold, elder_id,
+                match.score,
+                get_settings().voiceprint_similarity_threshold,
+                elder_id,
             )
             return IdentityDecision(
                 source="confirm",
@@ -280,9 +305,11 @@ async def open_thread_from_confirm(
     if str(confirmed_elder_id) != str(candidate_elder_id):
         logger.warning(
             "identity_confirm elder_id 不匹配候选集，降级 generic（confirm=%s, expected=%s）",
-            confirmed_elder_id, candidate_elder_id,
+            confirmed_elder_id,
+            candidate_elder_id,
         )
-        row = await _open_thread(
+        await _close_active_thread(session, device_id=device_id)
+        opened = await _open_thread(
             session,
             device_id=device_id,
             elder_id=None,
@@ -292,12 +319,14 @@ async def open_thread_from_confirm(
         return IdentityDecision(
             source="generic",
             elder_id=None,
-            thread_id=row.thread_id,
+            thread_id=opened.row.thread_id,
             reason="elder_unbound",
-            started_at=row.started_at,
+            started_at=opened.row.started_at,
+            session_seq=opened.session_seq,
         )
 
-    row = await _open_thread(
+    await _close_active_thread(session, device_id=device_id)
+    opened = await _open_thread(
         session,
         device_id=device_id,
         elder_id=confirmed_elder_id,
@@ -307,8 +336,9 @@ async def open_thread_from_confirm(
     return IdentityDecision(
         source="confirm",
         elder_id=confirmed_elder_id,
-        thread_id=row.thread_id,
-        started_at=row.started_at,
+        thread_id=opened.row.thread_id,
+        started_at=opened.row.started_at,
+        session_seq=opened.session_seq,
     )
 
 
@@ -316,7 +346,8 @@ async def open_thread_as_generic_on_timeout(
     session: AsyncSession, *, device_id: uuid.UUID
 ) -> IdentityDecision:
     """主动确认 30s 超时 → generic（C5 开放点裁决 2）。"""
-    row = await _open_thread(
+    await _close_active_thread(session, device_id=device_id)
+    opened = await _open_thread(
         session,
         device_id=device_id,
         elder_id=None,
@@ -326,9 +357,10 @@ async def open_thread_as_generic_on_timeout(
     return IdentityDecision(
         source="generic",
         elder_id=None,
-        thread_id=row.thread_id,
+        thread_id=opened.row.thread_id,
         reason="elder_unbound",
-        started_at=row.started_at,
+        started_at=opened.row.started_at,
+        session_seq=opened.session_seq,
     )
 
 
@@ -346,65 +378,89 @@ async def recheck_session_identity(
 ) -> IdentityDecision | None:
     """每 utterance 后复检一次（裁决 v2.3 静默复检）。
 
-    **只在身份变化时干预**：命中的 elder_id 与当前 thread.elder_id 不一致 → 结束旧 thread
-    + 重走首轮校验开新 thread。命中同一人 / 低于阈值 / 容器不可用 → 返回 None（不打断对话）。
-
-    返回 None 表示「身份没变，继续对话」；返回新 IdentityDecision 表示「需要切 thread」。
+    1v1 候选集下「换人」只有两种可判定结果：
+      - generic 会话命中绑定长者 → 升级 voice，结束旧 generic thread、开新 thread；
+      - 已识别会话低于阈值 → 无法确认是绑定长者，结束旧 thread 并返回
+        `confirm/low_confidence`，由 A2 发 identity_ask（FR-VPR-02/03）。
+    命中同一人 / generic 未命中 / vp 容器不可用 → 返回 None，不打断对话。
     """
     # 1. 找到当前 thread
     current_thread = (
-        (await session.execute(
+        await session.execute(
             select(ConversationThread).where(
                 ConversationThread.thread_id == current_thread_id,
                 ConversationThread.device_id == device_id,
                 ConversationThread.ended_at.is_(None),
             )
-        )).scalar_one_or_none()
-    )
+        )
+    ).scalar_one_or_none()
     if current_thread is None:
         logger.warning(
             "recheck：当前 thread %s 不存在或已结束（device=%s）",
-            current_thread_id, device_id,
+            current_thread_id,
+            device_id,
         )
         return None
 
     # 2. 比对新音频
     elder_id = await resolve_device_elder(session, device_id)
-    if elder_id is None or current_thread.elder_id is None:
-        return None  # generic / 未绑定：不复检
+    if elder_id is None:
+        return None  # 未绑定设备：无可比对的候选
 
     try:
         match = await vs.cosine_compare_against_elder(session, elder_id, audio_bytes)
     except vs.VoiceprintExtractUnavailable:
+        # 容器不可用不改变当前 thread；保留现有身份继续对话
         logger.warning("recheck：vp 容器不可用，跳过静默复检")
         return None
 
-    if not match.matched:
-        return None  # 换人但低置信，不主动干预（留到下一轮首轮）
+    if match.matched:
+        # 命中同一人 → 不打断
+        if current_thread.elder_id is not None and str(match.elder_id) == str(
+            current_thread.elder_id
+        ):
+            return None
 
-    # 3. 命中同一人 → 不打断
-    if str(match.elder_id) == str(current_thread.elder_id):
+        # generic → voice（或当前 thread 与候选不一致）：开新 voice thread
+        await _close_active_thread(session, device_id=device_id)
+        logger.info(
+            "recheck：命中绑定长者，切 voice thread（old_elder=%s → new_elder=%s）",
+            current_thread.elder_id,
+            match.elder_id,
+        )
+        new_opened = await _open_thread(
+            session,
+            device_id=device_id,
+            elder_id=match.elder_id,
+            identity_source="voice",
+            confidence=match.score,
+        )
+        return IdentityDecision(
+            source="voice",
+            elder_id=match.elder_id,
+            thread_id=new_opened.row.thread_id,
+            confidence=match.score,
+            started_at=new_opened.row.started_at,
+            session_seq=new_opened.session_seq,
+        )
+
+    # 未命中且当前是 generic：继续通用模式，不主动打断
+    if current_thread.elder_id is None:
         return None
 
-    # 4. 换人 → 结束旧 thread + 开新 thread（voice）
+    # 已识别长者说话人低于阈值：结束旧 thread，转主动确认（不再静默继续个人上下文）
     await _close_active_thread(session, device_id=device_id)
     logger.info(
-        "recheck：身份变化，切 thread（old_elder=%s → new_elder=%s）",
-        current_thread.elder_id, match.elder_id,
-    )
-    new_row = await _open_thread(
-        session,
-        device_id=device_id,
-        elder_id=match.elder_id,
-        identity_source="voice",
-        confidence=match.score,
+        "recheck：低置信，结束旧 thread 并转主动确认（score=%.4f < %.2f, elder=%s）",
+        match.score,
+        get_settings().voiceprint_similarity_threshold,
+        elder_id,
     )
     return IdentityDecision(
-        source="voice",
-        elder_id=match.elder_id,
-        thread_id=new_row.thread_id,
-        confidence=match.score,
-        started_at=new_row.started_at,
+        source="confirm",
+        elder_id=elder_id,
+        thread_id=None,
+        reason="low_confidence",
     )
 
 
@@ -425,11 +481,11 @@ async def validate_thread_belongs_to_device(
     403，因为它不是 HTTP 层——REST 层统一处理（task-01 T8-6 验收矩阵）。
     """
     row = (
-        (await session.execute(
+        await session.execute(
             select(ConversationThread).where(
                 ConversationThread.thread_id == thread_id,
                 ConversationThread.device_id == device_id,
             )
-        )).scalar_one_or_none()
-    )
+        )
+    ).scalar_one_or_none()
     return row is not None
