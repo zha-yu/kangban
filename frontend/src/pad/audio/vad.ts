@@ -32,8 +32,8 @@ declare global {
 
 const VAD_ASSETS = "/vad-assets";
 const WINDOW_SIZE = 256;
-/** WASM 加载超时（12MB wasm 本地加载，超时即回落服务端 VAD） */
-const LOAD_TIMEOUT_MS = 20_000;
+/** WASM 加载超时（12MB wasm，vite dev 无 gzip 首次拉取 >20s，与 kws-detector 对齐 30s；超时即回落服务端 VAD） */
+const LOAD_TIMEOUT_MS = 30_000;
 
 export class VadUnavailableError extends Error {
   constructor(message: string) {
