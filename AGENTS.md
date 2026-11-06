@@ -290,6 +290,7 @@ docker exec silvermate-app-verify python -c "import urllib.request as u; r=u.url
 - 主题 ≤ 12 字，与对应 task 卡的标题保持一致。
 - **日期不进文件名**（`adhoc` 除外）：计划会跨天修订，日期前缀会逼你改文件名或复制出第二份；时间信息交给 git。
 - 编号补零到两位，保证 `day-02` < `day-10` 字典序正确。
+- **按天协作时，个人实施计划放 `docs/plans/day<NN>/` 子目录**（如 `docs/plans/day04/a1-声纹身份.md`），小写 ASCII 代号 + 中文主题；全量方案仍用平铺的 `day-NN-主题.md`，两类都须同一次提交登记进 `docs/plans/README.md`。
 - 废弃的计划把文件头改成 `状态：已废弃`，**不删**（复盘要看）。
 
 ### 10.2 文件头必填四行
