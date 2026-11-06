@@ -7,11 +7,11 @@
 
 | # | 任务卡 | 状态 | 文件 |
 | --- | --- | --- | --- |
-| 1 | Day 4 · a0 联调遗留问题修复 | ⬜ 未开始 | `docs/team_tasks/day04/a0-联调遗留问题修复.md` |
+| 1 | Day 4 · a0 联调遗留问题修复 | 🚧 进行中 | `docs/team_tasks/day04/a0-联调遗留问题修复.md` |
 | 2 | Task 01 · 声纹身份闭环（A1，W2） | ⬜ 未开始 | `docs/team_tasks/day04/task-01-声纹身份闭环.md` |
 | 3 | Task 02 · 信令追加与对话闭环（A2，W3） | ⬜ 未开始 | `docs/team_tasks/day04/task-02-信令与对话闭环.md` |
 | 4 | Task 03 · 3D 展示后端（A3，W1） | ✅ 已完成 | `docs/team_tasks/day04/task-03-3D展示后端.md` |
-| 5 | Task 04 · VAD 主链接入与遗留修复（A4，W4/W5 + a0） | ⬜ 未开始 | `docs/team_tasks/day04/task-04-VAD主链与遗留修复.md` |
+| 5 | Task 04 · VAD 主链接入与遗留修复（A4，W4/W5 + a0） | 🚧 进行中 | `docs/team_tasks/day04/task-04-VAD主链与遗留修复.md` |
 | 6 | Task 05 · Day 4 前端全量（pad 联调主线 + 双端登录） | ⬜ 未开始 | `docs/team_tasks/day04/task-05-Day4前端联调.md` |
 
 ## 计划件状态
@@ -21,6 +21,7 @@
 | `docs/plans/day-04-3D与身份闭环.md` | ❔ 草稿 |
 | `docs/plans/day04/a3-3D展示后端.md` | ✅ 已完成 |
 | `docs/plans/day04/a3-DAG.md` | ✅ 已完成 |
+| `docs/plans/day04/a4-VAD主链与遗留修复.md` | ❔ 已冻结 |
 | `docs/plans/day04/f1-Day4前端联调.md` | 🚧 进行中 |
 | `docs/plans/day04/f1-双端登录页.md` | ✅ 已完成 |
 | `docs/plans/day04/task-01-声纹身份.md` | ❔ 草稿 |

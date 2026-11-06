@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api import audio, auth, devices, elders, guardians, health, pad, staff
+from app.api import audio, auth, devices, elders, guardians, health, pad, staff, voiceprints
 
 #: (路由器, 挂载前缀) —— 顺序与 `main.py` 原先手写的 6 条保持一致
 ROUTERS: tuple[tuple[APIRouter, str], ...] = (
@@ -30,6 +30,7 @@ ROUTERS: tuple[tuple[APIRouter, str], ...] = (
     # ↓ 2026-11-06 建号接口：以下只增不改，追加新行即可
     (staff.router, ""),  # 自带 /api/staff 前缀（E12）
     (guardians.router, ""),  # 自带 /api/guardians 与 /api/elders/{id}/guardians（G1/E13）
+    (voiceprints.router, "/api"),  # 路由内只写 /voiceprints/*，需补 /api（C4）
 )
 
 __all__ = ["ROUTERS"]
