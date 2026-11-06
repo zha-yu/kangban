@@ -185,7 +185,9 @@ def build(day_dir: Path, day: int) -> str:
 
     contract = collect_contract(day_dir)
     lines.append("")
-    lines.append(f"## 契约冻结：**{contract}**" if contract else "## 契约冻结：（本日无 contracts.md）")
+    lines.append(
+        f"## 契约冻结：**{contract}**" if contract else "## 契约冻结：（本日无 contracts.md）"
+    )
 
     lines += [
         "",
@@ -235,7 +237,9 @@ def main(argv: list[str] | None = None) -> int:
         if stale:
             if not args.quiet:
                 for path in stale:
-                    print(f"[stale] {path.relative_to(ROOT)} 已过期，请跑一次 scripts/update_progress.py")
+                    print(
+                        f"[stale] {path.relative_to(ROOT)} 已过期，请跑一次 scripts/update_progress.py"
+                    )
             return 1
         if not args.quiet:
             print("[ok] 全部日看板都是最新的")

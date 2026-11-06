@@ -274,6 +274,28 @@ wsl -e sh -lc "docker run --rm -v /mnt/e/project_month/silvermate/deploy/nginx.c
 | coturn | 3478 / 5349 | TURN/STUN，跨网段才需要 |
 | vite dev server | 5173 | 仅本地开发 |
 
+### 6.3 账号维护（管理员专属，2026-11-06）
+
+账号不由使用者自助注册：员工与家属账号一律由 `admin` 创建，家属建号后还要再绑定到长者（两步）。
+
+| 能力 | 端点 | 说明 |
+| --- | --- | --- |
+| 建员工 | `POST /api/staff` | `{name, role, phone, password, elder_ids?}`；`role ∈ admin / care_worker / doctor`；`elder_ids` 同时写负责范围（doctor→`doctor`、care_worker→`primary_care`，给 admin 分配一律 403） |
+| 改员工 | `PATCH /api/staff/{staff_id}` | `{role?, status?}`，任一变更 `token_version+1`，旧 Token 立即失效（AC-24） |
+| 建家属 | `POST /api/guardians` | `{name, phone, password}` → 返回 `guardian_id` |
+| 绑家属 | `POST /api/elders/{elder_id}/guardians` | `{guardian_id, relation}`；重复绑定 409；同一长者最多 2 位在册监护人（服务层校验） |
+
+错误码：`401 TOKEN_INVALID` / `403 ROLE_FORBIDDEN` / `404` / `409 CONFLICT`（手机号跨员工与家属两表查重）/ `422`。响应只回 `phone_masked`，不回传完整手机号与口令哈希。
+
+**空库先建第一个 admin**——没有任何 admin 时上面四个接口都进不去，用 CLI 引导：
+
+```bash
+uv run python scripts/create_account.py --role admin --name 王管理 \
+  --phone 13700000000 --password 'Admin@2026'
+```
+
+CLI 幂等（手机号已存在则 `kept`）、只存 bcrypt 哈希、支持 `--dry-run` 与 `--status`。契约见 `docs/接口契约_身份与权限.md` E12/E13/E15。
+
 ---
 
 ## 7. 质量门与验收
