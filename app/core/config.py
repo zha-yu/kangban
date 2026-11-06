@@ -162,6 +162,17 @@ class Settings(BaseSettings):
     medication_attempt_wait_seconds: int = 60
     voiceprint_similarity_threshold: float = 0.85
 
+    # ---- 声纹推理容器（Day 4 · A1） ----
+    # voiceprint_service 调这个容器的 POST /extract 端点，主服务不装 torch（容器隔离重依赖）
+    voiceprint_base_url: str = "http://localhost:7003"
+    voiceprint_extract_timeout_seconds: float = 5.0
+    voiceprint_embedding_dimension: int = 192  # CAM++ 固定 192 维（spikes/voiceprint/ 验证）
+    # Fernet 密钥：embedding 加密落库用。必须 32 字节 base64 编码；生产经 .env 注入，
+    # .env.example 只放占位符（AGENTS §4.2 红线）。本地开发可临时用下方默认值。
+    voiceprint_fernet_key: str = (
+        "ZGV2LXRlbXAgZmVybmV0IGtleSBmb3IgcGxheWdyb3VuZCBvbmx5"
+    )
+
     @property
     def cors_origins(self) -> list[str]:
         """`FRONTEND_ORIGIN` 支持逗号分隔多来源；空则不开 CORS 通配。"""
