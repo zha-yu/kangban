@@ -89,10 +89,10 @@ export function EldersPage() {
   const [page, setPage] = useState(1);
   const [statusFilter, setStatusFilter] = useState<ElderStatus | "all">("all");
   const [error, setError] = useState<string | null>(null);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<ElderDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [detailError, setDetailError] = useState<string | null>(null);
+  const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(new Set());
+  const [details, setDetails] = useState<Record<string, ElderDetail | undefined>>({});
+  const [loadingIds, setLoadingIds] = useState<ReadonlySet<string>>(new Set());
+  const [detailErrors, setDetailErrors] = useState<Record<string, string | undefined>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -121,22 +121,33 @@ export function EldersPage() {
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   async function toggleDetail(elderId: string) {
-    if (expandedId === elderId) {
-      setExpandedId(null);
-      setDetail(null);
-      setDetailError(null);
+    // 已展开 → 收起（其他详情保持不动，支持多条同时展开）
+    if (expandedIds.has(elderId)) {
+      setExpandedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(elderId);
+        return next;
+      });
       return;
     }
-    setExpandedId(elderId);
-    setDetail(null);
-    setDetailError(null);
-    setDetailLoading(true);
+    setExpandedIds((prev) => new Set(prev).add(elderId));
+    setDetailErrors((prev) => ({ ...prev, [elderId]: undefined }));
+    if (details[elderId]) return; // 已缓存，不重复请求
+    setLoadingIds((prev) => new Set(prev).add(elderId));
     try {
-      setDetail(await getElder(elderId));
+      const detail = await getElder(elderId);
+      setDetails((prev) => ({ ...prev, [elderId]: detail }));
     } catch (err) {
-      setDetailError(err instanceof ApiError ? err.message : "详情加载失败，请稍后重试");
+      setDetailErrors((prev) => ({
+        ...prev,
+        [elderId]: err instanceof ApiError ? err.message : "详情加载失败，请稍后重试",
+      }));
     } finally {
-      setDetailLoading(false);
+      setLoadingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(elderId);
+        return next;
+      });
     }
   }
 
@@ -168,7 +179,7 @@ export function EldersPage() {
       {items && (
         <ul className="wo-list">
           {items.map((e) => {
-            const expanded = expandedId === e.elder_id;
+            const expanded = expandedIds.has(e.elder_id);
             return (
               <li key={e.elder_id} className="wo-item">
                 <div className="wo-row">
@@ -194,9 +205,9 @@ export function EldersPage() {
                 </div>
                 {expanded && (
                   <div className="wo-detail">
-                    {detailLoading && <p className="wo-load-hint">正在加载详情…</p>}
-                    {detailError && <p className="wo-load-error">{detailError}</p>}
-                    {detail && <DetailCard detail={detail} />}
+                    {loadingIds.has(e.elder_id) && <p className="wo-load-hint">正在加载详情…</p>}
+                    {detailErrors[e.elder_id] && <p className="wo-load-error">{detailErrors[e.elder_id]}</p>}
+                    {details[e.elder_id] && <DetailCard detail={details[e.elder_id]!} />}
                   </div>
                 )}
               </li>

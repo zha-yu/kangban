@@ -181,7 +181,7 @@ export function WorkOrdersPage({ principal }: WorkOrdersPageProps) {
   const [filterStatus, setFilterStatus] = useState<WorkOrderStatus | "all" | "open">("all");
   const [filterType, setFilterType] = useState<WorkOrderType | "all">("all");
   const [filterSeverity, setFilterSeverity] = useState<Severity | "all">("all");
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(new Set());
   const [dialog, setDialog] = useState<ActionDialogState | null>(null);
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -371,7 +371,7 @@ export function WorkOrdersPage({ principal }: WorkOrdersPageProps) {
         {filtered.map((o) => {
           const countdown = escalationCountdown(o, nowMs);
           const isEscalated = countdown === null && o.severity === "red" && o.status === "new";
-          const expanded = expandedId === o.order_id;
+          const expanded = expandedIds.has(o.order_id);
           return (
             <li key={o.order_id} className={`wo-item${o.severity === "red" ? " is-red" : ""}`}>
               <div className="wo-row">
@@ -398,7 +398,14 @@ export function WorkOrdersPage({ principal }: WorkOrdersPageProps) {
                     type="button"
                     className="btn-secondary btn-sm"
                     aria-expanded={expanded}
-                    onClick={() => setExpandedId(expanded ? null : o.order_id)}
+                    onClick={() =>
+                      setExpandedIds((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(o.order_id)) next.delete(o.order_id);
+                        else next.add(o.order_id);
+                        return next;
+                      })
+                    }
                   >
                     {expanded ? "收起详情" : "详情"}
                   </button>
