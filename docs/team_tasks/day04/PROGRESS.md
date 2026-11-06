@@ -3,7 +3,7 @@
 > ⚠️ **本文件由 `scripts/update_progress.py` 自动生成，不要手改**——改任务卡首部的 `> 状态：` 行，再跑一次脚本（或直接提交，pre-commit 钩子会自动刷新）。
 > 刻意不写生成时间与提交哈希：那两样每次提交都会变，会让看板变成噪音。提交历史看 `git log`。
 
-## 总览：**1 / 5** 张任务卡已收口
+## 总览：**2 / 7** 张任务卡已收口
 
 | # | 任务卡 | 状态 | 文件 |
 | --- | --- | --- | --- |
@@ -12,14 +12,20 @@
 | 3 | Task 02 · 信令追加与对话闭环（A2，W3） | ⬜ 未开始 | `docs/team_tasks/day04/task-02-信令与对话闭环.md` |
 | 4 | Task 03 · 3D 展示后端（A3，W1） | ✅ 已完成 | `docs/team_tasks/day04/task-03-3D展示后端.md` |
 | 5 | Task 04 · VAD 主链接入与遗留修复（A4，W4/W5 + a0） | ⬜ 未开始 | `docs/team_tasks/day04/task-04-VAD主链与遗留修复.md` |
+| 6 | Task 05 · Day 4 前端全量（pad 联调主线 + 双端登录） | ⬜ 未开始 | `docs/team_tasks/day04/task-05-Day4前端联调.md` |
+| 7 | Task 06 · 护工工单看板（console 第 3 批首项，Mock 先行） | ✅ 已完成 | `docs/team_tasks/day04/task-06-护工工单看板.md` |
 
 ## 计划件状态
 
 | 计划 | 状态 |
 | --- | --- |
-| `docs/plans/day-04-3D与身份闭环.md` | ❔ 草稿 |
 | `docs/plans/day04/a3-3D展示后端.md` | ✅ 已完成 |
 | `docs/plans/day04/a3-DAG.md` | ✅ 已完成 |
+| `docs/plans/day04/day-04-3D与身份闭环.md` | ❔ 草稿 |
+| `docs/plans/day04/f1-Day4前端联调.md` | 🚧 进行中 |
+| `docs/plans/day04/f1-双端登录页.md` | ✅ 已完成 |
+| `docs/plans/day04/f2-护工工单看板.md` | ✅ 已完成 |
+| `docs/plans/day04/task-01-声纹身份.md` | ❔ 草稿 |
 
 ## 契约冻结：**C4 / C5 / C6 / C7 均已定稿（主理人裁决提前冻结，晨会签字确认）**
 
