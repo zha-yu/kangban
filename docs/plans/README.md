@@ -31,6 +31,7 @@
 | [task-a1-ASR与TTS适配层.md](./task-a1-ASR与TTS适配层.md) | Day 3 任务卡 a1 执行计划：7 条 PRD 验收口径 + TD 5 条实现基准 + 五方功能边界（含禁触清单）+ T1.0–T1.8 八步判据 + 3 项自裁（funasr 端口 7002 / 日志承载埋点 / ffmpeg 替代 pydub） | 进行中 | 2026-11-05 |
 | [task-a1-DAG.md](./task-a1-DAG.md) | a1 的独立 DAG 执行路径件（唯一事实源）：10 节点 13 边依赖图（mermaid + ASCII）、节点规格与判据、拓扑执行顺序、关键路径 360 min 与浮动时间、G1–G3 三道闸门、5 条失败回退、机器可读 JSON | 进行中 | 2026-11-05 |
 | [adhoc-20261106-数字人接入方案对比.md](./adhoc-20261106-数字人接入方案对比.md) | 「当前技术方案（day-04 v2.3，后端）」vs「康伴-数字人模块接入方案（vrm-playground 前端抽库）」八维度结构化对比：4 处本质性差异（VRM 资源归属 deploy+nginx vs frontend/public、avatar_url 接口下发 vs 本地、client_diag 上报、P2 范围越界）+ 8 项细节差异 + B 拍板项对照 + 合并动作清单 | 已冻结 | 2026-11-06 |
+| [day04/a4-VAD主链与遗留修复.md](./day04/a4-VAD主链与遗留修复.md) | task-04（A4 单元）推进计划：a0 三问题现状基线（P1-2 已修于 ab15551，F-01/F-02 未修）+ S0–S6 七步拆解（F-01 统一 422 / F-02 垃圾字节 422 / P1-2 验证补测 / W4 webrtcvad 兜底接 utterance 主链 / metrics 打点位 AC-42 / task-a2 契约变更记录 / 门禁收口），含交付物总表、验收对照、R1–R6 风险（webrtc.py 跨界协调、兜底激活语义自裁） | 草稿 | 2026-11-06 |
 | [day-04-3D与身份闭环.md](./day-04-3D与身份闭环.md) | Day 4 全量后端方案 v2.3：W1 3D 展示（avatar-config 三层降级、nginx 托管 VRM·两步走）、W2 声纹身份闭环（注册三接口、identity_ask/confirm、迁移 0004/0005·CAM++ 192 维、**设备绑定 1v1 候选集**、每会话首轮校验）、W3 上下文与 LLM 对话闭环（FR-DLG-05）、W4 VAD 正式切段、W5 唤醒词端侧 KWS P0（FR-UI-11/AC-42）；M1–M17 改造点、T1–T10 排期、R1–R13 风险、4 项自裁；显式排除 FR-3D-03/viseme/diarization；基线已同步修订（PRD v2.6、技术文档 v1.5） | 草稿 | 2026-11-06 |
 
 
