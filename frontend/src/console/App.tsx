@@ -5,17 +5,33 @@ import {
   fetchCurrent,
   hasSession,
   NETWORK_ERROR_TEXT,
+  roleLabel,
   type Principal,
 } from "./api";
 import { LoginPage } from "./pages/LoginPage";
-import { HomePage } from "./pages/HomePage";
+import { AppLayout } from "./layout/AppLayout";
+import { WorkOrdersPage } from "./pages/WorkOrdersPage";
 
 /**
- * 照护台入口（task-05 F1）：登录态路由。
+ * 照护台入口：登录态路由 + 角色分流（task-06 F2）。
  * 无本地登录态 → 登录页；有 → fetchCurrent 恢复身份（过期自动 refresh），
  * 恢复失败（refresh 也失效 / 网络错）→ 回登录页。
+ *
+ * 分流口径（前端页面方案 §3.2，业务页按批次交付）：
+ * - care_worker → 侧栏骨架 + 工单看板（本卡交付，Mock 数据）；
+ * - doctor / admin → 侧栏骨架（全置灰）+ 占位主区，业务页属第 3 批后续项；
+ * - guardian → 家属应走 family 入口，此处仅占位提示。
  */
 type View = "loading" | "login" | "home";
+
+function PlaceholderHome({ principal }: { principal: Principal }) {
+  return (
+    <div className="app-placeholder">
+      <h1>欢迎您，{principal.name}（{roleLabel(principal)}）</h1>
+      <p>该角色的业务页面属前端页面方案第 3/4 批，尚未开工；当前为登录链路占位提示。</p>
+    </div>
+  );
+}
 
 export default function App() {
   const [view, setView] = useState<View>("loading");
@@ -50,7 +66,19 @@ export default function App() {
   }
 
   if (view === "home" && principal) {
-    return <HomePage principal={principal} onLogout={() => setView("login")} />;
+    const handleLogout = () => setView("login");
+    if (principal.kind === "staff" && principal.role === "care_worker") {
+      return (
+        <AppLayout principal={principal} activeKey="workorders" onLogout={handleLogout}>
+          <WorkOrdersPage principal={principal} />
+        </AppLayout>
+      );
+    }
+    return (
+      <AppLayout principal={principal} activeKey="" onLogout={handleLogout}>
+        <PlaceholderHome principal={principal} />
+      </AppLayout>
+    );
   }
 
   return (
