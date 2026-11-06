@@ -111,6 +111,7 @@ flowchart TD
 | [task-09-健康代填.md](task-09-健康代填.md) | F5（前端） | console 第 3 批次项 | 健康采集代填表，提交 Mock（health_records Day 8 未交付）+ 负责长者下拉真实 E7；阈值常量按 PRD §4.6 |
 | [task-10-药单只读.md](task-10-药单只读.md) | F6（前端） | console 第 3 批收尾项 | 护工药单只读列表，Mock 先行（medication_plans Day 7 未交付）+ 长者下拉真实 E7；零写操作（§4.5 权限） |
 | [task-11-复核队列.md](task-11-复核队列.md) | F7（前端） | console 医生批次首项 | 健康记录复核队列，Mock 先行（health_records Day 8 未交付）；确认/纠错新版本 + 版本链（AC-22） |
+| [task-12-药单维护.md](task-12-药单维护.md) | F8（前端） | console 医生批次次项 | 医生药单增改停查，Mock 先行与护工只读页共享 store；AC-27 version+1 快照语义 |
 
 各卡自验准入后进联调窗口；执行期以各卡 `> 状态：` 行为准（PROGRESS 看板自动汇总）。
 
@@ -149,3 +150,4 @@ flowchart TD
 | v2.1 | 2026-11-06 | 新增 task-09 健康采集代填表（F5，console 第 3 批次项）：提交 Mock（health_records Day 8 未交付）+ 负责长者下拉真实 E7；source 按 §3.4 枚举（AC-32 行文 staff_report 冲突不采用，f5 D2 留痕） |
 | v2.2 | 2026-11-06 | 新增 task-10 药单只读（F6，console 第 3 批收尾项）：Mock 先行（medication_plans Day 7 未交付）+ 长者下拉真实 E7；零写操作按 §4.5 权限有意决策（护工只读） |
 | v2.3 | 2026-11-06 | 新增 task-11 健康记录复核队列（F7，console 医生批次首项）：Mock 先行（health_records Day 8 未交付）；确认/纠错新版本 + 版本链（AC-22/FR-HLT-04）；review_note 为 Mock 自裁字段（表无此列，f7 D4 留痕） |
+| v2.4 | 2026-11-06 | 新增 task-12 药单维护（F8，console 医生批次次项）：医生增改停查（§4.5），与护工只读页共享 Mock store；修改 = version+1（AC-27），停用二次确认无删除语义 |

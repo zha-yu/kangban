@@ -166,3 +166,74 @@ export async function listResponsibleElders(): Promise<ElderListItem[]> {
   const res = await listElders({ page: 1, pageSize: 100 });
   return res.items;
 }
+
+// ---------------------------------------------------------------------------
+// 医生写操作（task-12 F8，§4.5：医生增改停查；与护工只读页共享同一 store，
+// 护工页天然可见医生改动。真实接口交付后仅替换本节实现）
+// ---------------------------------------------------------------------------
+
+export interface PlanWriteInput {
+  elder_id: string;
+  drug_name: string;
+  dose: string;
+  schedule_cron: string;
+  start_date: string;
+  end_date: string | null;
+}
+
+let planSeq = store.length + 1;
+
+function assertFields(input: PlanWriteInput): void {
+  if (!input.elder_id) throw new Error("请选择长者");
+  if (!input.drug_name.trim()) throw new Error("药品名称必填");
+  if (!input.dose.trim()) throw new Error("剂量必填");
+  if (!input.schedule_cron.trim()) throw new Error("服药时间（cron）必填");
+  if (!input.start_date) throw new Error("开始日期必填");
+}
+
+/** 新增药单：version=1、active、created_by=当前医生 */
+export async function createPlan(input: PlanWriteInput, doctorName: string): Promise<MedicationPlan> {
+  assertFields(input);
+  const n = planSeq++;
+  const plan: MedicationPlan = {
+    plan_id: `plan-mock-${String(n).padStart(2, "0")}`,
+    elder_id: input.elder_id,
+    drug_name: input.drug_name.trim(),
+    dose: input.dose.trim(),
+    schedule_cron: input.schedule_cron.trim(),
+    start_date: input.start_date,
+    end_date: input.end_date,
+    version: 1,
+    created_by_name: doctorName,
+    status: "active",
+  };
+  store.push(plan);
+  return delay({ ...plan });
+}
+
+/** 修改药单：同 plan_id 原地 version+1（AC-27：历史提醒保留提交时快照，不受影响） */
+export async function updatePlan(planId: string, input: PlanWriteInput, doctorName: string): Promise<MedicationPlan> {
+  assertFields(input);
+  const target = store.find((p) => p.plan_id === planId);
+  if (!target) throw new Error("药单不存在");
+  if (target.status === "stopped") throw new Error("已停用药单不可修改，请重新新增");
+  target.drug_name = input.drug_name.trim();
+  target.dose = input.dose.trim();
+  target.schedule_cron = input.schedule_cron.trim();
+  target.start_date = input.start_date;
+  target.end_date = input.end_date;
+  target.version += 1;
+  target.created_by_name = doctorName;
+  return delay({ ...target });
+}
+
+/** 停用药单：status→stopped；无删除语义，不可恢复（教学级，f8 D4 留痕） */
+export async function stopPlan(planId: string, doctorName: string): Promise<MedicationPlan> {
+  const target = store.find((p) => p.plan_id === planId);
+  if (!target) throw new Error("药单不存在");
+  if (target.status === "stopped") throw new Error("该药单已停用");
+  target.status = "stopped";
+  target.version += 1;
+  target.created_by_name = doctorName;
+  return delay({ ...target });
+}

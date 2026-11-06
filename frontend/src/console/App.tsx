@@ -15,6 +15,7 @@ import { EldersPage } from "./pages/EldersPage";
 import { AlertsPage } from "./pages/AlertsPage";
 import { HealthFormPage } from "./pages/HealthFormPage";
 import { MedicationPage } from "./pages/MedicationPage";
+import { MedicationEditPage } from "./pages/MedicationEditPage";
 import { ReviewQueuePage } from "./pages/ReviewQueuePage";
 
 /**
@@ -25,13 +26,13 @@ import { ReviewQueuePage } from "./pages/ReviewQueuePage";
  * 分流口径（前端页面方案 §3.2，业务页按批次交付）：
  * - care_worker → 侧栏骨架 + 工单看板（Mock）/ 负责长者（真实对接 E7/E6）
  *   / 告警通知中心（Mock）/ 健康代填（提交 Mock + 长者下拉真实 E7）/ 药单只读（Mock）；
- * - doctor → 复核队列（Mock，task-11），其余医生项仍置灰；
+ * - doctor → 复核队列（Mock，task-11）/ 药单维护（Mock，task-12），其余医生项仍置灰；
  * - admin → 侧栏骨架（全置灰）+ 占位主区；
  * - guardian → 家属应走 family 入口，此处仅占位提示。
  */
 type View = "loading" | "login" | "home";
 type CareWorkerView = "workorders" | "elders" | "alerts" | "health-form" | "medication";
-type DoctorView = "review-queue";
+type DoctorView = "review-queue" | "medication-edit";
 
 function PlaceholderHome({ principal }: { principal: Principal }) {
   return (
@@ -108,7 +109,7 @@ export default function App() {
           onLogout={handleLogout}
           onNavigate={(key) => setDoctorView(key as DoctorView)}
         >
-          <ReviewQueuePage />
+          {doctorView === "medication-edit" ? <MedicationEditPage /> : <ReviewQueuePage />}
         </AppLayout>
       );
     }
