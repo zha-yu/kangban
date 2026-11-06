@@ -43,6 +43,7 @@
 | `docs/plans/day04/f6-药单只读.md` | ✅ 已完成 |
 | `docs/plans/day04/f7-复核队列.md` | ✅ 已完成 |
 | `docs/plans/day04/f8-药单维护.md` | ✅ 已完成 |
+| `docs/plans/day04/f9-长者注册与设备分配.md` | ✅ 已完成 |
 | `docs/plans/day04/task-01-声纹身份.md` | ❔ 草稿 |
 
 > 另有 1 个无 `> 状态：` 行的方案/草稿文件，未列入上表。

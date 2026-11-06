@@ -931,3 +931,97 @@ body {
 .dlg-actions .btn-primary {
   padding: 0 20px;
 }
+
+/* ---- 注册向导（task-08 F2） ---- */
+.wiz-card {
+  max-width: 520px;
+}
+
+.wiz-steps {
+  display: flex;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  color: var(--color-ink-muted);
+}
+
+.wiz-step-active {
+  color: var(--color-brand);
+  font-weight: 600;
+}
+
+.wiz-beds {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.wiz-bed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.wiz-bed-taken {
+  color: var(--color-ink-muted);
+  cursor: not-allowed;
+  background: color-mix(in srgb, var(--color-line) 30%, transparent);
+}
+
+.wiz-assign-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px dashed var(--color-line);
+  border-radius: 10px;
+  font-size: 13px;
+  color: var(--color-ink-muted);
+}
+
+.wiz-secret {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--color-brand);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-brand) 8%, transparent);
+}
+
+.wiz-secret-title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.wiz-secret code {
+  display: block;
+  word-break: break-all;
+  font-size: 13px;
+}
+
+.wiz-done-hint {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--color-ink-muted);
+  word-break: break-all;
+}
+
+.wiz-secret-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--color-ink-muted);
+}
