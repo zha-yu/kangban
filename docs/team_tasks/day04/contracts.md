@@ -103,6 +103,7 @@ Authorization: Bearer <device access_token>
   "fallback_image_url": str | None,  # 静态头像
   "rotation_y_offset": float,        # VRM0 朝向补偿（弧度），VRM1 恒 0.0
   "version": int                     # persona.avatar_url 变更即递增；前端据此失效缓存
+                                     # ⚠ 实现为内容指纹、可回退，仅作缓存键；待主理人确认（见变更记录 v1.1）
 }
 401/403 → 统一错误体 {detail, code, trace_id}
 
@@ -127,3 +128,4 @@ Authorization: Bearer <device access_token>
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-06 | 初稿即定稿：C4–C7 代码级定义 + C5 五个开放点裁决（确认交互=大按钮点选、30s 起点=ask 下发、ask_id 不匹配忽略、generic 经 identity_result 通知、metrics 三打点位）+ C6 复用 C2/C3 零新消息类型裁决；主理人要求提前冻结，晨会改为签字确认 |
+| v1.1 | 2026-11-06 | **待主理人确认**：C7 第 105 行原文写 `version`「persona.avatar_url 变更即递增」，A3 实现为四键内容的 crc32 指纹（`plan S-01`）——指纹**可回退**（实测 `/avatars/xiaoman.vrm` → `1794577085`，改回 `vrm1_sample.vrm` → 还原 `1686351657`），不满足「单调递增」。对消费方的约束据此明确：`version` 只作**不透明缓存键**，前端不得写成「新值 > 旧值才更新」的比较逻辑，正确用法是「值变了就重取」。申请把第 105 行措辞改为「persona.avatar_url（或 PUBLIC_BASE_URL / rotation 等任一取值来源）变化即变，实现为内容指纹、可回退，仅作缓存键」；字段名与类型不变，不影响已合入的前端挂载代码 |
