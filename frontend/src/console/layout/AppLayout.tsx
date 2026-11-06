@@ -21,9 +21,9 @@ const NAV_BY_ROLE: Record<string, NavItem[]> = {
   care_worker: [
     { key: "workorders", label: "工单看板", enabled: true },
     { key: "elders", label: "负责长者", enabled: true }, // task-07 交付
-    { key: "health-form", label: "健康代填", enabled: false },
+    { key: "health-form", label: "健康代填", enabled: true }, // task-09 交付（提交 Mock）
     { key: "medication", label: "药单只读", enabled: false },
-    { key: "alerts", label: "告警通知中心", enabled: false },
+    { key: "alerts", label: "告警通知中心", enabled: true }, // task-08 交付（Mock）
   ],
   doctor: [
     { key: "review-queue", label: "复核队列", enabled: false },

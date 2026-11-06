@@ -642,6 +642,119 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* ---- 告警通知中心（task-08 F4：Mock，AC-23 状态机） ---- */
+.ntf-page {
+  max-width: 980px;
+  margin: 0 auto;
+}
+
+.ntf-note {
+  margin: 0 0 16px;
+  font-size: 13px;
+  color: var(--color-ink-muted);
+}
+
+.ntf-steps {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ntf-step {
+  font-size: 13px;
+  color: var(--color-ink-subtle);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ntf-step:not(:last-child)::after {
+  content: "→";
+  color: var(--color-ink-subtle);
+}
+
+.ntf-step.is-reached {
+  color: var(--color-info-ink);
+  font-weight: 700;
+}
+
+.ntf-timeline {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--color-danger-ink);
+}
+
+/* ---- 健康代填（task-09 F5：提交 Mock + 真实 E7 下拉） ---- */
+.hf-page {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.hf-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.hf-fieldset {
+  border: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.hf-radio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--color-ink);
+}
+
+.hf-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+}
+
+.hf-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.hf-result {
+  margin-top: 20px;
+  padding: 16px 20px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hf-result-line {
+  margin: 0;
+  font-size: 14px;
+  color: var(--color-ink);
+}
+
+.hf-result-followup {
+  margin: 0;
+  font-size: 14px;
+  color: var(--color-ink-muted);
+}
+
 /* ---- 操作弹窗 ---- */
 .dlg-mask {
   position: fixed;

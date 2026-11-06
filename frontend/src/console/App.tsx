@@ -12,19 +12,22 @@ import { LoginPage } from "./pages/LoginPage";
 import { AppLayout } from "./layout/AppLayout";
 import { WorkOrdersPage } from "./pages/WorkOrdersPage";
 import { EldersPage } from "./pages/EldersPage";
+import { AlertsPage } from "./pages/AlertsPage";
+import { HealthFormPage } from "./pages/HealthFormPage";
 
 /**
- * 照护台入口：登录态路由 + 角色分流（task-06/07 F2/F3）。
+ * 照护台入口：登录态路由 + 角色分流（task-06/07/08/09 F2–F5）。
  * 无本地登录态 → 登录页；有 → fetchCurrent 恢复身份（过期自动 refresh），
  * 恢复失败（refresh 也失效 / 网络错）→ 回登录页。
  *
  * 分流口径（前端页面方案 §3.2，业务页按批次交付）：
- * - care_worker → 侧栏骨架 + 工单看板（Mock）/ 负责长者（真实对接 E7/E6）；
+ * - care_worker → 侧栏骨架 + 工单看板（Mock）/ 负责长者（真实对接 E7/E6）
+ *   / 告警通知中心（Mock）/ 健康代填（提交 Mock + 长者下拉真实 E7）；
  * - doctor / admin → 侧栏骨架（全置灰）+ 占位主区，业务页属第 3 批后续项；
  * - guardian → 家属应走 family 入口，此处仅占位提示。
  */
 type View = "loading" | "login" | "home";
-type CareWorkerView = "workorders" | "elders";
+type CareWorkerView = "workorders" | "elders" | "alerts" | "health-form";
 
 function PlaceholderHome({ principal }: { principal: Principal }) {
   return (
@@ -78,7 +81,15 @@ export default function App() {
           onLogout={handleLogout}
           onNavigate={(key) => setCareView(key as CareWorkerView)}
         >
-          {careView === "elders" ? <EldersPage /> : <WorkOrdersPage principal={principal} />}
+          {careView === "elders" ? (
+            <EldersPage />
+          ) : careView === "alerts" ? (
+            <AlertsPage principal={principal} />
+          ) : careView === "health-form" ? (
+            <HealthFormPage />
+          ) : (
+            <WorkOrdersPage principal={principal} />
+          )}
         </AppLayout>
       );
     }
