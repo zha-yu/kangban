@@ -17,6 +17,10 @@
 
 | 计划 | 状态 |
 | --- | --- |
+| `docs/plans/day03/adhoc-20261105-A3媒体层执行计划.md` | 🚧 进行中 |
+| `docs/plans/day03/adhoc-20261105-音频传输与设备链路技术方案.md` | ❔ 已冻结 |
+| `docs/plans/day03/day-03-WebRTC与语音闭环.md` | ❔ 草稿 |
+| `docs/plans/day03/day-03-a5-VAD兜底与降级测试.md` | ❔ 草稿 |
 | `docs/plans/day03/task-a1-ASR与TTS适配层.md` | ✅ 已完成（2026-11-05；N0–N9 全部达成，**N8 真链路已出字**，见 §10 v1.4） |
 | `docs/plans/day03/task-a1-DAG.md` | ✅ 已完成（2026-11-05；N0–N9 全部达成，N8 已拿到真实出字） |
 | `docs/plans/day03/task-a2-信令WS与鉴权.md` | ❔ 草稿 |
@@ -28,4 +32,4 @@
 
 1. 把对应任务卡首部的 `> 状态：<词>` 改成新状态（取值见 `AGENTS.md` §10.5）。
 2. 直接提交即可——`pre-commit` 钩子会重算本文件并纳入同一次提交。
-3. 想手动看差异：`uv run python scripts/update_progress.py`；只查是否过期：加 `--check`。
+3. 想手动看差异：`uv run python scripts/update_progress.py --day 3`；只查是否过期：加 `--check`。
