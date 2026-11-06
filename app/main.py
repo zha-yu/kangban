@@ -17,9 +17,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app import __version__
-from app.api import auth as auth_api
 from app.api import audio as audio_api
+from app.api import auth as auth_api
 from app.api import devices, elders, health
+from app.api import voiceprints as voiceprints_api
 from app.api.schemas.auth import ErrorResponse
 from app.audio import signaling  # Day 3 T2：WS 信令路由（/ws/signal）
 from app.audio.webrtc import install_signaling_handler  # Day 3 T3：A3 媒体层接线
@@ -81,6 +82,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     application.include_router(health.router)
     application.include_router(auth_api.router, prefix="/api")
+    application.include_router(voiceprints_api.router, prefix="/api")  # Day 4 T7：声纹 REST（C4 契约）
     application.include_router(elders.router)
     application.include_router(devices.router)
     application.include_router(audio_api.router)  # /api/audio 降级上传（C3，路由自带前缀）
