@@ -67,7 +67,7 @@ export const RULE_VERSION = "v1.0";
 // 分级（Mock 模拟服务端规则引擎；正式分级以后端写入为准）
 // ---------------------------------------------------------------------------
 
-function classify(input: HealthRecordInput): { severity: HealthSeverity; follow_up: string } {
+export function classifyHealthRecord(input: HealthRecordInput): { severity: HealthSeverity; follow_up: string } {
   const { systolic, diastolic, sleep_hours, mood_score, complaint } = input;
   const missing = systolic === null && diastolic === null && sleep_hours === null && mood_score === null && !complaint;
 
@@ -97,7 +97,7 @@ let recordSeq = 1;
 
 /** 代填提交（Mock：分级 + 后续任务提示；补录追加不覆盖，AC-22） */
 export async function submitHealthRecord(input: HealthRecordInput): Promise<HealthRecordResult> {
-  const { severity, follow_up } = classify(input);
+  const { severity, follow_up } = classifyHealthRecord(input);
   const n = recordSeq++;
   return {
     record_id: `hr-mock-${String(n).padStart(3, "0")}`,

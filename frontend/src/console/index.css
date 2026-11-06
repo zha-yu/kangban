@@ -807,6 +807,48 @@ body {
   color: var(--color-ink);
 }
 
+/* ---- 复核队列（task-11 F7：pending 黄/红档，红档置顶） ---- */
+.rv-page {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.rv-red {
+  border-left: 3px solid var(--color-danger);
+}
+
+.rv-chain {
+  margin-top: 8px;
+  padding: 12px 14px;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rv-chain-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rv-chain-item {
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rv-chain-item.is-current {
+  border-color: var(--color-primary);
+}
+
 /* ---- 操作弹窗 ---- */
 .dlg-mask {
   position: fixed;
