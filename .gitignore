@@ -76,6 +76,12 @@ static/mock/
 *.fbx
 *.blend
 
+# KWS（唤醒词）资产：onnx 模型与 wasm 编译产物体积大（~17MB），不进 Git。
+# 重建方法：scripts/build-kws-wasm.md（emsdk 4.0.23 + sherpa-onnx build-wasm-simd-kws.sh，
+# 模型 sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01-mobile，产物拷入 frontend/public/kws/）
+frontend/public/kws/
+frontend/src/pad/assets/kws/*.onnx
+
 # ---------- 7. IDE / 编辑器 ----------
 .idea/
 .vscode/

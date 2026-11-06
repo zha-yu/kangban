@@ -42,6 +42,15 @@ export class SignalSocket {
 
   connect(): void {
     if (this.stopped) return;
+    // 先安全丢弃旧连接：摘掉回调避免其 onclose 再走一次退避重连（重复连接/泄漏），
+    // 同时清掉挂起的重连定时器（retry 与到点重连并发时只保留本次）
+    const old = this.ws;
+    if (old) {
+      old.onopen = old.onmessage = old.onclose = old.onerror = null;
+      this.clearTimers();
+      old.close();
+      this.ws = null;
+    }
     const proto = location.protocol === "https:" ? "wss" : "ws";
     this.setState("connecting");
     const ws = new WebSocket(`${proto}://${location.host}${SIGNAL_WS_PATH}`);
