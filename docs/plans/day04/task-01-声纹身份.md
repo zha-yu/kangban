@@ -343,3 +343,6 @@ Day 4 A1 单元：**独立容器部署的声纹身份闭环**——CAM++ 推理�
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-06 | 初稿：A1 声纹身份闭环 10 子任务（T0 晨会签字 → T1 spike → T2 迁移 0004 → T3 ORM → T4 推理容器 → T5 迁移 0005 → T6 voiceprint_service → T7 REST 三接口 → T8 identity_service → T9 门禁 → T10 联调收口）；时间分配精确到小时对齐 Day 4 时间表；依赖说明含前置条件 + 外部资源 + 阻塞预案；验收标准按子任务粒度 + PRD/技术文档条款映射；风险预案 10 条 |
+| v1.1 | 2026-11-06 | identity_service thread 生命周期修正：`verify_session_identity` / `open_thread_from_confirm` / `open_thread_as_generic_on_timeout` 建新 thread 前先结束该设备未结束 thread；新增 `tests/test_identity_thread_lifecycle.py`（FakeSession 顺序测试，不依赖 DB） |
+| v1.2 | 2026-11-06 | 静态复检策略修正：已识别会话低于阈值 → 结束旧 thread + `confirm/low_confidence`；generic 命中 → voice 新 thread；同人/generic 未命中/vp 不可用/未绑定 → None；补 5 类 FakeSession 复检测试 |
+| v1.3 | 2026-11-06 | `session_seq` 落地：personal thread 同事务 `Elders.session_seq + 1 RETURNING`，thread_id 用 `(elder_id, session_seq)`；generic session_seq=0 + UUID hex；`IdentityDecision.session_seq` 回传 A2 |

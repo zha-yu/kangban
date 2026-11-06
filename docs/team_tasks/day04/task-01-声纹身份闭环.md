@@ -48,3 +48,6 @@ uv run pytest -q 全绿；ruff check app 通过
 | --- | --- | --- |
 | v1.0 | 2026-11-06 | 初稿：自 day04 README v1.0 §3/§6 拆出 |
 | v1.1 | 2026-11-06 | 主理人裁决：部署形态定**独立容器**（`deploy/voiceprint/` + 端口 7003，容器只做 /extract，比对在主服务进程内），主服务 pyproject 不新增 torch；写作域与验收同步更新 |
+| v1.2 | 2026-11-06 | thread 生命周期修正：`verify_session_identity` / `open_thread_from_confirm` / `open_thread_as_generic_on_timeout` 在 INSERT 新 thread 前先结束该设备所有未结束 thread，避免重连/confirm/超时留下多个 active thread；新增 `tests/test_identity_thread_lifecycle.py`（FakeSession 顺序测试，不依赖 DB） |
+| v1.3 | 2026-11-06 | 换人检测修正：`recheck_session_identity` 在已识别会话低于阈值时结束旧 thread 并返回 `confirm/low_confidence`（不再静默继续个人上下文）；generic 会话命中绑定长者时升级 voice 并开新 thread；新增同人/换人/generic 升级/generic 未命中/未绑定 5 类复检测试 |
+| v1.4 | 2026-11-06 | `session_seq` 落地：personal thread 在 INSERT 前同事务 `Elders.session_seq + 1 RETURNING`，thread_id 改为 `(elder_id, session_seq)`；generic 无 elder，session_seq=0、thread_id 用 UUID hex；`IdentityDecision.session_seq` 回传 A2；补 FakeSession 序号断言 |

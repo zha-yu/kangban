@@ -1,4 +1,4 @@
-> 状态：草稿　｜　版本：v1.0　｜　日期：2026-11-05
+> 状态：草稿　｜　版本：v1.9　｜　日期：2026-11-05
 > 关联：docs/team_tasks_day03/a2-signaling-ws.md（A2 任务卡）｜docs/team_tasks_day03/contracts.md（C2 契约确认稿）｜docs/team_tasks_day03/README.md（分工总览）
 > 上游依据：PRD §2.2 line 97–122、FR-TC-10 line 459、AC-40 line 521、§5.3（验收）｜技术设计文档 line 1016–1023「Day 3 · 语音通道」落地清单、line 225 audio 目录（实现）｜day-03 计划 v1.5 T2/V2/P6｜adhoc-20261105-音频传输与设备链路技术方案 v1.3 §三 M2｜接口契约_身份与权限.md E4/§5/自裁 S-08/S-23/裁决 A-02/A-03
 > 变更记录见文末
@@ -219,9 +219,40 @@ A4 依赖 A2 的 refresh 核对结论（W7 产出）决定过期处理
 | 任务卡变更记录 | C2 冻结、四裁决、测试替身口径、refresh 核对结论四项齐备 |
 | 契约留痕 | contracts.md 确认表 + 冻结后变更的群通告记录 |
 
+## 8. Day04 C5 增量留痕（2026-11-06，A2）
+
+C5 是 Day3 C2 冻结契约的**追加**，不改原 C2 字段、方向与语义：
+
+- 新增 S→C `identity_ask` / `identity_result`，C→S `identity_confirm` / `client_diag`；
+- C2 `tts_text` 仅追加可选 `degraded`（C6），原 `type` / `text` 不变；
+- `identity_ask` 的 `reason` 仅 `low_confidence` / `vp_unavailable`，候选集恒为设备绑定长者 1 位，`timeout_s=30`；
+- 30 秒从服务端**实际发送 ask 成功**时起算；超时只发一次 `identity_result(source=generic, elder_id=None)`；
+- `ask_id` 错配、重复 confirm、候选集外 `elder_id`：warn + 忽略，不发 error、不关连接、不改变已定身份；
+- generic 不清空设备绑定关系，`active_elder_id=None`，不读个人记忆/健康/用药；
+- 实现文件：`app/audio/signaling.py`；测试：`tests/test_audio_identity_ws.py`（状态机层 + 真实 WS 真库层）。
+
+**接口裁决留痕（B1–B6 与 N05 门禁）**
+
+| 编号 | 当前状态 | 说明 |
+| --- | --- | --- |
+| B1 | **已裁决（2026-11-06）** | C6 `ThreadInfo.elder_id` 改为 `str | None`，generic 为 `None`，与 `conversation_threads` 的 CHECK 对齐。 |
+| B2 | **已裁决（2026-11-06）** | `conversation_threads` 创建/结束、`session_seq` 递增与 generic thread_id 全部由 A1 `identity_service` 服务端事务独占完成；A2 只消费 A1 `IdentityDecision` 的终态 `thread_id`（经 `identity_decision_to_result` 投影），不建 thread、不自创 generic ID。A1 当前未回传 `session_seq`，A2 不伪造。 |
+| B3 | **已解决（2026-11-06）** | `app/main.py` lifespan 创建并关闭 Redis / LLM / `DialogueService` / `DialogueOrchestrator`，运行时挂 `app.state`；Redis 与 LLM 均为懒连接，不阻塞无依赖启动；测试见 `tests/test_dialogue_integration.py`。 |
+| B4 | **已解决（2026-11-06）** | `signaling.dispatch_asr_event` + `set_dialogue_final_handler` 作为 FINAL 唯一 awaitable seam；`webrtc._asr_callback` 从 VAD segment 生成 WAV 后 await handler，`asr_final` 字幕先投递一次；PARTIAL/ERROR 不触发对话。测试覆盖 FINAL once、PARTIAL 零次、双设备隔离、WAV 交接、handler 异常不破坏字幕。剩余：identity_result/confirm 与 TTS 音频仍属 N05。 |
+| B5 | 未交付 | personas.greeting 只读 provider 未交付；greeting 生产装配阻塞。 |
+| B6 | 未定 | 伪造/跨长者 thread 的 HTTP 403 映射路由未指定；AC-39 HTTP 层未验证。 |
+
 ## 变更记录
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-05 | 初稿：事实基线 F1–F11、W0–W7 拆解（含步骤/交付物/量化自检）、对接矩阵、时间节点、风险红线；登记设备会话无 refresh 通道的代码核实结论（E2 仅人账号，设备临期重走 E4） |
-| v1.1 | 2026-11-06 | A2 委托 A4 代记（只补记录，契约内容零改动）：①Day 4 契约追加 C5 消息 `client_diag{stage, ok, detail?}`（端侧自检上报，stage=vad ok=false 为服务端 VAD 兜底激活信号，见 fcb5e41）与 `identity_ask` / `identity_confirm` / `identity_result` 三消息（身份确认闭环，C5 裁决 5）；②`tts_text` 消息扩展 `degraded` 字段（TTS 降级话术标记）。上述均为 C2 冻结后的**追加/扩展**（新增消息类型与可选字段，不改既有消息语义），走 R5「群通告 + 双方任务卡留痕 + 对方确认」流程；identity 三打点位由 A2 在 signaling 改动里调 `app/core/metrics.py` 的 record_identity_* 三函数（52d0415 已就绪） |
+| v1.1 | 2026-11-06 | A2 委托 A4 代记（只补记录，契约内容零改动）：①Day 4 契约追加 C5 消息 `client_diag{stage, ok, detail?}`（端侧自检上报，stage=vad ok=false 为服务端 VAD 兜底激活信号，见 fcb5e41）与 `identity_ask` / `identity_confirm` / `identity_result` 三消息（身份确认闭环，C5 裁决 5）；②`tts_text` 消息扩展 `degraded` 字段（TTS 降级话术标记）。上述均为 C2 冻结后的**追加/扩展**（新增消息类型与可选字段，不改既有消息语义），走 R5「群通告 + 双方任务卡留痕 + 对方确认」流程；identity 三打点位由 A2 在 signaling 改动里调 `app/core/metrics.py` 的 record_identity_* 三函数（52d0415 已就绪）；B1–B6 未决项登记见 §8 |
+| v1.2 | 2026-11-06 | B1/B2 裁决落地：`ThreadInfo.elder_id` 改为 `str | None`；`conversation_threads` 由 A1 `identity_service` 独占创建；A2 的编排消费面改为单一 `IdentityThreadResult`（身份 + thread），不再单独传入 `ThreadGate`，不建 thread、不自生成 generic thread_id。 |
+| v1.3 | 2026-11-06 | A1 `identity_service` 实际交付 `IdentityDecision`（thread_id/confidence/reason，未回传 ThreadInfo/session_seq）；A2 增加 `identity_decision_to_result` 适配，编排只消费终态 `thread_id`，`needs_confirm` 转 `IdentityConfirmationRequired`；`session_seq` 不伪造，回传方式待 A1/主理人确认。 |
+| v1.4 | 2026-11-06 | B3/B4 落地：`app/main.py` lifespan 接管 Redis/LLM/Dialogue/Orchestrator 生命周期；`signaling.dispatch_asr_event` 成为 FINAL 唯一 awaitable seam，A3 `webrtc._asr_callback` 从 VAD segment 生成 WAV 并 await；FINAL 字幕先投递一次，PARTIAL/ERROR 不触发对话；新增 `tests/test_dialogue_integration.py`。 |
+| v1.5 | 2026-11-06 | C5 接线落地：A1 `identity_service` 开新 thread 前先关闭该设备未结束 thread；signaling 新增 `apply_generic_identity`、`begin_identity_recheck`、confirm/timeout handlers；main 装配 voice/generic 发布、confirm/timeout 建 thread 并写入 `(device_id, trace_id)` 缓存；新增 C5 handler 与 thread 生命周期测试。 |
+| v1.6 | 2026-11-06 | A1 换人检测修正：已识别会话低于阈值 → 结束旧 thread + `confirm/low_confidence`；generic 命中 → voice 新 thread；A2 复检分支在 `thread_id=None` 时清 thread 缓存并发 `identity_ask`。 |
+| v1.7 | 2026-11-06 | `session_seq` 与 TTS 音频落地：A1 回传 `session_seq` 并生成 `(elder_id, session_seq)` thread_id（generic=0/UUID）；A2 投影到 `IdentityThreadResult`；回复先 `tts_text`，再 TTS PCM 经 `webrtc.enqueue_tts_for_device` 写播放轨，TTS 失败保留字幕。 |
+| v1.8 | 2026-11-06 | 合并 `origin/dev`（293881d，merge cb177db）后的 A2 兼容：①`signaling._handle_client_diag` 收到 `stage=vad, ok=false` 时调 `webrtc.set_vad_fallback_for_device` 激活远端 `VadFallbackController`（W4 服务端 VAD 兜底），异常只记 `error_type`；②C5 identity 三打点位接入 `record_identity_ask_sent` / `record_identity_confirm_received` / `record_identity_result_sent`；③`webrtc.py` 冲突按双方能力共存合并（本地 `VadSession` 与远端 `VadFallbackController`、`on_vad_event` 与 `on_vad_segment`）；④A2 聚焦用例 111 passed / 1 skipped（C5 真库链路因 PostgreSQL 不可达 skip）。 |
+| v1.9 | 2026-11-06 | W4 兜底段下游接线落地：`MediaSession._handle_vad_segment` 在未注册 `on_vad_segment` 时默认调 `_transcribe_vad_segment`——兜底整段切 60ms ASR 帧 → `ASRProvider.stream` → PARTIAL/FINAL 经 `on_asr_event` 复用 A2 `_asr_callback`（字幕 + dialogue handler + WAV 声纹音频）；兜底 turn 写入 `_playback_turn_id` 保证 TTS 写轨；客户端 turn 进行中或会话非 OPEN 时跳过；兜底激活时不再并行跑本地 `VadSession`。新增 4 条测试；A2 聚焦回归 126 passed / 1 skipped。 |

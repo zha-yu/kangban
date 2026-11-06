@@ -31,9 +31,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
 import json
 import logging
 import uuid
+import wave
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass
@@ -688,6 +690,19 @@ async def _asr_frame_iterator(queue: asyncio.Queue[bytes | None]) -> AsyncIterat
         yield item
 
 
+async def _fallback_frame_iterator(segment: bytes) -> AsyncIterator[bytes]:
+    """把兜底整段 PCM16 切成 C1 要求的 60 ms ASR 帧。
+
+    兜底段由 30 ms VAD 帧拼成，帧数可能为奇数；末帧补静音到整帧，
+    避免半帧被 provider 拒收后整段无转写。
+    """
+    for offset in range(0, len(segment), ASR_FRAME_BYTES):
+        chunk = segment[offset : offset + ASR_FRAME_BYTES]
+        if len(chunk) < ASR_FRAME_BYTES:
+            chunk += b"\x00" * (ASR_FRAME_BYTES - len(chunk))
+        yield chunk
+
+
 # ------------------------------------------------------------------ 会话与 registry
 
 
@@ -744,6 +759,8 @@ class MediaSession:
         self._normalizer = AudioNormalizer()
         self._asr_queue: asyncio.Queue[bytes | None] | None = None
         self._asr_task: asyncio.Task[None] | None = None
+        # W4 兜底段串行化：同一连接同时只跑一条兜底 ASR，避免多段并发抢 provider。
+        self._fallback_asr_lock = asyncio.Lock()
         self._audio_track: MediaStreamTrack | None = None
         self._playback_queue: asyncio.Queue[PcmFrame] = asyncio.Queue(maxsize=MAX_PLAYBACK_FRAMES)
         self._playback_track: PlaybackAudioTrack | None = None
@@ -1484,6 +1501,9 @@ class MediaSession:
         """把 30 ms 帧交给 A5 的 VadSession，只翻译状态跃迁，不复制判定逻辑。"""
         if self._on_vad_event is None:
             return
+        # W4 兜底激活时由 VadFallbackController 单独切段，避免同一帧跑两套 VAD。
+        if self._vad_fallback.is_active:
+            return
         judge = self._vad_judge
         if judge is None:
             judge = VadSession(aggressiveness=self.config.vad_aggressiveness)
@@ -1539,7 +1559,9 @@ class MediaSession:
     async def _handle_vad_segment(self, segment: bytes) -> None:
         """兜底语音段下游（C6/A2 对接点）：走与 asr_end 相同的对话链路。
 
-        S4 自验期由测试桩消费；真实 utterance 主链在联调窗口接入。
+        外部注册了 `on_vad_segment` 时只交给消费者（测试桩/A2 自定义）；未注册时
+        默认在本层跑 ASR 并产出 FINAL，FINAL 经 `on_asr_event` → A2 对话编排，
+        与客户端 VAD 的 `asr_end` 主链完全同一条路径。
         """
         _log_event(
             "vad fallback segment delivered",
@@ -1551,20 +1573,102 @@ class MediaSession:
             segment_bytes=len(segment),
         )
         callback = self._on_vad_segment
-        if callback is None:
+        if callback is not None:
+            try:
+                await callback(segment)
+            except Exception as exc:
+                _log_event(
+                    "vad segment callback failed",
+                    trace_id=self.trace_id,
+                    connection_id=self.connection_id,
+                    turn_id=self._turn_id,
+                    state=self._state.value,
+                    reason=MediaFailureReason.TASK_EXCEPTION.value,
+                    error_type=type(exc).__name__,
+                )
             return
-        try:
-            await callback(segment)
-        except Exception as exc:
+        await self._transcribe_vad_segment(segment)
+
+    async def _transcribe_vad_segment(self, segment: bytes) -> None:
+        """W4 兜底段 → ASR → FINAL：与客户端 `asr_end` 同样的对话入口。
+
+        跳过条件：会话非 OPEN、客户端 ASR turn 正在进行（避免与端侧 VAD 双切段）。
+        兜底 turn 不复用 `_turn_id`（该字段只表示客户端流式收帧 turn），但会把
+        `_playback_turn_id` 指向兜底 turn，保证 A2 回复的 TTS 能写入同一条播放轨。
+        """
+        if not segment:
+            return
+        if self._state is not MediaState.OPEN or self._turn_id is not None:
             _log_event(
-                "vad segment callback failed",
+                "vad fallback transcription skipped",
                 trace_id=self.trace_id,
                 connection_id=self.connection_id,
                 turn_id=self._turn_id,
                 state=self._state.value,
-                reason=MediaFailureReason.TASK_EXCEPTION.value,
-                error_type=type(exc).__name__,
+                reason=("client_turn_active" if self._turn_id is not None else "session_not_open"),
+                segment_bytes=len(segment),
             )
+            return
+
+        async with self._fallback_asr_lock:
+            if self._state is not MediaState.OPEN or self._turn_id is not None:
+                return
+
+            turn_id = uuid.uuid4().hex
+            self.barge_in()
+            self._playback_turn_id = turn_id
+            # FINAL 时 `_asr_callback` 会取出该段生成 WAV，供声纹比对使用。
+            _latest_segments[self.connection_id] = segment
+
+            provider = self._asr_provider or build_asr()
+            self._asr_provider = provider
+            _log_event(
+                "vad fallback asr turn started",
+                trace_id=self.trace_id,
+                connection_id=self.connection_id,
+                turn_id=turn_id,
+                state=self._state.value,
+                reason="vad_fallback_turn_started",
+                segment_bytes=len(segment),
+            )
+            try:
+                try:
+                    events = await provider.stream(_fallback_frame_iterator(segment))
+                except ASRError as exc:
+                    await self._emit_asr_event(
+                        turn_id, ASREvent(kind=ASREventKind.ERROR, result=None, error=exc)
+                    )
+                    return
+                async for event in events:
+                    await self._emit_asr_event(turn_id, event)
+            except asyncio.CancelledError:
+                raise
+            except ASRError as exc:
+                await self._emit_asr_event(
+                    turn_id, ASREvent(kind=ASREventKind.ERROR, result=None, error=exc)
+                )
+            except Exception as exc:
+                _log_event(
+                    "vad fallback asr failed",
+                    trace_id=self.trace_id,
+                    connection_id=self.connection_id,
+                    turn_id=turn_id,
+                    state=self._state.value,
+                    reason=MediaFailureReason.TASK_EXCEPTION.value,
+                    error_type=type(exc).__name__,
+                )
+                await self._notify_failure(
+                    MediaFailureReason.TASK_EXCEPTION, "vad_fallback_asr_error"
+                )
+            finally:
+                _log_event(
+                    "vad fallback asr turn finished",
+                    trace_id=self.trace_id,
+                    connection_id=self.connection_id,
+                    turn_id=turn_id,
+                    state=self._state.value,
+                    reason="vad_fallback_turn_finished",
+                )
 
     def _push_asr_frame(self, data: bytes) -> None:
         queue = self._asr_queue
@@ -1798,7 +1902,22 @@ class MediaSessionRegistry:
 _SIGNALING_REGISTRIES: WeakKeyDictionary[asyncio.AbstractEventLoop, MediaSessionRegistry] = (
     WeakKeyDictionary()
 )
+# 每设备最近一次 VAD 语音段（内存中，FINAL 时取出用于声纹；不落盘、不跨 turn 复用）
+_latest_segments: dict[str, bytes] = {}
 _INTERNAL_ERROR_MESSAGE = "出了点小状况，请再说一遍。"
+
+
+def _pcm16_to_wav(pcm: bytes, *, sample_rate: int = TARGET_SAMPLE_RATE) -> bytes:
+    """16 kHz/16 bit/单声道 raw PCM → WAV 容器；仅供声纹容器使用，不落盘。"""
+    if len(pcm) % SAMPLE_WIDTH_BYTES != 0:
+        pcm = pcm[: len(pcm) - 1]
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(SAMPLE_WIDTH_BYTES)
+        wav.setframerate(sample_rate)
+        wav.writeframes(pcm)
+    return buffer.getvalue()
 
 
 def _signaling_registry() -> MediaSessionRegistry:
@@ -1842,7 +1961,16 @@ def _asr_callback(device_id: str, trace_id: str) -> AsrEventCallback:
     async def _on_asr_event(turn_id: str, event: ASREvent) -> None:
         from app.audio import signaling
 
-        delivered = signaling.deliver_asr_event(device_id, event)
+        audio_bytes: bytes | None = None
+        if event.kind is ASREventKind.FINAL:
+            segment = _latest_segments.pop(device_id, None)
+            if segment:
+                audio_bytes = _pcm16_to_wav(segment)
+
+        # FINAL 字幕先投递；注册了 A2 dialogue handler 时再 await 编排（仅一次）
+        delivered = await signaling.dispatch_asr_event(
+            device_id, turn_id, trace_id, event, audio_bytes
+        )
         kind = str(getattr(event.kind, "value", event.kind))
         _log_event(
             "asr event delivery",
@@ -1853,6 +1981,7 @@ def _asr_callback(device_id: str, trace_id: str) -> AsrEventCallback:
             reason="asr_event",
             kind=kind,
             delivered=delivered,
+            audio_bytes=len(audio_bytes) if audio_bytes is not None else 0,
         )
 
     return _on_asr_event
@@ -1861,11 +1990,13 @@ def _asr_callback(device_id: str, trace_id: str) -> AsrEventCallback:
 def _vad_callback(trace_id: str) -> VadEventCallback:
     """A3 → A2 的 VAD 事件出口。
 
-    C2 尚未冻结服务端 VAD 的客户端消息，因此这里只记录事件；是否据此开/关
-    ASR turn 或触发兜底打断，由 A2 在契约补齐后决定，A3 不越权。
+    服务端 VAD 只记录并缓存 SPEECH_END 语音段供 FINAL 声纹使用；是否据此开/关
+    ASR turn 或触发兜底打断，仍由 A2 在契约补齐后决定，A3 不越权。
     """
 
     async def _on_vad_event(connection_id: str, event: VadEvent) -> None:
+        if event.kind is VadEventKind.SPEECH_END and event.segment is not None:
+            _latest_segments[connection_id] = event.segment
         _log_event(
             "vad event delivery",
             trace_id=trace_id,
@@ -1883,6 +2014,7 @@ def _failure_callback(
     registry: MediaSessionRegistry, device_id: str, trace_id: str
 ) -> MediaFailureCallback:
     async def _on_media_failed(connection_id: str, reason: MediaFailureReason, detail: str) -> None:
+        _latest_segments.pop(device_id, None)
         _log_event(
             "media failure delivery",
             trace_id=trace_id,
@@ -1903,6 +2035,39 @@ def _require_session(registry: MediaSessionRegistry, device_id: str) -> MediaSes
     if session is None:
         raise MediaStateError("media session is not ready")
     return session
+
+
+def set_vad_fallback_for_device(device_id: str, active: bool) -> bool:
+    """A2 client_diag{stage=vad} → A3 连接级 VAD 兜底开关；无会话返回 False。"""
+    session = _signaling_registry().get_session(device_id)
+    if session is None:
+        return False
+    session.set_vad_fallback_active(active)
+    return True
+
+
+async def enqueue_tts_for_device(device_id: str, turn_id: str, pcm: bytes) -> bool:
+    """A2 对话回复 PCM → A3 下行播放轨；无会话/过期 turn/关闭一律返回 False。
+
+    本函数是 A2 → A3 的唯一 TTS 音频写轨入口，不抛媒体异常，调用方只需看 bool。
+    """
+    session = _signaling_registry().get_session(device_id)
+    if session is None:
+        return False
+    try:
+        await session.enqueue_tts_pcm(turn_id, pcm)
+    except MediaError as exc:
+        _log_event(
+            "tts enqueue rejected",
+            trace_id=session.trace_id,
+            connection_id=device_id,
+            turn_id=turn_id,
+            state=session.state.value,
+            reason="tts_enqueue_rejected",
+            error_type=type(exc).__name__,
+        )
+        return False
+    return True
 
 
 async def _handle_offer(
@@ -1927,6 +2092,7 @@ async def _handle_offer(
 
     async def _close_on_disconnect() -> None:
         # 旧连接 callback 不能误关同设备新连接：必须确认槽位仍是本 session。
+        _latest_segments.pop(device_id, None)
         if registry.get_session(device_id) is session:
             await registry.close_session(device_id, reason="ws_disconnect")
 
@@ -2060,8 +2226,10 @@ __all__ = [
     "VadEventCallback",
     "VadEventKind",
     "VadSegmentCallback",
+    "enqueue_tts_for_device",
     "handle_signal_message",
     "install_signaling_handler",
+    "set_vad_fallback_for_device",
     "uninstall_signaling_handler",
     "validate_downlink_pcm",
 ]
