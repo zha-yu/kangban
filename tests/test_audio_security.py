@@ -118,6 +118,9 @@ async def sec_app(sec_session: AsyncSession) -> FastAPI:
         yield sec_session
 
     app.dependency_overrides[_app_get_session] = _override_get_session
+    # 默认 Mock ASR：本文件默认验「正常路径 + 单点故障」，需要真 ASR 的用例
+    # 自己再覆盖 `_get_default_asr`。否则 `.env` 指到 funasr 时，容器状态会让用例红/绿。
+    app.dependency_overrides[audio_api._get_default_asr] = lambda: MockASRProvider()
 
     # 测试确定性：默认 pin Mock ASR/TTS（防 .env 渗入）；失败场景用例再用
     # 同 key 覆盖为 unavailable provider（赋值即替换，本注释之后的 per-test override 优先）。

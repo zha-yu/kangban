@@ -111,39 +111,56 @@ FastAPI（WebSocket 信令 SDP/ICE + aiortc 媒体）
 
 | 工具 | 用途 | 备注 |
 | --- | --- | --- |
-| Python 3.13（要求 3.12+） | 后端运行时 | 仓库带 `.python-version = 3.13` |
+| Python 3.12（要求 3.12+） | 后端运行时 | `.python-version` / `requires-python` / ruff / mypy 四处统一锁 3.12 |
 | [uv](https://docs.astral.sh/uv/) | 唯一的 Python 包管理器 | 不要混用 pip / conda，本仓库 `.venv` 由 uv 管理 |
-| Docker + Docker Compose | 起 PG / Redis / TURN 等组件 | 全栈一键起也用它 |
+| Docker + Docker Compose | 起 PG / Redis / FunASR 等依赖 | 完整 7 服务版（含前后端容器）留到 Day 10 |
 | Node.js + pnpm | 前端构建 | 三入口共用一套 Vite 配置 |
 | mkcert（可选） | 本地 HTTPS 证书 | 麦克风在非 localhost 下必须 HTTPS |
 
 > **Windows 不需要装 Microsoft C++ Build Tools**。VAD 依赖用的是 `webrtcvad-wheels`（上游 `webrtcvad` 的同源 fork，import 名与 API 完全不变），自带 cp310–cp314 预编译 wheel，`uv sync` 直接取二进制。若改回上游 `webrtcvad`，Windows 上会因缺少 C++ 编译器而 `uv sync` 失败。验证脚本：`uv run python spikes/vad/spike_webrtcvad.py`。
 
-### 5.2 五步启动
+### 5.2 前后端启动命令
+
+当前 `docker-compose.yml` 只编排 **postgres / redis / funasr** 三个依赖服务，仓库还没有 `Dockerfile`、nginx 与 backend/frontend 容器。本地开发的口径是「**基础组件走 Docker，前后端各起一个终端**」；完整 7 服务一键起留到 Day 10。
+
+#### 终端 A · 后端（FastAPI，:8000）
 
 ```bash
-# 1) 取代码
-git clone <repo-url> && cd silvermate
-
-# 2) 配环境变量（.env 已被 .gitignore 忽略，绝不入库）
-cp .env.example .env
-# 编辑 .env：至少填 LLM_API_KEY、ASR_*/TTS_*、WEATHER_API_KEY；其余本地可留默认值
-
-# 3) 装依赖
+# 首次：装依赖 + 配环境变量（.env 已被 .gitignore 忽略，绝不入库）
 uv sync
+cp .env.example .env          # 已有 .env 可跳过；至少填 LLM_API_KEY、ASR_*/TTS_*、WEATHER_API_KEY
 
-# 4) 起基础组件并建表
+# 起依赖并建表（页面/接口联调只需 postgres + redis；要用本地 ASR 基线再追加 funasr）
 docker compose up -d postgres redis
 uv run alembic upgrade head
 
-# 5) 起后端与前端
+# 每次启动
 uv run uvicorn app.main:app --reload --port 8000
-pnpm --dir frontend install && pnpm --dir frontend dev
 ```
 
-全栈一键起：`docker compose up --build`，然后访问 HTTPS 入口。
+```bash
+curl -s localhost:8000/health   # {"status":"ok", ...}，响应头带 X-Trace-Id
+```
 
-**没有 `uv` 的机器**（本开发机就是这种情况：`.venv` 与系统 `python` 都没有 `pip`）：第 3 步起不动，改用容器跑同一批命令。
+接口文档在 `http://localhost:8000/docs`。`/health` 刻意不探库，没有 `.env`、没起 PG/Redis 也能 200；联调按任务卡口径去掉 `--reload` 即为非热重载模式。
+
+#### 终端 B · 前端（Vite，:5173）
+
+```bash
+pnpm --dir frontend install     # 首次，或 package.json / pnpm-lock.yaml 变更后
+pnpm --dir frontend dev         # 开发服务器，strictPort: true，端口被占会直接报错退出
+pnpm --dir frontend build       # tsc --noEmit + MPA 构建，产物 frontend/dist/
+pnpm --dir frontend preview     # 本地预览构建产物
+```
+
+| 项 | 说明 |
+| --- | --- |
+| 页面入口 | 当前 MPA 只有 `pad`：`http://localhost:5173/`；`console` / `family` 入口随 Day 4 落地（`/console.html`、`/family.html`），以 `frontend/vite.config.ts` 的 `rollupOptions.input` 为准 |
+| 接口代理 | `vite.config.ts` 把 `/api` → `http://localhost:8000`、`/ws` → `ws://localhost:8000`；**先起后端再起前端**，页面里不用配 API 地址，也不触发 CORS |
+| HTTPS | 本机 `localhost:5173` 可直接使用麦克风；跨机联调需 mkcert 本地证书，否则 `getUserMedia` 不可用 |
+| 构建期变量 | `VITE_*` 只在 `pnpm --dir frontend build` 时注入，dev 模式走上面的代理，不必改 `.env` |
+
+**没有 `uv` 的机器**（WSL 等环境：`.venv` 与系统 `python` 都没有 `pip`）：上面的 `uv sync` 起不动，改用容器跑同一批命令。
 
 ```bash
 docker run -d --name silvermate-verify -v "$PWD":/w -w /w python:3.12-slim sleep infinity
@@ -155,9 +172,9 @@ docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:a
 
 需要连 PostgreSQL 跑迁移的完整版本见 [`AGENTS.md` §3.1](AGENTS.md)。
 
-> **当前进度**：Day 1.2「搭工作台」、Day 1.3「ER 与 Day 1 迁移」、Day 1.4「FastAPI 骨架」已完成并提交。
-> 已就绪：`alembic/`（`0001_day1` 五张表，upgrade/downgrade 往返实测）、`app/`（配置 / 结构化日志 / `trace_id` / `/health`）、`docs/ER_数据模型设计.md`、`docs/工作流选型说明.md`。
-> 尚未就绪：`docker-compose.yml`、`frontend/`、`Dockerfile`、`mcp-servers/`、`eval/` —— 随 Day 4–Day 10 落地，上面「起基础组件」「前端」两步届时才可执行。
+> **当前进度（2026-11-06）**：Day 1–Day 3 已交付（`alembic/` 迁移、`app/` 后端骨架与鉴权/音频链路、`frontend/` pad 端；Day 3 验收 292 passed、接口覆盖率 85%，见 §7），Day 4 双端登录页与 3D 身份闭环在推进。
+> 已就绪：`docker-compose.yml`（基础依赖版）、`frontend/`、`app/`、`alembic/`、`tests/`。
+> 尚未就绪：`Dockerfile`、nginx 托管、`mcp-servers/`、`eval/` —— 随 Day 4–Day 10 落地；在此之前「全栈一键起」不可用，按上面两个终端分别启动。
 
 ---
 
@@ -192,6 +209,7 @@ docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:a
 | 观测 | `LANGFUSE_*` `OTEL_*` `METRICS_ENABLED` | Trace 上传前脱敏 |
 | 数据保留 | `AUDIO_RETENTION_HOURS` `SCHEDULER_TIMEZONE` | 原始音频默认 72h 自动清理 |
 | 前端构建期 | `VITE_API_BASE_URL` `VITE_PAD_WS_URL` `VITE_ENABLE_3D` `VITE_ENABLE_WEBRTC` | 以 `VITE_` 前缀暴露给浏览器 |
+| 3D 资产 | `DEFAULT_AVATAR_URL` `DEFAULT_FALLBACK_AVATAR_URL` `AVATAR_ROTATION_Y_OFFSET` `AVATAR_CACHE_VERSION_SALT` | 形象取值链**第三层**兜底（persona → Settings → 前端内置），见 §6.1 |
 
 **本地 ASR 基线（FunASR）**：**不新增地址类变量**，复用现有 `ASR_*` 字段——`ASR_PROVIDER=funasr`、`ASR_BASE_URL=wss://localhost:7002`、`ASR_INSECURE=true`（宿主端口见下表 `funasr` 行，容器内 FunASR runtime 监听 10095）。
 
@@ -202,7 +220,46 @@ docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:a
 
 云 API 仍是主实现，FunASR 只作本地基线与降级备份（见 `docs/plans/task-a1-ASR与TTS适配层.md`）。
 
-### 服务与端口
+### 6.1 3D 形象资产与取值链
+
+平板渲染数字人所需的四个值由 `GET /api/pad/avatar-config` 给出（契约 C7，设备 JWT 鉴权）：
+
+```json
+{"avatar_url": "https://localhost/avatars/vrm1_sample.vrm",
+ "fallback_image_url": null, "rotation_y_offset": 0.0, "version": 1686351657}
+```
+
+`avatar_url` 的取值顺序是**三层**，前一层为空才落到下一层：
+
+| 层 | 来源 | 改它的方式 |
+| --- | --- | --- |
+| 1 | `personas.avatar_url`（库里存**相对路径**，响应时拼 `PUBLIC_BASE_URL`） | 改 persona 行即可换形象，**零代码、零重启**；`version` 指会随之变化，前端缓存自动失效 |
+| 2 | `DEFAULT_AVATAR_URL` | 改 `.env` 后重启后端 |
+| 3 | 前端内置兜底（`VITE_ENABLE_3D=false` 或前两层皆空时的静态头像） | 改前端构建期变量 |
+
+`version` 是四键内容的 crc32 指纹（不是自增版本号），因此它只承担「缓存失效」职责，**不代表形象可切换的档位**（FR-3D-03「更多动作与形象」是 P2，不排期）。
+
+**静态托管**：`.vrm` 由 nginx 直出，不经后端转发（PRD §2.1）。片段在 `deploy/nginx.conf` 的 `location /avatars/`，要点两条：
+
+- `.vrm` 必须回 `Content-Type: model/gltf-binary`，否则 three-vrm 拒绝解析（配置里用 `types { model/gltf-binary vrm; }` 显式声明，不依赖系统 mime.types）；
+- 目录映射 `deploy/assets/avatars/` ↔ URL `/avatars/`，文件体积上限 **15MB**（超过会挤掉 FR-3D-02 的 5s 降级窗口）。
+
+**资产不入库**：`*.vrm` 与 `*.glb` 已被 `.gitignore` 忽略（`.vrm` 单个 10MB 量级）。新克隆仓库后按 `deploy/assets/README.md` 重新下载：
+
+```bash
+curl -L -o deploy/assets/avatars/vrm1_sample.vrm \
+  https://pixiv.github.io/three-vrm/packages/three-vrm/examples/models/VRM1_Constraint_Twist_Sample.vrm
+```
+
+一次性验证 nginx 片段（无需常驻服务，Docker 在 WSL 里即可）：
+
+```bash
+wsl -e sh -lc "docker run --rm -v /mnt/e/project_month/silvermate/deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro nginx:alpine nginx -t"
+```
+
+
+
+### 6.2 服务与端口
 
 | 服务 | 端口 | 说明 |
 | --- | --- | --- |
@@ -216,6 +273,28 @@ docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:a
 | mock-operations-mcp | 7102 | 工单 / 家属通知 |
 | coturn | 3478 / 5349 | TURN/STUN，跨网段才需要 |
 | vite dev server | 5173 | 仅本地开发 |
+
+### 6.3 账号维护（管理员专属，2026-11-06）
+
+账号不由使用者自助注册：员工与家属账号一律由 `admin` 创建，家属建号后还要再绑定到长者（两步）。
+
+| 能力 | 端点 | 说明 |
+| --- | --- | --- |
+| 建员工 | `POST /api/staff` | `{name, role, phone, password, elder_ids?}`；`role ∈ admin / care_worker / doctor`；`elder_ids` 同时写负责范围（doctor→`doctor`、care_worker→`primary_care`，给 admin 分配一律 403） |
+| 改员工 | `PATCH /api/staff/{staff_id}` | `{role?, status?}`，任一变更 `token_version+1`，旧 Token 立即失效（AC-24） |
+| 建家属 | `POST /api/guardians` | `{name, phone, password}` → 返回 `guardian_id` |
+| 绑家属 | `POST /api/elders/{elder_id}/guardians` | `{guardian_id, relation}`；重复绑定 409；同一长者最多 2 位在册监护人（服务层校验） |
+
+错误码：`401 TOKEN_INVALID` / `403 ROLE_FORBIDDEN` / `404` / `409 CONFLICT`（手机号跨员工与家属两表查重）/ `422`。响应只回 `phone_masked`，不回传完整手机号与口令哈希。
+
+**空库先建第一个 admin**——没有任何 admin 时上面四个接口都进不去，用 CLI 引导：
+
+```bash
+uv run python scripts/create_account.py --role admin --name 王管理 \
+  --phone 13700000000 --password 'Admin@2026'
+```
+
+CLI 幂等（手机号已存在则 `kept`）、只存 bcrypt 哈希、支持 `--dry-run` 与 `--status`。契约见 `docs/接口契约_身份与权限.md` E12/E13/E15。
 
 ---
 
@@ -287,6 +366,32 @@ Day 3 调试中发现并修复的 4 个坑（详见会话，均已写进代码�
 | 4 | `Depends` 参数不能放在有默认值的 `Form` 参数之后 | Python 语法限制 | 把 `asr`/`tts` 挪到前面 |
 
 ---
+
+### 7.3 Day 4 · A3 3D 展示后端验收记录（2026-11-06）
+
+任务卡：`docs/team_tasks/day04/task-03-3D展示后端.md`｜实施计划：`docs/plans/day04/a3-3D展示后端.md`｜执行 DAG：`docs/plans/day04/a3-DAG.md`
+
+| 验收项 | 结果 | 证据 |
+| --- | --- | --- |
+| 设备 JWT 换形象配置 → 200 | ✅ | 真库 + 真 app：`POST /api/device-sessions` 200 → `GET /api/pad/avatar-config` 200，`avatar_url=https://localhost/avatars/vrm1_sample.vrm`、`version=1686351657` |
+| 不带凭证 → 401 | ✅ | 同一 app `GET /api/pad/avatar-config` → 401 `TOKEN_INVALID` |
+| 设备未绑长者 → 403 `device_not_bound` | ✅ | `tests/test_pad_avatar.py` 覆盖，错误体与 elders/devices 同形 `{detail, code, trace_id}` |
+| 三层取值链逐层降级 | ✅ | 单测 14 例：persona 相对路径→绝对、绝对 URL 直通、空 persona 落 Settings、两层皆空返 `null` 仍 200 |
+| 改 persona → `version` 变化、零代码换形象 | ✅ | 实测 `avatar_url` 改 `/avatars/xiaoman.vrm` → `version` 由 `1686351657` 变 `1794577085`，改回后**确定性还原**为 `1686351657`（crc32 指纹打在已绝对化的响应值上，改 `avatar_url` 或 `PUBLIC_BASE_URL` 都会变） |
+| `.vrm` 经 nginx 可拉取、MIME 正确 | ✅（配置级） | `docker run --rm -v .../nginx.conf:...:ro nginx:alpine nginx -t` → `syntax is ok / test is successful`；`types { model/gltf-binary vrm; }` 已显式声明 |
+| persona seed 幂等 | ✅ | 连跑两次：第一次 `inserted`，第二次 `kept (token_hash 不覆盖)`；`scripts/seed_personas.py` |
+| 质量门 | ✅ | `429 passed, 1 skipped`（skip 为未装 edge-tts）；总覆盖率 **79.17%**（门槛 70%），`app/api/pad.py` 96%；`ruff check` / `format --check` 全绿 |
+
+实现落点：`app/services/persona_service.py`（取值链与指纹）、`app/api/pad.py`（契约薄层）、`app/main.py`（挂载）、`scripts/seed_personas.py`、`deploy/nginx.conf`、`deploy/assets/`、`tests/test_pad_avatar.py`。
+
+两条设计取舍（评审请重点看）：
+
+- **未绑定一律 403，不返回 `200 + avatar_url=null`**。`null` 的语义是「后端没配形象，前端用内置兜底」；「设备没绑长者」需要人去照护台重新绑定，两者处置不同，合并会把运维缺口藏起来。
+- **查不到长者行时降级不抛 404**（契约 C7 只定义 200/401/403），但打 `avatar_config_elder_missing` warning 带 `trace_id`，否则「设备绑了一个 elders 里不存在的 id」永远查不出来。
+
+---
+
+
 
 ## 8. 已知限制与降级矩阵
 

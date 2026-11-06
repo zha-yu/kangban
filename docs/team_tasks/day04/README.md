@@ -104,6 +104,7 @@ flowchart TD
 | [task-02-信令与对话闭环.md](task-02-信令与对话闭环.md) | A2 | W3 + WS 追加 | identity 消息/client_diag、llm/dialogue/context、greeting、闸门① |
 | [task-03-3D展示后端.md](task-03-3D展示后端.md) | A3 | W1 3D 展示 | config 唯一录入人、seed、nginx 托管、avatar-config |
 | [task-04-VAD主链与遗留修复.md](task-04-VAD主链与遗留修复.md) | A4 | W4/W5 + a0 | 先清 a0 三问题，再接兜底 VAD 主链、metrics 打点 |
+| [task-05-Day4前端联调.md](task-05-Day4前端联调.md) | F1（前端） | Day 4 前端全量 | P0=pad 联调主线（3D/唤醒词/声纹录入/身份确认/对话收尾，对接 C4–C7）；P1=口型 + 双端登录页；与 task-01~04 在 14:30 窗口逐条咬合 |
 
 各卡自验准入后进联调窗口；执行期以各卡 `> 状态：` 行为准（PROGRESS 看板自动汇总）。
 
@@ -134,3 +135,5 @@ flowchart TD
 | v1.3 | 2026-11-06 | **契约提前定稿**：新增 contracts.md v1.0（C4–C7 代码级定义 + C5 五项开放点裁决：大按钮点选 / 30s 起点为 ask 下发 / ask_id 不匹配忽略 / generic 经 identity_result 通知 / metrics 三打点位；C6 复用 C2/C3 零新消息类型）；§4/§5/§7 与三张卡前置依赖同步，晨会改为签字确认 |
 | v1.4 | 2026-11-06 | §3 新增约定 6：个人实施计划统一放 `docs/plans/day04/` 并登记 plans 索引（AGENTS §10.1 已同步立通用规则） |
 | v1.5 | 2026-11-06 | 约定 2 补机制说明：`VOICEPRINT_BASE_URL` 支持指向局域网共享推理实例（IP 仅群内分发不入仓库），不可用自动降级不阻塞，队友可自起容器 |
+| v1.6 | 2026-11-06 | 新增 task-05 双端登录页（前端独立卡，不占四人后端分工）：console/family 两个独立登录模块 + MPA 双入口与 MUI 主题装配，对接 Day 2 已交付的 E1/E2/E3 鉴权接口，含任务拆解 F0–F4、验收 A/B/C 三组与手动测试矩阵 |
+| v1.7 | 2026-11-06 | **task-05 重写并更名 task-05-Day4前端联调.md**（v2.0）：范围从「仅双端登录」修正为 Day 4 前端全量——P0 为 pad 联调主线（3D 加载降级/唤醒词入口/声纹录入引导/身份确认大按钮/对话收尾，对接 C4–C7），P1 为口型与双端登录；验收扩为 A–F 六组 |

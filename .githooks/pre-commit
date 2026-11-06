@@ -1,11 +1,10 @@
 #!/bin/sh
-# 提交前自动刷新当前 Day 进度看板（day 目录由 update_progress.py 自动探测：
-# docs/team_tasks/dayNN/ 或旧版 docs/team_tasks_dayNN/，取序号最大者）
+# 提交前自动刷新每一天的进度看板 docs/team_tasks/day<N>/PROGRESS.md
 #
 # 启用一次即可（每个 clone 各来一次）：
 #     git config core.hooksPath .githooks
 #
-# 行为：重算 PROGRESS.md → 与本次提交一起入库。任务卡状态改了却忘了刷新，
+# 行为：重算所有 day*/PROGRESS.md → 与本次提交一起入库。任务卡状态改了却忘了刷新，
 # 会在提交那一刻被补上；生成失败则中止提交（宁可拦住，也不留过期看板）。
 
 set -e
@@ -24,13 +23,14 @@ if [ -z "$py" ]; then
     exit 0
 fi
 
-# 脚本成功时向 stdout 输出生成的 PROGRESS.md 相对路径（供下方 git add）
-out=$("$py" "$root/scripts/update_progress.py" --quiet) || {
-    echo "[progress] 生成 PROGRESS.md 失败，已中止提交" >&2
+if ! "$py" "$root/scripts/update_progress.py" --quiet; then
+    echo "[progress] 生成 docs/team_tasks/day*/PROGRESS.md 失败，已中止提交" >&2
     exit 1
-}
-
-if [ -n "$out" ] && [ -f "$root/$out" ]; then
-    git -C "$root" add "$out"
 fi
+
+for f in "$root"/docs/team_tasks/day*/PROGRESS.md; do
+    if [ -e "$f" ]; then
+        git -C "$root" add "${f#$root/}"
+    fi
+done
 exit 0

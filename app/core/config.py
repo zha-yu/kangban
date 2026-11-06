@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = 7
     elder_session_expire_hours: int = 24
 
+    # ---------------------------- 3D 数字人资产（Day 4 · A3） ----------------------------
+    # 三层取值链的第二层：personas.avatar_url 为空时才用这里的默认值。
+    # 库里与这里都存「相对路径」（如 /avatars/xxx.vrm）；响应层统一拼 public_base_url 成绝对 URL。
+    default_avatar_url: str = ""
+    default_fallback_avatar_url: str = ""  # 静态头像 PNG：3D 加载失败或超 5s 时前端使用（AC-15）
+    avatar_rotation_y_offset: float = 0.0  # 仅 VRM0 需要 π 补偿；VRM1 保持 0.0（见计划 S-02）
+    avatar_cache_version_salt: str = ""  # 想让前端强制失效缓存时改这个值，version 指纹会随之变化
+
     # ---------------------------- 数据库（业务表） ----------------------------
     database_url: str = "postgresql+asyncpg://silvermate:silvermate@localhost:5432/silvermate"
     database_pool_size: int = 10
@@ -161,6 +169,17 @@ class Settings(BaseSettings):
     medication_reminder_attempts: int = 4
     medication_attempt_wait_seconds: int = 60
     voiceprint_similarity_threshold: float = 0.85
+
+    # ---- 声纹推理容器（Day 4 · A1） ----
+    # voiceprint_service 调这个容器的 POST /extract 端点，主服务不装 torch（容器隔离重依赖）
+    voiceprint_base_url: str = "http://localhost:7003"
+    voiceprint_extract_timeout_seconds: float = 5.0
+    voiceprint_embedding_dimension: int = 192  # CAM++ 固定 192 维（spikes/voiceprint/ 验证）
+    # Fernet 密钥：embedding 加密落库用。必须 32 字节 base64 编码；生产经 .env 注入，
+    # .env.example 只放占位符（AGENTS §4.2 红线）。本地开发可临时用下方默认值。
+    voiceprint_fernet_key: str = (
+        "ZGV2LXRlbXAgZmVybmV0IGtleSBmb3IgcGxheWdyb3VuZCBvbmx5"
+    )
 
     @property
     def cors_origins(self) -> list[str]:

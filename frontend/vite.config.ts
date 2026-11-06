@@ -3,22 +3,25 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "node:path";
 
-// MPA 多入口：Day 3 仅建 pad 入口；console/family 属后续批次（A4 卡：目录占位不建）。
+// MPA 多入口：pad（长者端，React + Tailwind）/ console（照护台，MUI）/ family（家属端，MUI）。
 // 分层硬约束 4：pad 专属依赖（如 three-vrm）不得进其他入口构建产物。
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
+    host: "127.0.0.1",
     port: 5173,
     strictPort: true,
     proxy: {
-      "/api": { target: "http://localhost:8000", changeOrigin: true },
-      "/ws": { target: "ws://localhost:8000", ws: true },
+      "/api": { target: "http://127.0.0.1:8000", changeOrigin: true },
+      "/ws": { target: "ws://127.0.0.1:8000", ws: true },
     },
   },
   build: {
     rollupOptions: {
       input: {
         pad: resolve(__dirname, "index.html"),
+        console: resolve(__dirname, "console.html"),
+        family: resolve(__dirname, "family.html"),
       },
     },
   },

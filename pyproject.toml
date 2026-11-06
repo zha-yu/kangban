@@ -6,7 +6,7 @@ readme = "README.md"
 authors = [
     { name = "zxd15978684198", email = "zxd15978684198@163.com" }
 ]
-# 技术设计文档 §1.4 要求 Python 3.12+；本仓库 .python-version 锁 3.13
+# 技术设计文档 §1.4 要求 Python 3.12+；本仓库 .python-version 锁 3.12
 requires-python = ">=3.12"
 license = { text = "Proprietary" }
 keywords = ["elderly-care", "digital-human", "webrtc", "langgraph", "mcp", "agent"]
@@ -46,6 +46,8 @@ dependencies = [
     # ---- 鉴权 ----
     "pyjwt[crypto]>=2.9",
     "bcrypt>=4.2",
+    # ---- 数值（voiceprint cosine 比对 + embedding 归一化） ----
+    "numpy>=1.24",
     # ---- 观测 ----
     "prometheus-client>=0.21",
     "opentelemetry-sdk>=1.28",
