@@ -111,39 +111,56 @@ FastAPI（WebSocket 信令 SDP/ICE + aiortc 媒体）
 
 | 工具 | 用途 | 备注 |
 | --- | --- | --- |
-| Python 3.13（要求 3.12+） | 后端运行时 | 仓库带 `.python-version = 3.13` |
+| Python 3.12（要求 3.12+） | 后端运行时 | `.python-version` / `requires-python` / ruff / mypy 四处统一锁 3.12 |
 | [uv](https://docs.astral.sh/uv/) | 唯一的 Python 包管理器 | 不要混用 pip / conda，本仓库 `.venv` 由 uv 管理 |
-| Docker + Docker Compose | 起 PG / Redis / TURN 等组件 | 全栈一键起也用它 |
+| Docker + Docker Compose | 起 PG / Redis / FunASR 等依赖 | 完整 7 服务版（含前后端容器）留到 Day 10 |
 | Node.js + pnpm | 前端构建 | 三入口共用一套 Vite 配置 |
 | mkcert（可选） | 本地 HTTPS 证书 | 麦克风在非 localhost 下必须 HTTPS |
 
 > **Windows 不需要装 Microsoft C++ Build Tools**。VAD 依赖用的是 `webrtcvad-wheels`（上游 `webrtcvad` 的同源 fork，import 名与 API 完全不变），自带 cp310–cp314 预编译 wheel，`uv sync` 直接取二进制。若改回上游 `webrtcvad`，Windows 上会因缺少 C++ 编译器而 `uv sync` 失败。验证脚本：`uv run python spikes/vad/spike_webrtcvad.py`。
 
-### 5.2 五步启动
+### 5.2 前后端启动命令
+
+当前 `docker-compose.yml` 只编排 **postgres / redis / funasr** 三个依赖服务，仓库还没有 `Dockerfile`、nginx 与 backend/frontend 容器。本地开发的口径是「**基础组件走 Docker，前后端各起一个终端**」；完整 7 服务一键起留到 Day 10。
+
+#### 终端 A · 后端（FastAPI，:8000）
 
 ```bash
-# 1) 取代码
-git clone <repo-url> && cd silvermate
-
-# 2) 配环境变量（.env 已被 .gitignore 忽略，绝不入库）
-cp .env.example .env
-# 编辑 .env：至少填 LLM_API_KEY、ASR_*/TTS_*、WEATHER_API_KEY；其余本地可留默认值
-
-# 3) 装依赖
+# 首次：装依赖 + 配环境变量（.env 已被 .gitignore 忽略，绝不入库）
 uv sync
+cp .env.example .env          # 已有 .env 可跳过；至少填 LLM_API_KEY、ASR_*/TTS_*、WEATHER_API_KEY
 
-# 4) 起基础组件并建表
+# 起依赖并建表（页面/接口联调只需 postgres + redis；要用本地 ASR 基线再追加 funasr）
 docker compose up -d postgres redis
 uv run alembic upgrade head
 
-# 5) 起后端与前端
+# 每次启动
 uv run uvicorn app.main:app --reload --port 8000
-pnpm --dir frontend install && pnpm --dir frontend dev
 ```
 
-全栈一键起：`docker compose up --build`，然后访问 HTTPS 入口。
+```bash
+curl -s localhost:8000/health   # {"status":"ok", ...}，响应头带 X-Trace-Id
+```
 
-**没有 `uv` 的机器**（本开发机就是这种情况：`.venv` 与系统 `python` 都没有 `pip`）：第 3 步起不动，改用容器跑同一批命令。
+接口文档在 `http://localhost:8000/docs`。`/health` 刻意不探库，没有 `.env`、没起 PG/Redis 也能 200；联调按任务卡口径去掉 `--reload` 即为非热重载模式。
+
+#### 终端 B · 前端（Vite，:5173）
+
+```bash
+pnpm --dir frontend install     # 首次，或 package.json / pnpm-lock.yaml 变更后
+pnpm --dir frontend dev         # 开发服务器，strictPort: true，端口被占会直接报错退出
+pnpm --dir frontend build       # tsc --noEmit + MPA 构建，产物 frontend/dist/
+pnpm --dir frontend preview     # 本地预览构建产物
+```
+
+| 项 | 说明 |
+| --- | --- |
+| 页面入口 | 当前 MPA 只有 `pad`：`http://localhost:5173/`；`console` / `family` 入口随 Day 4 落地（`/console.html`、`/family.html`），以 `frontend/vite.config.ts` 的 `rollupOptions.input` 为准 |
+| 接口代理 | `vite.config.ts` 把 `/api` → `http://localhost:8000`、`/ws` → `ws://localhost:8000`；**先起后端再起前端**，页面里不用配 API 地址，也不触发 CORS |
+| HTTPS | 本机 `localhost:5173` 可直接使用麦克风；跨机联调需 mkcert 本地证书，否则 `getUserMedia` 不可用 |
+| 构建期变量 | `VITE_*` 只在 `pnpm --dir frontend build` 时注入，dev 模式走上面的代理，不必改 `.env` |
+
+**没有 `uv` 的机器**（WSL 等环境：`.venv` 与系统 `python` 都没有 `pip`）：上面的 `uv sync` 起不动，改用容器跑同一批命令。
 
 ```bash
 docker run -d --name silvermate-verify -v "$PWD":/w -w /w python:3.12-slim sleep infinity
@@ -155,9 +172,9 @@ docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:a
 
 需要连 PostgreSQL 跑迁移的完整版本见 [`AGENTS.md` §3.1](AGENTS.md)。
 
-> **当前进度**：Day 1.2「搭工作台」、Day 1.3「ER 与 Day 1 迁移」、Day 1.4「FastAPI 骨架」已完成并提交。
-> 已就绪：`alembic/`（`0001_day1` 五张表，upgrade/downgrade 往返实测）、`app/`（配置 / 结构化日志 / `trace_id` / `/health`）、`docs/ER_数据模型设计.md`、`docs/工作流选型说明.md`。
-> 尚未就绪：`docker-compose.yml`、`frontend/`、`Dockerfile`、`mcp-servers/`、`eval/` —— 随 Day 4–Day 10 落地，上面「起基础组件」「前端」两步届时才可执行。
+> **当前进度（2026-11-06）**：Day 1–Day 3 已交付（`alembic/` 迁移、`app/` 后端骨架与鉴权/音频链路、`frontend/` pad 端；Day 3 验收 292 passed、接口覆盖率 85%，见 §7），Day 4 双端登录页与 3D 身份闭环在推进。
+> 已就绪：`docker-compose.yml`（基础依赖版）、`frontend/`、`app/`、`alembic/`、`tests/`。
+> 尚未就绪：`Dockerfile`、nginx 托管、`mcp-servers/`、`eval/` —— 随 Day 4–Day 10 落地；在此之前「全栈一键起」不可用，按上面两个终端分别启动。
 
 ---
 
