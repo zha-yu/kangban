@@ -11,7 +11,7 @@
  */
 import type { PadStatus } from "./types";
 import type { SubtitleSource } from "./components/BigSubtitle";
-import type { ServerSignal } from "./protocol";
+import type { ClientDiagStage, ServerSignal } from "./protocol";
 import { MicCapture } from "./audio/capture";
 import { TenVad } from "./audio/vad";
 import { SignalSocket } from "./signal-socket";
@@ -33,6 +33,8 @@ export class RealtimeClient {
   private pc: RTCPeerConnection | null = null;
   private unbindDeviceChange: (() => void) | null = null;
   private starting = false;
+  /** 信令就绪 = auth_ok 已到（SocketState "ready"）：client_diag 只在此时放行（C2：auth 前上行会被 4401 关连） */
+  private socketReady = false;
   /** TTS 是否在播（打断判定用；tts_text 置位，打断/新一轮 partial 复位） */
   private ttsPlaying = false;
 
@@ -44,6 +46,7 @@ export class RealtimeClient {
 
     this.socket = new SignalSocket(token);
     this.socket.onStateChange = (state) => {
+      this.socketReady = state === "ready";
       if (state === "connecting" || state === "closed") this.cb.onStatus("disconnected");
     };
     this.socket.onAuthFail = this.cb.onAuthFail;
@@ -55,6 +58,12 @@ export class RealtimeClient {
   /** 「重新连接」按钮：复位信令状态机并重连（会话组件不重建） */
   retry(): void {
     this.socket?.retry();
+  }
+
+  /** C5 客户端诊断上行（仅日志，服务端不回执）：未就绪时静默丢弃，不排队不重发 */
+  sendDiag(stage: ClientDiagStage, ok: boolean, error: string): void {
+    if (!this.socketReady) return;
+    this.socket?.send({ type: "client_diag", stage, ok, error });
   }
 
   async stop(): Promise<void> {
