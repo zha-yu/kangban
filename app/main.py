@@ -17,11 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app import __version__
-from app.api import audio as audio_api
-from app.api import auth as auth_api
-from app.api import devices, elders, health
-from app.api import pad as pad_api
-from app.api import voiceprints as voiceprints_api
+from app.api import ROUTERS
 from app.api.schemas.auth import ErrorResponse
 from app.audio import signaling  # Day 3 T2：WS 信令路由（/ws/signal）
 from app.audio.webrtc import install_signaling_handler  # Day 3 T3：A3 媒体层接线
@@ -81,13 +77,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             expose_headers=[TRACE_HEADER],
         )
 
-    application.include_router(health.router)
-    application.include_router(auth_api.router, prefix="/api")
-    application.include_router(voiceprints_api.router, prefix="/api")  # Day 4 T7：声纹 REST（C4 契约）
-    application.include_router(elders.router)
-    application.include_router(devices.router)
-    application.include_router(audio_api.router)  # /api/audio 降级上传（C3，路由自带前缀）
-    application.include_router(pad_api.router)  # /api/pad 渲染前置数据（C7，Deliverable T6）
+    # REST 路由统一从 `app/api/__init__.py` 的注册表挂载（T0）：
+    # 新增路由只需在那张表里追加一行，不再改动本文件的公共代码块。
+    for _router, _prefix in ROUTERS:
+        application.include_router(_router, prefix=_prefix)
     application.include_router(signaling.router)  # /ws/signal 无 /api 前缀（契约裁决 A-03）
     install_signaling_handler()  # A3 注册 offer/ice/asr_start/asr_end 上行处理器
 
