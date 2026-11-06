@@ -1,0 +1,209 @@
+/* family 入口样式：设计 token 唯一真源（src/theme/tokens.css）。
+   首行 @import "tailwindcss" 使 tokens.css 的 @theme static 被处理为
+   真实 :root 变量（否则浏览器会整体忽略 @theme 块，变量不存在）。
+   组件样式为手写原生 CSS，一律 var() 引用 token，禁止硬编码色值。
+   375px 移动优先：无横向滚动、正文 ≥16px、触控 ≥48px（前端页面方案 §3.3）。 */
+@import "tailwindcss";
+@import "../theme/tokens.css";
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  color: var(--color-ink);
+}
+
+/* ---- 登录 / 占位首页共用布局（375px 单列，卡片在小屏内铺满） ---- */
+.auth-page {
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-canvas);
+  padding: 24px 16px;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 480px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-card);
+  padding: 32px 20px;
+}
+
+.auth-card.home-card {
+  text-align: center;
+  padding: 40px 24px;
+}
+
+.auth-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.auth-subtitle {
+  margin: 8px 0 0;
+  font-size: 16px;
+  color: var(--color-ink-muted);
+}
+
+.auth-note {
+  margin: 24px 0 0;
+  font-size: 16px;
+  color: var(--color-ink-muted);
+}
+
+.auth-actions {
+  margin-top: 32px;
+}
+
+/* ---- 表单 ---- */
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  margin-top: 28px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field > label {
+  font-size: 16px;
+  color: var(--color-ink);
+}
+
+.input {
+  width: 100%;
+  height: 48px;
+  padding: 0 14px;
+  font-size: 16px;
+  color: var(--color-ink);
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.input:focus {
+  border-color: var(--color-brand);
+}
+
+.input[aria-invalid="true"] {
+  border-color: var(--color-danger-ink);
+}
+
+.input-wrap {
+  position: relative;
+}
+
+.input-wrap .input {
+  padding-right: 52px;
+}
+
+.icon-btn {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 48px;
+  height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  color: var(--color-ink-muted);
+}
+
+.helper-error {
+  margin: 0;
+  font-size: 14px;
+  color: var(--color-danger-ink);
+}
+
+/* ---- 错误提示统一形态：danger-soft 底 + danger-ink 字（task-05 §3 要点 4） ---- */
+.alert-danger {
+  background: var(--color-danger-soft);
+  color: var(--color-danger-ink);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 16px;
+}
+
+/* ---- 按钮（前端页面方案 §4.2：主按钮 brand 底反白字；次按钮 surface 底 1px 线） ---- */
+.btn-primary {
+  width: 100%;
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--color-brand);
+  color: var(--color-ink-inverse);
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--color-brand-strong);
+}
+
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-size: 16px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.btn-secondary:hover {
+  background: var(--color-surface-sunken);
+}
+
+/* ---- 加载指示 ---- */
+.spinner {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid var(--color-brand-soft);
+  border-top-color: var(--color-brand);
+  animation: kb-spin 0.8s linear infinite;
+}
+
+.spinner-inverse {
+  border-color: var(--color-brand);
+  border-top-color: var(--color-ink-inverse);
+}
+
+@keyframes kb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
