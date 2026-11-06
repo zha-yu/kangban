@@ -1,6 +1,6 @@
 # Day 3 模块间接口契约（代码级定义）
 
-> 状态：C1 / C2 / C3 均已冻结　｜　版本：v1.3　｜　日期：2026-11-05
+> 状态：C1 / C2 / C3 均已冻结　｜　版本：v1.4　｜　日期：2026-11-06
 > 关联：docs/team_tasks_day03/README.md §3（契约清单与冻结人）
 > 上游依据：day-03 计划 v1.5 §2.3（ASR 契约与置信度口径）｜adhoc-20261105 方案 v1.3 M1–M3｜接口契约_身份与权限.md E4
 > 变更记录见文末
@@ -172,7 +172,7 @@ Authorization: Bearer <device access_token>   # E4 签发；elder_id 不由客�
 200 → {"text": str, "reply": {"text": str, "audio_url": str | None}}
       # text=ASR 终稿；reply.text=回复话术（降级链路为模板话术）；
       # audio_url=服务端合成音频的本地可取地址；无 TTS 时为 null
-错误 → 401（token 失效）｜413（超长音频，>30s 拒收）｜503（ASR 不可用，body 携带降级话术）
+错误 → 401（token 失效）｜413（超长音频，>30s 拒收）｜422（WAV 头非法/表单校验失败，`VALIDATION_ERROR`，a0-F-02 补记）｜503（ASR 不可用，body 携带降级话术）
 ```
 
 **语义约定**：本接口是 WebRTC 主链路不可用时的降级形态，成功响应也必须保证长者端可渲染（不白屏）；幂等不要求（天然一次性）；限流复用 `rate_limit_per_minute`。
@@ -196,3 +196,4 @@ Authorization: Bearer <device access_token>   # E4 签发；elder_id 不由客�
 | v1.1 | 2026-11-05 | C2 冻结：确认表状态更新 + 新增「C2 契约会裁决记录」（心跳单向 / 重复 auth 拒 / 踢旧留新 / 非法消息不关连接）+ 登记设备会话无 refresh 结论；C2 正文 TypedDict 未改动一字 |
 | v1.2 | 2026-11-05 | C1 由 A1 冻结并落地（`app/audio/asr.py` 行 39–92，随 `a4cb857` 提交）；C2/C3 仍待各自冻结人确认 |
 | v1.3 | 2026-11-05 | dev 合入 feature-zy 后状态对账：确认表内 C2（A2，v1.1 裁决四点）与 C3（A5，reply 定稿 audio_url）均已冻结，头部状态行据此同步；另修复合并残留——signaling.py 误留 A1 早期「仅消息类型」版 docstring 与重复 import，main.py 补回 `audio_api.router` 装配行（/api/audio 降级上传此前未挂载） |
+| v1.4 | 2026-11-06 | C3 错误码补记 422：C3 冻结时未收录「非 WAV/表单校验失败」分支，a0 卡联调遗留 F-01/F-02 已实现（统一错误体 `{detail, code, trace_id}`、WAV 头非法 422 `VALIDATION_ERROR`，随 41e078c / a224579 合入）；Day 4 全面核验发现契约与实现不一致，本版只补错误码行，不改 C3 其他语义；C3 冻结人 A5，改动由 A4 代记并随联调窗口群内通告 A5 追认（契约使用规则「群通告 + 冻结人任务卡留痕」） |

@@ -224,3 +224,4 @@ A4 依赖 A2 的 refresh 核对结论（W7 产出）决定过期处理
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-05 | 初稿：事实基线 F1–F11、W0–W7 拆解（含步骤/交付物/量化自检）、对接矩阵、时间节点、风险红线；登记设备会话无 refresh 通道的代码核实结论（E2 仅人账号，设备临期重走 E4） |
+| v1.1 | 2026-11-06 | A2 委托 A4 代记（只补记录，契约内容零改动）：①Day 4 契约追加 C5 消息 `client_diag{stage, ok, detail?}`（端侧自检上报，stage=vad ok=false 为服务端 VAD 兜底激活信号，见 fcb5e41）与 `identity_ask` / `identity_confirm` / `identity_result` 三消息（身份确认闭环，C5 裁决 5）；②`tts_text` 消息扩展 `degraded` 字段（TTS 降级话术标记）。上述均为 C2 冻结后的**追加/扩展**（新增消息类型与可选字段，不改既有消息语义），走 R5「群通告 + 双方任务卡留痕 + 对方确认」流程；identity 三打点位由 A2 在 signaling 改动里调 `app/core/metrics.py` 的 record_identity_* 三函数（52d0415 已就绪） |

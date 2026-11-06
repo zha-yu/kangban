@@ -10,14 +10,17 @@
 from __future__ import annotations
 
 import io
+import os
 import struct
 import wave
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -28,7 +31,9 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from app.api import audio as audio_api
+from app.api import auth as auth_api
 from app.audio.asr import MockASRProvider
+from app.audio.tts import MockTTSProvider
 from app.core.auth import (
     CredentialExpiredError,
     CredentialInvalidError,
@@ -37,6 +42,7 @@ from app.core.auth import (
 from app.core.config import get_settings
 from app.core.security import TokenExpiredError, sha256_hex
 from app.db import get_session as _app_get_session
+from app.main import handle_http_exception, handle_request_validation
 from app.models.organization import Bed, Device, Elder, Room
 
 # ---------------------------------------------------------------------------
@@ -72,12 +78,23 @@ async def audio_test_engine() -> AsyncIterator[AsyncEngine]:
 
 @pytest.fixture
 async def audio_test_session(audio_test_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
-    sf = async_sessionmaker(audio_test_engine, expire_on_commit=False)
-    async with sf() as session:
-        try:
-            yield session
-        finally:
-            await session.rollback()
+    """外层事务包住整个用例：service 层（device-sessions 登录）的真实 commit 只释放
+    savepoint，结束整体回滚，共享 dev 库零残留（模式同 test_elders_api.client）。
+
+    不能用裸 session：登录 commit 会把种子数据落进共享库，文件组合顺序变化时
+    污染 elders 计数用例（2026-11-06 实测 +1 elder +1 device）。
+    """
+    async with audio_test_engine.connect() as conn:
+        trans = await conn.begin()
+        sf = async_sessionmaker(
+            bind=conn, expire_on_commit=False, join_transaction_mode="create_savepoint"
+        )
+        async with sf() as session:
+            try:
+                yield session
+            finally:
+                await session.rollback()
+        await trans.rollback()
 
 
 @pytest.fixture
@@ -114,9 +131,14 @@ async def audio_seeded_db(audio_test_session: AsyncSession) -> dict[str, Any]:
 async def app_for_audio(
     audio_test_session: AsyncSession, audio_seeded_db: dict[str, Any]
 ) -> FastAPI:
-    """audio 路由 + 全局 exception handler（完整复制 auth 层 handler）。"""
+    """audio + auth 路由 + 全局 exception handler（完整复制 auth 层 handler）。"""
     app = FastAPI()
     app.include_router(audio_api.router)
+    app.include_router(auth_api.router, prefix="/api")  # a0-F-01：400 分支测试用
+    # a0-F-01：裸 app 不走 create_app，手动注册全局 RequestValidationError handler
+    app.add_exception_handler(RequestValidationError, handle_request_validation)
+    # a0-F-02：HTTPException 兜底（code_map 422→VALIDATION_ERROR），与生产同实现
+    app.add_exception_handler(HTTPException, handle_http_exception)
 
     async def _override_get_session():
         yield audio_test_session
@@ -126,6 +148,12 @@ async def app_for_audio(
     # 若沿用 `.env` 里的 ASR_PROVIDER（开发机上常被设成 funasr），用例就依赖外部容器状态，
     # 容器没起时会退化成 503 —— 那是环境问题，不该让用例红。
     app.dependency_overrides[audio_api._get_default_asr] = lambda: MockASRProvider()
+
+    # 测试确定性：显式 pin Mock ASR/TTS，防 .env 的 ASR_PROVIDER/TTS_PROVIDER
+    # 渗入 build_asr()/build_tts() 默认依赖（.env 配 funasr 时本文件用例会误连真链路）。
+    # 注意必须用零参工厂而非类本身：FastAPI 会把类的 __init__ 参数当可注入查询参数解析
+    app.dependency_overrides[audio_api._get_default_asr] = lambda: MockASRProvider()
+    app.dependency_overrides[audio_api._get_default_tts] = lambda: MockTTSProvider()
 
     # 全局 exception handler —— audio.py 鉴权用 Depends(current_device)
     # 会走 get_current_principal → 抛 Credential*Error，必须这里兜
@@ -326,6 +354,40 @@ async def test_utterance_success(
 
 
 @pytest.mark.asyncio
+async def test_utterance_p1_2_real_asr_tts_chain(
+    ac_audio: httpx.AsyncClient,
+    real_device_token: str,
+) -> None:
+    """a0-P1-2 收口：默认依赖链（build_asr/build_tts → Mock 形状）的链路行为。
+
+    - text 与所说内容一致（Mock 口径 = 固定脚本终稿，原样透传不造词）；
+    - audio_url 为真实落盘文件（/static/mock/tts_*.wav 且文件可读、合法 WAV），
+      不再是 Day 3 前期写死的假地址 http://static.example.com/mock.mp3。
+    """
+    wav = _make_wav(16_000)  # 1s
+    resp = await ac_audio.post(
+        "/api/audio/utterance",
+        headers={"Authorization": f"Bearer {real_device_token}"},
+        files={"audio": ("test.wav", wav, "audio/wav")},
+    )
+    assert resp.status_code == 200, f"got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body["text"] == "今天天气怎么样"  # app/audio/fixtures/asr_script.py 终稿
+
+    audio_url = body["reply"]["audio_url"]
+    assert audio_url, "TTS 正常时 audio_url 不应为 null"
+    assert not audio_url.endswith("mock.mp3"), f"假地址残留: {audio_url}"
+    assert audio_url.startswith("/static/mock/tts_")
+
+    # 落盘文件真实存在且是合法 WAV（16k/mono/16bit，与 _tts_synthesize 口径一致）
+    path = Path(os.getcwd()) / "static" / "mock" / audio_url.rsplit("/", 1)[-1]
+    assert path.exists(), f"audio_url 指向的文件未落盘: {path}"
+    with wave.open(str(path), "rb") as w:
+        assert w.getnframes() > 0
+        assert w.getframerate() == 16_000
+
+
+@pytest.mark.asyncio
 async def test_utterance_too_long_413(
     ac_audio: httpx.AsyncClient,
     real_device_token: str,
@@ -368,3 +430,72 @@ async def test_client_elder_id_ignored(
         files={"audio": ("test.wav", wav, "audio/wav")},
     )
     assert resp.status_code == 200, f"got {resp.status_code}: {resp.text}"
+
+
+@pytest.mark.asyncio
+async def test_missing_audio_422_unified_error_body(
+    ac_audio: httpx.AsyncClient,
+    real_device_token: str,
+) -> None:
+    """a0-F-01：缺 audio 文件字段 → RequestValidationError → 统一错误体。
+
+    断言 body 是 {detail, code, trace_id} 而非 FastAPI 默认的 Pydantic 裸数组。
+    """
+    resp = await ac_audio.post(
+        "/api/audio/utterance",
+        headers={"Authorization": f"Bearer {real_device_token}"},
+    )
+    assert resp.status_code == 422, f"got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body["code"] == "VALIDATION_ERROR"
+    # trace_id 值由 TraceIdMiddleware 写入 contextvar；本 fixture 是裸 app 没挂中间件，
+    # 生产路径由 test_security/test_elders_api 的 TraceIdMiddleware 用例覆盖
+    assert "trace_id" in body and isinstance(body["trace_id"], str)
+    assert isinstance(body["detail"], str) and body["detail"]
+    assert "body.audio" in body["detail"]  # loc 简化拼接，非原始数组
+
+
+@pytest.mark.asyncio
+async def test_garbage_bytes_422_not_503(
+    ac_audio: httpx.AsyncClient,
+    real_device_token: str,
+) -> None:
+    """a0-F-02：纯垃圾字节（非 WAV）→ 422 VALIDATION_ERROR，而非漏到 ASR 层炸 503。"""
+    resp = await ac_audio.post(
+        "/api/audio/utterance",
+        headers={"Authorization": f"Bearer {real_device_token}"},
+        files={"audio": ("garbage.wav", b"\x00" * 1024, "audio/wav")},
+    )
+    assert resp.status_code == 422, f"got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body["code"] == "VALIDATION_ERROR"
+
+    text_bytes = "这不是音频，是文本".encode()
+    resp = await ac_audio.post(
+        "/api/audio/utterance",
+        headers={"Authorization": f"Bearer {real_device_token}"},
+        files={"audio": ("garbage.wav", text_bytes, "audio/wav")},
+    )
+    assert resp.status_code == 422, f"got {resp.status_code}: {resp.text}"
+
+
+@pytest.mark.asyncio
+async def test_malformed_json_400_unified_error_body(
+    ac_audio: httpx.AsyncClient,
+) -> None:
+    """a0-F-01：默认路由类（auth，无 ContractAPIRoute）的非法 JSON → §7 分流 400。
+
+    契约 §7：请求体不是合法 JSON 归 400 BAD_REQUEST（elders 的 ContractAPIRoute
+    已这么做，这里验证 audio/auth 等默认路由类经全局 handler 后同款行为）；
+    body 必须是统一错误体三件套。
+    """
+    resp = await ac_audio.post(
+        "/api/sessions",
+        content=b"{",
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 400, f"got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body["code"] == "BAD_REQUEST"
+    assert "trace_id" in body
+    assert isinstance(body["detail"], str)

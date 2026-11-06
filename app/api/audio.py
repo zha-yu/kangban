@@ -98,18 +98,22 @@ async def _get_default_tts() -> TTSProvider:
 # ---------------------------------------------------------------------------
 
 
-def _wav_duration_ms(audio: bytes) -> int:
-    """从 WAV 头计算时长（ms）。失败返回 0，不抛异常。"""
+def _wav_duration_ms(audio: bytes) -> int | None:
+    """从 WAV 头计算时长（ms）；头部解析失败返回 None（调用方拒收 422，a0-F-02）。
+
+    此前失败静默归 0：垃圾字节通过 ≤30s 校验漏到 ASR 层炸成 503，客户端
+    拿不到「格式不对」的明确信号。现在格式校验前移到入口，非 WAV 一律 422。
+    """
     try:
         with wave.open(io.BytesIO(audio), "rb") as w:
             frames = w.getnframes()
             rate = w.getframerate()
             if rate <= 0:
-                return 0
+                return None
             return int(frames * 1000 / rate)
     except wave.Error:
         logger.warning("wav_duration: invalid wav header (len=%d)", len(audio))
-        return 0
+        return None
 
 
 async def _read_upload_file(file: UploadFile) -> bytes:
@@ -262,6 +266,15 @@ async def utterance(
 
     # 用 WAV 头算真实时长；不信任客户端传的 duration_ms
     real_duration_ms = _wav_duration_ms(audio_bytes)
+    if real_duration_ms is None:
+        # a0-F-02：非法 WAV 头（垃圾字节）在入口拒收 422，不再漏到 ASR 层炸 503
+        logger.warning(
+            "utterance rejected: not a valid wav file (len=%d, trace_id=%s)",
+            len(audio_bytes),
+            trace_id,
+        )
+        raise HTTPException(status_code=422, detail="audio is not a valid wav file")
+
     if real_duration_ms > MAX_AUDIO_SECONDS * 1000:
         logger.warning(
             "utterance rejected: audio too long (real=%dms, client=%sms, trace_id=%s)",
