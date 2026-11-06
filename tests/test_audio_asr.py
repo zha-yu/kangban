@@ -192,7 +192,8 @@ def test_build_asr_unknown_provider_falls_back_to_mock(
 
 
 def test_build_asr_funasr_defaults_to_local_7002() -> None:
-    provider = build_asr(Settings(asr_provider="funasr", asr_base_url="   "))
+    # _env_file=None：隔离 .env（本机 .env 常配 ASR_INSECURE=true），否则「默认不跳过校验」断言随环境漂移
+    provider = build_asr(Settings(asr_provider="funasr", asr_base_url="   ", _env_file=None))
     assert isinstance(provider, FunASRWSProvider)
     assert (
         provider.url == "wss://localhost:7002"

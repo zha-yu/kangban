@@ -26,8 +26,8 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from app.api import audio as audio_api
-from app.audio.asr import ASRProvider, ASRUnavailable
-from app.audio.tts import TTSProvider, TTSUnavailable
+from app.audio.asr import ASRProvider, ASRUnavailable, MockASRProvider
+from app.audio.tts import MockTTSProvider, TTSProvider, TTSUnavailable
 from app.core.auth import (
     CredentialExpiredError,
     CredentialInvalidError,
@@ -104,6 +104,12 @@ async def sec_app(sec_session: AsyncSession) -> FastAPI:
         yield sec_session
 
     app.dependency_overrides[_app_get_session] = _override_get_session
+
+    # 测试确定性：默认 pin Mock ASR/TTS（防 .env 渗入）；失败场景用例再用
+    # 同 key 覆盖为 unavailable provider（赋值即替换，本注释之后的 per-test override 优先）。
+    # 必须用零参工厂而非类本身：FastAPI 会把类的 __init__ 参数当可注入查询参数解析
+    app.dependency_overrides[audio_api._get_default_asr] = lambda: MockASRProvider()
+    app.dependency_overrides[audio_api._get_default_tts] = lambda: MockTTSProvider()
 
     @app.exception_handler(CredentialInvalidError)
     async def _(_req, exc):
