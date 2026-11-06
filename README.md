@@ -192,6 +192,7 @@ docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:a
 | 观测 | `LANGFUSE_*` `OTEL_*` `METRICS_ENABLED` | Trace 上传前脱敏 |
 | 数据保留 | `AUDIO_RETENTION_HOURS` `SCHEDULER_TIMEZONE` | 原始音频默认 72h 自动清理 |
 | 前端构建期 | `VITE_API_BASE_URL` `VITE_PAD_WS_URL` `VITE_ENABLE_3D` `VITE_ENABLE_WEBRTC` | 以 `VITE_` 前缀暴露给浏览器 |
+| 3D 资产 | `DEFAULT_AVATAR_URL` `DEFAULT_FALLBACK_AVATAR_URL` `AVATAR_ROTATION_Y_OFFSET` `AVATAR_CACHE_VERSION_SALT` | 形象取值链**第三层**兜底（persona → Settings → 前端内置），见 §6.1 |
 
 **本地 ASR 基线（FunASR）**：**不新增地址类变量**，复用现有 `ASR_*` 字段——`ASR_PROVIDER=funasr`、`ASR_BASE_URL=wss://localhost:7002`、`ASR_INSECURE=true`（宿主端口见下表 `funasr` 行，容器内 FunASR runtime 监听 10095）。
 
@@ -202,7 +203,46 @@ docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:a
 
 云 API 仍是主实现，FunASR 只作本地基线与降级备份（见 `docs/plans/task-a1-ASR与TTS适配层.md`）。
 
-### 服务与端口
+### 6.1 3D 形象资产与取值链
+
+平板渲染数字人所需的四个值由 `GET /api/pad/avatar-config` 给出（契约 C7，设备 JWT 鉴权）：
+
+```json
+{"avatar_url": "https://localhost/avatars/vrm1_sample.vrm",
+ "fallback_image_url": null, "rotation_y_offset": 0.0, "version": 1686351657}
+```
+
+`avatar_url` 的取值顺序是**三层**，前一层为空才落到下一层：
+
+| 层 | 来源 | 改它的方式 |
+| --- | --- | --- |
+| 1 | `personas.avatar_url`（库里存**相对路径**，响应时拼 `PUBLIC_BASE_URL`） | 改 persona 行即可换形象，**零代码、零重启**；`version` 指会随之变化，前端缓存自动失效 |
+| 2 | `DEFAULT_AVATAR_URL` | 改 `.env` 后重启后端 |
+| 3 | 前端内置兜底（`VITE_ENABLE_3D=false` 或前两层皆空时的静态头像） | 改前端构建期变量 |
+
+`version` 是四键内容的 crc32 指纹（不是自增版本号），因此它只承担「缓存失效」职责，**不代表形象可切换的档位**（FR-3D-03「更多动作与形象」是 P2，不排期）。
+
+**静态托管**：`.vrm` 由 nginx 直出，不经后端转发（PRD §2.1）。片段在 `deploy/nginx.conf` 的 `location /avatars/`，要点两条：
+
+- `.vrm` 必须回 `Content-Type: model/gltf-binary`，否则 three-vrm 拒绝解析（配置里用 `types { model/gltf-binary vrm; }` 显式声明，不依赖系统 mime.types）；
+- 目录映射 `deploy/assets/avatars/` ↔ URL `/avatars/`，文件体积上限 **15MB**（超过会挤掉 FR-3D-02 的 5s 降级窗口）。
+
+**资产不入库**：`*.vrm` 与 `*.glb` 已被 `.gitignore` 忽略（`.vrm` 单个 10MB 量级）。新克隆仓库后按 `deploy/assets/README.md` 重新下载：
+
+```bash
+curl -L -o deploy/assets/avatars/vrm1_sample.vrm \
+  https://pixiv.github.io/three-vrm/packages/three-vrm/examples/models/VRM1_Constraint_Twist_Sample.vrm
+```
+
+一次性验证 nginx 片段（无需常驻服务，Docker 在 WSL 里即可）：
+
+```bash
+wsl -e sh -lc "docker run --rm -v /mnt/e/project_month/silvermate/deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro nginx:alpine nginx -t"
+```
+
+
+
+### 6.2 服务与端口
 
 | 服务 | 端口 | 说明 |
 | --- | --- | --- |
@@ -287,6 +327,32 @@ Day 3 调试中发现并修复的 4 个坑（详见会话，均已写进代码�
 | 4 | `Depends` 参数不能放在有默认值的 `Form` 参数之后 | Python 语法限制 | 把 `asr`/`tts` 挪到前面 |
 
 ---
+
+### 7.3 Day 4 · A3 3D 展示后端验收记录（2026-11-06）
+
+任务卡：`docs/team_tasks/day04/task-03-3D展示后端.md`｜实施计划：`docs/plans/day04/a3-3D展示后端.md`｜执行 DAG：`docs/plans/day04/a3-DAG.md`
+
+| 验收项 | 结果 | 证据 |
+| --- | --- | --- |
+| 设备 JWT 换形象配置 → 200 | ✅ | 真库 + 真 app：`POST /api/device-sessions` 200 → `GET /api/pad/avatar-config` 200，`avatar_url=https://localhost/avatars/vrm1_sample.vrm`、`version=1686351657` |
+| 不带凭证 → 401 | ✅ | 同一 app `GET /api/pad/avatar-config` → 401 `TOKEN_INVALID` |
+| 设备未绑长者 → 403 `device_not_bound` | ✅ | `tests/test_pad_avatar.py` 覆盖，错误体与 elders/devices 同形 `{detail, code, trace_id}` |
+| 三层取值链逐层降级 | ✅ | 单测 14 例：persona 相对路径→绝对、绝对 URL 直通、空 persona 落 Settings、两层皆空返 `null` 仍 200 |
+| 改 persona → `version` 变化、零代码换形象 | ✅ | 指纹打在**已绝对化**的响应值上，改 `avatar_url` 或 `PUBLIC_BASE_URL` 都会变 |
+| `.vrm` 经 nginx 可拉取、MIME 正确 | ✅（配置级） | `docker run --rm -v .../nginx.conf:...:ro nginx:alpine nginx -t` → `syntax is ok / test is successful`；`types { model/gltf-binary vrm; }` 已显式声明 |
+| persona seed 幂等 | ✅ | 连跑两次：第一次 `inserted`，第二次 `kept (token_hash 不覆盖)`；`scripts/seed_personas.py` |
+| 质量门 | ✅ | `429 passed, 1 skipped`（skip 为未装 edge-tts）；总覆盖率 **79.17%**（门槛 70%），`app/api/pad.py` 96%；`ruff check` / `format --check` 全绿 |
+
+实现落点：`app/services/persona_service.py`（取值链与指纹）、`app/api/pad.py`（契约薄层）、`app/main.py`（挂载）、`scripts/seed_personas.py`、`deploy/nginx.conf`、`deploy/assets/`、`tests/test_pad_avatar.py`。
+
+两条设计取舍（评审请重点看）：
+
+- **未绑定一律 403，不返回 `200 + avatar_url=null`**。`null` 的语义是「后端没配形象，前端用内置兜底」；「设备没绑长者」需要人去照护台重新绑定，两者处置不同，合并会把运维缺口藏起来。
+- **查不到长者行时降级不抛 404**（契约 C7 只定义 200/401/403），但打 `avatar_config_elder_missing` warning 带 `trace_id`，否则「设备绑了一个 elders 里不存在的 id」永远查不出来。
+
+---
+
+
 
 ## 8. 已知限制与降级矩阵
 
