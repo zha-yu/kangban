@@ -47,7 +47,9 @@ export class RealtimeClient {
     this.socket = new SignalSocket(token);
     this.socket.onStateChange = (state) => {
       this.socketReady = state === "ready";
-      if (state === "connecting" || state === "closed") this.cb.onStatus("disconnected");
+      // connecting ≠ 断开：状态条显示「连接中」；否则上层会把建连初期误判为会话结束
+      if (state === "connecting") this.cb.onStatus("connecting");
+      if (state === "closed") this.cb.onStatus("disconnected");
     };
     this.socket.onAuthFail = this.cb.onAuthFail;
     this.socket.onGiveUp = this.cb.onNeedManualRetry;

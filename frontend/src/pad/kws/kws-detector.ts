@@ -12,7 +12,7 @@
 export const KWS_KEYWORD_PINYIN = "x iǎo b àn @小伴";
 
 const KWS_ASSET_PREFIX = "/kws/";
-const LOAD_TIMEOUT_MS = 10_000;
+const LOAD_TIMEOUT_MS = 30_000; // dev 首次拉 12MB wasm + 4.5MB data 较慢；nginx gzip 下更快
 
 /* ---- Emscripten 非 modularize 产物的最小类型声明 ---- */
 interface EmscriptenModuleConfig {
@@ -50,8 +50,9 @@ let loadPromise: Promise<KwsDetector | null> | null = null;
 let recognizer: KwsRecognizer | null = null;
 let stream: KwsStream | null = null;
 
-/** 动态注入 <script>，resolve 于 onload / reject 于 onerror */
+/** 动态注入 <script>，resolve 于 onload / reject 于 onerror；同 src 已存在则直接成功（StrictMode 双跑防重复执行） */
 function injectScript(src: string): Promise<void> {
+  if (document.querySelector(`script[src="${src}"]`)) return Promise.resolve();
   return new Promise((resolve, reject) => {
     const el = document.createElement("script");
     el.src = src;
@@ -64,6 +65,9 @@ function injectScript(src: string): Promise<void> {
 /** 单例加载：成功返回 KwsDetector，失败/超时返回 null（R-5 降级口径） */
 export function loadKwsDetector(): Promise<KwsDetector | null> {
   loadPromise ??= (async () => {
+    // 超时后 runtime 可能仍会就绪（12MB wasm 慢加载）；settled 保证超时路径
+    // 不再 createKws、也不清 window.Module（后续就绪时引用它无害）
+    let settled = false;
     try {
       // 胶水 API（createKws 定义）先行加载，与运行时互不依赖
       if (!window.createKws) {
@@ -81,15 +85,18 @@ export function loadKwsDetector(): Promise<KwsDetector | null> {
         runtimeReady,
         new Promise<never>((_, rej) => setTimeout(() => rej(new Error("kws runtime timeout")), LOAD_TIMEOUT_MS)),
       ]);
-      if (!window.createKws) throw new Error("createKws glue missing");
+      if (settled || !window.createKws) throw new Error("createKws glue missing");
 
       recognizer = window.createKws(window.Module!, {
         featConfig: { sampleRate: 16000, featureDim: 80 },
         modelConfig: {
-          // .data 经 --preload-file assets@. 挂在 MEMFS 根，路径即文件名
-          encoder: "encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
-          decoder: "decoder-epoch-12-avg-2-chunk-16-left-64.onnx",
-          joiner: "joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+          // 胶水的 initModelConfig 要求 transducer 嵌套结构；.data 经 --preload-file assets@.
+          // 挂在 MEMFS 根，路径即文件名
+          transducer: {
+            encoder: "encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+            decoder: "decoder-epoch-12-avg-2-chunk-16-left-64.onnx",
+            joiner: "joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+          },
           tokens: "tokens.txt",
           numThreads: 2,
           provider: "cpu",
@@ -123,8 +130,7 @@ export function loadKwsDetector(): Promise<KwsDetector | null> {
       console.warn("[kws] 不可用，落呼叫按钮降级：", e); // R-5：不阻塞主流程
       return null;
     } finally {
-      // 加载失败时清掉全局 Module，避免污染其他 Emscripten 资产
-      if (!recognizer) window.Module = undefined;
+      settled = true;
     }
   })();
   return loadPromise;

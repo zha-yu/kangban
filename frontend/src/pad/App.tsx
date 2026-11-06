@@ -80,6 +80,10 @@ function MainScreen({
         setKwsState("unavailable"); // 麦克风拿不到 → 按钮降级
         return;
       }
+      if (cancelled) {
+        void mic.stop(); // 双跑竞态守卫：cleanup 已跑则立即释放，防双麦
+        return;
+      }
       detector.onHit = beginSession;
       mic.onFrame = (pcm) => detector.feed(pcm); // 仅本机推理，不出端（AGENTS 红线 10）
       kwsRef.current = { detector, mic };
