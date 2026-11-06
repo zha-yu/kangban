@@ -338,7 +338,7 @@ Day 3 调试中发现并修复的 4 个坑（详见会话，均已写进代码�
 | 不带凭证 → 401 | ✅ | 同一 app `GET /api/pad/avatar-config` → 401 `TOKEN_INVALID` |
 | 设备未绑长者 → 403 `device_not_bound` | ✅ | `tests/test_pad_avatar.py` 覆盖，错误体与 elders/devices 同形 `{detail, code, trace_id}` |
 | 三层取值链逐层降级 | ✅ | 单测 14 例：persona 相对路径→绝对、绝对 URL 直通、空 persona 落 Settings、两层皆空返 `null` 仍 200 |
-| 改 persona → `version` 变化、零代码换形象 | ✅ | 指纹打在**已绝对化**的响应值上，改 `avatar_url` 或 `PUBLIC_BASE_URL` 都会变 |
+| 改 persona → `version` 变化、零代码换形象 | ✅ | 实测 `avatar_url` 改 `/avatars/xiaoman.vrm` → `version` 由 `1686351657` 变 `1794577085`，改回后**确定性还原**为 `1686351657`（crc32 指纹打在已绝对化的响应值上，改 `avatar_url` 或 `PUBLIC_BASE_URL` 都会变） |
 | `.vrm` 经 nginx 可拉取、MIME 正确 | ✅（配置级） | `docker run --rm -v .../nginx.conf:...:ro nginx:alpine nginx -t` → `syntax is ok / test is successful`；`types { model/gltf-binary vrm; }` 已显式声明 |
 | persona seed 幂等 | ✅ | 连跑两次：第一次 `inserted`，第二次 `kept (token_hash 不覆盖)`；`scripts/seed_personas.py` |
 | 质量门 | ✅ | `429 passed, 1 skipped`（skip 为未装 edge-tts）；总覆盖率 **79.17%**（门槛 70%），`app/api/pad.py` 96%；`ruff check` / `format --check` 全绿 |
