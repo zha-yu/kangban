@@ -16,7 +16,7 @@
 - [x] S0 留痕（本卡 + plans/README.md 索引修订）
 - [x] S1 spike：spikes/vrm-animation/ + 模型×动画兼容矩阵（结论见 spikes/vrm-animation/README.md：140/140 全过，依赖可合并；14 模型全为 VRM0，朝向全量标定；签名 (anim, vrm)）
 - [x] S2 avatar-catalog.ts 模型清单（默认 Yoimiya，Q1–Q4 口径；R8-b 落字段：4 个无表情模型 lipsync="none"；动画白名单 common/ 6 个，world-* 不收录；tsc --noEmit 通过）
-- [ ] S3 vrm-scene.ts 扩展（多槽缓存/程序化待机/vrma/朝向标定）
+- [x] S3 vrm-scene.ts 扩展（多槽 LRU 字节缓存/程序化待机眨眼呼吸/vrma 播放与自动回落/rotateVRM0 统一朝向；tsc 全绿。引依赖 @pixiv/three-vrm-animation@3.5.5 + @types/three@0.187.0（dev），删 Day4 类型 shim three-ambient.d.ts；**待真机标定**：用户经 spikes/vrm-animation/calibrate.html 四象限页核对 14 模型朝向，个别偏差回填 catalog rotationYOffset）
 - [ ] S4 AvatarStage 去 C7 改造（props 化 + 降级链 + diag 保留）
 - [ ] S5 AvatarPicker 选择页 + standby 入口 + localStorage 持久化
 - [ ] S6 回归 + 构建门禁（console/family 产物无 three；主链路零回归）

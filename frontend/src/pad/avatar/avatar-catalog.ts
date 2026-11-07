@@ -19,7 +19,8 @@ export interface AvatarCatalogItem {
   url: string;
   /** 文件体积（MB，选择页标注供长者感知等待） */
   sizeMB: number;
-  /** VRM0 朝向补偿（弧度）。全部待 S3 逐个标定后写死 */
+  /** VRM0 朝向补偿（弧度）。规范默认 π（rotateVRM0 口径：VRM0 与 VRM1 相差 180°），
+   *  已按此填入；个别厂商导出偏离规范的模型，经 S3 标定页真机校对后在此修正 */
   rotationYOffset: number;
   /** 口型能力（R8-b：Danheng/Evelyn/Firefly/Neuvillette 实测 0 表情） */
   lipsync: LipsyncMode;
@@ -35,20 +36,20 @@ export interface AnimationCatalogItem {
 
 /** 模型清单：frontend/public/assets/vrm/ 下 14 个 .vrm（体积为 ls 实测） */
 export const AVATAR_CATALOG: readonly AvatarCatalogItem[] = [
-  { id: "yoimiya",     displayName: "宵宫",     url: "/assets/vrm/Yoimiya.vrm",     sizeMB: 5.7,  rotationYOffset: 0, lipsync: "expression" },
-  { id: "neuvillette", displayName: "那维莱特", url: "/assets/vrm/Neuvillette.vrm", sizeMB: 6.3,  rotationYOffset: 0, lipsync: "none" },
-  { id: "danheng",     displayName: "丹恒",     url: "/assets/vrm/Danheng.vrm",     sizeMB: 7.8,  rotationYOffset: 0, lipsync: "none" },
-  { id: "fischl",      displayName: "菲谢尔",   url: "/assets/vrm/Fischl.vrm",      sizeMB: 7.8,  rotationYOffset: 0, lipsync: "expression" },
-  { id: "linghua",     displayName: "绫华",     url: "/assets/vrm/Linghua.vrm",     sizeMB: 10,   rotationYOffset: 0, lipsync: "expression" },
-  { id: "jizi",        displayName: "姬子",     url: "/assets/vrm/Jizi.vrm",        sizeMB: 11,   rotationYOffset: 0, lipsync: "expression" },
-  { id: "ningguang",   displayName: "凝光",     url: "/assets/vrm/Ningguang.vrm",   sizeMB: 11,   rotationYOffset: 0, lipsync: "expression" },
-  { id: "shenhe",      displayName: "申鹤",     url: "/assets/vrm/Shenhe.vrm",      sizeMB: 12,   rotationYOffset: 0, lipsync: "expression" },
-  { id: "sparkle",     displayName: "花火",     url: "/assets/vrm/Sparkle.vrm",     sizeMB: 12,   rotationYOffset: 0, lipsync: "expression" },
-  { id: "jingyuan",    displayName: "景元",     url: "/assets/vrm/Jingyuan.vrm",    sizeMB: 13,   rotationYOffset: 0, lipsync: "expression" },
-  { id: "firefly",     displayName: "流萤",     url: "/assets/vrm/Firefly.vrm",     sizeMB: 14,   rotationYOffset: 0, lipsync: "none" },
-  { id: "lisa",        displayName: "丽莎",     url: "/assets/vrm/Lisa.vrm",        sizeMB: 16,   rotationYOffset: 0, lipsync: "expression" },
-  { id: "evelyn",      displayName: "伊芙琳",   url: "/assets/vrm/Evelyn.vrm",      sizeMB: 34,   rotationYOffset: 0, lipsync: "none" },
-  { id: "yinlin",      displayName: "吟霖",     url: "/assets/vrm/Yinlin.vrm",      sizeMB: 40,   rotationYOffset: 0, lipsync: "expression" },
+  { id: "yoimiya",     displayName: "宵宫",     url: "/assets/vrm/Yoimiya.vrm",     sizeMB: 5.7,  rotationYOffset: Math.PI, lipsync: "expression" },
+  { id: "neuvillette", displayName: "那维莱特", url: "/assets/vrm/Neuvillette.vrm", sizeMB: 6.3,  rotationYOffset: Math.PI, lipsync: "none" },
+  { id: "danheng",     displayName: "丹恒",     url: "/assets/vrm/Danheng.vrm",     sizeMB: 7.8,  rotationYOffset: Math.PI, lipsync: "none" },
+  { id: "fischl",      displayName: "菲谢尔",   url: "/assets/vrm/Fischl.vrm",      sizeMB: 7.8,  rotationYOffset: Math.PI, lipsync: "expression" },
+  { id: "linghua",     displayName: "绫华",     url: "/assets/vrm/Linghua.vrm",     sizeMB: 10,   rotationYOffset: Math.PI, lipsync: "expression" },
+  { id: "jizi",        displayName: "姬子",     url: "/assets/vrm/Jizi.vrm",        sizeMB: 11,   rotationYOffset: Math.PI, lipsync: "expression" },
+  { id: "ningguang",   displayName: "凝光",     url: "/assets/vrm/Ningguang.vrm",   sizeMB: 11,   rotationYOffset: Math.PI, lipsync: "expression" },
+  { id: "shenhe",      displayName: "申鹤",     url: "/assets/vrm/Shenhe.vrm",      sizeMB: 12,   rotationYOffset: Math.PI, lipsync: "expression" },
+  { id: "sparkle",     displayName: "花火",     url: "/assets/vrm/Sparkle.vrm",     sizeMB: 12,   rotationYOffset: Math.PI, lipsync: "expression" },
+  { id: "jingyuan",    displayName: "景元",     url: "/assets/vrm/Jingyuan.vrm",    sizeMB: 13,   rotationYOffset: Math.PI, lipsync: "expression" },
+  { id: "firefly",     displayName: "流萤",     url: "/assets/vrm/Firefly.vrm",     sizeMB: 14,   rotationYOffset: Math.PI, lipsync: "none" },
+  { id: "lisa",        displayName: "丽莎",     url: "/assets/vrm/Lisa.vrm",        sizeMB: 16,   rotationYOffset: Math.PI, lipsync: "expression" },
+  { id: "evelyn",      displayName: "伊芙琳",   url: "/assets/vrm/Evelyn.vrm",      sizeMB: 34,   rotationYOffset: Math.PI, lipsync: "none" },
+  { id: "yinlin",      displayName: "吟霖",     url: "/assets/vrm/Yinlin.vrm",      sizeMB: 40,   rotationYOffset: Math.PI, lipsync: "expression" },
 ] as const;
 
 /** 动画白名单（spike 结论：common/ 20 个精选均可用；world-* 为世界系动画，不适合本舞台口径，不收录） */
