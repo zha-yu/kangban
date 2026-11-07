@@ -1,6 +1,6 @@
 # Day05 A1 · 本地 VRM 接入与形象选择页（方案，不含代码）
 
-> 状态：进行中　｜　版本：v1.2　｜　日期：2026-11-07
+> 状态：已冻结　｜　版本：v1.5　｜　日期：2026-11-07
 > 关联：docs/plans/day04/f1-Day4前端联调.md（W1 3D 展示现状）；docs/plans/adhoc-20261106-数字人接入方案对比.md（前次方案对比裁决，**已由主理人删除**，本文档部分推翻其结论，见 D1）；docs/team_tasks/day05/a1-本地VRM与形象选择页.md（任务卡，C7 停用留痕所在）
 > 上游依据：PRD FR-3D-01/FR-3D-02（加载失败或超 5s 切静态头像，不白屏）；前端页面方案（配色 token、≥48px 触控、大字号）；主理人裁决 2026-11-07（本地默认模型、全量支持 14 个模型、待机 + vrma 播放、只改前端）
 > 变更记录见文末
@@ -264,3 +264,4 @@ sequenceDiagram
 | v1.2 | 2026-11-07 | S0 落地：adhoc 对比文档经主理人确认已删除，plans/README.md 该行标「已废弃（文件已删除）」；C7 停用留痕改记 docs/team_tasks/day05/a1-本地VRM与形象选择页.md（新建任务卡）；方案状态转「进行中」 |
 | v1.3 | 2026-11-07 | S1 spike 通过（spikes/vrm-animation/README.md）：140/140 模型×动画全过，依赖可合并；两条新约束进 S3——① `createVRMAnimationClip(anim, vrm)` 签名，② 14 模型全为 VRM0，rotationYOffset 全量必标定（Q4 原假设失效）；R4 解除（日文文件名可直接用）；Q3 idle 定为 common/idle.vrma |
 | v1.4 | 2026-11-07 | R8 裁决（主理人）：口型选 b——无表情模型在选择页卡片标注「不支持口型」，不做下颌骨骼近似、不从 catalog 排除；S2 落地 avatar-catalog.ts（14 模型 + lipsync 字段 + 动画白名单 6 项 + localStorage 读写助手），tsc 通过 |
+| v1.5 | 2026-11-07 | S3–S6 全部完成，任务卡置「已完成」。S3 真机标定：14 模型 offset=π 全正脸无例外，idle.vrma ✓；S4 去 C7、S5 选择页落地；**计划外加项**：指针跟随（F-1b 眼+头／F-2a 仅待机／F-3 终态为触摸拖动也跟随，均经主理人确认；iPad 需 touch-action:none 防滚动仲裁）；Q2 立绘提前落地（assets/avatars 14 张 PNG）；S6 门禁全过（build 零报错、console/family 无 three、主链路 5 项回归通过） |

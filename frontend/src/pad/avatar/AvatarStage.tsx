@@ -37,9 +37,17 @@ export interface AvatarStageProps {
    * 移动鼠标/触摸拖动（F-3 调整为触摸也跟随）时眼睛+头部跟随。
    */
   pointerFollow?: boolean;
+  /** 任务面板占位时收窄为侧栏舞台；只改容器尺寸，3D 场景由 ResizeObserver 自适应、不重挂 */
+  compact?: boolean;
 }
 
-export function AvatarStage({ avatar, sendDiag, audioEl, pointerFollow = false }: AvatarStageProps) {
+export function AvatarStage({
+  avatar,
+  sendDiag,
+  audioEl,
+  pointerFollow = false,
+  compact = false,
+}: AvatarStageProps) {
   // 模型解析：props 注入优先，否则 localStorage（D-1/D-3：进页面读一次，会话内不响应变化）
   const model = avatar ?? resolveSelectedAvatar(readStoredAvatarId());
   const [phase, setPhase] = useState<StagePhase>({ kind: "loading" });
@@ -140,8 +148,12 @@ export function AvatarStage({ avatar, sendDiag, audioEl, pointerFollow = false }
   return (
     <div
       ref={stageBoxRef}
-      className="relative flex items-center justify-center overflow-hidden rounded-full border border-brand-line bg-brand-soft"
-      style={{ height: "min(560px, 48vh)", width: "min(560px, 48vh)" }}
+      className="relative flex shrink-0 items-center justify-center overflow-hidden rounded-full border border-brand-line bg-brand-soft"
+      style={
+        compact
+          ? { height: "min(300px, 30vh)", width: "min(300px, 30vh)", touchAction: "none" }
+          : { height: "min(560px, 48vh)", width: "min(560px, 48vh)", touchAction: "none" } // touch-action:none：触摸拖动不触发页面滚动仲裁，否则 iPad 上 pointercancel 提前打断，指针跟随失效
+      }
     >
       {/* 3D 画布：就绪前被降级层覆盖，成功后揭开（透明底透出圆框底色） */}
       <canvas ref={canvasRef} className="h-full w-full" />
