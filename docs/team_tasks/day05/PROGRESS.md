@@ -13,6 +13,7 @@
 
 | 计划 | 状态 |
 | --- | --- |
+| `docs/plans/day05/a-后端观测与数据.md` | ❔ 草稿 |
 | `docs/plans/day05/day-05-延迟基线与护栏.md` | 🚧 进行中 |
 
 ## 契约冻结：（本日无 contracts.md）
