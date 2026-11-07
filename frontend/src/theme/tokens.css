@@ -48,6 +48,7 @@
   --color-neutral-soft: #f3f4f6;
   --color-neutral-ink: #4b5563; /* 断开 / 降级 / 离线 / 禁用（红色不占） */
 
-  /* ---- 形状 ---- */
-  --radius-card: 1rem; /* 全端统一 rounded-2xl */
+  /* ---- 形状：嵌套递减，外层卡片 16px / 内部控件 10px ---- */
+  --radius-card: 1rem; /* 卡片 / 面板 / 弹窗：全端统一 rounded-2xl */
+  --radius-control: 10px; /* 按钮 / 输入框 / 卡内子块：比外层小一档，避免内外同圆角发糊 */
 }

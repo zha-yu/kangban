@@ -399,11 +399,11 @@ async def test_delete_all_removes_rows_and_reports_count(
     async with _db_session(vp_db) as session:
         for idx in (1, 2, 3):
             await register_sample(session, ELDER_UUID, idx, f"wav-{idx}".encode())
-        deleted = await delete_all_for_elder(session, ELDER_UUID)
+        deleted = await delete_all_for_elder(session, ELDER_UUID, actor="device:test")
         assert deleted == 3
         assert (await get_status(session, ELDER_UUID)).status == "none"
         # 重复删除幂等：0 行、不报错
-        assert await delete_all_for_elder(session, ELDER_UUID) == 0
+        assert await delete_all_for_elder(session, ELDER_UUID, actor="device:test") == 0
 
 
 # ============================================================

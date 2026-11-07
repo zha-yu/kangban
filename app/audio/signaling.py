@@ -215,7 +215,15 @@ class TtsTextMsg(TypedDict):
 
 class ErrorMsg(TypedDict):  # S→C，服务端降级/异常通知
     type: Literal["error"]
-    code: Literal["asr_unavailable", "llm_timeout", "tool_breaker", "internal"]
+    code: Literal[
+        "asr_unavailable",
+        "llm_timeout",
+        "tool_breaker",
+        "internal",
+        "asr_slow",  # Day 5 B-2：ASR 有结果但太慢（>2s）
+        "llm_slow",  # Day 5 B-2：LLM 有结果但太慢（>3s）
+        "tts_slow",  # Day 5 B-2：TTS 有结果但太慢（>1s）
+    ]
     message: str  # 已脱敏的长者可读话术
 
 
@@ -353,6 +361,10 @@ _ERROR_TALKBACK: dict[str, str] = {
     "llm_timeout": "我稍微想一想，请等我一下下。",
     "tool_breaker": "这个功能暂时不可用，稍后再试试。",
     "internal": "出了点小状况，请再说一遍。",
+    # Day 5 B-2 新增：并行 watchdog 慢响应话术（provider 还在跑但超过阈值就先发）
+    "asr_slow": "我正在听您说，请稍等一下下。",
+    "llm_slow": "我正在想，请稍等一下下。",
+    "tts_slow": "我马上说，请稍等一下下。",
 }
 
 

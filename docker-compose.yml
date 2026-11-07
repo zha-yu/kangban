@@ -5,6 +5,7 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     container_name: silvermate-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-silvermate}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-silvermate}
@@ -24,6 +25,7 @@ services:
   redis:
     image: redis:7
     container_name: silvermate-redis
+    restart: unless-stopped
     ports:
       - "${REDIS_HOST_PORT:-6379}:6379"
     healthcheck:
