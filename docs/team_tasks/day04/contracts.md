@@ -58,12 +58,15 @@ class IdentityResultMsg(TypedDict):   # S→C，告知最终身份模式（前�
 
 class ClientDiagMsg(TypedDict):       # C→S，服务端不回执；stage=vad 另有兜底激活语义（见块后补充）
     type: Literal["client_diag"]
-    stage: Literal["vrm_load", "webrtc", "vad", "asr"]
+    stage: Literal["vrm_load", "webrtc", "vad", "asr", "playback"]   # v1.5 追加 playback
     ok: bool
     error: str                        # 已脱敏
+    duration_ms: int                  # v1.5 追加，可选：stage=playback 时必填（端侧 TTS 播放耗时）；其余 stage 忽略
 ```
 
 **client_diag 语义补充（2026-11-06，随 W4 兜底落地同步，v1.1）**：`stage=vad, ok=false` 是服务端 VAD 兜底（`app/audio/vad.py` VadFallbackController）的**唯一显式激活信号**——A2 的 client_diag 处理路径据此调 `MediaSession.set_vad_fallback_active(True)`；`ok=true` 或连接关闭即停用（停用丢弃服务端残留，防端侧恢复后双切段冲突）；未收到 diag 不启用，不与端侧 TEN-VAD 双跑。`vrm_load/webrtc/asr` 三 stage 仅日志观测。
+
+**playback 语义（v1.5 追加，主理人裁决 R3）**：`stage=playback` 仅进 metrics 观测——A2 的 client_diag 处理路径代打 `record_stage(stage="playback", duration_ms=diag.duration_ms, source="client")`，不触发任何状态与回执；`wakeup` 段**不经** diag 重复打点（统一走 C2 auth 首帧 `wake_ts`，v1.5 同批裁决）。配套端侧改动登记为 dev-c 卡 C-6（day05 v1.1）。
 
 **级联语义**（v2.2/v2.3 裁决口径）：会话首轮强制校验（identity_service 与绑定长者 1v1 比对，cosine ≥0.85 → `identity_result source=voice`）；会话内静默复检仅身份变化时干预（换人 → 旧 thread 结束、重走首轮校验）。
 
@@ -134,3 +137,4 @@ Authorization: Bearer <device access_token>
 | v1.2 | 2026-11-06 | **待主理人确认**：C7 第 105 行原文写 `version`「persona.avatar_url 变更即递增」，A3 实现为四键内容的 crc32 指纹（`plan S-01`）——指纹**可回退**（实测 `/avatars/xiaoman.vrm` → `1794577085`，改回 `vrm1_sample.vrm` → 还原 `1686351657`），不满足「单调递增」。对消费方的约束据此明确：`version` 只作**不透明缓存键**，前端不得写成「新值 > 旧值才更新」的比较逻辑，正确用法是「值变了就重取」。申请把第 105 行措辞改为「persona.avatar_url（或 PUBLIC_BASE_URL / rotation 等任一取值来源）变化即变，实现为内容指纹、可回退，仅作缓存键」；字段名与类型不变，不影响已合入的前端挂载代码 |
 | v1.3 | 2026-11-06 | **B1/B2 裁决**：`ThreadInfo.elder_id` 由 `str` 改为 `str | None`，generic 为 `None`，与 `conversation_threads` 的 CHECK 对齐；明确 `conversation_threads` 创建/结束、`session_seq` 递增与 generic thread_id 由 A1 `identity_service` 服务端事务**独占完成**，A2 只消费 `ThreadInfo`、不建 thread、不双写。C2/C3/C5 不变 |
 | v1.4 | 2026-11-06 | A1 `identity_service` 实际交付 `IdentityDecision(thread_id/confidence/reason/session_seq)`；A2 新增 `identity_decision_to_result` 适配（终态消费 `thread_id` 与 `session_seq`，`needs_confirm` → `IdentityConfirmationRequired`），不伪造序号。C6 类型不变 |
+| v1.5 | 2026-11-07 | **C5 追加 playback 语义与 duration_ms 可选字段**（主理人裁决 R3）：ClientDiagMsg.stage 增 `playback`，`stage=playback` 时端侧必填 `duration_ms`（端侧 TTS 播放耗时），A2 服务端代打 metrics（`record_stage(stage="playback", duration_ms=diag.duration_ms, source="client")`）；`wakeup` 不走 diag（统一 C2 auth 首帧 wake_ts，见 day03/contracts.md v1.5）。配套端侧改动登记为 dev-c 卡 C-6（day05 v1.1） |

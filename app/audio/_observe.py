@@ -7,8 +7,10 @@ OTel/Langfuse 排在 Day 10（技术设计文档 §8 Day 10 落地清单）。
 所以本模块做两件事：
 1. 用现成的 `trace_id`（`app/core/context.py` 中间件写入）+ JSON 结构化日志承载观测字段，
    字段名已对齐 `decision_logs.asr_confidence` 与 PRD §5.3 的分段耗时口径；
-2. 留一个**单点收口**：Day 10 接 OTel 时，只改本文件两个 `record_*` 的函数体
-   （加 `span.set_attribute(...)`），调用方一行都不用动。
+2. **Day 5 双轨**（day-05 计划 S2）：日志轨照旧 + 经 `app/core/metrics.record_stage`
+   把 `asr`（total_ms 口径）与 `tts_first_packet`（非流式口径，自裁 Z2）两段异步批量入
+   `metrics` 表（唯一写库入口 `metrics_service`）；Day 10 接 OTel 时仍只改本文件
+   两个 `record_*` 的函数体，调用方一行都不用动。
 
 纪律（AGENTS §4 + day-03 计划 §3 裁决）：
 - 置信度拿不到就写 ``null``，**禁止伪造 0.0**；
@@ -19,6 +21,8 @@ from __future__ import annotations
 
 import logging
 import time
+
+from app.core.metrics import record_stage
 
 logger = logging.getLogger("app.audio.observe")
 
@@ -53,6 +57,9 @@ def record_asr(
     """记录一次 ASR 观测。
 
     source 取值：``provider``（引擎直给）/ ``funasr``（协议层拿不到，confidence 恒 None）/ ``mock``。
+
+    Day 5 双轨：日志行照旧 + ``metrics`` 表 ``asr`` 行（total_ms 口径；
+    source 透传 provider 口径，供 A-3 FunASR 基线归档区分；终稿才入表）。
     """
     logger.info(
         "asr observation",
@@ -66,6 +73,8 @@ def record_asr(
             "asr_total_ms": total_ms,
         },
     )
+    if is_final and total_ms is not None:
+        record_stage("asr", total_ms, source=source)
 
 
 def record_tts(
@@ -77,7 +86,11 @@ def record_tts(
     first_packet_ms: float | None,
     total_ms: float | None,
 ) -> None:
-    """记录一次 TTS 观测（Day 3 非流式：首包 = 整段可用时刻）。"""
+    """记录一次 TTS 观测（Day 3 非流式：首包 = 整段可用时刻）。
+
+    Day 5 双轨：日志行照旧 + ``metrics`` 表 ``tts_first_packet`` 行
+    （自裁 Z2：非流式口径 source="non_stream"；first_packet 缺失不入表）。
+    """
     logger.info(
         "tts observation",
         extra={
@@ -89,3 +102,5 @@ def record_tts(
             "tts_total_ms": total_ms,
         },
     )
+    if first_packet_ms is not None:
+        record_stage("tts_first_packet", first_packet_ms, source="non_stream")

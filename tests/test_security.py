@@ -50,9 +50,7 @@ from sqlalchemy.ext.asyncio import (
     AsyncConnection,
     AsyncEngine,
     AsyncSession,
-    create_async_engine,
 )
-from sqlalchemy.pool import NullPool
 from sqlalchemy.sql import table as sql_table
 
 from app.core import auth as auth_module
@@ -2435,38 +2433,14 @@ def test_asgi_chain_resolves_a_device_principal_with_the_db_bound_elder(
 
 
 @pytest.fixture
-async def auth_db_engine() -> AsyncIterator[AsyncEngine]:
-    """本文件专用的 NullPool 引擎；为什么不用 `app/db.py` 那个单例，见 `auth_db` 的说明。"""
-    test_engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
-    try:
-        yield test_engine
-    finally:
-        await test_engine.dispose()
+async def auth_db(db_conn: AsyncConnection) -> AsyncIterator[AsyncConnection]:
+    """每用例一个事务、结束回滚（P-03 根治后按原计划改回 conftest 的 `db_conn`）。
 
-
-@pytest.fixture
-async def auth_db(auth_db_engine: AsyncEngine) -> AsyncIterator[AsyncConnection]:
-    """每用例一个事务、结束回滚；连不上库就 skip 并说明原因（与 conftest 的 `db_conn` 同契约）。
-
-    刻意自建 NullPool 引擎而不是复用 `app/db.py` 的模块级单例：单例的连接池会把
-    **上一个事件循环**创建的 asyncpg 连接留给下一个用例，而 pytest-asyncio 每个用例一个新
-    循环，于是隔一个用例就在 `engine.connect()` 里炸 `AttributeError: 'NoneType' object has
-    no attribute 'send'` —— 表现为「一半通过、一半 skip」，看起来像数据库在抖，其实是用例在
-    互相投毒。NullPool 每次真连、用完即关，绕开这个坑。
-    这是 task-3 夹具的缺陷，已登记任务板 P-03 请 A 在 conftest 里补 `engine.dispose()`；
-    那边修好后本夹具应当删掉，全部改回 `db_conn`。
+    历史注记：曾因 conftest 单例引擎的连接池把上一个事件循环的 asyncpg 连接留给下一个
+    用例（任务板 P-03，「一半通过、一半 skip」互相投毒）而自建 NullPool 引擎；阶段 B
+    夹具治理把引擎生命周期钉在模块循环上后，投毒链路消失，本夹具回归共享夹具别名。
     """
-    try:
-        conn = await auth_db_engine.connect()
-    except Exception as exc:  # 任何连接失败（超时/拒绝/口令错）都算「无库」
-        pytest.skip(f"PostgreSQL 不可达，跳过数据库用例：{exc!r}")
-
-    trans = await conn.begin()
-    try:
-        yield conn
-    finally:
-        await trans.rollback()
-        await conn.close()
+    yield db_conn
 
 
 def _db_session(auth_db: AsyncConnection) -> AsyncSession:
@@ -2807,7 +2781,7 @@ async def test_db_card_record_absent_revokes(auth_db: AsyncConnection, jwt_env: 
 
 
 async def test_db_fixture_rolls_back_every_row_it_inserted(
-    auth_db: AsyncConnection, auth_db_engine: AsyncEngine
+    auth_db: AsyncConnection, db_engine: AsyncEngine
 ) -> None:
     """这条测的是夹具不是鉴权代码，但它撑着上面所有用例的前提：共享主库、零残留。
 
@@ -2817,7 +2791,7 @@ async def test_db_fixture_rolls_back_every_row_it_inserted(
     await _db_add_staff(auth_db)
     assert (await auth_db.execute(text("SELECT count(*) FROM staff_accounts"))).scalar_one() == 1
 
-    async with auth_db_engine.connect() as probe:
+    async with db_engine.connect() as probe:
         for name in (
             "staff_accounts",
             "guardian_accounts",

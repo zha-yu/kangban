@@ -45,6 +45,7 @@ from app.core.context import (
     reset_trace_id,
     set_trace_id,
 )
+from app.core.metrics import Stopwatch, record_stage
 from app.services.llm_service import LLMService
 
 if TYPE_CHECKING:
@@ -235,7 +236,16 @@ class DialogueService:
             persona=None if identity.is_generic else persona,
             now=self._now_provider(),
         )
+        llm_sw = Stopwatch()
         reply = await self._llm.chat(messages)
+        # Day 5 llm_first_token 打点（自裁 Z1：LLM 非流式，首 token ≈ 整段返回时刻，
+        # source 标注口径；Day 6+ 流式化后口径自动变准）
+        record_stage(
+            "llm_first_token",
+            llm_sw.elapsed_ms(),
+            elder_id=identity.elder_id,
+            source="non_stream",
+        )
 
         if not identity.is_generic:
             try:

@@ -51,6 +51,8 @@ from app.core.metrics import (
     record_identity_ask_sent,
     record_identity_confirm_received,
     record_identity_result_sent,
+    record_stage,
+    record_wakeup,
 )
 from app.core.runtime_context import Identity, reset_identity, set_identity
 from app.db import get_session
@@ -74,8 +76,9 @@ _DEAD_CHECK_INTERVAL_S = 1.0
 # C5 身份确认：契约 timeout_s 恒 30；内部计时器单独命名，测试用受控时钟 monkeypatch
 IDENTITY_ASK_TIMEOUT_S = 30
 _IDENTITY_TIMEOUT_TEST_S = float(IDENTITY_ASK_TIMEOUT_S)
-# C5 client_diag 只允许四个阶段（contracts.md v1.0）
-_CLIENT_DIAG_STAGES = frozenset({"vrm_load", "webrtc", "vad", "asr"})
+# C5 client_diag 允许的阶段（day03/contracts.md v1.0 四阶段 + v1.5 追加 playback，
+# 主理人裁决 R3：playback 由端侧经 diag 上报、服务端代打 metrics）
+_CLIENT_DIAG_STAGES = frozenset({"vrm_load", "webrtc", "vad", "asr", "playback"})
 
 # 自定义关闭码（4000–4999 为应用私有区间）
 WS_CLOSE_AUTH_FAILED = 4401  # 鉴权失败（契约定值）
@@ -90,6 +93,7 @@ router = APIRouter()
 class AuthMsg(TypedDict):  # C→S，连接后 300ms 内必须首发
     type: Literal["auth"]
     token: str  # 设备会话 access_token（E4 签发）；token 不进 URL
+    wake_ts: NotRequired[float]  # v1.5 可选：端侧 KWS 命中时刻（epoch 秒）；未命中不填走兜底
 
 
 class AuthOkMsg(TypedDict):  # S→C
@@ -523,6 +527,14 @@ async def _authenticate(conn: ConnectionContext, session: AsyncSession) -> Ident
     conn.device_id = identity.device_id
     conn.bound_elder_id = identity.elder_id
     conn.last_frame_at = time.monotonic()
+    # Day 5 唤醒段打点（裁决 R2，day03/contracts.md v1.5）：auth 首帧带 wake_ts 用端侧
+    # 口径（source=client，duration=accept−wake_ts，时钟偏移防护在 record_wakeup 内）；
+    # 未带走 WS accept 兜底（source=backend，duration=0 占位）。
+    wake_ts = first.get("wake_ts")
+    if isinstance(wake_ts, (int, float)) and wake_ts > 0:
+        record_wakeup(source="client", wake_ts=float(wake_ts))
+    else:
+        record_wakeup(source="backend")
     return identity
 
 
@@ -889,7 +901,12 @@ async def _handle_identity_confirm(conn: ConnectionContext, message: Mapping[str
 
 
 async def _handle_client_diag(conn: ConnectionContext, message: Mapping[str, Any]) -> None:
-    """C→S client_diag：只写结构化安全字段，不回执、不落库、不进 metrics。"""
+    """C→S client_diag：只写结构化安全字段，不回执；仅 playback 经 metrics 代打入库。
+
+    v1.5（裁决 R3）：stage=playback 由端侧上报端侧 TTS 播放耗时（duration_ms 必填），
+    服务端代打 record_stage(stage="playback", source="client")；其余 stage 仅日志观测
+    （vad 另有兜底激活语义）。wakeup 不走本路径（统一 C2 auth 首帧 wake_ts）。
+    """
     stage = message.get("stage")
     ok = message.get("ok")
     error = message.get("error")
@@ -911,6 +928,18 @@ async def _handle_client_diag(conn: ConnectionContext, message: Mapping[str, Any
         "client_diag",
         extra=_log_extra(conn, stage=stage, ok=ok, error_len=len(error)),
     )
+
+    # v1.5（裁决 R3）：playback 段由服务端代打入 metrics（duration_ms 必填校验）
+    if stage == "playback":
+        duration_ms = message.get("duration_ms")
+        if isinstance(duration_ms, (int, float)) and duration_ms >= 0:
+            record_stage("playback", float(duration_ms), source="client")
+        else:
+            logger.warning(
+                "ws_bad_message",
+                extra=_log_extra(conn, reason="client_diag_playback_duration_missing"),
+            )
+        return
 
     # W4：stage=vad 的端侧自检结果驱动服务端 VAD 兜底（ok=false → 激活）
     if stage == "vad" and conn.device_id is not None:

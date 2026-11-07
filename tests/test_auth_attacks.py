@@ -25,9 +25,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
-    create_async_engine,
 )
-from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
 from app.core.logging import JsonFormatter
@@ -77,24 +75,13 @@ def jwt_env(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
 
 
 @pytest.fixture
-async def engine(jwt_env: None) -> AsyncIterator[AsyncEngine]:
-    """独立 engine + NullPool：测试连接不复用应用池，退出即释放。"""
-    eng = create_async_engine(get_settings().database_url, poolclass=NullPool)
-    try:
-        async with eng.connect():
-            pass
-    except Exception as exc:  # 任何连接失败（超时/拒绝/口令错/库不存在）都算「无库」
-        await eng.dispose()
-        pytest.skip(f"PostgreSQL 不可达，跳过攻击用例：{exc!r}")
+async def db_session(db_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
+    """每测试一个外层事务；会话内的 commit 只释放 savepoint，最终整体回滚。
 
-    yield eng
-    await eng.dispose()
-
-
-@pytest.fixture
-async def db_session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
-    """每测试一个外层事务；会话内的 commit 只释放 savepoint，最终整体回滚。"""
-    async with engine.connect() as conn:
+    db_engine 为 conftest 的 module 级共享引擎（阶段 B 夹具治理，P-03 根治后
+    不再自建 NullPool；无库时 conftest 已 skip）。
+    """
+    async with db_engine.connect() as conn:
         trans = await conn.begin()
         session = AsyncSession(
             bind=conn,

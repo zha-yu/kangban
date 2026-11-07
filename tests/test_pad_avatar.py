@@ -6,8 +6,8 @@
 - `version` 随 `personas.avatar_url` 变化而变（前端缓存失效的依据）；
 - 未绑定设备 → 403 `device_not_bound`（S-03 自裁，避开 C4 已占用的 409 `device_unbound`）。
 
-跑法与 `test_elders_api.py` 同构：自建 NullPool 引擎（避免模块级连接池把上一个
-事件循环的 asyncpg 连接带进本文件），每用例一个事务、结束回滚，主库零残留；
+跑法与 `test_elders_api.py` 同构：conftest 的 module 级共享引擎（阶段 B 夹具治理，
+P-03 根治后不再自建 NullPool），每用例一个事务、结束回滚，主库零残留；
 请求走真实 ASGI 链路，`get_session` / `current_device` / `token_hash` 校验全是真实代码。
 无 PostgreSQL 时 `pytest.skip` 并打印原因，绝不静默通过。
 """
@@ -26,9 +26,7 @@ from sqlalchemy.ext.asyncio import (
     AsyncConnection,
     AsyncEngine,
     AsyncSession,
-    create_async_engine,
 )
-from sqlalchemy.pool import NullPool
 
 from app.api import pad as pad_api
 from app.core.config import get_settings
@@ -75,17 +73,8 @@ def jwt_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 @pytest.fixture
-async def db_engine() -> AsyncIterator[AsyncEngine]:
-    engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
-    try:
-        yield engine
-    finally:
-        await engine.dispose()
-
-
-@pytest.fixture
 async def db(db_engine: AsyncEngine) -> AsyncIterator[AsyncConnection]:
-    """每用例一个事务、结束回滚；连不上库就 skip 并打印原因（与 conftest 同契约）。"""
+    """每用例一个事务、结束回滚（db_engine 为 conftest 的 module 级共享引擎）。"""
     try:
         conn = await db_engine.connect()
     except Exception as exc:  # 超时/拒绝/口令错一律算「无库」

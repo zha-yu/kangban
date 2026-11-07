@@ -1,10 +1,10 @@
 # 康伴（SilverMate）数据模型设计
 
-> **版本**：v0.2（草案 · 12 条裁决已定 + AC 逐条取证已跑通，尚未冻结）
+> **版本**：v0.4（草案 · 裁决 B1–B6 已定 + AC 逐条取证已跑通，尚未冻结）
 > **状态**：第 2 步（建模）与第 3 步（取证演练）已完成；评审通过后升 v1.0 冻结，作为 Alembic 迁移的唯一依据。
 > **事实来源**：表结构 = `docs/康伴3D数字人_技术设计文档.md` §3（下称 **TD**）；业务规则/状态机/幂等/枚举/边界 = `docs/康伴3D数字人_PRD.md`（下称 **PRD**）。
 > **不引用大纲**：大纲只提供迭代流程，不提供数据事实（`AGENTS.md`「前置 · 文档角色与事实来源」铁律 1）。
-> **建表口径**：**26 张表 = A 身份组织 7 + B 关系绑定 3 + C 业务数据 10 + D 内容通知日志 6**；迁移批次 5+5+2+1+9+3+1 亦合计 26。
+> **建表口径**：**27 张表 = A 身份组织 7 + B 关系绑定 3 + C 业务数据 10 + D 内容通知日志 7**（Day 5 追加 `metrics`，裁决 B6）；迁移批次 5+5+2+1+1+9+3+1 亦合计 27。
 
 **阅读约定**
 
@@ -43,6 +43,7 @@
 | **B3** | 表数量表述不一致 | 冻结 **26 张**（7+3+10+6）。TD §3 开头「全量 24 张」与 C 组标题「9 张」均为陈旧数字 | 本文按 26 张定稿；TD 那两处文字回改（见 §9 待办） |
 | **B4** | 大纲 1.3「11 张表」与 TD 26 表冲突 | 执行按 **26 张**、Day 1 建 **5 张**（含 `beds`）；大纲 1.3 的**流程部分全部保留**（产出物路径、分批节奏、人工读 diff、验收动作） | 差异对照见 §8 |
 | **B5** | Web Push 做到什么深度 | P0 只落库 + 演示卡片：`notifications.channel='webpush'` 记录照写，真实浏览器推送归 **P1**（与 PRD §2.5「只生成推送记录和演示卡片」一致） | `guardian_accounts.webpush_subscription` 字段保留备用；`.env.example` 的 `WEBPUSH_VAPID_*` 保持占位 |
+| **B6** | Day 5 延迟基线需要分段耗时明细落库（2026-11-07 主理人裁决 D2，自裁合规） | **追加第 27 张表 `metrics`**（D 组）：trace_id / elder_id 可空 / stage 七值 CHECK / duration_ms / source / created_at；迁移批次改 5+5+2+1+1+9+3+1 = 27 | 表定义见 §4.4.7；迁移 `0006_day5_metrics.py`；TD v1.8 同批修订记录；不触碰已合入迁移 0001–0005 |
 
 ### 1.2 可后置项（已定，影响实现不影响主体结构）
 
@@ -83,7 +84,7 @@
 2. **为什么不加自增主键**：防 ID 遍历泄露、支持离线预生成；双 ID（uuid + bigserial）只增加误用风险。
 3. **软删与保留**：业务删除用状态位（`status='archived'` / `'deleted'` / `'unbound'`），物理删除只由定时任务处理超期条目；`audit_logs` 只增不改。
 4. **加密与脱敏**：声纹向量走**磁盘/KMS 层加密**，列保持明文可算（应用层加密会让库内 cosine 与索引失效）；`token_hash` / `password_hash` 只存哈希；日志与 Trace 上传前脱敏（姓名/手机号/身份证号/房间号/健康数值）；`decision_logs.input_text` 落库前即脱敏；原始音频不入库（72h 定时物理删除）。
-5. **checkpoint 隔离**：`langgraph_checkpoints` / `langgraph_writes` 由插件管理，**不进本文的 26 张表**，也不与业务表建外键。
+5. **checkpoint 隔离**：`langgraph_checkpoints` / `langgraph_writes` 由插件管理，**不进本文的 27 张表**，也不与业务表建外键。
 6. **三道隔离闸门依赖**：闸门② = `memory_chunks` 所有查询强制 `WHERE elder_id=:runtime.elder_id`（配合 §5.1 索引）；闸门③ = 身份只从 `runtime_context` 注入，任何表都不接受模型自报的 `elder_id`。
 
 ---
@@ -424,7 +425,7 @@ erDiagram
 | created_at | timestamptz | 否 | 创建时间 |
 | last_accessed | timestamptz | 是 | 最后召回时间（冷热分层依据） |
 
-### 4.4 D 组 · 内容、通知与日志（6 张）
+### 4.4 D 组 · 内容、通知与日志（7 张）
 
 #### 4.4.1 `media_library` 媒体库表
 
@@ -519,6 +520,20 @@ erDiagram
 
 > 只增不改；不承担常规状态流转（那是 `work_order_transitions`）。
 
+#### 4.4.7 `metrics` 分段耗时打点表（Day 5 追加，裁决 B6）
+
+| 字段 | 类型 | 空 | 说明 |
+| --- | --- | --- | --- |
+| id | uuid PK | 否 | 打点编号 |
+| trace_id | varchar(64) | 否 | 全链路追踪 ID（与日志 / Langfuse trace 对应；P50/P95 复算的串联键） |
+| elder_id | uuid | 是 | 长者（**可空**：唤醒前打点无身份；不建 FK，对齐 `decision_logs.elder_id` 口径） |
+| stage | text | 否 | CHECK 七值：`wakeup` / `connection` / `asr` / `route` / `llm_first_token` / `tts_first_packet` / `playback` |
+| duration_ms | int | 否 | 该段耗时（毫秒，≥0） |
+| source | varchar(32) | 是 | 口径区分：`client`（端侧 wake_ts）/ `backend`（WS accept 兜底）/ `non_stream`（LLM/TTS 非流式口径）等 |
+| created_at | timestamptz | 否 | 打点入库时间 |
+
+> **只写指标不写内容**：不含转写全文、不含长者隐私字段（对齐 `app/core/metrics.py` 纪律）；写库唯一入口 `app/services/metrics_service.py`；写失败降级为日志告警，不阻塞对话主链路。
+
 ---
 
 ## 5. 索引与约束总表
@@ -555,6 +570,8 @@ erDiagram
 | `(elder_id, status)` ⚠️ | medication_plans | **P2 补充**：查在用计划 |
 | `(elder_id, started_at DESC)` ⚠️ | conversation_threads | **P2 补充**：按人翻会话 |
 | `(elder_id, status)` ⚠️ | voiceprints | **P2 补充**：取 active 声纹 |
+| `(trace_id)` ⚠️ | metrics | **B6 补充**（Day 5）：按 trace_id 串一次对话各分段 |
+| `(stage, created_at)` ⚠️ | metrics | **B6 补充**（Day 5）：P50/P95 按段复算（stage 过滤 + 时间窗） |
 
 > 向量索引：`voiceprints.embedding` / `memory_chunks.embedding` 在万行级走**精确检索**，暂不建 ivfflat/HNSW，避免过早优化。
 
@@ -598,11 +615,12 @@ erDiagram
 | **Day 1** | 5 | rooms, beds, devices, elders, personas | 房间/床位/设备/长者/人设骨架（**含 `beds`，比大纲 1.3 多 1 张**，B4） |
 | Day 2 | 5 | staff_accounts, guardian_accounts, elder_staff_assignments, elder_guardians, staff_tokens | 三类凭证 + 员工/监护人绑定 |
 | Day 4 | 2 | voiceprints（**此时才加 `embedding`**，B2）, conversation_threads | 声纹闭环 + 会话隔离 |
+| Day 5 | 1 | metrics | 延迟基线分段耗时（B6，2026-11-07 裁决 D2） |
 | Day 6 | 1 | decision_logs | 三级路由评测数据源 |
 | Day 7 | 9 | memory_chunks, medication_plans, medication_events, medication_attempts, risk_events, work_orders, work_order_transitions, media_library, media_history | 记忆治理 + 用药子图 + 工单流转 + 点播 |
 | Day 8 | 3 | health_records, daily_reports, notifications | 健康决策图 HITL + 家属端 |
 | Day 9 | 1 | audit_logs | 权限闸门与审计 |
-| **合计** | **26** | — | — |
+| **合计** | **27** | — | — |
 
 > 规则：**主迁移一经合入不再改，后续只加新迁移**；`alembic revision --autogenerate` 后必须人工逐行读 diff 再 `upgrade`。
 
@@ -720,3 +738,4 @@ erDiagram
 | v0.1 | 2026-11-04 | 首版：26 张表全量字段；落定 12 条裁决（B1–B5、C1–C7）与 2 项默认采纳（P1/P2）；与大纲 1.3 的差异对照 |
 | v0.2 | 2026-11-04 | ① 新增 **§7 AC 逐条取证矩阵**（42 条，38 库内可证 / 4 非数据面）；② 取证回补 5 条（D1–D5，摘要入 §1.4）：`failure_reason` 增 `rtc_failed`、拒服工单定格 `follow_up`、撤销窗与解析失败计数走服务层、天气耗时归 OTel；③ §9 待办状态更新（TD/PRD 以修订记录落地，Day 1 迁移实测通过） |
 | v0.3 | 2026-11-04 | 裁决记录**反向下游**：TD 正文已按本文 §1 回改（TD 附 C **v1.6**，不再只加记录）——24→26 张、C 组 9→10、`voiceprints.sample_index`、`embedding` Day 1–3 不建、`work_orders.type` 增 `follow_up`、`decision_logs.trace_id`、P1/P2 的索引与唯一约束、`health_records.source` 四值 CHECK、监护人上限改服务层、枚举一律 CHECK、设备解绑不留流水、Web Push 归 P1；同步关闭 TD 附 B 的「22 张表/`medication_attempts` 是否合并」待确认项。§9 待办 1 更新为「两轮已落地」 |
+| v0.4 | 2026-11-07 | **B6**：Day 5 追加第 27 张表 `metrics`（分段耗时打点，AC-42/PRD §5.3 数据底座）——§4.4.7 表定义、§5.2 两条查询索引、§6 批次表增 Day 5 行（5+5+2+1+1+9+3+1 = 27）。依据：2026-11-07 主理人裁决 D2（docs/plans/day05/day-05-延迟基线与护栏.md S1 自裁留痕）；TD v1.8 修订记录同批。不触碰已合入迁移 0001–0005，走新迁移 0006 |

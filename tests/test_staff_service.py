@@ -21,11 +21,8 @@ from sqlalchemy.ext.asyncio import (
     AsyncConnection,
     AsyncEngine,
     AsyncSession,
-    create_async_engine,
 )
-from sqlalchemy.pool import NullPool
 
-from app.core.config import get_settings
 from app.core.security import STAFF_ROLES
 from app.models.guardian import GuardianAccount
 from app.models.organization import Elder
@@ -57,18 +54,10 @@ EXISTING_GUARDIAN_PHONE = "13900000010"
 
 
 @pytest.fixture
-async def engine() -> AsyncIterator[AsyncEngine]:
-    eng = create_async_engine(get_settings().database_url, poolclass=NullPool)
+async def session(db_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
+    """db_engine 为 conftest 的 module 级共享引擎（阶段 B 夹具治理，P-03 根治）。"""
     try:
-        yield eng
-    finally:
-        await eng.dispose()
-
-
-@pytest.fixture
-async def session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
-    try:
-        conn: AsyncConnection = await engine.connect()
+        conn: AsyncConnection = await db_engine.connect()
     except Exception as exc:
         pytest.skip(f"PostgreSQL 不可达，跳过数据库用例：{exc!r}")
 

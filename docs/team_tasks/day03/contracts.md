@@ -86,6 +86,7 @@ from typing import TypedDict, Literal
 class AuthMsg(TypedDict):          # C→S，连接后 300ms 内必须首发
     type: Literal["auth"]
     token: str                     # 设备会话 access_token（E4 签发）；token 不进 URL
+    wake_ts: float                 # v1.5 追加，可选：端侧 KWS 命中时刻（epoch 秒）；KWS 未命中/不可用时不填，走后端 WS accept 兜底（source=backend）。服务端用 accept−wake_ts 记 wakeup 段耗时，越界值防时钟偏移截断
 
 
 class AuthOkMsg(TypedDict):        # S→C
@@ -197,3 +198,4 @@ Authorization: Bearer <device access_token>   # E4 签发；elder_id 不由客�
 | v1.2 | 2026-11-05 | C1 由 A1 冻结并落地（`app/audio/asr.py` 行 39–92，随 `a4cb857` 提交）；C2/C3 仍待各自冻结人确认 |
 | v1.3 | 2026-11-05 | dev 合入 feature-zy 后状态对账：确认表内 C2（A2，v1.1 裁决四点）与 C3（A5，reply 定稿 audio_url）均已冻结，头部状态行据此同步；另修复合并残留——signaling.py 误留 A1 早期「仅消息类型」版 docstring 与重复 import，main.py 补回 `audio_api.router` 装配行（/api/audio 降级上传此前未挂载） |
 | v1.4 | 2026-11-06 | C3 错误码补记 422：C3 冻结时未收录「非 WAV/表单校验失败」分支，a0 卡联调遗留 F-01/F-02 已实现（统一错误体 `{detail, code, trace_id}`、WAV 头非法 422 `VALIDATION_ERROR`，随 41e078c / a224579 合入）；Day 4 全面核验发现契约与实现不一致，本版只补错误码行，不改 C3 其他语义；C3 冻结人 A5，改动由 A4 代记并随联调窗口群内通告 A5 追认（契约使用规则「群通告 + 冻结人任务卡留痕」） |
+| v1.5 | 2026-11-07 | **C2 追加 AuthMsg 可选字段 `wake_ts`**（主理人裁决 R2）：端侧 KWS 命中时刻随 auth 首帧上送，服务端据此记 metrics `wakeup` 段（source=client），未填走 WS accept 兜底（source=backend）；配套端侧改动登记为 dev-c 卡 C-5（day05 v1.1）。其余消息类型与字段一字不动 |

@@ -29,18 +29,14 @@ from typing import Any
 
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
-    create_async_engine,
 )
-from sqlalchemy.pool import NullPool
 
 from app.audio import signaling
 from app.audio.asr import ASREvent, ASREventKind, ASRResult, ASRUnavailable
-from app.core.config import get_settings
 from app.core.security import sha256_hex, sign_device_session
 from app.db import get_session as _app_get_session
 from app.models.organization import Bed, Device, Elder, Room
@@ -175,30 +171,23 @@ class WsClient:
 
 
 @pytest.fixture
-async def test_engine() -> AsyncIterator[AsyncEngine]:
-    engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(
-                text(
-                    "TRUNCATE elder_guardians, elder_staff_assignments, "
-                    "guardian_accounts, staff_accounts, staff_tokens, "
-                    "devices, elders, beds, personas, rooms CASCADE"
-                )
-            )
-        yield engine
-    finally:
-        await engine.dispose()
+async def test_session(db_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
+    """db_engine 为 conftest 的 module 级共享引擎。
 
-
-@pytest.fixture
-async def test_session(test_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
-    sf = async_sessionmaker(test_engine, expire_on_commit=False)
-    async with sf() as session:
-        try:
-            yield session
-        finally:
-            await session.rollback()
+    阶段 C 去掉 TRUNCATE 后改走 create_savepoint：service 层的真实 commit 只释放
+    savepoint，结束整体回滚，独立测试库零残留（模式同 test_elders_api.client）。
+    """
+    async with db_engine.connect() as conn:
+        trans = await conn.begin()
+        sf = async_sessionmaker(
+            bind=conn, expire_on_commit=False, join_transaction_mode="create_savepoint"
+        )
+        async with sf() as session:
+            try:
+                yield session
+            finally:
+                await session.rollback()
+        await trans.rollback()
 
 
 @pytest.fixture
@@ -647,6 +636,37 @@ async def test_extra_business_frame_keeps_alive(
 # ---------------------------------------------------------------------------
 # 依赖注入 / 分层自检（W7 收口辅助断言）
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# 用例 12：wakeup 段打点（裁决 R2，day03/contracts.md v1.5）——auth 首帧 wake_ts
+# ---------------------------------------------------------------------------
+
+
+async def test_case12_wakeup_point_with_and_without_wake_ts(
+    ws_app: FastAPI, seeded_db: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """auth 首帧带 wake_ts → source=client；不带 → source=backend 兜底。"""
+    calls: list[dict[str, Any]] = []
+
+    def _spy_wakeup(*, source: str, wake_ts: float | None = None, connection_ms: float | None = None) -> None:
+        calls.append({"source": source, "wake_ts": wake_ts})
+
+    monkeypatch.setattr(signaling, "record_wakeup", _spy_wakeup)
+
+    token = _device_token(seeded_db["device_id_0"], _DEVICE_SECRET_A)
+    async with _connect(ws_app) as ws:
+        await ws.send_json(
+            {"type": "auth", "token": token, "wake_ts": time.time() - 0.5}
+        )
+        assert (await ws.receive_json())["type"] == "auth_ok"
+    assert calls[-1]["source"] == "client"
+    assert calls[-1]["wake_ts"] is not None
+
+    async with _connect(ws_app) as ws:
+        await ws.send_json({"type": "auth", "token": token})  # 不带 wake_ts
+        assert (await ws.receive_json())["type"] == "auth_ok"
+    assert calls[-1] == {"source": "backend", "wake_ts": None}
 
 
 def test_media_handler_registration_roundtrip() -> None:
