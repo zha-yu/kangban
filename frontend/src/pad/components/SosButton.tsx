@@ -1,9 +1,10 @@
 /**
  * SOS 常显大按钮（FR-ALT-06）。
  *
- * 放在顶栏右侧，任务面板切换时位置不动；实心主色 + 大字「一键求助」，
- * 不使用红色小块，避免与「红色事件」状态混淆（见 docs/前端页面方案.md §2 规则 5）。
- * 触控区 80px 高，远超 PRD 的 ≥48×48px 门槛。
+ * 放在顶栏最右侧，形象选择页由父级注入同一位置（headerExtra），
+ * 相位切换、任务面板、SOS 结果态都不改变它的位置（v1.4 接回）；
+ * 实心主色 + 大字「一键求助」，不使用红色小块，避免与「红色事件」状态混淆
+ * （见 docs/前端页面方案.md §2 规则 5）。触控区 80px 高，远超 PRD 的 ≥48×48px 门槛。
  */
 interface SosButtonProps {
   onClick: () => void;
@@ -15,6 +16,7 @@ export function SosButton({ onClick, active = false }: SosButtonProps) {
     <button
       type="button"
       aria-label="一键求助"
+      aria-pressed={active}
       onClick={onClick}
       className={`flex h-20 shrink-0 items-center gap-3 rounded-2xl px-8 text-3xl font-bold text-ink-inverse ${
         active ? "bg-brand-strong" : "bg-brand active:bg-brand-strong"

@@ -13,9 +13,15 @@ export function SosResult({ onExit }: { onExit: () => void }) {
       eyebrow="一键求助"
       title="已通知护工，请稍等"
       badge={
-        <StatusBadge tone="danger" size="md">
-          求救事件已生成
-        </StatusBadge>
+        <>
+          <StatusBadge tone="danger" size="md">
+            求救事件已生成
+          </StatusBadge>
+          {/* 当前仅 UI 原型：后端 sos 工单 / 通知契约未接，避免长者误以为真的已送达护工 */}
+          <StatusBadge tone="neutral" size="md">
+            界面演示 · 工单接口待接
+          </StatusBadge>
+        </>
       }
       footer={
         <button
@@ -47,6 +53,10 @@ export function SosResult({ onExit }: { onExit: () => void }) {
       </div>
       <p className="mt-8 text-xl text-ink-muted">
         如果情况有变化，可以直接告诉赶来的工作人员。
+      </p>
+      {/* 技术设计文档 §1.2 第 2 条：SOS 不替代急救，文案必须明确「非急救通道」 */}
+      <p className="mt-4 text-xl font-semibold text-ink">
+        这里不是急救通道；情况紧急请直接呼叫护工或拨打 120。
       </p>
     </TaskShell>
   );

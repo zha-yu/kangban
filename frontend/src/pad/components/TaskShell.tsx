@@ -31,7 +31,7 @@ export function TaskShell({
 }: TaskShellProps) {
   return (
     <section
-      className="flex h-full max-h-[660px] w-[960px] max-w-[92vw] shrink-0 flex-col overflow-hidden rounded-2xl border border-line bg-surface p-8"
+      className="flex h-full max-h-[80vh] w-[960px] max-w-[92vw] shrink-0 flex-col overflow-hidden rounded-2xl border border-line bg-surface p-8"
     >
       <header className="flex shrink-0 items-start justify-between gap-8">
         <div className="flex flex-col gap-3">
