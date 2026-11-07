@@ -32,6 +32,7 @@ from app.services import staff_service
 from app.services.staff_service import (
     ElderNotFoundError,
     GuardianAlreadyBoundError,
+    GuardianDisabledError,
     GuardianLimitExceededError,
     GuardianNotFoundError,
     StaffConflictError,
@@ -92,6 +93,9 @@ async def bind_guardian(
     except GuardianNotFoundError as exc:
         return _error_response(404, "NOT_FOUND", exc.message)  # type: ignore[return-value]
     except GuardianAlreadyBoundError as exc:
+        return _error_response(409, "CONFLICT", exc.message)  # type: ignore[return-value]
+    except GuardianDisabledError as exc:
+        # 存量修复（2026-11-07）：disabled 家属绑定应返 409 而非漏捕 500（A-1 全量回归发现）
         return _error_response(409, "CONFLICT", exc.message)  # type: ignore[return-value]
     except GuardianLimitExceededError as exc:
         return _error_response(409, "CONFLICT", exc.message)  # type: ignore[return-value]
