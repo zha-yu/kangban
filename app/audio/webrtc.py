@@ -1349,19 +1349,51 @@ class MediaSession:
         provider: ASRProvider,
         queue: asyncio.Queue[bytes | None],
     ) -> None:
+        # ---------- Day 5 B-2：三档超时并行 watchdog（ASR 段） ----------
+        # per-request state：函数内局部 dict，每次调用新建 → 天然 per-request、不跨请求共享
+        _state: dict[str, Any] = {"slow_degraded": False}
+        _watchdog: asyncio.Task[None] | None = None
+        _settings = get_settings()
+
+        async def _asr_slow_watchdog() -> None:
+            """阈值到了立即发 asr_slow，不等 provider 返回。"""
+            from app.audio.signaling import _ERROR_TALKBACK
+
+            await asyncio.sleep(_settings.degrade_asr_slow_ms / 1000)
+            if not _state["slow_degraded"]:
+                _state["slow_degraded"] = True
+                _deliver(
+                    self.connection_id,
+                    {"type": "error", "code": "asr_slow", "message": _ERROR_TALKBACK["asr_slow"]},
+                )
+
         try:
             try:
                 events = await provider.stream(_asr_frame_iterator(queue))
             except ASRError as exc:
+                # stream() 本身就炸了（握手/连接失败）—— watchdog 还没启动，不需要 cancel
                 await self._emit_asr_event(
                     turn_id, ASREvent(kind=ASREventKind.ERROR, result=None, error=exc)
                 )
                 return
+
+            # stream() 成功返回 generator → 启动 watchdog
+            _watchdog = asyncio.create_task(_asr_slow_watchdog())
+
+            first_event = True
             async for event in events:
+                if first_event and _watchdog is not None and not _watchdog.done():
+                    # 首包到达（PARTIAL 或 FINAL 都行）→ 首包慢问题已解决，取消 watchdog
+                    _watchdog.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await _watchdog
+                    first_event = False
                 await self._emit_asr_event(turn_id, event)
         except asyncio.CancelledError:
             raise
         except ASRError as exc:
+            # stream() 内部迭代时抛异常 → ERROR 事件已通过 _emit_asr_event → deliver_asr_event
+            # 映射成 ErrorMsg.asr_unavailable（现有链路，B-2 不吞异常、后端两条都发）
             await self._emit_asr_event(
                 turn_id, ASREvent(kind=ASREventKind.ERROR, result=None, error=exc)
             )
@@ -1377,6 +1409,11 @@ class MediaSession:
             )
             await self._notify_failure(MediaFailureReason.TASK_EXCEPTION, "asr_task_error")
         finally:
+            # ★ try/finally 强制清理：正常返回 / 异常退出 / 主任务被取消 三条路径全覆盖
+            if _watchdog is not None and not _watchdog.done():
+                _watchdog.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await _watchdog
             _log_event(
                 "asr turn finished",
                 trace_id=self.trace_id,
@@ -1635,11 +1672,40 @@ class MediaSession:
                 try:
                     events = await provider.stream(_fallback_frame_iterator(segment))
                 except ASRError as exc:
+                    # stream() 本身就炸了—— watchdog 还没启动
                     await self._emit_asr_event(
                         turn_id, ASREvent(kind=ASREventKind.ERROR, result=None, error=exc)
                     )
                     return
+
+                # ---------- Day 5 B-2：三档超时并行 watchdog（VAD fallback ASR 段） ----------
+                _state: dict[str, Any] = {"slow_degraded": False}
+                _watchdog: asyncio.Task[None] | None = None
+                _settings = get_settings()
+
+                async def _asr_slow_watchdog() -> None:
+                    from app.audio.signaling import _ERROR_TALKBACK
+
+                    await asyncio.sleep(_settings.degrade_asr_slow_ms / 1000)
+                    if not _state["slow_degraded"]:
+                        _state["slow_degraded"] = True
+                        _deliver(
+                            self.connection_id,
+                            {
+                                "type": "error",
+                                "code": "asr_slow",
+                                "message": _ERROR_TALKBACK["asr_slow"],
+                            },
+                        )
+
+                _watchdog = asyncio.create_task(_asr_slow_watchdog())
+                first_event = True
                 async for event in events:
+                    if first_event and _watchdog is not None and not _watchdog.done():
+                        _watchdog.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await _watchdog
+                        first_event = False
                     await self._emit_asr_event(turn_id, event)
             except asyncio.CancelledError:
                 raise
@@ -1661,6 +1727,11 @@ class MediaSession:
                     MediaFailureReason.TASK_EXCEPTION, "vad_fallback_asr_error"
                 )
             finally:
+                # ★ try/finally 强制清理
+                if _watchdog is not None and not _watchdog.done():
+                    _watchdog.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await _watchdog
                 _log_event(
                     "vad fallback asr turn finished",
                     trace_id=self.trace_id,

@@ -8,11 +8,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections import OrderedDict
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Literal
 from uuid import UUID
 
@@ -201,14 +202,45 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         text: str,
         audio_bytes: bytes | None,
     ) -> None:
+        # ---------- Day 5 B-2：LLM 并行 watchdog（覆盖 FINAL → reply 总耗时） ----------
+        # 语义：覆盖 ASR FINAL 到 reply 返回总耗时（含身份校验 + Redis history + LLM + Redis 写回）。
+        # 任何环节慢（含非 LLM 环节）都适用"我正在想"话术，用户感知正确。
+        _llm_state: dict[str, bool] = {"slow_degraded": False}
+        _llm_watchdog: asyncio.Task[None] | None = None
+        _settings = get_settings()
+
+        async def _llm_slow_watchdog() -> None:
+            from app.audio.signaling import _ERROR_TALKBACK
+
+            await asyncio.sleep(_settings.degrade_llm_slow_ms / 1000)
+            if not _llm_state["slow_degraded"]:
+                _llm_state["slow_degraded"] = True
+                signaling.deliver(
+                    device_id,
+                    {
+                        "type": "error",
+                        "code": "llm_slow",
+                        "message": _ERROR_TALKBACK["llm_slow"],
+                    },
+                )
+
+        _llm_watchdog = asyncio.create_task(_llm_slow_watchdog())
+
         try:
-            reply = await orchestrator.handle_asr_final(
-                device_id=device_id,
-                trace_id=trace_id,
-                turn_id=turn_id,
-                text=text,
-                audio_bytes=audio_bytes,
-            )
+            try:
+                reply = await orchestrator.handle_asr_final(
+                    device_id=device_id,
+                    trace_id=trace_id,
+                    turn_id=turn_id,
+                    text=text,
+                    audio_bytes=audio_bytes,
+                )
+            finally:
+                # ★ try/finally 强制清理
+                if _llm_watchdog is not None and not _llm_watchdog.done():
+                    _llm_watchdog.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await _llm_watchdog
         except IdentityConfirmationRequired as exc:
             # A1 reason=no_audio 等不在 C5 两值内时，线上统一按 low_confidence 询问；
             # 原始 reason 只进服务端日志，不改变 C5 契约。
@@ -258,6 +290,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 )
                 return
 
+            # ---------- Day 5 B-2：TTS 并行 watchdog（单次 await synthesize） ----------
+            _tts_state: dict[str, bool] = {"slow_degraded": False}
+            _tts_watchdog: asyncio.Task[None] | None = None
+            _settings = get_settings()
+
+            async def _tts_slow_watchdog() -> None:
+                from app.audio.signaling import _ERROR_TALKBACK
+
+                await asyncio.sleep(_settings.degrade_tts_slow_ms / 1000)
+                if not _tts_state["slow_degraded"]:
+                    _tts_state["slow_degraded"] = True
+                    signaling.deliver(
+                        device_id,
+                        {
+                            "type": "error",
+                            "code": "tts_slow",
+                            "message": _ERROR_TALKBACK["tts_slow"],
+                        },
+                    )
+
+            _tts_watchdog = asyncio.create_task(_tts_slow_watchdog())
+
             try:
                 pcm = await tts_provider.synthesize(reply.text)
             except TTSUnavailable as exc:
@@ -283,6 +337,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     },
                 )
                 return
+            finally:
+                # ★ try/finally 强制清理
+                if _tts_watchdog is not None and not _tts_watchdog.done():
+                    _tts_watchdog.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await _tts_watchdog
 
             audio_enqueued = await enqueue_tts_for_device(device_id, turn_id, pcm)
             logger.info(

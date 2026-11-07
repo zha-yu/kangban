@@ -235,7 +235,11 @@ async def delete_voiceprints(
         return _unbound_device_response()
 
     try:
-        await delete_all_for_elder(session=session, elder_id=elder_id)
+        await delete_all_for_elder(
+            session=session,
+            elder_id=elder_id,
+            actor=f"device:{identity.principal_id}",
+        )
     except Exception as exc:
         return _handle_service_exception(exc)
 
