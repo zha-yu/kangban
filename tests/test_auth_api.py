@@ -1,7 +1,7 @@
 """task-5 · auth API 集成测试（6 条验收全覆盖）。
 
 真实 DB + httpx.AsyncClient 链路：
-- NullPool 引擎绕开 task-4 登记的 P-03 事件循环复用问题；
+- conftest 的 module 级共享引擎（阶段 B 夹具治理，P-03 根治后不再自建 NullPool）；
 - 每用例一个事务、所有 DB 操作（seed + 请求）共享同一 session，最后统一 rollback；
 - httpx.AsyncClient 跑在 pytest 的 async 循环里，不换循环（解决 TestClient 跨循环 bug）。
 
@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC
 from typing import Any
@@ -18,16 +17,13 @@ from typing import Any
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import text, update
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
-    create_async_engine,
 )
-from sqlalchemy.pool import NullPool
 
-from app.core.config import get_settings
 from app.core.security import hash_password, sha256_hex
 from app.db import get_session as _app_get_session
 from app.models import (
@@ -46,6 +42,11 @@ _TEST_PHONE = "13800000001"
 _TEST_PASSWORD = "test123"
 _DEVICE_SECRET_PLAIN = "device-long-secret-plain-abc123"
 
+# 阶段 A 提速：seeded_db 是 function 级夹具，每个用例都要 seed 两个账号；
+# cost-12 的 hash_password 单次约 0.3s，模块级预计算一次全文件复用。
+# bcrypt 随机盐不影响登录校验（verify_password 只比对同一明文）。
+_TEST_HASH = hash_password(_TEST_PASSWORD)
+
 
 # ---------------------------------------------------------------------------
 # Fixtures —— 整条链保持 async，共用同一事件循环
@@ -53,35 +54,25 @@ _DEVICE_SECRET_PLAIN = "device-long-secret-plain-abc123"
 
 
 @pytest.fixture
-async def test_engine() -> AsyncIterator[AsyncEngine]:
-    """NullPool 引擎 + 启动时清 DB（绕开之前 commit 残留）。"""
-    engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
-    try:
-        # 每 session 跑之前先清掉可能残留的测试数据（之前版本 commit 没清）
-        async with engine.begin() as conn:
-            await conn.execute(
-                text(
-                    "TRUNCATE elder_guardians, elder_staff_assignments, "
-                    "guardian_accounts, staff_accounts, staff_tokens, "
-                    "devices, elders, beds, personas, rooms CASCADE"
-                )
-            )
-        yield engine
-    finally:
-        await engine.dispose()
-
-
-@pytest.fixture
 async def test_session(
-    test_engine: AsyncEngine,
+    db_engine: AsyncEngine,
 ) -> AsyncIterator[AsyncSession]:
-    """每用例一个事务、yield 后统一 rollback。"""
-    sf = async_sessionmaker(test_engine, expire_on_commit=False)
-    async with sf() as session:
-        try:
-            yield session
-        finally:
-            await session.rollback()
+    """每用例一个事务、yield 后统一 rollback（db_engine 为 conftest 的 module 级共享引擎）。
+
+    阶段 C 去掉 TRUNCATE 后改走 create_savepoint：service 层登录的真实 commit 只释放
+    savepoint，结束整体回滚，独立测试库零残留（模式同 test_elders_api.client）。
+    """
+    async with db_engine.connect() as conn:
+        trans = await conn.begin()
+        sf = async_sessionmaker(
+            bind=conn, expire_on_commit=False, join_transaction_mode="create_savepoint"
+        )
+        async with sf() as session:
+            try:
+                yield session
+            finally:
+                await session.rollback()
+        await trans.rollback()
 
 
 @pytest.fixture
@@ -116,14 +107,14 @@ async def seeded_db(test_session: AsyncSession) -> dict[str, Any]:
         name="王护工",
         role="care_worker",
         phone=_TEST_PHONE,
-        password_hash=hash_password(_TEST_PASSWORD),
+        password_hash=_TEST_HASH,
         token_version=0,
         status="active",
     )
     guardian = GuardianAccount(
         name="张女士",
         phone="13900000001",
-        password_hash=hash_password(_TEST_PASSWORD),
+        password_hash=_TEST_HASH,
         token_version=0,
         status="active",
     )
@@ -260,11 +251,13 @@ async def test_fake_token_returns_401(ac: httpx.AsyncClient) -> None:
 
 
 async def test_expired_token_returns_401(ac: httpx.AsyncClient, seeded_db: dict[str, Any]) -> None:
-    from datetime import datetime
+    from datetime import datetime, timedelta
 
     from app.core.security import KIND_STAFF, TYP_ACCESS, _build_payload
 
-    now = datetime.now(UTC)
+    # 预签发「已过期」令牌：payload 校验要求 exp > iat，不能签负 TTL；
+    # 把 now 回拨 10s（TTL 仍为 1s）即可让 exp 早于当前时间，免去真实 sleep 等过期。
+    now = datetime.now(UTC) - timedelta(seconds=10)
     expired_jwt = _build_payload(
         typ=TYP_ACCESS,
         sub=f"{KIND_STAFF}:{seeded_db['staff_id']}",
@@ -272,7 +265,6 @@ async def test_expired_token_returns_401(ac: httpx.AsyncClient, seeded_db: dict[
         extra={"kind": KIND_STAFF, "role": "care_worker", "tv": 0},
         now=now,
     )
-    await asyncio.sleep(2)
 
     resp = await ac.get(
         "/api/sessions/current",

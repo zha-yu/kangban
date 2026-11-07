@@ -12,8 +12,9 @@
 测试统一经 env 覆写 `VOICEPRINT_SIMILARITY_THRESHOLD=0.55`（CAM++ spike 实测可行区间，
 见 spikes/voiceprint/README.md），裁决落地后只需改默认值，测试本身不动。
 
-DB 用例沿用 test_security.py 的 NullPool 引擎 + 事务回滚模式（避开模块级单例引擎的
-跨事件循环投毒问题）；库不可达时按 conftest 口径 skip 并说明原因，不静默通过。
+DB 用例沿用事务回滚模式；引擎统一走 conftest 的 module 级共享引擎
+（阶段 B 夹具治理，跨事件循环投毒 P-03 已根治）；库不可达时按 conftest
+口径 skip 并说明原因，不静默通过。
 """
 
 from __future__ import annotations
@@ -32,9 +33,7 @@ from sqlalchemy.ext.asyncio import (
     AsyncConnection,
     AsyncEngine,
     AsyncSession,
-    create_async_engine,
 )
-from sqlalchemy.pool import NullPool
 
 from app.core.config import Settings, get_settings
 from app.models import Elder
@@ -89,13 +88,10 @@ def vp_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[Settings]:
 
 
 @pytest.fixture
-async def vp_engine(vp_env: Settings) -> AsyncIterator[AsyncEngine]:
-    """本文件专用 NullPool 引擎（不用 app/db.py 模块级单例，原因见 test_security.py）。"""
-    engine = create_async_engine(vp_env.database_url, poolclass=NullPool)
-    try:
-        yield engine
-    finally:
-        await engine.dispose()
+async def vp_engine(vp_env: Settings, db_engine: AsyncEngine) -> AsyncIterator[AsyncEngine]:
+    """复用 conftest 的 module 级共享引擎（阶段 B 夹具治理，P-03 根治）；
+    vp_env 仅负责注入 VOICEPRINT_* 测试配置（database_url 不受其影响）。"""
+    yield db_engine
 
 
 @pytest.fixture

@@ -55,6 +55,7 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-grpc>=1.28",
     "langfuse>=2.54",
     "websockets>=17.4",
+    "pytest-xdist>=3.8.0",
 ]
 
 # uv：本项目是应用而非可分发包，不需要 build-system，也不安装自身
@@ -130,8 +131,11 @@ testpaths = ["tests"]
 # 不把仓库根加进 sys.path 时，`from app.main import create_app` 会 ModuleNotFoundError。
 pythonpath = ["."]
 asyncio_mode = "auto"
+# 阶段 B 夹具治理（P-03 根治）：同一模块的测试与夹具共享一条事件循环，
+# 循环不再每用例关闭；conftest 的共享引擎与模块循环同生共死（见 conftest.py）。
 # pytest-asyncio 未来默认值变更提示，显式钉住避免行为漂移
-asyncio_default_fixture_loop_scope = "function"
+asyncio_default_fixture_loop_scope = "module"
+asyncio_default_test_loop_scope = "module"
 addopts = "-ra --strict-markers --strict-config"
 markers = [
     "gate: 三道隔离闸门（会话/记忆/工具授权），100% 覆盖",
