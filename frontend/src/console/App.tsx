@@ -17,6 +17,8 @@ import { HealthFormPage } from "./pages/HealthFormPage";
 import { MedicationPage } from "./pages/MedicationPage";
 import { MedicationEditPage } from "./pages/MedicationEditPage";
 import { ReviewQueuePage } from "./pages/ReviewQueuePage";
+import { AdminUsersPage } from "./pages/AdminUsersPage";
+import { AdminDevicesPage } from "./pages/AdminDevicesPage";
 
 /**
  * 照护台入口：登录态路由 + 角色分流（task-06～11 F2–F7）。
@@ -27,12 +29,14 @@ import { ReviewQueuePage } from "./pages/ReviewQueuePage";
  * - care_worker → 侧栏骨架 + 工单看板（Mock）/ 负责长者（真实对接 E7/E6）
  *   / 告警通知中心（Mock）/ 健康代填（提交 Mock + 长者下拉真实 E7）/ 药单只读（Mock）；
  * - doctor → 复核队列（Mock，task-11）/ 药单维护（Mock，task-12），其余医生项仍置灰；
- * - admin → 侧栏骨架（全置灰）+ 占位主区；
+ * - admin → 用户与角色 / 模拟设备（Day 5 D-1，真实端点 E12/E15/E13/E18/E16/E17），
+ *   教学数据重置 / 人设配置 / 审计日志仍置灰（后续批次）；
  * - guardian → 家属应走 family 入口，此处仅占位提示。
  */
 type View = "loading" | "login" | "home";
 type CareWorkerView = "workorders" | "elders" | "alerts" | "health-form" | "medication";
 type DoctorView = "review-queue" | "medication-edit";
+type AdminView = "users" | "devices";
 
 function PlaceholderHome({ principal }: { principal: Principal }) {
   return (
@@ -48,6 +52,7 @@ export default function App() {
   const [principal, setPrincipal] = useState<Principal | null>(null);
   const [careView, setCareView] = useState<CareWorkerView>("workorders");
   const [doctorView, setDoctorView] = useState<DoctorView>("review-queue");
+  const [adminView, setAdminView] = useState<AdminView>("users");
 
   useEffect(() => {
     if (!hasSession()) {
@@ -110,6 +115,18 @@ export default function App() {
           onNavigate={(key) => setDoctorView(key as DoctorView)}
         >
           {doctorView === "medication-edit" ? <MedicationEditPage /> : <ReviewQueuePage />}
+        </AppLayout>
+      );
+    }
+    if (principal.kind === "staff" && principal.role === "admin") {
+      return (
+        <AppLayout
+          principal={principal}
+          activeKey={adminView}
+          onLogout={handleLogout}
+          onNavigate={(key) => setAdminView(key as AdminView)}
+        >
+          {adminView === "devices" ? <AdminDevicesPage /> : <AdminUsersPage />}
         </AppLayout>
       );
     }

@@ -4,8 +4,8 @@ import { logout, roleLabel, type Principal } from "../api";
  * 照护台应用骨架（task-06 F2）：浅色侧栏 + 顶栏 + 主区。
  *
  * 口径（前端页面方案 §3.2 通用）：侧栏浅色同族 + 主色 8% 底选中态，不用深侧栏；
- * 本卡只做骨架——护工「工单看板」一项可用，其余业务项与医生/管理员项置灰占位，
- * 后续批次按角色逐项挂页（f2 计划 D2）。
+ * 护工/医生业务项按批次交付；管理员 Day 5 交付「用户与角色」「模拟设备」两项，
+ * 「教学数据重置 / 人设配置 / 审计日志」保持置灰（不属 D-1 四流程范围）。
  */
 
 /** 侧栏菜单项：label + 可用性；enabled 仅当前批次已交付项 */
@@ -32,7 +32,8 @@ const NAV_BY_ROLE: Record<string, NavItem[]> = {
     { key: "drug-questions", label: "药品疑问", enabled: false },
   ],
   admin: [
-    { key: "users", label: "用户与角色", enabled: false },
+    { key: "users", label: "用户与角色", enabled: true }, // Day 5 D-1 交付（真实端点 E12/E15/E13）
+    { key: "devices", label: "模拟设备", enabled: true }, // Day 5 D-1 交付（E18/E16/E17）
     { key: "reset", label: "教学数据重置", enabled: false },
     { key: "persona", label: "人设配置", enabled: false },
     { key: "audit", label: "审计日志", enabled: false },

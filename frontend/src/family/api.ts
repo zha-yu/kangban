@@ -1,14 +1,47 @@
 /**
- * 家属端认证 API 封装（task-05 F3）。
+ * 家属端认证 API 封装（task-05 F3）+ 业务数据双轨切换层（Day 5 · D-2）。
  *
- * 契约唯一依据：app/api/auth.py + app/api/schemas/auth.py + docs/接口契约_身份与权限.md §E1–E3。
+ * 契约唯一依据：app/api/auth.py + app/api/schemas/auth.py + docs/接口契约_身份与权限.md §E1–E3；
+ * 业务部分见 docs/接口契约_家属端数据.md v1.0 草案（待冻结）。
  * 注意：E1 实际端点是 `POST /api/sessions`（任务卡 §3 写的 `/api/sessions/login` 有笔误，
  * 按卡 §6「以 app/api/auth.py 为准」执行，差异已登记卡变更记录）。
  *
  * 本模块与 console/api.ts 为**独立同构实现**（task-05 §0：禁止互相 import 或 import src/pad/**）。
  * 同源 localStorage 共享，故所有 key 带入口前缀，避免双端互踢登录态。
  * 家属端 kind=guardian、role 为 None，角色显示只依赖 kind/name。
+ *
+ * 数据源分层（N6）：业务类型、Mock 数据与 Mock 实现全部在 `./data-source.ts`；
+ * 本文件只保留认证域、唯一 `USE_MOCK` 开关、类型导出与 5 个业务函数（N7 双轨）。
  */
+
+import {
+  SCOPE_FORBIDDEN_TEXT,
+  mockBoundElders,
+  mockMarkNotificationRead,
+  mockNotifications,
+  mockReportDetail,
+  mockReports,
+  type AttentionEvent,
+  type BoundElder,
+  type DailyReportDetail,
+  type DailyReportSummary,
+  type FamilyNotification,
+  type ListItems,
+  type MedicationStats,
+  type Paged,
+} from "./data-source";
+
+export { SCOPE_FORBIDDEN_TEXT };
+export type {
+  AttentionEvent,
+  BoundElder,
+  DailyReportDetail,
+  DailyReportSummary,
+  FamilyNotification,
+  ListItems,
+  MedicationStats,
+  Paged,
+};
 
 const STORAGE_PREFIX = "kb_family";
 const ACCESS_KEY = `${STORAGE_PREFIX}_access_token`;
@@ -235,72 +268,7 @@ export function logout(): void {
  */
 export const USE_MOCK = true;
 
-/** 403 越权文案（FR-RPT-02：家属只能查看绑定长者，服务端 403 + 审计） */
-export const SCOPE_FORBIDDEN_TEXT = "无权查看该长者的数据";
-
-/** 用药四类统计（契约 S-01：键名与用药回执终态逐字对齐，禁止合并为「实际漏服」） */
-export interface MedicationStats {
-  taken_reported: number;
-  refused: number;
-  missed_unconfirmed: number;
-  notification_failed: number;
-}
-
-/** F0 授权长者（切换器数据源，服务端 WHERE guardian_id=:current AND status='active'） */
-export interface BoundElder {
-  elder_id: string;
-  name: string;
-  relation: string;
-}
-
-/** 需关注事件（F2 详情内，契约 S-09 服务端 JOIN 组装） */
-export interface AttentionEvent {
-  level: "red" | "yellow";
-  type: string;
-  brief: string;
-  occurred_at: string;
-}
-
-/** F1 日报列表项（同 report_date 只出最新版，契约 S-07） */
-export interface DailyReportSummary {
-  report_id: string;
-  elder_id: string;
-  report_date: string;
-  version: number;
-  status: "normal" | "away_notice";
-  summary_preview: string;
-  audio_url: string | null;
-  pushed_at: string | null;
-}
-
-/** F2 日报详情（含固定声明「教学模拟信息，不构成医疗诊断」） */
-export interface DailyReportDetail extends Omit<DailyReportSummary, "summary_preview"> {
-  summary_text: string;
-  medication_stats: MedicationStats;
-  health_summary: string;
-  attention_events: AttentionEvent[];
-}
-
-/** N1 通知项（家属侧 P0 只见 channel=inapp，契约 §1.2） */
-export interface FamilyNotification {
-  notification_id: string;
-  type: string;
-  payload: { elder_name: string; event_brief: string; report_id: string | null };
-  channel: "inapp" | "webpush";
-  status: "generated" | "pending" | "delivered" | "acknowledged" | "failed";
-  is_mock: boolean;
-  retry_count: number;
-  created_at: string;
-  sent_at: string | null;
-  read_at: string | null;
-}
-
-interface Paged<T> {
-  items: T[];
-  total: number;
-  page: number;
-  page_size: number;
-}
+// 业务类型与 Mock 数据已迁至 ./data-source.ts（N6）；本文件只保留类型再导出与双轨切换。
 
 /** 业务接口响应 → ApiError（401 凭证失效 / 403 越权 / 其余按网络错，不回显内部细节） */
 async function ensureOk(res: Response): Promise<void> {
@@ -310,184 +278,64 @@ async function ensureOk(res: Response): Promise<void> {
   throw new ApiError("network", NETWORK_ERROR_TEXT);
 }
 
-// ---- mock 数据（S-11：结构与真实接口响应逐字段一致） ----
+// Mock 数据与 Mock 实现已迁至 ./data-source.ts（N6）；以下只做双轨切换。
 
-const MOCK_ELDERS: BoundElder[] = [
-  { elder_id: "e1000000-0000-0000-0000-000000000001", name: "张桂芬", relation: "母亲" },
-  { elder_id: "e2000000-0000-0000-0000-000000000002", name: "李建国", relation: "父亲" },
-];
-
-function localDate(daysAgo: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - daysAgo);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
-function isoAgo(hours: number): string {
-  return new Date(Date.now() - hours * 3600_000).toISOString();
-}
-
-const MOCK_REPORTS: DailyReportDetail[] = [
-  {
-    report_id: "r0000000-0000-0000-0000-00000000000a",
-    elder_id: MOCK_ELDERS[0].elder_id,
-    report_date: localDate(0),
-    version: 2,
-    status: "normal",
-    summary_text:
-      "今日血压偏高（152/94mmHg），已同步负责医生复核。用药方面有 1 次拒服，已记录并提醒护工关注。晚间睡眠 6.5 小时，精神状态尚可。本报告为教学模拟信息，不构成医疗诊断。",
-    medication_stats: { taken_reported: 2, refused: 1, missed_unconfirmed: 0, notification_failed: 0 },
-    health_summary: "血压 152/94mmHg；睡眠 6.5 小时；步数 1,860",
-    attention_events: [
-      { level: "yellow", type: "health_referral", brief: "血压偏高，建议咨询医生", occurred_at: isoAgo(10) },
-    ],
-    audio_url: null,
-    pushed_at: isoAgo(9),
-  },
-  {
-    report_id: "r0000000-0000-0000-0000-00000000000b",
-    elder_id: MOCK_ELDERS[0].elder_id,
-    report_date: localDate(1),
-    version: 1,
-    status: "normal",
-    summary_text:
-      "全天情况平稳，用药 3 次均按时自报已服。午后散步约 30 分钟。本报告为教学模拟信息，不构成医疗诊断。",
-    medication_stats: { taken_reported: 3, refused: 0, missed_unconfirmed: 0, notification_failed: 0 },
-    health_summary: "血压 138/86mmHg；睡眠 7.2 小时；步数 2,540",
-    attention_events: [],
-    audio_url: null,
-    pushed_at: isoAgo(33),
-  },
-  {
-    report_id: "r0000000-0000-0000-0000-00000000000c",
-    elder_id: MOCK_ELDERS[0].elder_id,
-    report_date: localDate(2),
-    version: 1,
-    status: "away_notice",
-    summary_text: "长者当日暂离社区，日报为暂离告知。本报告为教学模拟信息，不构成医疗诊断。",
-    medication_stats: { taken_reported: 0, refused: 0, missed_unconfirmed: 0, notification_failed: 0 },
-    health_summary: "",
-    attention_events: [],
-    audio_url: null,
-    pushed_at: null,
-  },
-  {
-    report_id: "r0000000-0000-0000-0000-00000000000d",
-    elder_id: MOCK_ELDERS[1].elder_id,
-    report_date: localDate(0),
-    version: 1,
-    status: "normal",
-    summary_text:
-      "今日降压药送达后未在 60 秒内确认，系统已按四次触达流程重试并通知护工。本报告为教学模拟信息，不构成医疗诊断。",
-    medication_stats: { taken_reported: 1, refused: 0, missed_unconfirmed: 1, notification_failed: 0 },
-    health_summary: "血压 146/90mmHg；睡眠 5.8 小时",
-    attention_events: [
-      { level: "red", type: "emergency_health", brief: "收缩压 185mmHg，已通知护工与家属", occurred_at: isoAgo(12) },
-    ],
-    audio_url: null,
-    pushed_at: isoAgo(8),
-  },
-];
-
-let MOCK_NOTIFICATIONS: FamilyNotification[] = [
-  {
-    notification_id: "n0000000-0000-0000-0000-000000000001",
-    type: "emergency_health",
-    payload: { elder_name: "李建国", event_brief: "收缩压 185mmHg，已通知护工，建议联系医生", report_id: "r0000000-0000-0000-0000-00000000000d" },
-    channel: "inapp",
-    status: "delivered",
-    is_mock: true,
-    retry_count: 0,
-    created_at: isoAgo(12),
-    sent_at: isoAgo(12),
-    read_at: null,
-  },
-  {
-    notification_id: "n0000000-0000-0000-0000-000000000002",
-    type: "missed_medication",
-    payload: { elder_name: "李建国", event_brief: "晚间药送达后未确认，护工已跟进", report_id: "r0000000-0000-0000-0000-00000000000d" },
-    channel: "inapp",
-    status: "delivered",
-    is_mock: true,
-    retry_count: 2,
-    created_at: isoAgo(11),
-    sent_at: isoAgo(11),
-    read_at: null,
-  },
-  {
-    notification_id: "n0000000-0000-0000-0000-000000000003",
-    type: "report_ready",
-    payload: { elder_name: "张桂芬", event_brief: "11 月日报已生成，点击查看", report_id: "r0000000-0000-0000-0000-00000000000a" },
-    channel: "inapp",
-    status: "delivered",
-    is_mock: true,
-    retry_count: 0,
-    created_at: isoAgo(9),
-    sent_at: isoAgo(9),
-    read_at: isoAgo(8),
-  },
-];
-
-// ---- 业务 fetch（mock 分支签名与真实分支一致，S-11） ----
+// ---- 业务 fetch（N7 双轨：Mock / 真实分支签名一致，S-11） ----
+// 真实分支路径严格对齐《接口契约_家属端数据》草案 §4；契约冻结评审（X3）前全部标注「待冻结」。
 
 export async function fetchBoundElders(): Promise<BoundElder[]> {
-  if (USE_MOCK) return MOCK_ELDERS;
+  if (USE_MOCK) return mockBoundElders();
+  // 待冻结：F0 GET /api/family/elders（契约 §4 F0 只返回 {items}）
   const res = await authedFetch("/api/family/elders");
   await ensureOk(res);
-  const data = (await res.json()) as Paged<BoundElder>;
-  return data.items;
+  const data = (await res.json()) as ListItems<BoundElder>;
+  return data.items ?? [];
 }
 
 export async function fetchReports(elderId: string): Promise<DailyReportSummary[]> {
-  if (USE_MOCK) {
-    return MOCK_REPORTS.filter((r) => r.elder_id === elderId).map((r) => ({
-      report_id: r.report_id,
-      elder_id: r.elder_id,
-      report_date: r.report_date,
-      version: r.version,
-      status: r.status,
-      summary_preview: r.summary_text.slice(0, 80),
-      audio_url: r.audio_url,
-      pushed_at: r.pushed_at,
-    }));
-  }
-  const res = await authedFetch(`/api/family/elders/${encodeURIComponent(elderId)}/reports`);
+  if (USE_MOCK) return mockReports(elderId);
+  // 待冻结：F1 GET /api/family/elders/{elder_id}/reports（分页 1/20，上限 100，S-10）
+  const res = await authedFetch(
+    `/api/family/elders/${encodeURIComponent(elderId)}/reports?page=1&page_size=100`,
+  );
   await ensureOk(res);
   const data = (await res.json()) as Paged<DailyReportSummary>;
-  return data.items;
+  return data.items ?? [];
 }
 
 export async function fetchReport(reportId: string): Promise<DailyReportDetail> {
   if (USE_MOCK) {
-    const hit = MOCK_REPORTS.find((r) => r.report_id === reportId);
+    const hit = mockReportDetail(reportId);
     if (!hit) throw new ApiError("invalid", "日报不存在或已删除");
     return hit;
   }
+  // 待冻结：F2 GET /api/family/reports/{report_id}
   const res = await authedFetch(`/api/family/reports/${encodeURIComponent(reportId)}`);
   await ensureOk(res);
   return (await res.json()) as DailyReportDetail;
 }
 
 export async function fetchNotifications(): Promise<FamilyNotification[]> {
-  if (USE_MOCK) return MOCK_NOTIFICATIONS;
-  const res = await authedFetch("/api/family/notifications?page=1&page_size=100");
+  if (USE_MOCK) return mockNotifications();
+  // 待冻结：N1 GET /api/family/notifications（分页 1/20，上限 100；unread_only 默认 false）
+  const res = await authedFetch("/api/family/notifications?page=1&page_size=100&unread_only=false");
   await ensureOk(res);
   const data = (await res.json()) as Paged<FamilyNotification>;
-  return data.items;
+  return data.items ?? [];
 }
 
-/** N4 标记已读（幂等：重复调用返回原 read_at） */
+/** N4 标记已读（幂等：重复调用返回原 read_at，且只写 read_at、不动 status） */
 export async function markNotificationRead(notificationId: string): Promise<string> {
   if (USE_MOCK) {
-    const hit = MOCK_NOTIFICATIONS.find((n) => n.notification_id === notificationId);
-    if (!hit) throw new ApiError("invalid", "通知不存在或已删除");
-    hit.read_at = hit.read_at ?? new Date().toISOString();
-    return hit.read_at;
+    const readAt = mockMarkNotificationRead(notificationId);
+    if (!readAt) throw new ApiError("invalid", "通知不存在或已删除");
+    return readAt;
   }
-  const res = await authedFetch(`/api/family/notifications/${encodeURIComponent(notificationId)}/read`, {
-    method: "POST",
-  });
+  // 待冻结：N4 POST /api/family/notifications/{notification_id}/read
+  const res = await authedFetch(
+    `/api/family/notifications/${encodeURIComponent(notificationId)}/read`,
+    { method: "POST" },
+  );
   await ensureOk(res);
   const data = (await res.json()) as { notification_id: string; read_at: string };
   return data.read_at;
