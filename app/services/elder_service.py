@@ -64,6 +64,10 @@ class ElderValidationError(ElderServiceError):
     """业务校验失败（如 `archived` 夹带其他字段、persona 不存在）。"""
 
 
+class ElderConflictError(ElderServiceError):
+    """资源状态冲突（如目标床位已被其他长者占用）。"""
+
+
 @dataclass(frozen=True, slots=True)
 class ElderDetail:
     """E6 详情：R4 全字段 + 由 `beds` JOIN 得出的 `room_no / bed_no`（裁决 S-05）。"""
@@ -95,6 +99,34 @@ class ElderListItem:
 class ElderPage:
     items: list[ElderListItem]
     total: int
+
+
+@dataclass(frozen=True, slots=True)
+class BedInfo:
+    """E18 床位项：`elder_id` 非空即已占用。"""
+
+    bed_id: uuid.UUID
+    bed_no: str
+    elder_id: uuid.UUID | None
+
+
+@dataclass(frozen=True, slots=True)
+class RoomWithBeds:
+    """E18 房间项：房间 + 全量床位（含空床）。"""
+
+    room_id: uuid.UUID
+    room_no: str
+    status: str
+    beds: list[BedInfo]
+
+
+@dataclass(frozen=True, slots=True)
+class BedAssignment:
+    """E19 响应：入床后的三个定位字段。"""
+
+    elder_id: uuid.UUID
+    bed_id: uuid.UUID
+    room_id: uuid.UUID
 
 
 def _audit(
@@ -131,6 +163,19 @@ def _require_admin(identity: Identity, *, action: str, target: str) -> None:
     """
     try:
         check_roles(identity, ("admin",))
+    except RoleForbiddenError:
+        _audit(identity, action=action, target=target, result="forbidden", reason="role")
+        raise
+
+
+def _require_staff_write(identity: Identity, *, action: str, target: str) -> None:
+    """建档/入床门禁：admin 与 care_worker 均可（契约 v1.8，主理人 2026-11-06 裁决）。
+
+    医生 / 家属 / 设备 / 工牌一律 403；拒绝时先落审计再抛，
+    与 `_require_admin` 同一节奏，让「403 → 审计」有统一落点。
+    """
+    try:
+        check_roles(identity, ("admin", "care_worker"))
     except RoleForbiddenError:
         _audit(identity, action=action, target=target, result="forbidden", reason="role")
         raise
@@ -296,8 +341,8 @@ async def create_elder(
     gender: str | None,
     persona_id: uuid.UUID | None,
 ) -> ElderDetail:
-    """E5：仅 admin；`name` 不唯一，允许重名；默认值由数据库给出。"""
-    _require_admin(identity, action="elder.create", target="elder:new")
+    """E5：admin / care_worker（契约 v1.8）；`name` 不唯一，允许重名；默认值由数据库给出。"""
+    _require_staff_write(identity, action="elder.create", target="elder:new")
 
     # 契约 E5 没有 409 口径；persona_id 是请求体里的引用字段，不存在按 422 处理。
     if persona_id is not None and not await _persona_exists(session, persona_id):
@@ -432,8 +477,109 @@ async def update_elder(
     return _detail_from(elder, room_no=room_no, bed_no=bed_no)
 
 
+async def list_rooms_with_beds(session: AsyncSession, identity: Identity) -> list[RoomWithBeds]:
+    """E18：房间 + 全量床位（含空床），供照护台分配床位选择。
+
+    读操作不设角色白名单以外的门槛——与 E7 一致走 `_scope_relation`，
+    但房间/床位本身不属于长者责任范围数据，员工（admin/care_worker/doctor）全量可读；
+    家属 / 设备 / 工牌 403。
+    """
+    if identity.kind != KIND_STAFF:
+        _audit(
+            identity,
+            action="room.list",
+            target="room:list",
+            result="forbidden",
+            reason="principal_kind",
+        )
+        raise ElderScopeForbiddenError("room list is only readable by staff sessions")
+
+    rooms = (await session.execute(select(Room).order_by(Room.room_no))).scalars().all()
+    beds = (await session.execute(select(Bed).order_by(Bed.room_id, Bed.bed_no))).scalars().all()
+
+    by_room: dict[uuid.UUID, list[BedInfo]] = {}
+    for bed in beds:
+        by_room.setdefault(bed.room_id, []).append(
+            BedInfo(bed_id=bed.bed_id, bed_no=bed.bed_no, elder_id=bed.elder_id)
+        )
+    return [
+        RoomWithBeds(
+            room_id=room.room_id,
+            room_no=room.room_no,
+            status=room.status,
+            beds=by_room.get(room.room_id, []),
+        )
+        for room in rooms
+    ]
+
+
+async def assign_bed(
+    session: AsyncSession,
+    identity: Identity,
+    elder_id: uuid.UUID,
+    *,
+    bed_id: uuid.UUID,
+) -> BedAssignment:
+    """E19：把长者安排到床位；若长者已在其他床，先腾空旧床（换床语义）。
+
+    目标床位被其他长者占用是 409；长者与床位不存在是 404。
+    `rooms.status` 由 beds 聚合（模型注释），但全仓尚无任何聚合写入口，
+    本函数不引入第二套口径，只写 beds。
+    """
+    target = f"elder:{elder_id}"
+    _require_staff_write(identity, action="elder.assign_bed", target=target)
+
+    elder = await session.get(Elder, elder_id)
+    if elder is None:
+        _audit(identity, action="elder.assign_bed", target=target, result="not_found")
+        raise ElderNotFoundError(str(elder_id))
+
+    bed = await session.get(Bed, bed_id)
+    if bed is None:
+        _audit(
+            identity,
+            action="elder.assign_bed",
+            target=target,
+            result="not_found",
+            reason="bed",
+        )
+        raise ElderNotFoundError(str(bed_id))
+
+    if bed.elder_id is not None and bed.elder_id != elder_id:
+        _audit(
+            identity,
+            action="elder.assign_bed",
+            target=target,
+            result="conflict",
+            reason="bed_occupied",
+        )
+        raise ElderConflictError("target bed is already occupied")
+
+    # 换床：先腾空该长者当前占用的一切床位，再占新床。
+    current = (await session.execute(select(Bed).where(Bed.elder_id == elder_id))).scalars().all()
+    for old in current:
+        if old.bed_id != bed.bed_id:
+            old.elder_id = None
+            old.status = "available"
+
+    bed.elder_id = elder_id
+    bed.status = "occupied"
+    await session.flush()
+    _audit(
+        identity,
+        action="elder.assign_bed",
+        target=target,
+        result="success",
+        bed_id=str(bed.bed_id),
+    )
+    return BedAssignment(elder_id=elder_id, bed_id=bed.bed_id, room_id=bed.room_id)
+
+
 __all__ = [
     "ELDER_STATUSES",
+    "BedAssignment",
+    "BedInfo",
+    "ElderConflictError",
     "ElderDetail",
     "ElderListItem",
     "ElderNotFoundError",
@@ -441,8 +587,11 @@ __all__ = [
     "ElderScopeForbiddenError",
     "ElderServiceError",
     "ElderValidationError",
+    "RoomWithBeds",
+    "assign_bed",
     "create_elder",
     "get_elder",
     "list_elders",
+    "list_rooms_with_beds",
     "update_elder",
 ]

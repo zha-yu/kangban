@@ -77,7 +77,7 @@ export function AlertsPage({ principal }: { principal: Principal }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState<NotificationStatus | "all">("all");
   const [filterType, setFilterType] = useState<NotificationType | "all">("all");
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [rowError, setRowError] = useState<string | null>(null);
   const actor = useMemo(() => ({ id: principal.id, name: principal.name }), [principal]);
@@ -102,23 +102,24 @@ export function AlertsPage({ principal }: { principal: Principal }) {
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   }, [items, filterStatus, filterType]);
 
-  /** 展开详情：标记已读（已读 ≠ 确认，AC-23） */
+  /** 展开详情：标记已读（已读 ≠ 确认，AC-23）；多条详情可同时展开 */
   function toggleExpand(n: NotificationItem) {
     setRowError(null);
-    if (expandedId === n.notification_id) {
-      setExpandedId(null);
-      return;
-    }
-    setExpandedId(n.notification_id);
-    if (!n.read_at) {
-      markNotificationRead(n.notification_id)
-        .then((updated) => {
-          setItems((prev) => prev?.map((x) => (x.notification_id === updated.notification_id ? updated : x)) ?? prev);
-        })
-        .catch(() => {
-          // 已读标记失败不打断浏览，刷新后重试
-        });
-    }
+    const isOpen = expandedIds.has(n.notification_id);
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(n.notification_id)) next.delete(n.notification_id);
+      else next.add(n.notification_id);
+      return next;
+    });
+    if (isOpen || n.read_at) return;
+    markNotificationRead(n.notification_id)
+      .then((updated) => {
+        setItems((prev) => prev?.map((x) => (x.notification_id === updated.notification_id ? updated : x)) ?? prev);
+      })
+      .catch(() => {
+        // 已读标记失败不打断浏览，刷新后重试
+      });
   }
 
   async function confirm(n: NotificationItem) {
@@ -171,7 +172,7 @@ export function AlertsPage({ principal }: { principal: Principal }) {
 
       <ul className="wo-list">
         {filtered.map((n) => {
-          const expanded = expandedId === n.notification_id;
+          const expanded = expandedIds.has(n.notification_id);
           return (
             <li key={n.notification_id} className="wo-item">
               <div className="wo-row">
@@ -230,7 +231,7 @@ export function AlertsPage({ principal }: { principal: Principal }) {
         {filtered.length === 0 && <li className="wo-empty">当前筛选条件下没有通知</li>}
       </ul>
 
-      {rowError && !expandedId && <p className="field-error">{rowError}</p>}
+      {rowError && expandedIds.size === 0 && <p className="field-error">{rowError}</p>}
     </div>
   );
 }

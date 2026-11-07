@@ -62,7 +62,7 @@ class VadSession:
     """webrtcvad 单轮语音切段器。
 
     生命周期：
-        session = VadSession(aggressiveness=2)
+        session = VadSession(aggressiveness=3)
         session.feed_frame(frame_bytes_30ms)   # 逐帧喂入
         ...
         speech_segment = session.flush()        # 结束会话，返回累计语音段（含 preRoll）
@@ -73,7 +73,9 @@ class VadSession:
     - 非法帧长 → warning + skip，绝不让 `_webrtcvad.Error` 冒泡。
     """
 
-    aggressiveness: int = 2
+    # adhoc-20261106：2→3（0~3 档里最强的抗噪判定），配合端侧 TEN-VAD threshold 0.6
+    # 收窄收音范围，减少远处他人语音被误切段送进 ASR。
+    aggressiveness: int = 3
     min_speech_frames: int = 3  # 连续 3 帧 → speechstart
     silence_frames: int = 27  # 连续 27 帧 → speechend（810ms 静音）
 
@@ -84,7 +86,6 @@ class VadSession:
     _speech_count: int = field(init=False, default=0)
     _silence_count: int = field(init=False, default=0)
     _in_speech: bool = field(init=False, default=False)
-    _total_frames: int = field(init=False, default=0)
     _illegal_count: int = field(init=False, default=0)  # 连续非法帧计数，防单帧 skip 时日志爆炸
 
     def __post_init__(self) -> None:
@@ -128,10 +129,11 @@ class VadSession:
         # 合法帧出现，清零连续计数器
         self._illegal_count = 0
 
-        self._total_frames += 1
-
-        # --- 2. 强制切段（30s 封顶）---
-        if self._total_frames * FRAME_MS >= MAX_SPEECH_MS and self._in_speech:
+        # --- 2. 强制切段（30s 封顶，按**已积累语音段**长度而非会话时长）---
+        # 为什么不用"会话已喂帧数"：兜底会话连接级自续，若说话人静默 ≥30s 后才开口，
+        # 旧口径会在 utterance 第 2 帧就强制吐段，把句首切碎。_speech_buffer 只含
+        # 语音帧（preRoll 600ms + speechstart 后的帧），长度即真实语音时长。
+        if self._in_speech and len(self._speech_buffer) * FRAME_MS >= MAX_SPEECH_MS:
             trace_id = get_trace_id() or "-"
             logger.info("vad: max speech duration reached, force cut (trace_id=%s)", trace_id)
             return self._finalize_speech_segment()
@@ -190,7 +192,6 @@ class VadSession:
         self._speech_count = 0
         self._silence_count = 0
         self._in_speech = False
-        self._total_frames = 0
         self._illegal_count = 0
 
     # ------------------------------------------------------------------
