@@ -88,6 +88,7 @@ export function LoginPage({ onLoggedIn }: LoginPageProps) {
       <label className="flex flex-col gap-2">
         <span className="text-2xl">设备密钥</span>
         <input
+          type="password"
           value={deviceSecret}
           onChange={(e) => setDeviceSecret(e.target.value)}
           disabled={locked}

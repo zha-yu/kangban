@@ -280,11 +280,13 @@ function VoiceprintGate({ onLogout }: { onLogout: () => void }) {
 
   if (phase === "enroll") {
     return (
-      <VoiceprintEnroll
-        token={loadSession()?.access_token ?? ""}
-        onAuthFail={onLogout}
-        onDone={() => setPhase("ready")}
-      />
+      <div className="flex h-full items-center justify-center p-6">
+        <VoiceprintEnroll
+          token={loadSession()?.access_token ?? ""}
+          onAuthFail={onLogout}
+          onDone={() => setPhase("ready")}
+        />
+      </div>
     );
   }
 

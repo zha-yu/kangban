@@ -266,13 +266,17 @@ async def test_forged_tokens_rejected_at_signature_layer(client: AsyncClient) ->
 # ------------------------------------------------------------------ 攻击 B
 
 
-@pytest.mark.parametrize("kind", ["care_worker", "guardian"])
+@pytest.mark.parametrize("kind", ["guardian"])
 async def test_non_admin_cannot_create_elder(
     client: AsyncClient,
     db_session: AsyncSession,
     kind: str,
 ) -> None:
-    """护工/家属调 admin 专属建档接口：403 + 回查库确认零新增。"""
+    """家属调建档接口：403 + 回查库确认零新增。
+
+    契约 v1.8（2026-11-06 主理人裁决）：E5 已放开到 care_worker，
+    这里只保留「非员工主体不可建档」的攻击面。
+    """
     token = _care_token() if kind == "care_worker" else _guardian_token()
 
     before = (await db_session.execute(select(func.count()).select_from(Elder))).scalar_one()

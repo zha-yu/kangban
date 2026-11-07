@@ -39,6 +39,7 @@ from app.services.device_service import (
     DeviceScopeForbiddenError,
 )
 from app.services.elder_service import (
+    ElderConflictError,
     ElderDetail,
     ElderNotFoundError,
     ElderScopeForbiddenError,
@@ -99,6 +100,8 @@ class ContractAPIRoute(APIRoute):
             except (ElderNotFoundError, DeviceNotFoundError):
                 return _error_response(404, "NOT_FOUND", "not found")
             except DeviceConflictError:
+                return _error_response(409, "CONFLICT", "conflict")
+            except ElderConflictError:
                 return _error_response(409, "CONFLICT", "conflict")
             except ElderValidationError:
                 return _error_response(422, "VALIDATION_ERROR", "invalid request")
@@ -188,6 +191,22 @@ class ElderListResponse(BaseModel):
     page_size: int
 
 
+class ElderBedAssignRequest(BaseModel):
+    """E19 请求体：目标床位。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    bed_id: uuid.UUID
+
+
+class ElderBedAssignResponse(BaseModel):
+    """E19 响应：入床后的定位三字段。"""
+
+    elder_id: uuid.UUID
+    bed_id: uuid.UUID
+    room_id: uuid.UUID
+
+
 def _detail_response(detail: ElderDetail) -> ElderDetailResponse:
     return ElderDetailResponse(
         elder_id=detail.elder_id,
@@ -210,7 +229,7 @@ def _detail_response(detail: ElderDetail) -> ElderDetailResponse:
     "",
     response_model=ElderCreateResponse,
     status_code=201,
-    summary="长者建档（仅 admin）",
+    summary="长者建档（admin/care_worker，契约 v1.8）",
 )
 async def create_elder(
     payload: ElderCreateRequest,
@@ -272,6 +291,25 @@ async def list_elders(
         total=result.total,
         page=page,
         page_size=page_size,
+    )
+
+
+@router.post(
+    "/{elder_id}/bed",
+    response_model=ElderBedAssignResponse,
+    summary="长者入床（admin/care_worker；床位被占 409，换床先腾旧床）",
+)
+async def assign_elder_bed(
+    elder_id: uuid.UUID,
+    payload: ElderBedAssignRequest,
+    identity: Annotated[Identity, Depends(get_current_principal)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ElderBedAssignResponse:
+    assignment = await elder_service.assign_bed(session, identity, elder_id, bed_id=payload.bed_id)
+    return ElderBedAssignResponse(
+        elder_id=assignment.elder_id,
+        bed_id=assignment.bed_id,
+        room_id=assignment.room_id,
     )
 
 

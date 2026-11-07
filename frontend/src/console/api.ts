@@ -238,6 +238,42 @@ export async function apiGet<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** 带状态的鉴权 GET：4xx/5xx 不再吞成「网络异常」，把状态码与错误码抛给调用方分支 */
+export async function apiGetWithStatus<T>(path: string): Promise<{ status: number; body: T | null }> {
+  let res: Response;
+  try {
+    res = await authedFetch(path);
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    throw new ApiError("network", NETWORK_ERROR_TEXT);
+  }
+  if (res.status === 401) {
+    throw new ApiError("invalid", INVALID_CREDENTIAL_TEXT);
+  }
+  if (!res.ok) return { status: res.status, body: null };
+  return { status: res.status, body: (await res.json()) as T };
+}
+
+/** 通用鉴权 POST（task-08 F2）：返回原始 Response，业务码分支由调用方按契约处理 */
+export async function apiPost(path: string, body: unknown): Promise<Response> {
+  let res: Response;
+  try {
+    res = await authedFetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    throw new ApiError("network", NETWORK_ERROR_TEXT);
+  }
+  if (res.status === 401) {
+    // refresh 已在 authedFetch 内尝试并失败 → 登录态已清
+    throw new ApiError("invalid", INVALID_CREDENTIAL_TEXT);
+  }
+  return res;
+}
+
 /** 退出登录：清本入口 localStorage 回登录页（task-05 §3 要点 6） */
 export function logout(): void {
   clearSession();

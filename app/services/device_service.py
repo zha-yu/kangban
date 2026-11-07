@@ -51,6 +51,27 @@ class DeviceConflictError(DeviceServiceError):
 
 
 @dataclass(frozen=True, slots=True)
+class DeviceCreated:
+    """E16 建档结果：明文 secret 只在此处出现一次，调用方必须立即交给前端展示。"""
+
+    device_id: uuid.UUID
+    room_id: uuid.UUID
+    status: str
+    device_secret: str
+
+
+@dataclass(frozen=True, slots=True)
+class DeviceListItem:
+    """E17 列表项：room_no 由 JOIN rooms 得出，供照护台展示。"""
+
+    device_id: uuid.UUID
+    room_id: uuid.UUID
+    room_no: str
+    elder_id: uuid.UUID | None
+    status: str
+
+
+@dataclass(frozen=True, slots=True)
 class DeviceBinding:
     device_id: uuid.UUID
     room_id: uuid.UUID
@@ -100,6 +121,18 @@ def _require_admin(identity: Identity, *, action: str, target: str) -> None:
         raise
 
 
+def _require_staff_write(identity: Identity, *, action: str, target: str) -> None:
+    """E16/E17 门禁：admin 与 care_worker 均可（契约 v1.8，主理人 2026-11-06 裁决）。
+
+    与 elder_service 的同名门禁同一节奏：拒绝先落审计再抛。
+    """
+    try:
+        check_roles(identity, ("admin", "care_worker"))
+    except RoleForbiddenError:
+        _audit(identity, action=action, target=target, result="forbidden", reason="role")
+        raise
+
+
 def _clear_binding(device: Device) -> None:
     """解绑的唯一定义：清长者、置 offline、轮换长期令牌哈希。
 
@@ -132,13 +165,13 @@ async def bind_device(
     room_id: uuid.UUID,
     elder_id: uuid.UUID | None,
 ) -> DeviceBinding:
-    """E9：admin 把设备绑到房间（及可选长者）。
+    """E9：admin / care_worker（契约 v1.8）把设备绑到房间（及可选长者）。
 
     长者必须在目标房间的床位里，否则 409；长者已绑其他设备也是 409。
     预检查负责给出可读原因，唯一索引负责兜住并发；两者都在，不是二选一。
     """
     target = f"device:{device_id}"
-    _require_admin(identity, action="device.bind", target=target)
+    _require_staff_write(identity, action="device.bind", target=target)
 
     device = await session.get(Device, device_id)
     if device is None:
@@ -300,15 +333,74 @@ async def list_elder_candidates(
     return CandidateList(room_id=device.room_id, mode=mode, candidates=candidates)
 
 
+async def create_device(
+    session: AsyncSession,
+    identity: Identity,
+    *,
+    room_id: uuid.UUID,
+) -> DeviceCreated:
+    """E16：设备建档。生成一次性明文 secret，库里只落 SHA-256（同 E10 轮换口径）。
+
+    房间不存在 404（Device.room_id NOT NULL，建档必须先选房间）；
+    明文 secret 只经返回值交给 API 层展示一次，不进日志、不再可查。
+    """
+    target = "device:new"
+    _require_staff_write(identity, action="device.create", target=target)
+
+    room = await session.get(Room, room_id)
+    if room is None:
+        _audit(identity, action="device.create", target=target, result="not_found", reason="room")
+        raise DeviceNotFoundError(str(room_id))
+
+    device_secret = secrets.token_urlsafe(32)
+    device = Device(room_id=room_id, token_hash=sha256_hex(device_secret), status="offline")
+    session.add(device)
+    await session.flush()
+    _audit(identity, action="device.create", target=f"device:{device.device_id}", result="success")
+    return DeviceCreated(
+        device_id=device.device_id,
+        room_id=device.room_id,
+        status=device.status,
+        device_secret=device_secret,
+    )
+
+
+async def list_devices(session: AsyncSession, identity: Identity) -> list[DeviceListItem]:
+    """E17：全量设备列表（含未绑定），room_no 由 JOIN rooms 得出。"""
+    _require_staff_write(identity, action="device.list", target="device:list")
+
+    rows = (
+        await session.execute(
+            select(Device, Room.room_no)
+            .join(Room, Room.room_id == Device.room_id)
+            .order_by(Room.room_no, Device.device_id)
+        )
+    ).all()
+    return [
+        DeviceListItem(
+            device_id=device.device_id,
+            room_id=device.room_id,
+            room_no=room_no,
+            elder_id=device.elder_id,
+            status=device.status,
+        )
+        for device, room_no in rows
+    ]
+
+
 __all__ = [
     "CandidateList",
     "DeviceBinding",
     "DeviceConflictError",
+    "DeviceCreated",
+    "DeviceListItem",
     "DeviceNotFoundError",
     "DeviceScopeForbiddenError",
     "DeviceServiceError",
     "ElderCandidate",
     "bind_device",
+    "create_device",
+    "list_devices",
     "list_elder_candidates",
     "unbind_device",
 ]

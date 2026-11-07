@@ -36,6 +36,7 @@ from sqlalchemy.pool import NullPool
 
 from app.api import devices as devices_api
 from app.api import elders as elders_api
+from app.api import rooms as rooms_api
 from app.core.config import get_settings
 from app.core.runtime_context import Identity
 from app.core.security import sha256_hex, sign_device_session, sign_staff_access
@@ -143,11 +144,12 @@ async def db(db_engine: AsyncEngine) -> AsyncIterator[AsyncConnection]:
 
 @pytest.fixture
 async def client(db: AsyncConnection, jwt_env: None) -> AsyncIterator[AsyncClient]:
-    """临时装配本卡两个 router；请求与测试事务共用同一事件循环与同一连接。"""
+    """临时装配本卡三个 router；请求与测试事务共用同一事件循环与同一连接。"""
     application = FastAPI()
     application.add_middleware(TraceIdMiddleware)
     application.include_router(elders_api.router)
     application.include_router(devices_api.router)
+    application.include_router(rooms_api.router)
 
     async def override_get_session() -> AsyncIterator[AsyncSession]:
         # join_transaction_mode=create_savepoint：请求内 commit 只释放保存点，
@@ -537,12 +539,20 @@ async def test_t01_admin_creates_elder_and_db_persists(
     assert int(same_name) == 2
 
 
-async def test_t02_non_admin_create_is_forbidden_and_db_unchanged(
+async def test_t02_care_worker_can_create_and_others_are_forbidden(
     client: AsyncClient, db: AsyncConnection, world: World
 ) -> None:
     before = await _count(db, Elder)
+    # 契约 v1.8：E5 放开到 care_worker，先证正例。
+    granted = await client.post(
+        "/api/elders",
+        json={"name": "护工建档"},
+        headers=_bearer(_staff_token(world.care1, "care_worker")),
+    )
+    assert granted.status_code == 201
+    assert await _count(db, Elder) == before + 1
+
     headers_list = [
-        _bearer(_staff_token(world.care1, "care_worker")),
         _bearer(_staff_token(world.doctor1, "doctor")),
         _bearer(_guardian_token(world.guardian_bound)),
         _bearer(_device_token(world.device_a, SECRET_A)),
@@ -552,7 +562,7 @@ async def test_t02_non_admin_create_is_forbidden_and_db_unchanged(
         response = await client.post("/api/elders", json={"name": "不该落库"}, headers=headers)
         _assert_error(response, 403, "ROLE_FORBIDDEN")
 
-    assert await _count(db, Elder) == before
+    assert await _count(db, Elder) == before + 1
 
 
 # ------------------------------------------------------------------ T03 · 详情 / 列表字段与分页
@@ -898,8 +908,30 @@ async def test_t11_cross_room_missing_device_and_non_admin_are_rejected(
     )
 
     before = await _device_row(db, world.device_free)
+    # 契约 v1.8：E9 放开到 care_worker，先证正例。
+    granted = await client.post(
+        f"/api/devices/{world.device_free}/bind",
+        json={"room_id": str(ROOM_D), "elder_id": str(E5)},
+        headers=_bearer(_staff_token(world.care1, "care_worker")),
+    )
+    assert granted.status_code == 200
+    assert granted.json()["elder_id"] == str(E5)
+    # 复原到用例初始态，保证后面的 403 循环仍打在未绑设备上。
+    # 注意：解绑会轮换 token_hash（AC-24 设计如此），所以只比对绑定语义三字段。
+    assert (
+        await client.post(
+            f"/api/devices/{world.device_free}/unbind",
+            headers=_bearer(_staff_token(world.admin, "admin")),
+        )
+    ).status_code == 200
+    restored = await _device_row(db, world.device_free)
+    assert (restored.room_id, restored.elder_id, restored.status) == (
+        before.room_id,
+        before.elder_id,
+        before.status,
+    )
+
     for headers in (
-        _bearer(_staff_token(world.care1, "care_worker")),
         _bearer(_staff_token(world.doctor1, "doctor")),
         _bearer(_guardian_token(world.guardian_bound)),
         _bearer(_device_token(world.device_a, SECRET_A)),
@@ -914,7 +946,13 @@ async def test_t11_cross_room_missing_device_and_non_admin_are_rejected(
             "ROLE_FORBIDDEN",
         )
 
-    assert (await _device_row(db, world.device_free)) == before
+    # 403 循环不能碰数据；hash 已被上面复原用的解绑轮换，只比对绑定语义三字段。
+    after_loop = await _device_row(db, world.device_free)
+    assert (after_loop.room_id, after_loop.elder_id, after_loop.status) == (
+        before.room_id,
+        before.elder_id,
+        before.status,
+    )
 
 
 # ------------------------------------------------------------------ T12–T13 · 解绑与旧令牌失效
@@ -1157,3 +1195,221 @@ async def test_all_protected_endpoints_require_credentials(
 ) -> None:
     response = await client.request(method, path, json=payload)
     _assert_error(response, 401, "TOKEN_INVALID")
+
+
+# ------------------------------------------------------------------ E16–E19 · 建号向导新接口（契约 v1.8）
+
+BED_FREE = uuid.UUID("bed00006-0000-4000-8000-000000000006")
+BED_FREE2 = uuid.UUID("bed00007-0000-4000-8000-000000000007")
+
+
+async def _seed_free_beds(db: AsyncConnection) -> None:
+    """world 里五张床全被占用；E18/E19 与闭环用例补两张空床到 A-301。"""
+    await db.execute(
+        Bed.__table__.insert(),
+        [
+            {"bed_id": BED_FREE, "room_id": ROOM_A, "bed_no": "3 号床", "status": "available"},
+            {"bed_id": BED_FREE2, "room_id": ROOM_A, "bed_no": "4 号床", "status": "available"},
+        ],
+    )
+
+
+async def test_e18_room_list_returns_rooms_with_beds(
+    client: AsyncClient, db: AsyncConnection, world: World
+) -> None:
+    await _seed_free_beds(db)
+
+    response = await client.get(
+        "/api/rooms", headers=_bearer(_staff_token(world.care1, "care_worker"))
+    )
+    assert response.status_code == 200
+    body = response.json()
+    rooms = {uuid.UUID(room["room_id"]): room for room in body["items"]}
+    room_a = rooms[ROOM_A]
+    assert room_a["room_no"] == "A-301"
+    bed_nos = {bed["bed_no"]: bed for bed in room_a["beds"]}
+    assert set(bed_nos) == {"1 号床", "2 号床", "3 号床", "4 号床"}
+    assert bed_nos["1 号床"]["elder_id"] == str(E1)
+    assert bed_nos["3 号床"]["elder_id"] is None
+
+    # 家属不可读（工牌/设备同理走 check_roles 拒绝）。
+    _assert_error(
+        await client.get("/api/rooms", headers=_bearer(_guardian_token(world.guardian_bound))),
+        403,
+        "SCOPE_FORBIDDEN",
+    )
+
+
+async def test_e19_assign_bed_happy_move_conflict_and_denied(
+    client: AsyncClient, db: AsyncConnection, world: World
+) -> None:
+    await _seed_free_beds(db)
+    care = _bearer(_staff_token(world.care1, "care_worker"))
+
+    # care_worker 建档 + 入床（E5/E19 正例）。
+    created = await client.post("/api/elders", json={"name": "入床测试"}, headers=care)
+    assert created.status_code == 201
+    elder_id = uuid.UUID(created.json()["elder_id"])
+
+    assigned = await client.post(
+        f"/api/elders/{elder_id}/bed", json={"bed_id": str(BED_FREE)}, headers=care
+    )
+    assert assigned.status_code == 200
+    assert assigned.json() == {
+        "elder_id": str(elder_id),
+        "bed_id": str(BED_FREE),
+        "room_id": str(ROOM_A),
+    }
+    bed_row = (await db.execute(select(Bed).where(Bed.bed_id == BED_FREE))).one()
+    assert bed_row.elder_id == elder_id
+    assert bed_row.status == "occupied"
+
+    # 换床语义：同一长者改到另一张空床，旧床必须被腾空。
+    moved = await client.post(
+        f"/api/elders/{elder_id}/bed", json={"bed_id": str(BED_FREE2)}, headers=care
+    )
+    assert moved.status_code == 200
+    old_row = (await db.execute(select(Bed).where(Bed.bed_id == BED_FREE))).one()
+    assert old_row.elder_id is None and old_row.status == "available"
+
+    # 目标床位被其他长者占用 → 409，且不产生部分写入。
+    occupied = await client.post(
+        f"/api/elders/{elder_id}/bed", json={"bed_id": str(BED_A1)}, headers=care
+    )
+    _assert_error(occupied, 409, "CONFLICT")
+    assert (await db.execute(select(Bed).where(Bed.bed_id == BED_A1))).one().elder_id == E1
+
+    # 长者 / 床位不存在 → 404。
+    _assert_error(
+        await client.post(
+            f"/api/elders/{E_MISSING}/bed", json={"bed_id": str(BED_FREE)}, headers=care
+        ),
+        404,
+        "NOT_FOUND",
+    )
+    _assert_error(
+        await client.post(
+            f"/api/elders/{elder_id}/bed", json={"bed_id": str(D_MISSING)}, headers=care
+        ),
+        404,
+        "NOT_FOUND",
+    )
+
+    # 医生不可入床（契约 v1.8 只放开 admin/care_worker）。
+    _assert_error(
+        await client.post(
+            f"/api/elders/{elder_id}/bed",
+            json={"bed_id": str(BED_FREE)},
+            headers=_bearer(_staff_token(world.doctor1, "doctor")),
+        ),
+        403,
+        "ROLE_FORBIDDEN",
+    )
+
+
+async def test_e16_device_create_returns_one_time_secret(
+    client: AsyncClient, db: AsyncConnection, world: World
+) -> None:
+    care = _bearer(_staff_token(world.care1, "care_worker"))
+
+    response = await client.post("/api/devices", json={"room_id": str(ROOM_D)}, headers=care)
+    assert response.status_code == 201
+    body = response.json()
+    assert set(body) == {"device_id", "room_id", "status", "device_secret"}
+    assert body["status"] == "offline"
+    assert body["room_id"] == str(ROOM_D)
+    assert len(body["device_secret"]) >= 32
+
+    row = (
+        await db.execute(select(Device).where(Device.device_id == uuid.UUID(body["device_id"])))
+    ).one()
+    assert row.token_hash == sha256_hex(body["device_secret"])
+    assert row.elder_id is None
+
+    # 房间不存在 → 404。
+    _assert_error(
+        await client.post("/api/devices", json={"room_id": str(D_MISSING)}, headers=care),
+        404,
+        "NOT_FOUND",
+    )
+    # 医生不可建设备。
+    _assert_error(
+        await client.post(
+            "/api/devices",
+            json={"room_id": str(ROOM_D)},
+            headers=_bearer(_staff_token(world.doctor1, "doctor")),
+        ),
+        403,
+        "ROLE_FORBIDDEN",
+    )
+
+
+async def test_e17_device_list_shows_room_and_binding(client: AsyncClient, world: World) -> None:
+    response = await client.get(
+        "/api/devices", headers=_bearer(_staff_token(world.care2, "care_worker"))
+    )
+    assert response.status_code == 200
+    items = response.json()["items"]
+    by_id = {uuid.UUID(item["device_id"]): item for item in items}
+    # world 种子四台设备必须齐全且字段正确；库里的其他历史残留不归本用例管。
+    assert {world.device_a, world.device_b, world.device_free, world.device_other} <= set(by_id)
+    assert by_id[world.device_a]["room_no"] == "A-301"
+    assert by_id[world.device_a]["elder_id"] == str(E1)
+    assert by_id[world.device_free]["elder_id"] is None
+    assert by_id[world.device_free]["room_no"] == "D-401"
+
+    # 设备主体不可读列表（check_roles 拒非员工）。
+    _assert_error(
+        await client.get("/api/devices", headers=_bearer(_device_token(world.device_a, SECRET_A))),
+        403,
+        "ROLE_FORBIDDEN",
+    )
+
+
+async def test_e2e_register_bed_device_bind_candidates(
+    client: AsyncClient, db: AsyncConnection, world: World
+) -> None:
+    """照护台向导全链路：建档 → 入床 → 建设备 → 绑定 → 候选集含新长者。"""
+    await _seed_free_beds(db)
+    care = _bearer(_staff_token(world.care1, "care_worker"))
+
+    created = await client.post(
+        "/api/elders",
+        json={"name": "全链路", "birth_date": "1946-01-02", "gender": "male"},
+        headers=care,
+    )
+    assert created.status_code == 201
+    elder_id = created.json()["elder_id"]
+
+    bed = await client.post(
+        f"/api/elders/{elder_id}/bed", json={"bed_id": str(BED_FREE)}, headers=care
+    )
+    assert bed.status_code == 200
+    room_id = bed.json()["room_id"]
+
+    device = await client.post("/api/devices", json={"room_id": room_id}, headers=care)
+    assert device.status_code == 201
+    device_body = device.json()
+    device_id = device_body["device_id"]
+    secret = device_body["device_secret"]
+
+    bound = await client.post(
+        f"/api/devices/{device_id}/bind",
+        json={"room_id": room_id, "elder_id": elder_id},
+        headers=care,
+    )
+    assert bound.status_code == 200
+
+    # 绑定后设备凭证仍有效（建档 secret 未被绑定轮换），且候选集能看到新长者（脱敏）。
+    candidates = await client.get(
+        f"/api/devices/{device_id}/elder-candidates",
+        headers=_bearer(_device_token(uuid.UUID(device_id), secret)),
+    )
+    assert candidates.status_code == 200
+    names = [item["display_name"] for item in candidates.json()["candidates"]]
+    assert "全*路" in names
+
+    # 新设备凭据能换正式设备会话所需要的一切：token_hash 与明文一致。
+    row = (await db.execute(select(Device).where(Device.device_id == uuid.UUID(device_id)))).one()
+    assert row.elder_id == uuid.UUID(elder_id)
+    assert row.token_hash == sha256_hex(secret)

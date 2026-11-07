@@ -6,11 +6,16 @@ export const FRAME_SAMPLES = 960; // 60ms @16k
 export const PRE_ROLL_FRAMES = 10; // 600ms preRoll
 
 /** getUserMedia 错误映射（adhoc §2.4，长者可读话术） */
-export type MicErrorCode = "not_allowed" | "not_found" | "not_readable";
+export type MicErrorCode =
+  | "not_allowed"
+  | "not_found"
+  | "not_readable"
+  | "virtual_only";
 export const MIC_ERROR_TEXT: Record<MicErrorCode, string> = {
   not_allowed: "麦克风权限被拒绝：请点击地址栏图标允许后重试",
   not_found: "未检测到麦克风设备",
   not_readable: "麦克风被其他程序占用",
+  virtual_only: "未检测到真实麦克风：当前输入是虚拟声卡，请接入麦克风设备后重试",
 };
 
 export class MicCaptureError extends Error {
@@ -44,6 +49,21 @@ function audioConstraints(): MediaTrackConstraints {
   };
 }
 
+/** 虚拟声卡甄别（debug H9）：同传助手/BlackHole 等回环设备输出恒定满幅非语音信号，
+ *  端侧 VAD 永不触发 → 「正在听」假死。优先物理麦克风；仅剩虚拟输入时快失败。 */
+const VIRTUAL_INPUT_RE =
+  /virtual|虚拟|loopback|blackhole|同传|aggregate|multi-output|infoflow/i;
+
+async function pickPhysicalInput(): Promise<MediaTrackConstraints> {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const inputs = devices.filter((d) => d.kind === "audioinput");
+  const physical = inputs.find((d) => !VIRTUAL_INPUT_RE.test(d.label));
+  if (!physical) {
+    throw new MicCaptureError("virtual_only", MIC_ERROR_TEXT.virtual_only);
+  }
+  return { deviceId: { exact: physical.deviceId } };
+}
+
 /** 监听麦克风插拔（§2.3：拔出 → 上层提示 + 回落默认设备重开）；返回解绑函数 */
 export function onDeviceChange(cb: () => void): () => void {
   navigator.mediaDevices.addEventListener("devicechange", cb);
@@ -67,11 +87,33 @@ export class MicCapture {
 
   async start(): Promise<void> {
     try {
+      let picked: MediaTrackConstraints | null = null;
+      try {
+        picked = await pickPhysicalInput();
+      } catch (err) {
+        if (err instanceof MicCaptureError) throw err; // virtual_only 快失败
+        throw err; // 枚举失败 → 走外层默认设备
+      }
       this.stream_ = await navigator.mediaDevices.getUserMedia({
-        audio: audioConstraints(),
+        audio: { ...audioConstraints(), ...picked },
       });
     } catch (err) {
-      throw mapGetUserMediaError(err);
+      if (err instanceof MicCaptureError) throw err;
+      // exact deviceId 因插拔失效 → 退回默认设备重试一次
+      if (
+        err instanceof DOMException &&
+        err.name === "OverconstrainedError"
+      ) {
+        try {
+          this.stream_ = await navigator.mediaDevices.getUserMedia({
+            audio: audioConstraints(),
+          });
+        } catch (retryErr) {
+          throw mapGetUserMediaError(retryErr);
+        }
+      } else {
+        throw mapGetUserMediaError(err);
+      }
     }
 
     this.ctx = new AudioContext();

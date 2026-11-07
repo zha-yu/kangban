@@ -11,6 +11,27 @@ import { assembleWav } from "../audio/wav";
 export const SEGMENT_MIN_MS = 1_000; // 段内有效下限：不足禁上传并提示
 export const SEGMENT_MAX_MS = 5_000; // 自动截断上限：到点自动停止
 
+// 录前环境自检（adhoc-20261106，启发式、只提示不阻断）：
+// 3s 均值 RMS（int16 归一化）超过阈值即判「偏吵」。误报代价低（只是多一句提醒），阈值放宽取值。
+export const AMBIENT_CHECK_MS = 3_000;
+export const AMBIENT_NOISY_AVG = 0.03;
+
+/** 16k PCM16 帧的 RMS（归一化 0~1），电平条与环境自检共用 */
+function rms16(pcm: Int16Array): number {
+  let sum = 0;
+  for (let i = 0; i < pcm.length; i++) {
+    const v = pcm[i] / 32768;
+    sum += v * v;
+  }
+  return Math.sqrt(sum / pcm.length);
+}
+
+/** 环境自检结果：null = 采样被作废（StrictMode 双跑 cleanup / 用户抢先点了开始） */
+export interface AmbientSample {
+  avg: number;
+  max: number;
+}
+
 export class SegmentRecorder {
   private mic: MicCapture | null = null;
   private frames: Int16Array[] = [];
@@ -20,6 +41,8 @@ export class SegmentRecorder {
   private seq = 0;
   private recording = false;
   private lastDurationMs = 0;
+  private lastLevel = 0;
+  private ambientSeq = 0;
 
   /** 到 5s 自动截断时回调（组件据此走停止 + 上传流程） */
   onAutoStop: (() => void) | null = null;
@@ -33,10 +56,16 @@ export class SegmentRecorder {
     return this.recording ? Date.now() - this.startedAtMs : 0;
   }
 
+  /** 段内实时电平（最近一帧 RMS，0~1）：录音中有效，供电平条可视化 */
+  get level(): number {
+    return this.recording ? this.lastLevel : 0;
+  }
+
   /** 开始录音：开麦（已开则复用实例，避免重复弹权限）→ 攒帧 → 挂 5s 定时器。
    *  麦克风失败抛 MicCaptureError（话术已映射，调用方直接展示）。 */
   async start(): Promise<void> {
     const seq = ++this.seq;
+    this.ambientSeq++; // 作废在途环境自检：录音采集要接管 onFrame，不能被自检的 finally 抢回去
     this.frames = []; // 新一次尝试：上一段的残留帧先清掉（AC-36）
     this.lastDurationMs = 0;
     if (!this.mic) this.mic = new MicCapture();
@@ -47,7 +76,10 @@ export class SegmentRecorder {
       await mic.stop();
       return;
     }
-    mic.onFrame = (pcm) => this.frames.push(pcm);
+    mic.onFrame = (pcm) => {
+      this.frames.push(pcm);
+      this.lastLevel = rms16(pcm);
+    };
     this.recording = true;
     this.startedAtMs = Date.now();
     this.autoTimer = setTimeout(() => {
@@ -69,6 +101,7 @@ export class SegmentRecorder {
       this.lastDurationMs = this.startedAtMs > 0 ? Date.now() - this.startedAtMs : 0;
       this.recording = false;
       this.startedAtMs = 0;
+      this.lastLevel = 0;
       if (this.mic) this.mic.onFrame = null;
     }
     return this.lastDurationMs;
@@ -77,6 +110,36 @@ export class SegmentRecorder {
   /** 组 WAV Blob（16k/16bit/单声道），C4 multipart 的 audio 字段直传 */
   takeWav(): Blob {
     return assembleWav(this.frames);
+  }
+
+  /** 录前环境自检：开麦采 durationMs 毫秒电平取均值/峰值。
+   *  作废（cancelAmbient / 用户抢先 start）返回 null；麦克风失败抛 MicCaptureError。
+   *  采样期间不攒帧（onFrame 只算电平），结束后不关麦——start() 复用同一实例。 */
+  async sampleAmbient(durationMs: number): Promise<AmbientSample | null> {
+    const seq = ++this.ambientSeq;
+    if (!this.mic) this.mic = new MicCapture();
+    const mic = this.mic;
+    if (!mic.stream) await mic.start();
+    if (seq !== this.ambientSeq) return null;
+    const levels: number[] = [];
+    const handler = (pcm: Int16Array): void => {
+      levels.push(rms16(pcm));
+    };
+    mic.onFrame = handler;
+    const deadline = Date.now() + durationMs;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      if (seq !== this.ambientSeq) return null; // 被作废：onFrame 交还，不碰 mic 生命周期
+    }
+    if (mic.onFrame === handler) mic.onFrame = null;
+    if (levels.length === 0) return null;
+    const avg = levels.reduce((a, b) => a + b, 0) / levels.length;
+    return { avg, max: Math.max(...levels) };
+  }
+
+  /** 作废在途环境自检（StrictMode 双跑 cleanup / 组件卸载） */
+  cancelAmbient(): void {
+    this.ambientSeq++;
   }
 
   /** AC-36：清空帧数组，原始音频数据即弃（上传发起后立即调用） */

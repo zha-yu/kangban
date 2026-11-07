@@ -202,7 +202,7 @@ docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:a
 | System Two | `LLM_BASE_URL` `LLM_API_KEY` `LLM_MODEL` `LLM_TIMEOUT_SECONDS` | DeepSeek / Qwen 兼容端点，经统一适配器 |
 | System One | `LAYA_ENABLED` `LAYA_BASE_URL` `LAYA_API_KEY` `LAYA_TIMEOUT_MS` `LAYA_CONFIDENCE_THRESHOLD` | 本地 CPU 分类器，阈值默认 0.85 |
 | 语音 | `ASR_*` `TTS_*` | 第三方流式服务，教师统一发 key |
-| 实时通话 | `TURN_URL` `TURN_USERNAME` `TURN_CREDENTIAL` `STUN_URL` `WEBRTC_ICE_TIMEOUT_SECONDS` | ICE 超时触发降级 |
+| 实时通话 | `TURN_URL` `TURN_USERNAME` `TURN_CREDENTIAL` `STUN_URL` `WEBRTC_ICE_TIMEOUT_SECONDS` `WEBRTC_VAD_AGGRESSIVENESS` | ICE 超时触发降级；服务端 webrtcvad 兜底判定强度 0~3，默认 3（adhoc-20261106） |
 | 天气 | `WEATHER_API_PROVIDER` `WEATHER_API_KEY` `WEATHER_API_BASE_URL` `WEATHER_CACHE_TTL_SECONDS` | 全系统唯一真实外部接口 |
 | 通知 | `NOTIFY_CHANNEL` `WEBPUSH_VAPID_PUBLIC_KEY` `WEBPUSH_VAPID_PRIVATE_KEY` | 仅 `inapp` / `webpush`，**无微信、无邮件** |
 | MCP | `MCP_WEATHER_SERVER_URL` `MCP_OPERATIONS_SERVER_URL` `MCP_CALL_TIMEOUT_SECONDS` | 工具发现与超时 |

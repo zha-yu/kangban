@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
@@ -186,6 +187,10 @@ def _parse_content(response: httpx.Response) -> str | None:
     if not isinstance(content, str):
         return None
     content = content.strip()
+    # 推理型模型（MiniMax M 系等）会在 content 内联 <think>…</think> 思考块，
+    # 不剥离会进 TTS 播报；max_tokens 截断时可能残留未闭合的 <think> 头，一并去掉。
+    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+    content = re.sub(r"^<think>.*$", "", content, flags=re.DOTALL).strip()
     return content or None
 
 
