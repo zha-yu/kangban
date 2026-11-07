@@ -57,6 +57,7 @@
 | [day04/f1-vad-worker隔离.md](./day04/f1-vad-worker隔离.md) | 联调缺陷修复：KWS/VAD 两套非 modularize emscripten 产物顶层 `class ExitStatus` 全局冲突，致呼叫后端侧 TEN-VAD 必失效静默降级；主理人拍板方案 A（VAD 移入 Worker 隔离），vad.ts 重写为 Worker 封装、TenVad API 不变、realtime.ts 零改动；S1–S5 步骤 + 四项验收 + R1–R4 风险；v1.1 收口（含录入页居中与 92vw 适配顺带修） | 已完成 | 2026-11-06 |
 | [adhoc-20261106-收音与识别优化.md](./adhoc-20261106-收音与识别优化.md) | 联调优化：TEN-VAD threshold 0.5→0.6 + 服务端 webrtcvad aggressiveness 2→3（收窄收音范围）+ FunASR 可配置热词（ASR_HOTWORDS 默认空回落）+ system prompt ASR 纠错条目 + 录入页 3s 环境自检与电平条；明确不做说话人分离与念读校验（边界裁决）；含三场景模拟测试记录表 | 进行中 | 2026-11-06 |
 | [day04/f9-长者注册与设备分配.md](./day04/f9-长者注册与设备分配.md) | console 长者注册闭环：契约 v1.8（E5/E9 放开 care_worker + 新增 E16 设备建档/E17 设备列表/E18 房间床位/E19 长者入床，补缺口 G3/G4）+ console 四步向导（建档→选床→建设备展示一次性密钥→引导 pad 录声纹）；pad 零改动 | 已完成 | 2026-11-06 |
+| [day05/dev-c-pad语音与3D.md](./day05/dev-c-pad语音与3D.md) | Day 5 dev-C pad 前端执行计划：C-4 口型取证 + C-1 三档超时表现（按 dev-B v3.1 冻结口径消费 error 通道三档 slow code + slow→unavailable 状态升级合并）+ C-3 声纹真人实测（同人/非同人/降级三路径）+ C-5/C-6 端侧 wake_ts 与 playback 上报（桩先行，不越权改 protocol.ts）+ C-2 20 次延迟测量 + M5.4 演示主操；S0–S5 分阶段汇报制，含 12 项代码级现状核查、N1/N2/N5 联调清单与 R1–R6 风险 | 草稿 | 2026-11-07 |
 | [day05/a1-本地VRM与形象选择页.md](./day05/a1-本地VRM与形象选择页.md) | Day 5 A1 方案：数字人改本地资产驱动（推翻 C7 下发，D1 留痕）+ 14 模型全量支持 + 形象选择页 + 程序化待机与 vrma 播放；S0–S6 全部完成（v1.5，含计划外加项：指针跟随、Q2 立绘），真机验收通过 | 已冻结 | 2026-11-07 |
 
 ## 状态取值

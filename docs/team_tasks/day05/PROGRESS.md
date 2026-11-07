@@ -16,6 +16,8 @@
 | --- | --- |
 | `docs/plans/day05/a1-本地VRM与形象选择页.md` | ❔ 已冻结 |
 | `docs/plans/day05/day-05-延迟基线与护栏.md` | 🚧 进行中 |
+| `docs/plans/day05/dev-b-护栏与降级.md` | 🚧 进行中 |
+| `docs/plans/day05/dev-c-pad语音与3D.md` | 🚧 进行中 |
 
 ## 契约冻结：（本日无 contracts.md）
 
