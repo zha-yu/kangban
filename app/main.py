@@ -43,6 +43,7 @@ from app.core.auth import (
 from app.core.config import Settings, get_settings
 from app.core.context import TRACE_HEADER, get_trace_id
 from app.core.logging import configure_logging
+from app.core.metrics import get_metrics_recorder
 from app.core.security import TokenExpiredError
 from app.core.trace import TraceIdMiddleware
 from app.db import session_factory
@@ -372,6 +373,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         signaling.set_dialogue_final_handler(None)
         signaling.set_identity_confirm_handler(None)
         signaling.set_identity_timeout_handler(None)
+        # Day 5：metrics 批量缓冲冲刷（裁决 B6/D2）——先停 worker 再 drain，避免丢批
+        await get_metrics_recorder().stop()
         await llm_service.aclose()
         # redis-py 的 asyncio 关闭方法；当前 stubs 尚未同步 aclose
         await redis_client.aclose()  # type: ignore[attr-defined]

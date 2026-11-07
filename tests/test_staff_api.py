@@ -8,7 +8,7 @@
 - 长者不存在 → 404；短口令 / 坏手机号 → 422；
 - 改角色与停用都让 `token_version + 1`（AC-24 凭证即时失效）；无变更时不加。
 
-跑法与 `test_pad_avatar.py` 同构：自建 NullPool 引擎、每用例一个事务回滚、
+跑法与 `test_pad_avatar.py` 同构：conftest 共享引擎、每用例一个事务回滚、
 请求走真实 ASGI 链路（`get_session` / `current_staff` / `role` 全真实）。
 无 PostgreSQL 时 `pytest.skip` 并打印原因，绝不静默通过。
 """
@@ -26,9 +26,7 @@ from sqlalchemy.ext.asyncio import (
     AsyncConnection,
     AsyncEngine,
     AsyncSession,
-    create_async_engine,
 )
-from sqlalchemy.pool import NullPool
 
 from app.api import staff as staff_api
 from app.core.config import get_settings
@@ -47,6 +45,12 @@ ADMIN_PHONE = "13700000001"
 CAREWORKER_PHONE = "13700000002"
 NEW_PHONE = "13700000003"
 
+# 阶段 A 提速：seeded 夹具 function 级，每用例重复 cost-12 哈希（约 0.6s/用例），
+# 模块级预计算一次全文件复用；bcrypt 随机盐不影响 verify_password 对同一明文的校验。
+_HASH_ADMIN = hash_password("Admin@2026")
+_HASH_CAREWORKER = hash_password("Care@2026")
+_HASH_FAM_XX = hash_password("Fam@2026xx")
+
 
 # ---------------------------------------------------------------- 夹具
 
@@ -60,16 +64,8 @@ def jwt_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 @pytest.fixture
-async def db_engine() -> AsyncIterator[AsyncEngine]:
-    engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
-    try:
-        yield engine
-    finally:
-        await engine.dispose()
-
-
-@pytest.fixture
 async def db(db_engine: AsyncEngine) -> AsyncIterator[AsyncConnection]:
+    """每用例一个事务、结束回滚（db_engine 为 conftest 的 module 级共享引擎）。"""
     try:
         conn = await db_engine.connect()
     except Exception as exc:
@@ -96,7 +92,7 @@ async def seeded(db: AsyncConnection) -> AsyncConnection:
                 name="测试管理员",
                 role="admin",
                 phone=ADMIN_PHONE,
-                password_hash=hash_password("Admin@2026"),
+                password_hash=_HASH_ADMIN,
                 status="active",
             ),
             StaffAccount(
@@ -104,7 +100,7 @@ async def seeded(db: AsyncConnection) -> AsyncConnection:
                 name="测试护工",
                 role="care_worker",
                 phone=CAREWORKER_PHONE,
-                password_hash=hash_password("Care@2026"),
+                password_hash=_HASH_CAREWORKER,
                 status="active",
             ),
             Elder(elder_id=ELDER_ID, name="测试长者", status="active"),
@@ -225,7 +221,7 @@ async def test_duplicate_phone_against_guardian_returns_409(
         GuardianAccount(
             name="已有家属",
             phone="13700000009",
-            password_hash=hash_password("Fam@2026xx"),
+            password_hash=_HASH_FAM_XX,
             status="active",
         )
     )

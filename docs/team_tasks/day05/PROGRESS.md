@@ -14,8 +14,19 @@
 
 | 计划 | 状态 |
 | --- | --- |
+| `docs/plans/day05/a-后端观测与数据.md` | 🚧 进行中 |
 | `docs/plans/day05/a1-本地VRM与形象选择页.md` | ❔ 已冻结 |
+| `docs/plans/day05/d-DAG.md` | ❔ 草稿 |
+| `docs/plans/day05/d-admin页走查记录.md` | ✅ 已完成（真实端点走查） |
+| `docs/plans/day05/d-prompt-双端前端.md` | ❔ 草稿 |
+| `docs/plans/day05/d-双端前端推进计划.md` | ❔ 草稿 |
+| `docs/plans/day05/d-启动门槛核对.md` | 🚧 进行中 |
+| `docs/plans/day05/d-字段差异清单.md` | ❔ 部分完成（等待 A-4） |
+| `docs/plans/day05/d-家属端切换层说明.md` | ❔ 部分完成（B-3 v1.1 已到，等待 X3 冻结） |
+| `docs/plans/day05/d-家属端契约差异表.md` | 🚧 进行中（B-3 v1.1 已到，等待 X3 冻结） |
+| `docs/plans/day05/d-汇报清单.md` | ❔ 部分完成（D-1 走查通过；N8/N10/N11 阻塞） |
 | `docs/plans/day05/day-05-延迟基线与护栏.md` | 🚧 进行中 |
+| `docs/plans/day05/dev-b-护栏与降级.md` | 🚧 进行中 |
 
 ## 契约冻结：（本日无 contracts.md）
 

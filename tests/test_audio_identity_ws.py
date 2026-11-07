@@ -23,16 +23,13 @@ from typing import Any
 
 import pytest
 from fastapi import FastAPI, WebSocketDisconnect
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
     AsyncSession,
     async_sessionmaker,
-    create_async_engine,
 )
-from sqlalchemy.pool import NullPool
 
 from app.audio import signaling, webrtc
-from app.core.config import get_settings
 from app.core.security import sha256_hex, sign_device_session
 from app.db import get_session as _app_get_session
 from app.models.organization import Bed, Device, Elder, Room
@@ -663,26 +660,23 @@ class WsClient:
 
 
 @pytest.fixture
-async def db_session() -> AsyncIterator[AsyncSession]:
-    engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
-    try:
-        await engine.connect()
-    except Exception as exc:
-        await engine.dispose()
-        pytest.skip(f"PostgreSQL 不可达，跳过 C5 真库链路用例：{exc!r}")
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("TRUNCATE devices, elders, beds, rooms CASCADE"))
-    except Exception:
-        await engine.dispose()
-        raise
-    sf = async_sessionmaker(engine, expire_on_commit=False)
-    async with sf() as session:
-        try:
-            yield session
-        finally:
-            await session.rollback()
-    await engine.dispose()
+async def db_session(db_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
+    """db_engine 为 conftest 的 module 级共享引擎。
+
+    阶段 C 去掉 TRUNCATE 后改走 create_savepoint：service 层的真实 commit 只释放
+    savepoint，结束整体回滚，独立测试库零残留（模式同 test_elders_api.client）。
+    """
+    async with db_engine.connect() as conn:
+        trans = await conn.begin()
+        sf = async_sessionmaker(
+            bind=conn, expire_on_commit=False, join_transaction_mode="create_savepoint"
+        )
+        async with sf() as session:
+            try:
+                yield session
+            finally:
+                await session.rollback()
+        await trans.rollback()
 
 
 @pytest.fixture
