@@ -31,11 +31,13 @@ class GuardrailDecision:
 class Guardrails:
     """会话级 Tool 调用护栏实例。
 
-    判定顺序（严格按此优先级，低层不得被高层覆盖）：
-    1. 相同 Tool + 相同参数 → 短路放行（不消耗预算，避免重复调用）
-    2. 本轮累计调用已达 `max_tool_calls` → Deny
-    3. 同 Tool 在窗口内已达 `repeat_threshold` → Deny（熔断）
+    判定顺序（严格按此优先级；与 tests/test_guardrails.py 对齐）：
+    1. 本轮累计调用已达 `max_tool_calls` → Deny（预算优先，先于熔断与同参短路）
+    2. 同 Tool 在窗口内已达 `repeat_threshold` → Deny（熔断）
+    3. 相同 Tool + 相同参数 → 短路放行（不消耗预算，但仍登记滑动窗，避免重复调用）
     4. 放行，登记本次调用
+
+    注意：同参短路**不绕过**预算与熔断——预算/熔断判定在它之前。
     """
 
     def __init__(

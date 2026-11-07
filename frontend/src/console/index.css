@@ -207,9 +207,33 @@ body {
   border-radius: var(--radius-control);
 }
 
+/* 文字按钮（取消 / 修改 / 停用 / 历史版本等）：无底无边，靠文字与 hover 面区分 */
+.btn-ghost {
+  min-height: 40px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-ink-muted);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--color-surface-sunken);
+  color: var(--color-ink);
+}
+
+.btn-ghost:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 /* 键盘焦点可见（无障碍基线） */
 .btn-primary:focus-visible,
 .btn-secondary:focus-visible,
+.btn-ghost:focus-visible,
 .input:focus-visible,
 .field-input:focus-visible {
   outline: 2px solid var(--color-brand);
@@ -953,6 +977,39 @@ body {
   padding: 0 20px;
 }
 
+/* ---- 复核 / 药单维护弹窗（task-11 F7 / task-12 F8）----
+   这两个页面此前使用未定义的 .rv-mask / .rv-dialog / .wo-dialog-title，
+   弹窗会内联铺在页面上、无遮罩。此处补齐，颜色全部走 token。 */
+.rv-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--color-ink) 40%, transparent);
+}
+
+.rv-dialog {
+  width: 100%;
+  max-width: 520px;
+  max-height: 90vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 24px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-card);
+}
+
+.wo-dialog-title {
+  margin: 0;
+  font-size: 18px;
+}
+
 /* ---- 注册向导（task-08 F2） ---- */
 .wiz-card {
   max-width: 520px;
@@ -1045,4 +1102,174 @@ body {
   margin: 8px 0 0;
   font-size: 12px;
   color: var(--color-ink-muted);
+}
+
+/* ---- 管理员页（Day 5 D-1：用户与角色 / 模拟设备；真实端点 E12/E15/E13 + E18/E16/E17） ---- */
+.admin-page {
+  max-width: 980px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.admin-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-card);
+  padding: 20px;
+}
+
+.admin-card-title {
+  margin: 0;
+  font-size: 18px;
+}
+
+.admin-card-sub {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--color-ink-muted);
+}
+
+.admin-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.admin-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.admin-field > label,
+.admin-field-label {
+  font-size: 14px;
+  color: var(--color-ink);
+}
+
+.admin-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.admin-checks {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.admin-check-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* 触控/密度跟随 console 全局 40px（桌面鼠标端；48px 仅 pad 长者端，2026-11-07 远端口径） */
+.admin-check {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  font-size: 14px;
+  color: var(--color-ink);
+  cursor: pointer;
+}
+
+.admin-check input {
+  width: 18px;
+  height: 18px;
+}
+
+.admin-result {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-sunken);
+  font-size: 14px;
+  color: var(--color-ink);
+  word-break: break-all;
+}
+
+.admin-empty {
+  grid-column: 1 / -1;
+  margin: 8px 0 0;
+  font-size: 14px;
+  color: var(--color-ink-muted);
+}
+
+/* 表格行高 ≥40px、正文 14–16px（前端页面方案 §4.1） */
+.admin-table {
+  width: 100%;
+  margin-top: 12px;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.admin-table th,
+.admin-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-line);
+  line-height: 20px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.admin-table th {
+  background: var(--color-surface-sunken);
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+.admin-table td {
+  color: var(--color-ink);
+}
+
+.admin-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: var(--color-ink-muted);
+  word-break: break-all;
+}
+
+/* 一次性设备密钥：主色描边 + 8% 底，仅展示一次（不铺信号色） */
+.admin-secret {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 14px;
+  border: 1px solid var(--color-brand);
+  border-radius: var(--radius-control);
+  background: var(--color-brand-soft);
+}
+
+.admin-secret-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-brand-strong);
+}
+
+.admin-secret-note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-ink-muted);
+}
+
+.admin-secret .admin-actions {
+  margin-top: 0;
 }
