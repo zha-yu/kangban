@@ -8,8 +8,20 @@ import { BigSubtitle } from "./components/BigSubtitle";
 import { StatusBadge } from "./components/StatusBadge";
 import { SosButton } from "./components/SosButton";
 import { HoldToTalk } from "./components/HoldToTalk";
+import { TaskPanel } from "./components/TaskPanel";
 import { LoginPage } from "./pages/LoginPage";
 import { SosResult } from "./pages/SosResult";
+import { DemoSwitcher } from "./pages/DemoSwitcher";
+import type { TaskKind } from "./tasks";
+import {
+  TASK_HINTS,
+  emitPadTask,
+  makeDevTask,
+  readDemoTask,
+  subscribePadTasks,
+  type PadTaskCommand,
+  type PadTaskEvent,
+} from "./task-channel";
 import { RealtimeClient } from "./realtime";
 import { MicCapture } from "./audio/capture";
 import { loadKwsDetector, type KwsDetector } from "./kws/kws-detector";
@@ -23,6 +35,9 @@ interface SubtitleState {
   text: string;
   source: SubtitleSource;
 }
+
+/** 开发验收直达：模块加载时读一次 ?demo=，仅 DEV 生效，不进真实演示链路 */
+const INITIAL_DEMO_TASK = readDemoTask();
 
 /** 主界面：两相轮转（Day 4 W2）——
  *  standby：待机唤醒期，KWS 端侧监听「小伴」（音频不出端）+ 呼叫按钮正交入口（FR-UI-09）；
@@ -55,14 +70,74 @@ function MainScreen({
       new URLSearchParams(window.location.search).has("picker"),
   );
   const [stageKey, setStageKey] = useState(0);
-  // FR-ALT-06：SOS 常显，结果态优先于形象选择页与任务相位；
+  // FR-ALT-06：SOS 常显，结果态优先于形象选择页与任务面板；
   // 结果态只替换中部内容，顶栏按钮 / 大字幕 / 操作区高度都不动，位置永不移动。
-  // 开发验收直达 ?sos=1，仅 DEV 生效，不进真实演示链路。
+  // 开发验收直达 ?sos=1（或 ?demo=sos），仅 DEV 生效，不进真实演示链路。
   const [sosOpen, setSosOpen] = useState(
     () =>
       import.meta.env.DEV &&
-      new URLSearchParams(window.location.search).has("sos"),
+      (new URLSearchParams(window.location.search).has("sos") ||
+        new URLSearchParams(window.location.search).get("demo") === "sos"),
   );
+
+  // v1.5：任务命令（与传输解耦）。后端适配器落地后只需往任务总线 emit，
+  // 主屏不需要知道是外呼、WS 降级帧还是调度器触发的。
+  const [activeTask, setActiveTask] = useState<PadTaskCommand | null>(() =>
+    INITIAL_DEMO_TASK ? makeDevTask(INITIAL_DEMO_TASK) : null,
+  );
+  const [taskHint, setTaskHint] = useState<string | null>(() =>
+    INITIAL_DEMO_TASK ? TASK_HINTS[INITIAL_DEMO_TASK] : null,
+  );
+
+  // 唯一订阅点。open 时幂等（同 taskId 不重启面板）、close 时只对得上的任务生效；
+  // 任务到达会退出形象选择页，SOS 结果态保持优先、不被任务挤掉。
+  useEffect(
+    () =>
+      subscribePadTasks((event: PadTaskEvent) => {
+        if (event.type === "open") {
+          setActiveTask((prev) =>
+            prev?.taskId === event.command.taskId ? prev : event.command,
+          );
+          setTaskHint(event.command.hint);
+          setPickerOpen(false);
+        } else {
+          setActiveTask((prev) =>
+            prev?.taskId === event.taskId ? null : prev,
+          );
+          setTaskHint(null);
+        }
+      }),
+    [],
+  );
+
+  /** 真实 ASR / TTS 字幕到达时，任务提示让位，保证字幕始终与音频一致（FR-UI-02） */
+  const pushSubtitle = useCallback((text: string, source: SubtitleSource) => {
+    setTaskHint(null);
+    setSubtitle({ text, source });
+  }, []);
+
+  const closeTask = useCallback(() => {
+    if (!activeTask) return;
+    emitPadTask({
+      type: "close",
+      taskId: activeTask.taskId,
+      reason: "user_exit",
+    });
+  }, [activeTask]);
+
+  /** 开发态切换条 = 任务下发适配器的可运行样例：点击即 emit 一条同形命令 */
+  function handleSwitch(kind: TaskKind) {
+    if (kind === "sos") {
+      setSosOpen(true);
+      return;
+    }
+    setSosOpen(false);
+    if (kind === "none") {
+      closeTask();
+      return;
+    }
+    emitPadTask({ type: "open", command: makeDevTask(kind) });
+  }
 
   /** 进入会话：停 KWS（关麦 + 释放回调，麦克风交给 RealtimeClient 自建实例），切换相位 */
   const beginSession = useCallback(() => {
@@ -127,7 +202,7 @@ function MainScreen({
         setStatus(s);
         if (s === "disconnected") endSession(); // 会话结束/断连 → 回待机（呼叫按钮与唤醒词重新可用）
       },
-      onSubtitle: (text, source) => setSubtitle({ text, source }),
+      onSubtitle: pushSubtitle,
       onAuthFail: onLogout, // 会话过期/无效 → 回登录页（T-H 方案 A 定案）
       onNeedManualRetry: endSession, // 连续 5 次重连失败 → 同样回待机，按钮重新出现
       audioEl: audioRef.current,
@@ -169,11 +244,15 @@ function MainScreen({
 
   // S5：形象选择页（仅 standby 期渲染；此间 KWS 仍在监听，喊「小伴」会直接进会话
   // 并因 phase 切换自动离开选择页）。onDone(changed) 为真才重挂舞台，避免无谓重载。
-  if (pickerOpen && phase === "standby" && !sosOpen) {
+  if (pickerOpen && phase === "standby" && !sosOpen && !activeTask) {
     return (
       <AvatarPicker
         // 与 MainScreen 顶栏同一个最右位置，换形象时 SOS 也不消失（FR-ALT-06 常显）
         headerExtra={<SosButton onClick={() => setSosOpen(true)} />}
+        topBar={
+          // 此分支已保证 !sosOpen && !activeTask，切换条恒为「主对话」
+          <DemoSwitcher value="none" onChange={handleSwitch} />
+        }
         onDone={(changed) => {
           setPickerOpen(false);
           if (changed) setStageKey((k) => k + 1);
@@ -191,20 +270,37 @@ function MainScreen({
 
   // 大字幕：standby 默认显示唤醒引导；降级「按住说话」与声纹提示下发的文本优先显示，
   // 避免话术被引导语吞掉。两相位共用同一字幕区，位置不随对话状态跳动。
-  // SOS 结果态时本区显示一行中性 UI 提示（不是 TTS 字幕，不经过语音路由），保持区域常驻。
+  // SOS / 任务态显示一行中性 UI 提示（notice，不是 TTS 字幕，不经过语音路由）；
+  // 真实 ASR/TTS 到达后由 pushSubtitle 清掉任务提示，字幕重新与音频一致。
   const subtitleText = sosOpen
     ? "已按下求助按钮，请稍等"
-    : phase === "inSession"
-      ? subtitle.text
-      : subtitle.text || standbyHint;
-  const subtitleSource: SubtitleSource = sosOpen
-    ? "notice"
-    : phase === "inSession" || subtitle.text
-      ? subtitle.source
-      : "notice";
+    : taskHint ??
+      (phase === "inSession" ? subtitle.text : subtitle.text || standbyHint);
+  const subtitleSource: SubtitleSource =
+    sosOpen || taskHint
+      ? "notice"
+      : phase === "inSession" || subtitle.text
+        ? subtitle.source
+        : "notice";
+
+  const switcherValue: TaskKind = sosOpen ? "sos" : (activeTask?.kind ?? "none");
+
+  // 舞台在任务到达时收窄为左侧 300px 圆框；ResizObserver 自适应，场景不重挂
+  const stage = (
+    <AvatarStage
+      key={stageKey} // S5 显式换装：选择页确认后重挂，读最新 localStorage（D-3）
+      compact={!!activeTask && !sosOpen}
+      sendDiag={(s, ok, error) => clientRef.current?.sendDiag(s, ok, error)}
+      audioEl={phase === "inSession" ? audioRef.current : null} // 仅会话期有 TTS 下行
+      pointerFollow={phase === "standby"} // F-2a：仅待机期跟随，会话中恢复看镜头
+    />
+  );
 
   return (
     <div className="flex h-full flex-col">
+      {/* 开发态任务切换条：常显于 DEV（生产构建不含），点击走任务总线而非直接改布局 */}
+      <DemoSwitcher value={switcherValue} onChange={handleSwitch} />
+
       {/* TTS 下行播放（WebRTC 收轨）；传给 AvatarStage 做口型（P1） */}
       <audio ref={audioRef} />
 
@@ -223,21 +319,26 @@ function MainScreen({
         </div>
       </header>
 
-      {/* 舞台独占剩余空间：字幕区与操作区高度固定，圆框不再被底部控件压到字幕上
+      {/* 舞台独占剩余空间；任务到达时收为左舞台 + 右任务面板两栏，四段高度不变。
+          字幕区与操作区高度固定，圆框不再被底部控件压到字幕上
           （旧版 standby 底部 4 层堆叠约 510px，挤掉 main 空间导致 60px 大字幕穿过人物） */}
-      <main className="flex min-h-0 flex-1 items-center justify-center overflow-hidden">
+      <main className="flex min-h-0 flex-1 items-center justify-center gap-16 overflow-hidden px-12">
         {sosOpen ? (
           // 结果态只占中部：顶栏 SOS（active）、大字幕区、操作区高度都在原位
           <div className="flex h-full w-full items-center justify-center">
             <SosResult onExit={() => setSosOpen(false)} />
           </div>
+        ) : activeTask ? (
+          <>
+            {stage}
+            <TaskPanel
+              command={activeTask}
+              onExit={closeTask}
+              onHint={setTaskHint}
+            />
+          </>
         ) : (
-          <AvatarStage
-            key={stageKey} // S5 显式换装：选择页确认后重挂，读最新 localStorage（D-3）
-            sendDiag={(stage, ok, error) => clientRef.current?.sendDiag(stage, ok, error)}
-            audioEl={phase === "inSession" ? audioRef.current : null} // 仅会话期有 TTS 下行
-            pointerFollow={phase === "standby"} // F-2a：仅待机期跟随，会话中恢复看镜头
-          />
+          stage
         )}
       </main>
 
@@ -263,7 +364,7 @@ function MainScreen({
               <HoldToTalk
                 compact
                 token={loadSession()?.access_token ?? ""}
-                onSubtitle={(text, source) => setSubtitle({ text, source })}
+                onSubtitle={pushSubtitle}
                 onAuthFail={onLogout}
               />
               {/* S5 换装入口：仅 standby 期暴露（会话中禁止换装，计划口径 §3.2） */}

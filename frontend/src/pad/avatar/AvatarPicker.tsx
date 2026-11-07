@@ -95,19 +95,23 @@ function AvatarCard({
   );
 }
 
-/** headerExtra：由主屏注入的常显操作（SOS），放在「返回」右侧，与主屏顶栏的最右位置一致 */
+/** headerExtra：由主屏注入的常显操作（SOS），放在「返回」右侧，与主屏顶栏的最右位置一致。
+ *  topBar：主屏注入的开发态任务切换条，保证换形象时入口不消失。 */
 export function AvatarPicker({
   onDone,
   headerExtra,
+  topBar,
 }: {
   onDone: (changed: boolean) => void;
   headerExtra?: ReactNode;
+  topBar?: ReactNode;
 }) {
   // 进入页面时锁定「使用中」基准：点返回未换装则不触发重挂载
   const initialId = resolveSelectedAvatar(readStoredAvatarId()).id;
 
   return (
     <div className="flex h-full flex-col">
+      {topBar}
       <header className="flex shrink-0 items-center justify-between px-12 pt-8">
         <div>
           <h1 className="text-5xl font-bold text-ink">换个形象</h1>
