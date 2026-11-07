@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>标定 · 朝向四象限</title>
+    <style>
+      body { font: 13px/1.6 ui-monospace, monospace; margin: 12px; background: #111; color: #ddd; }
+      #wrap { position: relative; width: 800px; }
+      canvas { display: block; }
+      .label { position: absolute; color: #0f0; font: bold 16px monospace; text-shadow: 0 0 4px #000; pointer-events: none; }
+      #status { margin-top: 8px; }
+      button, select { font: 14px monospace; margin-right: 8px; }
+    </style>
+  </head>
+  <body>
+    <div>
+      <button id="prev">← 上一个</button>
+      <select id="model"></select>
+      <button id="next">下一个 →</button>
+      <label><input type="checkbox" id="anim" checked /> 播放待机动画（Q3 真机验证）</label>
+    </div>
+    <div id="wrap">
+      <canvas id="stage" width="800" height="600"></canvas>
+      <div class="label" style="left: 190px; top: 140px;">offset 0</div>
+      <div class="label" style="left: 590px; top: 140px;">offset +90°</div>
+      <div class="label" style="left: 190px; top: 440px;">offset 180°</div>
+      <div class="label" style="left: 590px; top: 440px;">offset -90°</div>
+    </div>
+    <div id="status">加载中…</div>
+    <script type="module" src="./calibrate.ts"></script>
+  </body>
+</html>

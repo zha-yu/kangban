@@ -13,7 +13,11 @@
     "skipLibCheck": true,
     "isolatedModules": true,
     "useDefineForClassFields": true,
-    "types": ["vite/client"]
+    "types": ["vite/client"],
+    "paths": {
+      "three": ["./node_modules/@types/three/index.d.ts"],
+      "three/examples/*": ["./node_modules/@types/three/examples/*"]
+    }
   },
   "include": ["src"]
 }

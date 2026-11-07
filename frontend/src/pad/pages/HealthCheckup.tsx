@@ -18,9 +18,15 @@ interface HealthAnswer {
 interface HealthCheckupProps {
   onExit: () => void;
   onSubtitle?: (text: string) => void;
+  /** 任务下发载荷里的来源标签（如「19:00 定时」）；仅展示，不参与分级 */
+  sourceLabel?: string;
 }
 
-export function HealthCheckup({ onExit, onSubtitle }: HealthCheckupProps) {
+export function HealthCheckup({
+  onExit,
+  onSubtitle,
+  sourceLabel,
+}: HealthCheckupProps) {
   const [index, setIndex] = useState(0);
   const [answers, setAnswers] = useState<Partial<Record<HealthField, HealthAnswer>>>(
     {},
@@ -93,7 +99,7 @@ export function HealthCheckup({ onExit, onSubtitle }: HealthCheckupProps) {
   if (done) {
     return (
       <TaskShell
-        eyebrow="每日健康采集"
+        eyebrow={`每日健康采集${sourceLabel ? ` · ${sourceLabel}` : ""}`}
         title="今天问完了，谢谢您"
         badge={
           <StatusBadge tone="info" size="md">
@@ -144,7 +150,7 @@ export function HealthCheckup({ onExit, onSubtitle }: HealthCheckupProps) {
 
   return (
     <TaskShell
-      eyebrow={`每日健康采集 · 第 ${index + 1} / 5 问`}
+      eyebrow={`每日健康采集 · 第 ${index + 1} / 5 问${sourceLabel ? ` · ${sourceLabel}` : ""}`}
       title={question.label}
       badge={
         <StatusBadge tone={retrying ? "warning" : "info"} size="md" pulse={!retrying}>

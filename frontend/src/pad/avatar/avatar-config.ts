@@ -1,4 +1,8 @@
 /**
+ * 【已停用 2026-11-07，Day05 A1 S4】本文件不再被任何代码引用——数字人形象改为本地资产驱动
+ * （avatar-catalog.ts + AvatarStage.tsx，D1 裁决），此处仅保留接口契约本体备查，禁止新调用。
+ * 留痕：docs/team_tasks/day05/a1-本地VRM与形象选择页.md（S0）；后端接口未删除。
+ *
  * C7 avatar-config REST 契约消费方（冻结人 A3；docs/team_tasks/day04/contracts.md C7，v1.1 缓存口径）。
  * GET /api/pad/avatar-config，Authorization: Bearer <device access_token>；elder_id 一律服务端解出。
  * 错误三路：401 → onAuthFail（走既有回登录逻辑）；403 device_not_bound → 抛 AvatarConfigError

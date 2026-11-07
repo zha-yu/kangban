@@ -123,7 +123,14 @@ export interface TtsTextMsg {
 /** 服务端降级/异常通知；message 为已脱敏的长者可读话术 */
 export interface ErrorMsg {
   type: "error";
-  code: "asr_unavailable" | "llm_timeout" | "tool_breaker" | "internal";
+  code:
+    | "asr_unavailable"
+    | "llm_timeout"
+    | "tool_breaker"
+    | "internal"
+    | "asr_slow" // Day 5 B-2：ASR 有结果但太慢
+    | "llm_slow" // Day 5 B-2：LLM 有结果但太慢
+    | "tts_slow"; // Day 5 B-2：TTS 有结果但太慢
   message: string;
 }
 

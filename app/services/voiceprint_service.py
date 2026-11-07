@@ -27,6 +27,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.core.context import get_trace_id
 from app.models.voiceprint import Voiceprint
 
 logger = logging.getLogger("voiceprint_service")
@@ -259,14 +260,26 @@ async def get_status(
 async def delete_all_for_elder(
     session: AsyncSession,
     elder_id: uuid.UUID,
+    actor: str,
 ) -> int:
-    """删除该长者全部 voiceprints，返回删除行数。"""
+    """删除该长者全部 voiceprints，返回删除行数。
+
+    actor 由调用方（REST 层）传入，格式 "device:<uuid>" / "admin:<uuid>" 等，
+    用于结构化审计日志（Day 4 只写日志，Day 9 回填 audit_logs 表）。
+    """
     result = await session.execute(
         delete(Voiceprint).where(Voiceprint.elder_id == elder_id)
     )
     await session.commit()
     count = result.rowcount or 0
-    logger.info("删除 elder=%s 的 %d 条 voiceprints", elder_id, count)
+    logger.info(
+        "voiceprint delete",
+        trace_id=get_trace_id() or "-",
+        audit_action="voiceprint_delete",
+        actor=actor,
+        target=f"elder:{elder_id}",
+        result=f"deleted:{count}",
+    )
     return count
 
 

@@ -14,6 +14,9 @@ export default defineConfig({
     proxy: {
       "/api": { target: "http://127.0.0.1:8000", changeOrigin: true },
       "/ws": { target: "ws://127.0.0.1:8000", ws: true },
+      // 后端 TTS WAV 落盘目录（app/api/audio.py 存 <cwd>/static/mock/ 并由 FastAPI 挂载 /static）；
+      // dev 下 audio 元素在 5173 源内请求，必须转发到 8000，否则拿到 Vite SPA 兜底 HTML 无声
+      "/static": { target: "http://127.0.0.1:8000", changeOrigin: true },
     },
   },
   build: {
