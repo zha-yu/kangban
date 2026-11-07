@@ -32,18 +32,27 @@ export interface AvatarStageProps {
    * 可选：不传则无口型、其余功能不受影响；lipsync="none" 模型（R8-b）本组件内部跳过。
    */
   audioEl?: HTMLAudioElement | null;
+  /**
+   * 指针跟随开关（F-2a 决议：仅待机期启用，会话中恢复看镜头）。开启后在圆形舞台内
+   * 移动鼠标/触摸拖动（F-3 调整为触摸也跟随）时眼睛+头部跟随。
+   */
+  pointerFollow?: boolean;
 }
 
-export function AvatarStage({ avatar, sendDiag, audioEl }: AvatarStageProps) {
+export function AvatarStage({ avatar, sendDiag, audioEl, pointerFollow = false }: AvatarStageProps) {
   // 模型解析：props 注入优先，否则 localStorage（D-1/D-3：进页面读一次，会话内不响应变化）
   const model = avatar ?? resolveSelectedAvatar(readStoredAvatarId());
   const [phase, setPhase] = useState<StagePhase>({ kind: "loading" });
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  /** 圆形舞台容器：指针跟随的命中区域（F-2 决议：仅圆形区域内生效） */
+  const stageBoxRef = useRef<HTMLDivElement>(null);
   /** 本次挂载内 client_diag 只发一次（C5：仅日志；成功不发） */
   const diagSentRef = useRef(false);
   /** 口型用「最新 audioEl」引用：元素可能首帧后才挂载/换流，rAF 内每帧经访问器取最新 */
   const audioElRef = useRef<HTMLAudioElement | null>(null);
   audioElRef.current = audioEl ?? null;
+  /** 场景句柄：指针跟随经它下发（模型重建后新句柄自动生效） */
+  const sceneHandleRef = useRef<VrmSceneHandle | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -82,6 +91,7 @@ export function AvatarStage({ avatar, sendDiag, audioEl }: AvatarStageProps) {
           handle.dispose();
           return;
         }
+        sceneHandleRef.current = handle; // 指针跟随经此下发
         setPhase({ kind: "ready" }); // 3D 就绪，揭开降级层
       } catch {
         failVrmLoad("vrm_parse_or_render_failed");
@@ -93,13 +103,43 @@ export function AvatarStage({ avatar, sendDiag, audioEl }: AvatarStageProps) {
       disposed = true;
       handle?.dispose();
       handle = null;
+      sceneHandleRef.current = null;
     };
     // 仅在模型变化时重建场景（S5 换装走 props 注入触发）
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [model.id]);
 
+  // 指针跟随（F-1b/F-2a/F-3）：监听圆框容器，鼠标/触摸/触控笔均生效（触摸拖动也跟随）；
+  // 圆形命中判定（容器 bounding box 四角不算），出圆即回落「看镜头」
+  useEffect(() => {
+    const el = stageBoxRef.current;
+    if (!pointerFollow || !el) {
+      sceneHandleRef.current?.setPointerTarget(null);
+      return;
+    }
+    const applyPointer = (e: PointerEvent): void => {
+      const rect = el.getBoundingClientRect();
+      const nx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      const ny = -(((e.clientY - rect.top) / rect.height) * 2 - 1);
+      if (nx * nx + ny * ny > 1) {
+        sceneHandleRef.current?.setPointerTarget(null); // 圆外四角：不跟随
+        return;
+      }
+      sceneHandleRef.current?.setPointerTarget(nx, ny);
+    };
+    const onLeave = (): void => sceneHandleRef.current?.setPointerTarget(null);
+    el.addEventListener("pointermove", applyPointer);
+    el.addEventListener("pointerleave", onLeave);
+    return () => {
+      el.removeEventListener("pointermove", applyPointer);
+      el.removeEventListener("pointerleave", onLeave);
+      sceneHandleRef.current?.setPointerTarget(null);
+    };
+  }, [pointerFollow]);
+
   return (
     <div
+      ref={stageBoxRef}
       className="relative flex items-center justify-center overflow-hidden rounded-full border border-brand-line bg-brand-soft"
       style={{ height: "min(560px, 48vh)", width: "min(560px, 48vh)" }}
     >

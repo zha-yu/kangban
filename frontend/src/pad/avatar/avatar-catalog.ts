@@ -78,6 +78,15 @@ export function findAvatarById(id: string | null | undefined): AvatarCatalogItem
 }
 
 /**
+ * 选择页角色卡立绘（Q2 落地）：与模型 id 同名的 420×560 透明底全身 PNG，
+ * 来自离线渲染导出的形象总览，放在 public/assets/avatars/ 随构建产出。
+ * 资源缺失时由 AvatarPicker 的 onError 回落渐变占位，不白屏。
+ */
+export function avatarThumbUrl(id: string): string {
+  return `/assets/avatars/${id}.png`;
+}
+
+/**
  * 解析应展示的模型：localStorage 值合法则用之，否则回落出厂默认。
  * 兜底 DEFAULT 项意外缺失时返回清单首项（结构性兜底，正常不触发）。
  */

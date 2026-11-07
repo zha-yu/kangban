@@ -39,6 +39,14 @@ const BLINK_DURATION_MS = 220;
 /** 呼吸微摆幅度（弧度）与周期（秒）：胸口骨骼的微小起伏 */
 const BREATH_AMPLITUDE_RAD = 0.02;
 const BREATH_PERIOD_S = 4;
+/** 指针跟随（F-1b/F-2a 决议）：注视点放在镜头前这一比例深度处 */
+const POINTER_TARGET_Z_RATIO = 0.45;
+/** 指针归一化位移映射成注视点水平/垂直偏移的世界单位（米） */
+const POINTER_X_RANGE = 0.9;
+const POINTER_Y_RANGE = 0.55;
+/** 头部跟随最大转角（弧度）：幅度保守，避免「扭头过头」显怪 */
+const HEAD_MAX_YAW_RAD = 0.3;
+const HEAD_MAX_PITCH_RAD = 0.2;
 
 /* ---- 资产字节缓存（URL 键多槽 LRU）---- */
 
@@ -157,6 +165,12 @@ export interface VrmSceneHandle {
   playAnimation(url: string, loop?: boolean): Promise<boolean>;
   /** 停止当前动画并回到程序化待机 */
   stopAnimation(): void;
+  /**
+   * 设置指针跟随目标（F-1b/F-2a）：x/y 为圆框内归一化坐标（-1..1，屏幕 y 已翻转）。
+   * 传 null 回落「看镜头」默认视线。眼睛经 lookAt 目标生效；头部小幅叠加
+   * （mixer 之后的写序覆盖 idle 微动）。鼠标/触摸/触控笔均生效。
+   */
+  setPointerTarget(x: number | null, y?: number): void;
 }
 
 /** S3 挂载选项：待机动画叠加（Q3） */
@@ -220,6 +234,13 @@ export async function mountVrmScene(
   const blinkAvail = (expressionManager?.getExpression("blink") ?? null) !== null;
   const chest = vrm.humanoid?.getNormalizedBoneNode("chest") ?? null;
   const chestBaseRotationZ = chest?.rotation.z ?? 0;
+  // 指针跟随（F-1b）：头部骨骼基线 + 归一化目标/现值（tick 内 lerp 平滑）
+  const head = vrm.humanoid?.getNormalizedBoneNode("head") ?? null;
+  const headBaseRotationX = head?.rotation.x ?? 0;
+  const headBaseRotationY = head?.rotation.y ?? 0;
+  let pointerTarget: { x: number; y: number } | null = null;
+  let pointerX = 0;
+  let pointerY = 0;
 
   let nextBlinkAt = performance.now() + BLINK_INTERVAL_MIN_MS + Math.random() * (BLINK_INTERVAL_MAX_MS - BLINK_INTERVAL_MIN_MS);
 
@@ -270,7 +291,8 @@ export async function mountVrmScene(
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
-    lookTarget.position.copy(camera.position);
+    // 指针跟随中不覆盖注视点（该帧 tick 会按指针现值重写）
+    if (!pointerTarget) lookTarget.position.copy(camera.position);
   };
   resize();
   const observer = new ResizeObserver(resize);
@@ -313,6 +335,27 @@ export async function mountVrmScene(
       chest.rotation.z = chestBaseRotationZ + Math.sin((t / BREATH_PERIOD_S) * Math.PI * 2) * BREATH_AMPLITUDE_RAD;
     }
 
+    // 指针跟随（F-1b/F-2a）：注视点 lerp 平滑（帧率无关）
+    const lerpK = 1 - Math.exp(-12 * delta);
+    pointerX += ((pointerTarget?.x ?? 0) - pointerX) * lerpK;
+    pointerY += ((pointerTarget?.y ?? 0) - pointerY) * lerpK;
+    if (pointerTarget) {
+      lookTarget.position.set(
+        pointerX * POINTER_X_RANGE,
+        camera.position.y + pointerY * POINTER_Y_RANGE,
+        camera.position.z * POINTER_TARGET_Z_RATIO,
+      );
+    } else {
+      lookTarget.position.copy(camera.position);
+    }
+    // 头部跟随始终生效（F-1b）：写序在 mixer.update 之后，覆盖 idle vrma 的头部微动
+    // （其幅度极小，覆盖无视觉损失）。若未来一次性动作期间需要保留其头部轨道，
+    // 再把条件收紧为 `head && !anim`。
+    if (head) {
+      head.rotation.y = headBaseRotationY + pointerX * HEAD_MAX_YAW_RAD;
+      head.rotation.x = headBaseRotationX - pointerY * HEAD_MAX_PITCH_RAD;
+    }
+
     vrm.update(delta);
     renderer.render(scene, camera);
   };
@@ -333,5 +376,11 @@ export async function mountVrmScene(
     },
     playAnimation,
     stopAnimation,
+    setPointerTarget(x, y) {
+      pointerTarget =
+        x === null
+          ? null
+          : { x: Math.max(-1, Math.min(1, x)), y: Math.max(-1, Math.min(1, y ?? 0)) };
+    },
   };
 }

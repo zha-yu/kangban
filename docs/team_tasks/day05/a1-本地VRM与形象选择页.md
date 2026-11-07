@@ -18,7 +18,7 @@
 - [x] S2 avatar-catalog.ts 模型清单（默认 Yoimiya，Q1–Q4 口径；R8-b 落字段：4 个无表情模型 lipsync="none"；动画白名单 common/ 6 个，world-* 不收录；tsc --noEmit 通过）
 - [x] S3 vrm-scene.ts 扩展（多槽 LRU 字节缓存/程序化待机眨眼呼吸/vrma 播放与自动回落/rotateVRM0 统一朝向；tsc 全绿。引依赖 @pixiv/three-vrm-animation@3.5.5 + @types/three@0.187.0（dev），删 Day4 类型 shim three-ambient.d.ts。**真机标定已通过（2026-11-07，用户经 calibrate.html 四象限页逐模型校对）**：14 模型 offset=π 全部正脸，无例外回填；idle.vrma 播放 ✓）
 - [x] S4 AvatarStage 去 C7 改造（D-1 props 注入 avatar?；D-2 跳过图片层直落渐变占位；D-3 会话内不响应 localStorage 变化；unbound 相删除；token/onAuthFail props 移除；idleAnimationUrl 接上；lipsync="none" 不传口型源；tsc 通过，avatar-config.ts 仅剩文件本体无引用）
-- [ ] S5 AvatarPicker 选择页 + standby 入口 + localStorage 持久化
+- [x] S5 AvatarPicker 选择页 + standby 入口 + localStorage 持久化（AvatarPicker.tsx：一触即选写 localStorage + onDone(changed) 回调；14 卡片 div 渐变占位（Q2），lipsync="none" 标「不支持口型」（R8-b），使用中高亮；App.tsx MainScreen：standby 期「换个形象」入口、pickerOpen && standby 分支渲染（KWS 保持监听，喊小伴自动离开选择页）、stageKey 重挂 AvatarStage 显式换装（D-3）；tsc 通过）
 - [ ] S6 回归 + 构建门禁（console/family 产物无 three；主链路零回归）
 
 ## 验收
