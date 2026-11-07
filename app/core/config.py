@@ -175,7 +175,9 @@ class Settings(BaseSettings):
     tool_repeat_break_threshold: int = 3
     medication_reminder_attempts: int = 4
     medication_attempt_wait_seconds: int = 60
-    voiceprint_similarity_threshold: float = 0.85
+    # 主理人裁决 2026-11-07：0.85 → 0.55（CAM++ 教师口径）。依据 spikes/voiceprint/ 实测
+    # 同人 cosine 0.517–0.568，0.85 阈值必误拒；PRD §3.2 已随 v2.8 修订。运行时经 Settings 可调。
+    voiceprint_similarity_threshold: float = 0.55
 
     # ---- 声纹推理容器（Day 4 · A1） ----
     # voiceprint_service 调这个容器的 POST /extract 端点，主服务不装 torch（容器隔离重依赖）
