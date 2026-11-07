@@ -1,6 +1,6 @@
 # Day 5 · dev-D console 五 Mock 页字段差异清单
 
-> 状态：部分完成（等待 A-4）　｜　版本：v1.3　｜　日期：2026-11-07
+> 状态：部分完成（等待 A-4）　｜　版本：v1.4　｜　日期：2026-11-07
 > 关联：docs/plans/day05/d-双端前端推进计划.md（W3）、docs/plans/day05/d-DAG.md（N9/N10/N11）
 > 上游依据：技术设计文档 §3 表定义（行号见各表）｜PRD FR-HLT-06/AC-32（C4 冲突旧文）｜A-4 契约草案（⏳ 未交付）
 > 变更记录见文末
@@ -210,14 +210,14 @@ TD 出处：`health_records`（TD 470-490）。
 | # | 发现 | 证据 | 处置 |
 | --- | --- | --- | --- |
 | B1 | **药单 Mock 与真实长者 ID 不匹配**：`medication-api.ts` 的 Mock 计划使用 `elder-301/303/305`，E7 返回真实 UUID；两个药单页按选中真实 `elder_id` 过滤 → 恒为空列表 | 药单只读 / 药单维护均显示空态（截图 #4/#6） | 只登记；属 Mock 数据与真实接口的接线差异，A-4 确认前不改 Mock 数据、不改业务逻辑 |
-| B2 | **弹窗无样式（H5 实测）**：`.rv-mask` / `.rv-dialog` / `.btn-ghost` 未在 `console/index.css` 定义，渲染为 `position: static`、背景透明、`padding: 0px`，弹窗内联插入页面、无遮罩 | `doctor-review-correct-dialog.png` / `doctor-medication-create-dialog.png` 可见表单直接铺在页面上 | 只登记；不属本任务，不修既有缺陷 |
+| B2 | ~~弹窗无样式（H5 实测）~~ **已修复（2026-11-07）**：`console/index.css` 补 `.rv-mask`（fixed 遮罩）/ `.rv-dialog`（520px 白卡 + `--radius-card`）/ `.btn-ghost` / `.wo-dialog-title`；浏览器实测遮罩 `rgba(0,0,0,0.4)`、卡片白底 16px 圆角居中、点击遮罩可关闭 | 修复前 `doctor-review-correct-dialog.png` / `doctor-medication-create-dialog.png`；修复后待补截图 | 已修复；N11 回归以修复后版本为准 |
 | B3 | **复核版本链基线仅 1 项**：待复核记录（rv-mock-001）没有历史版本；含两版本的纠错记录（rv-mock-003/004）不在 pending 队列，UI 无法从队列打开两版本链 | `doctor-review-chain.png` 显示 1 项 | 只登记；演示若要展示两版本链，需先对一条 pending 记录执行纠错，或后续调整队列/数据（不在本任务） |
 | B4 | **医生药单维护初始无长者范围**：测试医生由 E12 建档时未带 `elder_ids`，E7 返回空范围，药单维护下拉为空；本轮仅在本地测试库补 `elder_staff_assignments`（relation=`doctor`，张爷爷）后完成走查 | `doctor-medication-edit.png` 显示张爷爷 1 项 | 测试数据补齐，非代码/迁移改动；正式 seed 应覆盖医生负责关系 |
 | B5 | ~~健康代填容器样式受 H4 影响~~ **merge 后已解决**：远端 `console/index.css` 已把未定义 token 全部替换（`--color-border`→`--color-line`、`--radius-lg`→`--radius-card`、`--color-surface-soft`→`--color-surface-sunken` 等），合并后 token 扫描 **UNDEFINED=0** | 原 `health_fill_result.png` 采于 merge 前 | 已由远端修复；N11 回归以 merge 后为准 |
 
 > 基线结论：五个 Mock 模块均能正常渲染与交互，无崩溃/白屏；发现 1 处 Mock/真实 ID 接线差异、1 组既有弹窗样式缺陷、1 处演示数据缺口。N11 修正字段后可用本基线逐页对照，避免渲染回归。
 >
-> **merge 说明（2026-11-07）**：本基线截图采于 merge `origin/develop` 之前（console 控件 48px）；merge 后 console 全局控件统一为 40px（远端口径），仅影响控件高度，不影响本表的字段/列表/弹窗结构。B5 的 H4 未定义 token 已被远端修复（token 扫描 0）；B2 的 `.rv-mask`/`.rv-dialog`/`.btn-ghost` 仍未定义，缺陷仍在。N11 回归以 merge 后版本为准。
+> **merge 说明（2026-11-07）**：本基线截图采于 merge `origin/develop` 与弹窗修复之前（console 控件 48px）；merge 后 console 全局控件统一为 40px（远端口径），仅影响控件高度，不影响本表的字段/列表/弹窗结构。B5 的 H4 未定义 token 已被远端修复（token 扫描 0）；B2 的 `.rv-mask`/`.rv-dialog`/`.btn-ghost` 已由 dev-D 补样式并通过浏览器实测，缺陷关闭。N11 回归以 merge + 修复后版本为准。
 
 ## 9. 回传与双向确认
 
@@ -237,3 +237,4 @@ TD 出处：`health_records`（TD 470-490）。
 | v1.1 | 2026-11-07 | N9 完成：导出五页全部类型与字段，逐字段标注 TD §3 表名+行号并给出三列结论；登记 C4/H1–H5 既有差异；A-4 对照列与 N10/N11 全部 ⏳。**未改任何 Mock 代码** |
 | v1.2 | 2026-11-07 | 补 §8 渲染基线（N9 附）：六页面视图逐项走查并截图；登记 B1 药单 Mock/真实 ID 不匹配、B2 弹窗无样式实测、B3 版本链仅 1 项、B4 医生药单范围缺口、B5 健康容器样式缺失。**Mock 代码零改动** |
 | v1.3 | 2026-11-07 | merge origin/develop 后更新：B5（H4 未定义 token）已由远端修复，token 扫描 UNDEFINED=0；B2（rv-mask/rv-dialog/btn-ghost）仍存在；补 merge 后 40px 对基线的影响说明。Mock 代码仍零改动 |
+| v1.4 | 2026-11-07 | 修复 B2：`console/index.css` 补 `.rv-mask`/`.rv-dialog`/`.btn-ghost`/`.wo-dialog-title`，浏览器实测居中模态框与遮罩关闭通过；B1/B3/B4 仍待后续。Mock 字段/业务逻辑零改动 |

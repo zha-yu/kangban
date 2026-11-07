@@ -207,9 +207,33 @@ body {
   border-radius: var(--radius-control);
 }
 
+/* 文字按钮（取消 / 修改 / 停用 / 历史版本等）：无底无边，靠文字与 hover 面区分 */
+.btn-ghost {
+  min-height: 40px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-ink-muted);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--color-surface-sunken);
+  color: var(--color-ink);
+}
+
+.btn-ghost:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 /* 键盘焦点可见（无障碍基线） */
 .btn-primary:focus-visible,
 .btn-secondary:focus-visible,
+.btn-ghost:focus-visible,
 .input:focus-visible,
 .field-input:focus-visible {
   outline: 2px solid var(--color-brand);
@@ -951,6 +975,39 @@ body {
 
 .dlg-actions .btn-primary {
   padding: 0 20px;
+}
+
+/* ---- 复核 / 药单维护弹窗（task-11 F7 / task-12 F8）----
+   这两个页面此前使用未定义的 .rv-mask / .rv-dialog / .wo-dialog-title，
+   弹窗会内联铺在页面上、无遮罩。此处补齐，颜色全部走 token。 */
+.rv-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--color-ink) 40%, transparent);
+}
+
+.rv-dialog {
+  width: 100%;
+  max-width: 520px;
+  max-height: 90vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 24px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-card);
+}
+
+.wo-dialog-title {
+  margin: 0;
+  font-size: 18px;
 }
 
 /* ---- 注册向导（task-08 F2） ---- */

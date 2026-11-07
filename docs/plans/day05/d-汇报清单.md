@@ -1,6 +1,6 @@
 # Day 5 · dev-D 汇报清单
 
-> 状态：部分完成（D-1 走查通过；N8/N10/N11 阻塞）　｜　版本：v1.7　｜　日期：2026-11-07
+> 状态：部分完成（D-1 走查通过；N8/N10/N11 阻塞）　｜　版本：v1.8　｜　日期：2026-11-07
 > 关联：docs/plans/day05/d-双端前端推进计划.md（W4/W5）、docs/team_tasks/day05/dev-d-前端console与family.md
 > 上游依据：docs/plans/day05/day-05-延迟基线与护栏.md §S7 自检项（A1/A2/A3）｜身份契约 v1.8｜家属端契约草案 v1.1
 > 变更记录见文末
@@ -12,7 +12,7 @@
 | 项 | 命令 | 结果 | 说明 |
 | --- | --- | --- | --- |
 | 基线构建（改动前） | `pnpm --dir frontend build` | 通过（exit 0，2.78s） | G0 不回归对照 |
-| 最终构建（merge 后） | `pnpm --dir frontend build` | 通过（exit 0，4.43s） | `tsc --noEmit` 零错误；三入口 index/family/console 均产出 |
+| 最终构建（merge 后） | `pnpm --dir frontend build` | 通过（exit 0，4.14s） | `tsc --noEmit` 零错误；三入口 index/family/console 均产出 |
 | 产物隔离 | `grep three-vrm\|@pixiv` console/family html+js+css | **0 命中（clean）** | three-vrm 只在 pad chunk |
 | 已知告警 | pad chunk 816.32 kB >500 kB | 非错误 | 既有告警，不属本任务 |
 
@@ -21,7 +21,7 @@
 | 产物 | 基线 | merge 后 | 说明 |
 | --- | --- | --- | --- |
 | `console-*.js` | 78.26 kB | 93.37 kB | +admin-api + 两个 Admin 页面 |
-| `console-*.css` | 29.20 kB | 33.46 kB | admin 样式 2.25 kB + 远端 console 样式统一 |
+| `console-*.css` | 29.20 kB | 34.34 kB | admin 样式 + 远端 console 样式统一 + 弹窗样式补齐 |
 | `family-*.js` | 17.89 kB | 18.04 kB | data-source 拆分，页面与行为不变 |
 
 ## 2. 三项静态零
@@ -58,7 +58,7 @@
 | --- | --- | --- | --- | --- |
 | **D-1** admin 管理页 | 已完成（除录屏） | `admin-api.ts`（E12/E15/E13 + 403/409/404/422 页面文案）；`AdminUsersPage`（建员工/建家属/绑定长者 + 前端校验 + E7 候选）；`AdminDevicesPage`（E18/E16/E17 + 一次性密钥 + 数字 status 守卫）；`App.tsx` / `AppLayout.tsx` / `index.css` 装配；构建通过；**真实端点四流程 4/4、DB 回查 4/4、越权 3/3、非 admin 无白屏 3/3**；**merge 后样式口径**：console 控件 40px（跟随 develop）、admin 勾选 40px、表格行高 41px、正文 14–16px | 演示录屏未录制（浏览器工具仅截图，无 ffmpeg） | dev-D + 主理人（M5.4 视频录屏） |
 | **D-2** family 切换层 | 部分完成 | `data-source.ts` 拆分；`api.ts` 唯一 `USE_MOCK` + 5 函数双轨；真实路径按契约 §4；F0 外壳修正；`USE_MOCK=1` 处；页面零改动；**Mock 三页浏览器回归通过**（切换器 2 人 / 日报列表+详情 / 通知 3 条、未读 2→1）；**真实 375px 视口验证通过**（三页 `scrollWidth=375`、溢出 0、正文 16px、触控 48px）；**契约 v1.1 已到**（R3 补 id/assigned_at、S-01 改 TD 原文，前端无需改代码） | B-3 完整逐端点校对稿未见、契约冻结（X3）待；真实分支定稿 | dev-B 补校对意见稿（如有）；主理人排冻结评审 |
-| **D-3** 五 Mock 页字段对齐 | 部分完成 | `d-字段差异清单.md` 左半表 100%（TD 表名+行号）；**六页面渲染基线完成**（工单/告警/健康代填/药单只读/复核/药单维护），登记 B1–B5（B5 的 H4 未定义 token 已由 merge 修复；B2 弹窗样式仍缺）；Mock 代码**零改动** | A-4 草案（X1）与落点（X0）→ N10 双向确认 → N11 修正 | dev-A 交 A-4；主理人裁定落点 |
+| **D-3** 五 Mock 页字段对齐 | 部分完成 | `d-字段差异清单.md` 左半表 100%（TD 表名+行号）；**六页面渲染基线完成**（工单/告警/健康代填/药单只读/复核/药单维护），登记 B1–B5；**B2 弹窗无样式已修复并浏览器实测通过**，B5 的 H4 已由 merge 修复；B1/B3/B4 仍待后续；Mock 代码**零改动** | A-4 草案（X1）与落点（X0）→ N10 双向确认 → N11 修正 | dev-A 交 A-4；主理人裁定落点 |
 
 ## 6. 未执行项与原因（不得写成「通过」）
 
@@ -72,7 +72,7 @@
 
 ## 7. 录屏与媒体
 
-- **截图（外部，未入库）**：`C:\Users\Alienware\AppData\Local\Temp\trae\screenshots\` 下约 29 张命名证据图，覆盖 admin 四流程、care_worker/doctor 登录、family 日报/通知、375px 三页，以及五 Mock 模块基线（工单/告警/健康/药单/复核/药单维护）。
+- **截图（外部，未入库）**：`C:\Users\Alienware\AppData\Local\Temp\trae\screenshots\` 下约 30 张命名证据图，覆盖 admin 四流程、care_worker/doctor 登录、family 日报/通知、375px 三页、五 Mock 模块基线，以及弹窗修复后的居中模态框实测。
 - **视频录屏：未录制**。尝试用无头 Chrome CDP 抓帧写 MJPEG-AVI，但自动化表单在 headless 下出现重复提交、且环境无 ffmpeg/编码器，未产出可用视频；未伪造路径、未入库媒体。
 - 含明文 `device_secret` 的截图已在取证后删除，未保留在任何持久化位置。
 
@@ -89,8 +89,9 @@
 | 硬编码密钥 / 真实长者数据 | 无；测试账号与 Mock 均为本地教学数据，口令未写入仓库 |
 | 一次性 `device_secret` | 仅组件 state，关闭即丢弃；含明文截图取证后删除；无 localStorage / 日志 |
 | 新增依赖 / 组件库 / 测试框架 | 无（merge 引入的 `@pixiv/three-vrm-animation`、`@types/three` 属远端 pad 改动，非 dev-D 新增） |
-| 合并与提交 | 本地 commit `880212d` + merge `3c6db7a`（origin/develop，14 commits）；**未 push**；merge 无冲突，README 自动合并 |
-| 工作区残留 | 仅开工前既有 `docs/plans/day04/day-04-3D与身份闭环.md` 修改与 `frontend/public/**/__MACOSX/` 未跟踪目录，非本轮产生 |
+| 合并与提交 | 本地 commit `880212d` + merge `3c6db7a`（origin/develop，14 commits）；收尾 commit `7b79031`；**未 push**；merge 无冲突，README 自动合并 |
+| 清理与修复 | 补 `.rv-mask`/`.rv-dialog`/`.btn-ghost` 弹窗样式（浏览器实测通过）；`.gitignore` 增加 `**/__MACOSX/`、`**/.vite/`；删除 `frontend/public/**/__MACOSX` 与 `spikes/vrm-animation/.vite`；修正 `guardrails.py` 判定顺序注释 |
+| 工作区残留 | 仅开工前既有 `docs/plans/day04/day-04-3D与身份闭环.md` 修改，非本轮产生 |
 
 ## 变更记录
 
@@ -104,3 +105,4 @@
 | v1.5 | 2026-11-07 | 补 admin 页真实 DOM 尺寸实测（1280×800）：输入框/主按钮/勾选 48px、表格行高 41px、正文 14–16px、页面无横向溢出；D-1 证据补强 |
 | v1.6 | 2026-11-07 | 补 D-3 五 Mock 模块渲染基线（6 页面视图）与 B1–B5 发现；Mock 代码零改动；N11 回归对照基线就绪 |
 | v1.7 | 2026-11-07 | merge origin/develop（commit 880212d + merge 3c6db7a）：admin 控件按远端口径 40px / `--radius-control`；console/index.css 未定义 token 归零；接收家属端契约 v1.1（B-3 部分闭环）；构建通过（4.43s）；未 push |
+| v1.8 | 2026-11-07 | 修复 B2 弹窗样式（浏览器实测遮罩/白卡/圆角/遮罩关闭通过）；构建通过（4.14s）；清理 `__MACOSX` 与 `spikes/.vite` 并补 .gitignore；修正 guardrails 判定顺序注释；`tests/test_guardrails.py` 9 passed |
