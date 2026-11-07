@@ -1,6 +1,6 @@
 # Task dev-D · 前端 · console/family 双端（admin 页、契约对齐、切换层）
 
-> 状态：进行中　｜　版本：v1.5　｜　日期：2026-11-07
+> 状态：进行中　｜　版本：v1.6　｜　日期：2026-11-07
 > 上游依据：PRD FR-ADM-01/06｜前端页面方案 §3.4 第 4 批（经 2026-11-07 裁决提前）｜docs/plans/day05 §4（A2/A3）
 > 联调节点：N3、N4；详见 dag-项目工作流总览与联调节点.md
 
@@ -28,3 +28,4 @@
 | v1.3 | 2026-11-07 | 补 family 375px 真实视口验证：无头 Chrome CDP 375×812，日报/通知/详情三页 `scrollWidth=375`、溢出元素 0、正文 16px、触控 48px，**通过**。admin 视频录屏尝试 CDP 抓帧写 AVI，因 headless 表单重复提交 + 无编码器未产出，仍为未录制。临时验证脚本与带 token 的 Chrome profile 已删除；本地库仅保留 admin/界面护工/测试医生/界面家属及 1 条绑定。详见 `d-家属端切换层说明.md` v1.3、`d-汇报清单.md` v1.3 |
 | v1.4 | 2026-11-07 | 按用户指示补登记 `docs/plans/README.md` 索引：6 份 `d-*.md`（启动门槛核对 / 字段差异清单 / 家属端契约差异表 / 家属端切换层说明 / admin 页走查记录 / 汇报清单）已加入索引表，状态 5 进行中 + 1 已完成，链接逐条 `Test-Path` 通过；v1.3 中「README 索引未更新」的遗留作废 |
 | v1.5 | 2026-11-07 | 补 D-3 五 Mock 模块渲染基线（6 页面视图）：工单看板 7 单/告警 8 条/健康代填绿档/药单两页空态/复核队列 2 条+版本链 1 项/药单维护新增弹窗；登记 B1 药单 Mock 与真实长者 ID 不匹配、B2 弹窗无样式实测、B3 版本链仅 1 项、B4 医生范围缺口、B5 健康容器样式缺失。**Mock 代码零改动**；本地测试库补医生负责关系（非代码/迁移） |
+| v1.6 | 2026-11-07 | 按用户指示先本地 commit（`880212d`，不 push）再 merge `origin/develop`（merge `3c6db7a`，14 commits，无冲突）。接收远端：后端 guardrails/三档超时、pad 本地 VRM、console 控件 40px + `--radius-control` + H4 token 修复、家属端契约 v1.1。dev-D 侧：admin 勾选/圆角对齐 40px 与 `--radius-control`；D-2 文档更新到契约 v1.1（B-3 部分闭环）；构建通过（4.43s）；console/index.css 未定义 token=0、hex=0。Review 发现 P1（ASR watchdog 启动在 connect/handshake 之后、guardrails 注释顺序与实现不符）等，未改他人代码 |

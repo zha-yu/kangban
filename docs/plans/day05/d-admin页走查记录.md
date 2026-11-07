@@ -1,6 +1,6 @@
 # Day 5 · dev-D admin 页走查记录（N5）
 
-> 状态：已完成（真实端点走查）　｜　版本：v1.3　｜　日期：2026-11-07
+> 状态：已完成（真实端点走查）　｜　版本：v1.4　｜　日期：2026-11-07
 > 关联：docs/plans/day05/d-双端前端推进计划.md（W1-d/e）、docs/plans/day05/d-DAG.md（N5 / G-C）
 > 上游依据：身份契约 v1.8 §4 E12/E15/E13/E18/E16/E17、§6 权限矩阵、§7 错误码、S-24｜PRD FR-ADM-01（435）
 > 变更记录见文末
@@ -70,7 +70,7 @@
 | 非 admin 访问 E12/E15/E13 被拒 | 3/3 通过（2×403 + guardian 401 per S-24） |
 | 非 admin 前端无白屏 | 通过（care_worker / doctor / guardian 各 1 次） |
 | 一次性 `device_secret` 仅展示一次 | 通过（关闭后不可见；明文截图已删除） |
-| 样式合规（1280×800 渲染实测） | 通过 | 新增 admin CSS 硬编码 hex=0、未定义 token=0；输入框 48px/16px、主按钮 48px/16px、长者勾选 48px、表格行高 41px/字体 14px、卡片标题 18px/说明 13px；页面无横向溢出（`scrollWidth 1265 < innerWidth 1280`）。顶栏「退出登录」为既有 40px 样式，非本次新增 |
+| 样式合规（merge 后 CSS 口径） | 通过 | console 全局控件统一 **40px**（2026-11-07 远端裁决：桌面鼠标端；48px 仅 pad 长者端）；admin 勾选 40px；表格行高 41px/字体 14px；卡片标题 18px/说明 13px；admin CSS 圆角全部 `var(--radius-control)`。合并后 `console/index.css` 未定义 token=0、硬编码 hex=0。先前 48px 渲染实测作废（merge 前口径） |
 | 构建与包隔离 | `pnpm --dir frontend build` 通过；console/family 产物 three-vrm 0 命中 |
 
 ## 6. 录屏
@@ -87,3 +87,4 @@
 | v1.1 | 2026-11-07 | 环境解除（Docker Desktop + postgres/redis + uvicorn）后完成真实走查：四流程 4/4、落库回查 4/4、越权 3/3（guardian 按 S-24 为 401）、非 admin 无白屏 3/3；一次性密钥关闭态取证，明文截图删除；录屏未录制（工具限制）。未伪造结果 |
 | v1.2 | 2026-11-07 | 补录屏尝试结论：无头 Chrome CDP 抓帧写 MJPEG-AVI 因 headless 表单重复提交 + 无编码器失败，未产出视频；走查截图证据不变 |
 | v1.3 | 2026-11-07 | 补 admin 页真实 DOM 尺寸实测（1280×800）：输入框/主按钮/勾选 48px、表格行高 41px、正文 14–16px、无横向溢出；顶栏退出为既有 40px，不属本次新增 |
+| v1.4 | 2026-11-07 | merge origin/develop 后按远端口径将 admin 控件对齐 40px / `--radius-control`；原 48px 实测作废；合并后 console/index.css 未定义 token=0、hex=0；构建通过 |

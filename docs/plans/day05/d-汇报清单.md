@@ -1,8 +1,8 @@
 # Day 5 · dev-D 汇报清单
 
-> 状态：部分完成（D-1 走查通过；N8/N10/N11 阻塞）　｜　版本：v1.6　｜　日期：2026-11-07
+> 状态：部分完成（D-1 走查通过；N8/N10/N11 阻塞）　｜　版本：v1.7　｜　日期：2026-11-07
 > 关联：docs/plans/day05/d-双端前端推进计划.md（W4/W5）、docs/team_tasks/day05/dev-d-前端console与family.md
-> 上游依据：docs/plans/day05/day-05-延迟基线与护栏.md §S7 自检项（A1/A2/A3）｜身份契约 v1.8｜家属端契约草案 v1.0
+> 上游依据：docs/plans/day05/day-05-延迟基线与护栏.md §S7 自检项（A1/A2/A3）｜身份契约 v1.8｜家属端契约草案 v1.1
 > 变更记录见文末
 
 ---
@@ -12,16 +12,16 @@
 | 项 | 命令 | 结果 | 说明 |
 | --- | --- | --- | --- |
 | 基线构建（改动前） | `pnpm --dir frontend build` | 通过（exit 0，2.78s） | G0 不回归对照 |
-| 最终构建（改动后） | `pnpm --dir frontend build` | 通过（exit 0，3.29s） | `tsc --noEmit` 零错误；三入口 index/family/console 均产出 |
+| 最终构建（merge 后） | `pnpm --dir frontend build` | 通过（exit 0，4.43s） | `tsc --noEmit` 零错误；三入口 index/family/console 均产出 |
 | 产物隔离 | `grep three-vrm\|@pixiv` console/family html+js+css | **0 命中（clean）** | three-vrm 只在 pad chunk |
 | 已知告警 | pad chunk 816.32 kB >500 kB | 非错误 | 既有告警，不属本任务 |
 
 构建产物变化（对照基线）：
 
-| 产物 | 基线 | 最终 | 说明 |
+| 产物 | 基线 | merge 后 | 说明 |
 | --- | --- | --- | --- |
 | `console-*.js` | 78.26 kB | 93.37 kB | +admin-api + 两个 Admin 页面 |
-| `console-*.css` | 29.20 kB | 31.45 kB | 新增 admin 样式约 2.25 kB |
+| `console-*.css` | 29.20 kB | 33.46 kB | admin 样式 2.25 kB + 远端 console 样式统一 |
 | `family-*.js` | 17.89 kB | 18.04 kB | data-source 拆分，页面与行为不变 |
 
 ## 2. 三项静态零
@@ -30,7 +30,7 @@
 | --- | --- | --- | --- |
 | 硬编码 hex | 本次新增/改动 8 个前端文件 | **0 处** | `Select-String '#[0-9a-fA-F]{3,8}'` |
 | 未定义 token 变量（新增部分） | `console/index.css` 新增 admin 段 | **0 处** | 引用仅 `--color-brand*` / `--color-ink*` / `--color-line` / `--color-surface*` / `--radius-card` |
-| 未定义 token 变量（整文件） | `console/index.css` 全文件 | 6 处**既有**（`--color-border` / `--radius-lg` / `--radius-md` / `--color-surface-soft` / `--color-danger` / `--color-primary`） | 计划 §1.7 已登记，本轮只登记不修；新增段未沿用 |
+| 未定义 token 变量（整文件） | `console/index.css` 全文件 | **0 处** | merge 后远端已修复 H4；admin 新增段只引用白名单变量 |
 | three-vrm 进 console/family 产物 | `frontend/dist` | **0 处** | `THREE_VRM_IN_CONSOLE_FAMILY=0` |
 
 ## 3. S7 自检项对照（A1 / A2 / A3）
@@ -47,7 +47,7 @@
 | --- | --- | --- | --- |
 | 1 | 任务表 D-1 / D-2 / D-3 全绿 | **未达成（D-1 已走查通过；D-2/D-3 阻塞）** | D-1 代码 + 四流程 + 越权 + 非 admin 无白屏完成，录屏未录制；D-2 切换层完成、真实分支待冻结；D-3 盘点完成、A-4 未到 |
 | 2 | `pnpm --dir frontend build` 通过且 three-vrm 不进 console | **达成** | 见 §1 |
-| 3 | N3 / N4 对接检查单逐条有结论 | **未达成（blocked）** | N3：A-4 未交付（X1）、落点未定（X0）；N4：B-3 未交付（X2）、冻结评审未开（X3） |
+| 3 | N3 / N4 对接检查单逐条有结论 | **部分** | N3：A-4 未交付（X1）、落点未定（X0）；N4：B-3 契约 v1.1 已到（部分闭环），冻结评审（X3）未开 |
 | 4 | M5.4 admin 页走查纳入演示预演，结果回填任务卡 | **部分达成** | admin 走查已完成并回填任务卡变更记录；M5.4 正式预演未执行（X4 演示脚本未提供） |
 | 5 | 汇报清单对照 S7 齐全 | **达成（本文件）** | 未通过项已写明原因与责任人 |
 | 6 | 交付物总表 1–9 齐备 + 索引登记 | **达成（索引已补登记）** | 3–8 已产出（部分带阻塞标注）；6 份 `d-*.md` 已按用户指示登记进 `docs/plans/README.md`，链接逐条 `Test-Path` 通过 |
@@ -56,9 +56,9 @@
 
 | 任务 | 结论 | 已完成 | 剩余 / 阻塞 | 责任人 / 时点 |
 | --- | --- | --- | --- | --- |
-| **D-1** admin 管理页 | 已完成（除录屏） | `admin-api.ts`（E12/E15/E13 + 403/409/404/422 页面文案）；`AdminUsersPage`（建员工/建家属/绑定长者 + 前端校验 + E7 候选）；`AdminDevicesPage`（E18/E16/E17 + 一次性密钥 + 数字 status 守卫）；`App.tsx` / `AppLayout.tsx` / `index.css` 装配；构建通过；**真实端点四流程 4/4、DB 回查 4/4、越权 3/3、非 admin 无白屏 3/3**；**1280×800 渲染实测**：输入框/主按钮/勾选 48px、表格行高 41px、正文 14–16px、无横向溢出 | 演示录屏未录制（浏览器工具仅截图，无 ffmpeg） | dev-D + 主理人（M5.4 视频录屏） |
-| **D-2** family 切换层 | 部分完成 | `data-source.ts` 拆分；`api.ts` 唯一 `USE_MOCK` + 5 函数双轨；真实路径按契约 §4；F0 外壳修正；`USE_MOCK=1` 处；页面零改动；**Mock 三页浏览器回归通过**（切换器 2 人 / 日报列表+详情 / 通知 3 条、未读 2→1）；**真实 375px 视口验证通过**（无头 Chrome CDP：三页 `scrollWidth=375`、溢出元素 0、正文 16px、触控 48px）；`d-家属端切换层说明.md` | B-3 校对稿比对（N8 右半）、契约冻结（X3）、真实分支定稿 | dev-B 交 B-3；主理人排冻结评审 |
-| **D-3** 五 Mock 页字段对齐 | 部分完成 | `d-字段差异清单.md` 左半表 100%（TD 表名+行号）；**六页面渲染基线完成**（工单/告警/健康代填/药单只读/复核/药单维护），登记 B1–B5（Mock 与真实长者 ID 不匹配、弹窗无样式、版本链仅 1 项、医生范围缺口、健康容器样式缺失）；Mock 代码**零改动** | A-4 草案（X1）与落点（X0）→ N10 双向确认 → N11 修正 | dev-A 交 A-4；主理人裁定落点 |
+| **D-1** admin 管理页 | 已完成（除录屏） | `admin-api.ts`（E12/E15/E13 + 403/409/404/422 页面文案）；`AdminUsersPage`（建员工/建家属/绑定长者 + 前端校验 + E7 候选）；`AdminDevicesPage`（E18/E16/E17 + 一次性密钥 + 数字 status 守卫）；`App.tsx` / `AppLayout.tsx` / `index.css` 装配；构建通过；**真实端点四流程 4/4、DB 回查 4/4、越权 3/3、非 admin 无白屏 3/3**；**merge 后样式口径**：console 控件 40px（跟随 develop）、admin 勾选 40px、表格行高 41px、正文 14–16px | 演示录屏未录制（浏览器工具仅截图，无 ffmpeg） | dev-D + 主理人（M5.4 视频录屏） |
+| **D-2** family 切换层 | 部分完成 | `data-source.ts` 拆分；`api.ts` 唯一 `USE_MOCK` + 5 函数双轨；真实路径按契约 §4；F0 外壳修正；`USE_MOCK=1` 处；页面零改动；**Mock 三页浏览器回归通过**（切换器 2 人 / 日报列表+详情 / 通知 3 条、未读 2→1）；**真实 375px 视口验证通过**（三页 `scrollWidth=375`、溢出 0、正文 16px、触控 48px）；**契约 v1.1 已到**（R3 补 id/assigned_at、S-01 改 TD 原文，前端无需改代码） | B-3 完整逐端点校对稿未见、契约冻结（X3）待；真实分支定稿 | dev-B 补校对意见稿（如有）；主理人排冻结评审 |
+| **D-3** 五 Mock 页字段对齐 | 部分完成 | `d-字段差异清单.md` 左半表 100%（TD 表名+行号）；**六页面渲染基线完成**（工单/告警/健康代填/药单只读/复核/药单维护），登记 B1–B5（B5 的 H4 未定义 token 已由 merge 修复；B2 弹窗样式仍缺）；Mock 代码**零改动** | A-4 草案（X1）与落点（X0）→ N10 双向确认 → N11 修正 | dev-A 交 A-4；主理人裁定落点 |
 
 ## 6. 未执行项与原因（不得写成「通过」）
 
@@ -72,7 +72,7 @@
 
 ## 7. 录屏与媒体
 
-- **截图（外部，未入库）**：`C:\Users\Alienware\AppData\Local\Temp\trae\screenshots\` 下 15 张，覆盖 admin 登录、建员工、建家属、绑定、设备密钥关闭态、care_worker/doctor 登录、family 日报/通知，以及 **375px 三页真实视口截图**（`family-375-reports.png` / `family-375-notifications.png` / `family-375-detail.png`）。
+- **截图（外部，未入库）**：`C:\Users\Alienware\AppData\Local\Temp\trae\screenshots\` 下约 29 张命名证据图，覆盖 admin 四流程、care_worker/doctor 登录、family 日报/通知、375px 三页，以及五 Mock 模块基线（工单/告警/健康/药单/复核/药单维护）。
 - **视频录屏：未录制**。尝试用无头 Chrome CDP 抓帧写 MJPEG-AVI，但自动化表单在 headless 下出现重复提交、且环境无 ffmpeg/编码器，未产出可用视频；未伪造路径、未入库媒体。
 - 含明文 `device_secret` 的截图已在取证后删除，未保留在任何持久化位置。
 
@@ -88,7 +88,9 @@
 | 数据库 | 仅连接 `docker compose` 起的本地 PostgreSQL；未连生产 / 真实医疗系统 |
 | 硬编码密钥 / 真实长者数据 | 无；测试账号与 Mock 均为本地教学数据，口令未写入仓库 |
 | 一次性 `device_secret` | 仅组件 state，关闭即丢弃；含明文截图取证后删除；无 localStorage / 日志 |
-| 新增依赖 / 组件库 / 测试框架 | 无 |
+| 新增依赖 / 组件库 / 测试框架 | 无（merge 引入的 `@pixiv/three-vrm-animation`、`@types/three` 属远端 pad 改动，非 dev-D 新增） |
+| 合并与提交 | 本地 commit `880212d` + merge `3c6db7a`（origin/develop，14 commits）；**未 push**；merge 无冲突，README 自动合并 |
+| 工作区残留 | 仅开工前既有 `docs/plans/day04/day-04-3D与身份闭环.md` 修改与 `frontend/public/**/__MACOSX/` 未跟踪目录，非本轮产生 |
 
 ## 变更记录
 
@@ -101,3 +103,4 @@
 | v1.4 | 2026-11-07 | 按用户指示补登记 `docs/plans/README.md`：6 份 `d-*.md` 已入索引；完成定义第 6 项改为「达成（索引已补登记）」，§6 移除 README 遗留项 |
 | v1.5 | 2026-11-07 | 补 admin 页真实 DOM 尺寸实测（1280×800）：输入框/主按钮/勾选 48px、表格行高 41px、正文 14–16px、页面无横向溢出；D-1 证据补强 |
 | v1.6 | 2026-11-07 | 补 D-3 五 Mock 模块渲染基线（6 页面视图）与 B1–B5 发现；Mock 代码零改动；N11 回归对照基线就绪 |
+| v1.7 | 2026-11-07 | merge origin/develop（commit 880212d + merge 3c6db7a）：admin 控件按远端口径 40px / `--radius-control`；console/index.css 未定义 token 归零；接收家属端契约 v1.1（B-3 部分闭环）；构建通过（4.43s）；未 push |
