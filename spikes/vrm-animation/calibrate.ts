@@ -20,6 +20,21 @@ const statusEl = document.getElementById("status")!;
 const canvas = document.getElementById("stage") as HTMLCanvasElement;
 const animCheck = document.getElementById("anim") as HTMLInputElement;
 
+/** 错误显式上报：任何一步失败都写进状态栏与标题，不再静默卡「加载中」 */
+function fail(msg: string): void {
+  statusEl.textContent = `失败：${msg}`;
+  statusEl.style.color = "#ef5350";
+  document.title = "CALIBRATE_ERROR";
+}
+window.addEventListener("error", (e) => fail(e.message ?? "unknown"));
+
+// WebGL 预检：创建失败直接明示，不等到 THREE 里报晦涩错误
+const glProbe = document.createElement("canvas").getContext("webgl2") ?? document.createElement("canvas").getContext("webgl");
+if (!glProbe) {
+  fail("浏览器无法创建 WebGL 上下文——请检查 Chrome 设置（chrome://settings 搜索「硬件加速」并开启后重启浏览器），或换 Edge/Safari 试");
+  throw new Error("no webgl");
+}
+
 const select = document.getElementById("model") as HTMLSelectElement;
 for (const m of MODELS) {
   const opt = document.createElement("option");
@@ -54,6 +69,7 @@ function parseVrm(buffer: ArrayBuffer): Promise<VRM> {
 }
 
 const vrm = await parseVrm(await (await fetch(`/${encodeURI(model)}`)).arrayBuffer());
+statusEl.textContent = "模型解析完成，初始化渲染器…";
 VRMUtils.removeUnnecessaryVertices(vrm.scene);
 VRMUtils.combineSkeletons(vrm.scene);
 

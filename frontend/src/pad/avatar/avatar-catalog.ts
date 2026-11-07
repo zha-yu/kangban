@@ -65,6 +65,10 @@ export const ANIMATION_CATALOG: readonly AnimationCatalogItem[] = [
 /** 出厂默认模型（Q1 裁决：体积最小的 Yoimiya） */
 export const DEFAULT_AVATAR_ID = "yoimiya";
 
+/** 待机动画（Q3 裁决：common/idle.vrma 循环叠加；清单结构性兜底空串，正常不触发） */
+export const IDLE_ANIMATION_URL =
+  ANIMATION_CATALOG.find((a) => a.id === "idle")?.url ?? "";
+
 /** 模型选择的 localStorage 键（按设备持久化，pad 为设备绑定唯一长者） */
 export const AVATAR_STORAGE_KEY = "pad.avatar.selected";
 

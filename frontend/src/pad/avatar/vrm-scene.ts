@@ -187,11 +187,10 @@ export async function mountVrmScene(
     obj.frustumCulled = false; // 蒙皮网格包围盒不可靠，统一关闭裁剪
   });
 
-  // 朝向：VRM0 统一走官方 rotateVRM0（本批 14 个模型全为 VRM0，S1 spike 实测）；
-  // 个别模型如仍有偏差，用 avatar-catalog 的 rotationYOffset 逐个微调
-  if (vrm.meta.metaVersion === "0") {
-    VRMUtils.rotateVRM0(vrm);
-  }
+  // 朝向：直接用 catalog 的 rotationYOffset（弧度）对原始朝向补偿，不调 VRMUtils.rotateVRM0。
+  // 口径与标定页 calibrate.html 完全一致（raw + offset，2026-11-07 真机校对 14 模型全 π 正脸）；
+  // 此前 rotateVRM0 + offset 双重旋转导致 pad 端背影（360° 归零）。新模型接入时：
+  // VRM0 在 catalog 配 π、VRM1 配 0，标定页逐个核对后回填。
   vrm.scene.rotation.y += rotationYOffset;
   console.info(`[avatar] VRM 加载成功 metaVersion=${vrm.meta.metaVersion}`);
 

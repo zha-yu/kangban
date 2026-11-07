@@ -170,12 +170,10 @@ function MainScreen({
         </button>
       </header>
 
-      {/* 中部：3D 数字人舞台（Day 4 W1：C7 avatar-config + three-vrm；加载失败/超 5s 切静态头像，不白屏）。
+      {/* 中部：3D 数字人舞台（Day 5 A1 S4：本地资产驱动，去 C7；加载失败/超 5s 切内置占位，不白屏）。
           圆框尺寸沿用 min(560px,48vh)：1920×1080 为基线，小视口下先收缩本区，保证大字幕不被截断 */}
       <main className="flex min-h-0 flex-1 items-center justify-center">
         <AvatarStage
-          token={loadSession()?.access_token ?? ""}
-          onAuthFail={onLogout}
           sendDiag={(stage, ok, error) => clientRef.current?.sendDiag(stage, ok, error)}
           audioEl={phase === "inSession" ? audioRef.current : null} // 仅会话期有 TTS 下行
         />
@@ -273,6 +271,13 @@ function VoiceprintGate({ onLogout }: { onLogout: () => void }) {
           className="h-24 rounded-2xl bg-brand px-16 text-3xl font-bold text-ink-inverse active:bg-brand-strong"
         >
           我已完成绑定，重新检查
+        </button>
+        <button
+          type="button"
+          onClick={onLogout}
+          className="rounded-2xl border border-line bg-surface px-8 py-4 text-xl text-ink-muted active:bg-surface-sunken"
+        >
+          退出登录
         </button>
       </div>
     );
