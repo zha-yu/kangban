@@ -179,6 +179,15 @@ class Settings(BaseSettings):
     # 同人 cosine 0.517–0.568，0.85 阈值必误拒；PRD §3.2 已随 v2.8 修订。运行时经 Settings 可调。
     voiceprint_similarity_threshold: float = 0.55
 
+    # ---------------------------- Day 5 · 三档慢响应阈值（真正并行 watchdog，见 dev-b 计划 v3.1） ----------------------------
+    # 语义：provider **还在跑但超过这个时间** 就先发 slow 提示，不等 provider 返回；
+    #      provider 最终成功 → 正常继续；最终失败 → slow + unavailable/timeout 两条都发（后端两条都发、前端负责状态升级合并）。
+    # 两套超时不混：provider 层断网兜底（FUNASR_RECEIVE_TIMEOUT_S=45s / llm_timeout_seconds=20）走 ASRUnavailable/LLMTimeout 异常 →
+    #              signaling.deliver(code="asr_unavailable"/"llm_timeout")；这三档是「有结果但太慢」的分段耗时。
+    degrade_asr_slow_ms: int = 2000
+    degrade_llm_slow_ms: int = 3000
+    degrade_tts_slow_ms: int = 1000
+
     # ---- 声纹推理容器（Day 4 · A1） ----
     # voiceprint_service 调这个容器的 POST /extract 端点，主服务不装 torch（容器隔离重依赖）
     voiceprint_base_url: str = "http://localhost:7003"
