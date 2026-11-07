@@ -15,6 +15,9 @@ type Mode = "ask" | "confirmed" | "general";
 interface IdentityConfirmProps {
   onExit: () => void;
   onSubtitle?: (text: string) => void;
+  /** 候选集由服务端下发（只含设备绑定房间的长者）；不传则用教学模拟数据 */
+  candidates?: IdentityCandidate[];
+  reason?: "low_confidence" | "service_unavailable";
 }
 
 const GENERAL_LIMITS = [
@@ -23,9 +26,15 @@ const GENERAL_LIMITS = [
   "不会替您确认用药",
 ];
 
-export function IdentityConfirm({ onExit, onSubtitle }: IdentityConfirmProps) {
+export function IdentityConfirm({
+  onExit,
+  onSubtitle,
+  candidates,
+  reason = "service_unavailable",
+}: IdentityConfirmProps) {
   const [mode, setMode] = useState<Mode>("ask");
   const [selected, setSelected] = useState<IdentityCandidate | null>(null);
+  const people = candidates ?? MOCK_CANDIDATES;
 
   function handleSelect(person: IdentityCandidate) {
     setSelected(person);
@@ -125,7 +134,9 @@ export function IdentityConfirm({ onExit, onSubtitle }: IdentityConfirmProps) {
       exitLabel="稍后再说"
       footer={
         <p className="text-xl text-ink-muted">
-          声纹服务暂不可用时会显示本页，系统不会替您猜是谁。
+          {reason === "low_confidence"
+            ? "声纹没能确定是谁在说话，系统不会替您猜。"
+            : "声纹服务暂不可用时会显示本页，系统不会替您猜是谁。"}
         </p>
       }
     >
@@ -133,7 +144,7 @@ export function IdentityConfirm({ onExit, onSubtitle }: IdentityConfirmProps) {
         请点一下您的名字，或者直接说出名字。
       </p>
       <div className="mt-8 grid grid-cols-2 gap-5">
-        {MOCK_CANDIDATES.map((person) => (
+        {people.map((person) => (
           <button
             key={person.id}
             type="button"

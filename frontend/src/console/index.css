@@ -86,13 +86,13 @@ body {
 
 .input {
   width: 100%;
-  height: 48px;
+  height: 40px;
   padding: 0 14px;
   font-size: 16px;
   color: var(--color-ink);
   background: var(--color-surface);
   border: 1px solid var(--color-line);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   outline: none;
   transition: border-color 0.15s ease;
 }
@@ -110,7 +110,7 @@ body {
 }
 
 .input-wrap .input {
-  padding-right: 52px;
+  padding-right: 44px;
 }
 
 .icon-btn {
@@ -118,8 +118,8 @@ body {
   right: 2px;
   top: 50%;
   transform: translateY(-50%);
-  width: 48px;
-  height: 48px;
+  width: 40px;
+  height: 40px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -139,20 +139,24 @@ body {
 .alert-danger {
   background: var(--color-danger-soft);
   color: var(--color-danger-ink);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   padding: 12px 14px;
   font-size: 14px;
 }
 
-/* ---- 按钮（前端页面方案 §4.2：主按钮 brand 底反白字；次按钮 surface 底 1px 线） ---- */
+/* ---- 按钮（前端页面方案 §4.2）----
+   console 是桌面鼠标端，控件高 40px，与筛选栏输入框 / 顶栏次按钮 / 行内小按钮齐平；
+   48px 是 pad 长者端触控门槛（FR-UI-02 / FR-ALT-06），不适用于后台。
+   圆角 10px 比外层 16px 卡片小一档；可点感靠 padding，不靠加高或加深颜色。 */
 .btn-primary {
-  min-height: 48px;
+  min-height: 40px;
+  padding: 0 24px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
   border: 0;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: var(--color-brand);
   color: var(--color-ink-inverse);
   font-size: 16px;
@@ -161,7 +165,8 @@ body {
   transition: background 0.15s ease;
 }
 
-.btn-primary:hover:not(:disabled) {
+.btn-primary:hover:not(:disabled),
+.btn-primary:active:not(:disabled) {
   background: var(--color-brand-strong);
 }
 
@@ -171,10 +176,13 @@ body {
 }
 
 .btn-secondary {
-  min-height: 48px;
-  padding: 0 32px;
+  min-height: 40px;
+  padding: 0 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--color-line);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: var(--color-surface);
   color: var(--color-ink);
   font-size: 16px;
@@ -182,8 +190,30 @@ body {
   transition: background 0.15s ease;
 }
 
-.btn-secondary:hover {
+.btn-secondary:hover,
+.btn-secondary:active {
   background: var(--color-surface-sunken);
+}
+
+.btn-secondary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* 列表行内小按钮：与主按钮同高 40px，靠更窄的 padding 与 14px 字收密度 */
+.btn-sm {
+  padding: 0 16px;
+  font-size: 14px;
+  border-radius: var(--radius-control);
+}
+
+/* 键盘焦点可见（无障碍基线） */
+.btn-primary:focus-visible,
+.btn-secondary:focus-visible,
+.input:focus-visible,
+.field-input:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
 }
 
 /* ---- 加载指示 ---- */
@@ -245,7 +275,7 @@ body {
   display: flex;
   align-items: center;
   padding: 0 12px;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   font-size: 15px;
   color: var(--color-ink);
   text-decoration: none;
@@ -312,7 +342,6 @@ body {
 }
 
 .app-topbar .btn-secondary {
-  min-height: 40px;
   padding: 0 16px;
   font-size: 14px;
 }
@@ -505,11 +534,7 @@ body {
   flex-shrink: 0;
 }
 
-.wo-actions .btn-secondary.btn-sm {
-  min-height: 40px;
-  padding: 0 14px;
-  font-size: 14px;
-}
+/* 小按钮尺寸已由全局 .btn-sm 统一定义 */
 
 .wo-empty {
   padding: 48px 0;
@@ -630,11 +655,7 @@ body {
   gap: 16px;
 }
 
-.elder-pager .btn-secondary.btn-sm {
-  min-height: 40px;
-  padding: 0 14px;
-  font-size: 14px;
-}
+/* 小按钮尺寸已由全局 .btn-sm 统一定义 */
 
 .elder-pager-info {
   font-size: 13px;
@@ -699,8 +720,8 @@ body {
   flex-direction: column;
   gap: 16px;
   padding: 20px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-card);
   background: var(--color-surface);
 }
 
@@ -735,9 +756,9 @@ body {
 .hf-result {
   margin-top: 20px;
   padding: 16px 20px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  background: var(--color-surface-soft);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-sunken);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -771,8 +792,8 @@ body {
 }
 
 .med-card {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-card);
   background: var(--color-surface);
   padding: 14px 16px;
   display: flex;
@@ -814,15 +835,15 @@ body {
 }
 
 .rv-red {
-  border-left: 3px solid var(--color-danger);
+  border-left: 3px solid var(--color-danger-ink);
 }
 
 .rv-chain {
   margin-top: 8px;
   padding: 12px 14px;
-  border: 1px dashed var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-surface-soft);
+  border: 1px dashed var(--color-line);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-sunken);
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -837,8 +858,8 @@ body {
 
 .rv-chain-item {
   padding: 10px 12px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
   background: var(--color-surface);
   display: flex;
   flex-direction: column;
@@ -846,7 +867,7 @@ body {
 }
 
 .rv-chain-item.is-current {
-  border-color: var(--color-primary);
+  border-color: var(--color-brand);
 }
 
 /* ---- 操作弹窗 ---- */
@@ -897,7 +918,7 @@ body {
   color: var(--color-ink);
   background: var(--color-surface);
   border: 1px solid var(--color-line);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   outline: none;
   font-family: inherit;
 }
@@ -969,7 +990,7 @@ body {
   gap: 8px;
   padding: 10px 12px;
   border: 1px solid var(--color-line);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   font-size: 14px;
   cursor: pointer;
 }
@@ -988,7 +1009,7 @@ body {
   margin: 0 0 12px;
   padding: 10px 12px;
   border: 1px dashed var(--color-line);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   font-size: 13px;
   color: var(--color-ink-muted);
 }
@@ -997,7 +1018,7 @@ body {
   margin: 12px 0;
   padding: 12px;
   border: 1px solid var(--color-brand);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: color-mix(in srgb, var(--color-brand) 8%, transparent);
 }
 

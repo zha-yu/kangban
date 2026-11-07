@@ -12,9 +12,11 @@ interface Props {
   token: string;
   onSubtitle: (text: string, source: SubtitleSource) => void;
   onAuthFail: () => void;
+  /** 主屏次级入口：描边浅底、小一号，把主色实心留给「呼叫小伴」；不传保持原大按钮形态 */
+  compact?: boolean;
 }
 
-export function HoldToTalk({ token, onSubtitle, onAuthFail }: Props) {
+export function HoldToTalk({ token, onSubtitle, onAuthFail, compact = false }: Props) {
   const [holding, setHolding] = useState(false);
   const [busy, setBusy] = useState(false);
   const micRef = useRef<MicCapture | null>(null);
@@ -94,11 +96,19 @@ export function HoldToTalk({ token, onSubtitle, onAuthFail }: Props) {
       onPointerDown={() => void begin()}
       onPointerUp={() => void end()}
       onPointerLeave={() => holding && void end()}
-      className={
+      className={[
+        compact
+          ? "min-h-14 rounded-2xl border px-10 py-4 text-2xl font-semibold"
+          : "rounded-2xl px-16 py-8 text-5xl font-bold",
         holding
-          ? "rounded-2xl bg-brand-strong px-16 py-8 text-5xl font-bold text-ink-inverse"
-          : "rounded-2xl bg-brand px-16 py-8 text-5xl font-bold text-ink-inverse active:bg-brand-strong disabled:opacity-50"
-      }
+          ? compact
+            ? "border-brand bg-brand-soft text-brand"
+            : "bg-brand-strong text-ink-inverse"
+          : compact
+            ? "border-line bg-surface text-ink active:bg-surface-sunken"
+            : "bg-brand text-ink-inverse active:bg-brand-strong",
+        "disabled:opacity-50",
+      ].join(" ")}
     >
       {busy ? "思考中…" : holding ? "松开 结束" : "按住 说话"}
     </button>
