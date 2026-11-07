@@ -223,7 +223,7 @@ docker exec silvermate-app-verify python -c "import urllib.request as u; r=u.url
 | **L2 System Two** | **DeepSeek / Qwen 兼容 API**，经统一 LLM 适配器 | 云 API | 首 token ≤800ms | 开放域闲聊、多工具 ReAct 编排、结构化输出、记忆摘要 | 超时/限流 → 重试 2 次后退化为「L1 结果 + 模板话术」，并提示人工；不得自动执行高危写操作（改药单/关工单/删数据） |
 | **语音识别** | 第三方**流式 ASR** API | 云 API（教师统一 key） | 首包 ≤300ms | 方言语音转文本 + 置信度埋点 | 降级：按住说话整段上传 → 再降级：页面输入框 |
 | **语音合成** | 第三方**流式 TTS** API | 云 API | 首包 ≤300ms | 语音播报 + 口型能量近似 | 降级：大字幕 + 预置音频；断网可用浏览器 `speechSynthesis` |
-| **Embedding / 声纹** | 向量模型（pgvector 存储）+ 3D-Speaker CAM++ | 本地或 API | 不计入主链路 | 长期记忆召回（强制 `WHERE elder_id`）、声纹比对（cosine ≥0.85） | 召回失败 → 本轮不加载记忆，**不得臆造**；声纹不可用 → 长者 ID + 主动确认 |
+| **Embedding / 声纹** | 向量模型（pgvector 存储）+ 3D-Speaker CAM++ | 本地或 API | 不计入主链路 | 长期记忆召回（强制 `WHERE elder_id`）、声纹比对（cosine ≥0.55，2026-11-07 裁决，见 PRD v2.8） | 召回失败 → 本轮不加载记忆，**不得臆造**；声纹不可用 → 长者 ID + 主动确认 |
 
 **总预算**：端到端 P95 ≤ 1.5s（ASR + 路由 + 生成 + TTS 合计）。
 > 上表逐层毫秒数为按 1.5s 端到端目标拆分的工程预算，非 PRD 明文数值；调整必须同步 `docs/HARNESS_DESIGN.md`。
@@ -237,7 +237,7 @@ docker exec silvermate-app-verify python -c "import urllib.request as u; r=u.url
 | `MAX_TOOL_CALLS_PER_TURN` | 8 | PRD FR-DLG-10 |
 | 同一 Tool 熔断 | 1 分钟内第 3 次调用 | PRD FR-DLG-10；技术文档 §6.2 |
 | 快决策置信度阈值 | 0.85（低于则澄清一次后升级） | PRD §2.3 |
-| 声纹判定阈值 | cosine ≥ 0.85 | PRD §3.2 |
+| 声纹判定阈值 | cosine ≥ 0.55（CAM++ 教师口径；2026-11-07 主理人裁决下调，原 0.85，见 PRD 修订记录 v2.8） | PRD §3.2 |
 | 用药触达 | T0 / +5 / +10 / +15 分钟，每次等 60s | PRD §4.5 |
 | 健康采集窗口 | 19:00 起，20:00 强制结束 | PRD §4.6 |
 | 健康红标 | 收缩压 ≥180 或 舒张压 ≥120（单分量即判红） | PRD §4.6 |
