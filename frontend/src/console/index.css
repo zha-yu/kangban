@@ -1025,3 +1025,173 @@ body {
   font-size: 12px;
   color: var(--color-ink-muted);
 }
+
+/* ---- 管理员页（Day 5 D-1：用户与角色 / 模拟设备；真实端点 E12/E15/E13 + E18/E16/E17） ---- */
+.admin-page {
+  max-width: 980px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.admin-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-card);
+  padding: 20px;
+}
+
+.admin-card-title {
+  margin: 0;
+  font-size: 18px;
+}
+
+.admin-card-sub {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--color-ink-muted);
+}
+
+.admin-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.admin-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.admin-field > label,
+.admin-field-label {
+  font-size: 14px;
+  color: var(--color-ink);
+}
+
+.admin-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.admin-checks {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.admin-check-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* 触控 ≥48×48（前端页面方案 §4.1） */
+.admin-check {
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  background: var(--color-surface);
+  font-size: 14px;
+  color: var(--color-ink);
+  cursor: pointer;
+}
+
+.admin-check input {
+  width: 18px;
+  height: 18px;
+}
+
+.admin-result {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  background: var(--color-surface-sunken);
+  font-size: 14px;
+  color: var(--color-ink);
+  word-break: break-all;
+}
+
+.admin-empty {
+  grid-column: 1 / -1;
+  margin: 8px 0 0;
+  font-size: 14px;
+  color: var(--color-ink-muted);
+}
+
+/* 表格行高 ≥40px、正文 14–16px（前端页面方案 §4.1） */
+.admin-table {
+  width: 100%;
+  margin-top: 12px;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.admin-table th,
+.admin-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-line);
+  line-height: 20px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.admin-table th {
+  background: var(--color-surface-sunken);
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+.admin-table td {
+  color: var(--color-ink);
+}
+
+.admin-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: var(--color-ink-muted);
+  word-break: break-all;
+}
+
+/* 一次性设备密钥：主色描边 + 8% 底，仅展示一次（不铺信号色） */
+.admin-secret {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 14px;
+  border: 1px solid var(--color-brand);
+  border-radius: 10px;
+  background: var(--color-brand-soft);
+}
+
+.admin-secret-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-brand-strong);
+}
+
+.admin-secret-note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-ink-muted);
+}
+
+.admin-secret .admin-actions {
+  margin-top: 0;
+}
