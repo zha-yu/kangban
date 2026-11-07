@@ -58,10 +58,11 @@ export async function deviceLogin(
   }
 
   // 401 统一口径：设备不存在/密钥不匹配/已锁定都落 unauthorized
+  // 422 归 unauthorized：device_id 格式非法（非 UUID）属输入错误，显示「网络失败」会误导排查方向
   const code: LoginErrorCode =
     res.status === 429
       ? "rate_limited"
-      : res.status === 401 || res.status === 403 || res.status === 404
+      : res.status === 401 || res.status === 403 || res.status === 404 || res.status === 422
         ? "unauthorized"
         : "network";
   throw new LoginError(code, ERROR_TEXT[code]);

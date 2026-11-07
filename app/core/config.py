@@ -124,7 +124,11 @@ class Settings(BaseSettings):
     turn_credential_ttl_seconds: int = 3600
     webrtc_ice_timeout_seconds: int = 5
     webrtc_audio_bitrate_kbps: int = 32
-    webrtc_vad_aggressiveness: int = 2
+    # adhoc-20261106：2→3（0~3 档里最强的抗噪判定），配合端侧 TEN-VAD threshold 0.6
+    # 收窄收音范围，减少远处他人语音被误切段送进 ASR。这是运行时唯一生效的口径——
+    # webrtc.py 的判定会话与 VadSession 无参兜底路径都以此为准（VadSession 数据类
+    # 默认值与之保持一致）。
+    webrtc_vad_aggressiveness: int = 3
 
     # ---------------------------- 天气（唯一真实外部接口） ----------------------------
     weather_api_provider: str = ""

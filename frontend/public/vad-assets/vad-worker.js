@@ -118,6 +118,11 @@ function handleFeed(pcm) {
 function feedWindow(samples) {
   if (!detector) return;
   detector.acceptWaveform(samples);
+  // 关键：排空已完成语音段队列。sherpa-onnx 的段无人 pop 时，30s 环形缓冲
+  // （bufferSizeInSeconds）填满后 isDetected() 冻结在 true，speech_end 永不触发
+  // （debug H10：1 次 start 后状态机冻死）。本项目只用边沿信号，段样本经
+  // WebRTC 轨上行，pop 丢弃即可（官方示例用法：while(!isEmpty()) pop()）。
+  while (!detector.isEmpty()) detector.pop();
   const isActive = detector.isDetected();
   if (isActive !== active) {
     active = isActive;
