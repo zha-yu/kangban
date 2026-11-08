@@ -9,6 +9,7 @@ import { StatusBadge } from "./components/StatusBadge";
 import { SosButton } from "./components/SosButton";
 import { HoldToTalk } from "./components/HoldToTalk";
 import { TaskPanel } from "./components/TaskPanel";
+import { ChatTranscript, type ChatMessage } from "./components/ChatTranscript";
 import { LoginPage } from "./pages/LoginPage";
 import { SosResult } from "./pages/SosResult";
 import { DemoSwitcher } from "./pages/DemoSwitcher";
@@ -56,6 +57,10 @@ function MainScreen({
     text: initialNotice ?? "",
     source: initialNotice ? "notice" : "final",
   });
+  // 本次会话的完整对话：只累积整句（final / reply），前端内存保存；
+  // 退出登录、刷新会随组件卸载清空，不落库、不加后端字段
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const nextMsgId = useRef(0);
   // R-5 可用性探测三态：loading（探测中）→ listening（唤醒词可用）/ unavailable（只留呼叫按钮）
   const [kwsState, setKwsState] = useState<"loading" | "listening" | "unavailable">("loading");
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -112,10 +117,22 @@ function MainScreen({
     [],
   );
 
-  /** 真实 ASR / TTS 字幕到达时，任务提示让位，保证字幕始终与音频一致（FR-UI-02） */
+  /** 真实 ASR / TTS 字幕到达时，任务提示让位，保证字幕始终与音频一致（FR-UI-02）。
+   *  整句（final / reply）同时追加到对话记录；partial 中间态与 notice 系统提示
+   *  只更新大字幕、不进记录，避免列表被过程文本刷屏。 */
   const pushSubtitle = useCallback((text: string, source: SubtitleSource) => {
     setTaskHint(null);
     setSubtitle({ text, source });
+    if ((source === "final" || source === "reply") && text.trim()) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: nextMsgId.current++,
+          role: source === "final" ? "elder" : "companion",
+          text,
+        },
+      ]);
+    }
   }, []);
 
   const closeTask = useCallback(() => {
@@ -256,7 +273,7 @@ function MainScreen({
         // 与 MainScreen 顶栏同一个最右位置，换形象时 SOS 也不消失（FR-ALT-06 常显）
         headerExtra={<SosButton onClick={() => setSosOpen(true)} />}
         topBar={
-          // 此分支已保证 !sosOpen && !activeTask，切换条恒为「主对话」
+          // 固定浮层，切换入口在换形象页也不消失；此分支恒为「主对话」
           <DemoSwitcher value="none" onChange={handleSwitch} />
         }
         onDone={(changed) => {
@@ -290,12 +307,18 @@ function MainScreen({
         : "notice";
 
   const switcherValue: TaskKind = sosOpen ? "sos" : (activeTask?.kind ?? "none");
+  // 中部形态优先级：SOS 结果态 > 任务面板 > 对话记录（仅 inSession）> 常态舞台
+  const showTranscript = phase === "inSession" && !sosOpen && !activeTask;
+  const twoColumn = !sosOpen && (!!activeTask || showTranscript);
+  // 两栏态收紧横向间距、字幕降档、底部不再叠一个「呼叫小伴」大按钮
+  const taskMode = !sosOpen && !!activeTask;
+  const subtitleCompact = sosOpen || !!taskHint;
 
-  // 舞台在任务到达时收窄为左侧 300px 圆框；ResizObserver 自适应，场景不重挂
+  // 舞台在任务 / 对话记录到达时收窄为左侧 300px 圆框；ResizeObserver 自适应，场景不重挂
   const stage = (
     <AvatarStage
       key={stageKey} // S5 显式换装：选择页确认后重挂，读最新 localStorage（D-3）
-      compact={!!activeTask && !sosOpen}
+      compact={twoColumn}
       sendDiag={(s, ok, error) => clientRef.current?.sendDiag(s, ok, error)}
       audioEl={phase === "inSession" ? audioRef.current : null} // 仅会话期有 TTS 下行
       pointerFollow={phase === "standby"} // F-2a：仅待机期跟随，会话中恢复看镜头
@@ -304,7 +327,7 @@ function MainScreen({
 
   return (
     <div className="flex h-full flex-col">
-      {/* 开发态任务切换条：常显于 DEV（生产构建不含），点击走任务总线而非直接改布局 */}
+      {/* 开发态任务切换：固定浮层，不占四段式高度；点击走任务总线而非直接改布局 */}
       <DemoSwitcher value={switcherValue} onChange={handleSwitch} />
 
       {/* TTS 下行播放（WebRTC 收轨）；传给 AvatarStage 做口型（P1） */}
@@ -327,14 +350,19 @@ function MainScreen({
 
       {/* 舞台独占剩余空间；任务到达时收为左舞台 + 右任务面板两栏，四段高度不变。
           字幕区与操作区高度固定，圆框不再被底部控件压到字幕上
-          （旧版 standby 底部 4 层堆叠约 510px，挤掉 main 空间导致 60px 大字幕穿过人物） */}
-      <main className="flex min-h-0 flex-1 items-center justify-center gap-16 overflow-hidden px-12">
+          （旧版 standby 底部 4 层堆叠约 510px，挤掉 main 空间导致 60px 大字幕穿过人物）。
+          两栏态顶部留 24px：右栏卡片不再从 main 顶边起、贴住页面顶栏；留白放在
+          容器上而非卡片内，标题条仍从卡片圆角顶边起，不会出现切断圆角的白边 */}
+      <main
+        className={`flex min-h-0 flex-1 items-center justify-center overflow-hidden ${twoColumn ? "gap-8 px-8 pt-6" : "gap-16 px-12"}`}
+      >
         {sosOpen ? (
           // 结果态只占中部：顶栏 SOS（active）、大字幕区、操作区高度都在原位
           <div className="flex h-full w-full items-center justify-center">
             <SosResult onExit={() => setSosOpen(false)} />
           </div>
         ) : activeTask ? (
+          // 任务面板优先于对话记录；退出任务后若在会话中会自动回到记录
           <>
             {stage}
             <TaskPanel
@@ -343,21 +371,43 @@ function MainScreen({
               onHint={setTaskHint}
             />
           </>
+        ) : showTranscript ? (
+          // 对话中：左 3D 舞台 + 右可回看的完整对话记录
+          <>
+            {stage}
+            <ChatTranscript messages={messages} />
+          </>
         ) : (
           stage
         )}
       </main>
 
-      {/* 大字幕固定区（FR-UI-02）：standby / inSession 同位切换，字幕与音频一致 */}
-      <section className="flex min-h-[112px] shrink-0 items-center justify-center px-12">
-        <BigSubtitle text={subtitleText} source={subtitleSource} />
+      {/* 大字幕固定区（FR-UI-02）：只显示当前这一句并与音频同步；固定高度 + 溢出裁切，
+          长提示不再换行压到操作区。完整对话在中部右栏记录里翻看 */}
+      <section className="flex h-[152px] shrink-0 items-center justify-center overflow-hidden">
+        <BigSubtitle
+          text={subtitleText}
+          source={subtitleSource}
+          compact={subtitleCompact}
+        />
       </section>
 
-      {/* 操作区：唯一主色实心按钮 + 一行次级入口；两相位等高，字幕位置不跳。
-          按住说话是主链路降级入口、换个形象是设置入口，都不与主按钮抢层级。
-          SOS 结果态时留空但高度不变，避免长者在求助后误触「呼叫小伴」 */}
-      <footer className="flex min-h-[232px] shrink-0 flex-col items-center justify-start gap-6 pb-12">
-        {phase === "standby" && !sosOpen && (
+      {/* 操作区高度恒定，字幕位置不跳。任务态收掉「呼叫小伴」大按钮——
+          任务面板里已有「已服用 / 这次不吃」主操作，再叠一个主色大按钮既抢层级又挤占纵向空间；
+          KWS 仍在监听，语音确认照常可用，降级入口「按住说话」保留。
+          SOS 结果态时留空但高度不变，避免长者在求助后误触呼叫 */}
+      <footer
+        className={`flex min-h-[232px] shrink-0 flex-col items-center gap-6 pb-12 ${taskMode ? "justify-center" : "justify-start"}`}
+      >
+        {phase === "standby" && !sosOpen && taskMode && (
+          <HoldToTalk
+            compact
+            token={loadSession()?.access_token ?? ""}
+            onSubtitle={pushSubtitle}
+            onAuthFail={onLogout}
+          />
+        )}
+        {phase === "standby" && !sosOpen && !taskMode && (
           <>
             <button
               onClick={beginSession}

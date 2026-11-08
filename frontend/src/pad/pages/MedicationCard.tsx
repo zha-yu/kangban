@@ -21,9 +21,9 @@ interface MedicationCardProps {
 
 function Info({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex flex-col gap-2">
-      <span className="text-lg text-ink-muted">{label}</span>
-      <span className="text-2xl font-semibold text-ink">{value}</span>
+    <div className="flex flex-col gap-1.5">
+      <span className="text-base text-ink-muted">{label}</span>
+      <span className="text-xl font-semibold text-ink">{value}</span>
     </div>
   );
 }
@@ -94,14 +94,14 @@ export function MedicationCard({
               <button
                 type="button"
                 onClick={handleTaken}
-                className="h-24 flex-1 rounded-2xl bg-brand text-4xl font-bold text-ink-inverse active:bg-brand-strong"
+                className="h-20 flex-1 rounded-2xl bg-brand text-3xl font-bold text-ink-inverse active:bg-brand-strong"
               >
                 已服用
               </button>
               <button
                 type="button"
                 onClick={handleRefused}
-                className="h-24 rounded-2xl border border-line bg-surface px-10 text-3xl font-semibold text-ink active:bg-surface-sunken"
+                className="h-20 rounded-2xl border border-line bg-surface px-10 text-2xl font-semibold text-ink active:bg-surface-sunken"
               >
                 这次不吃
               </button>
@@ -113,7 +113,7 @@ export function MedicationCard({
                 <button
                   type="button"
                   onClick={() => setState("pending")}
-                  className="h-24 flex-1 rounded-2xl border border-line bg-surface text-3xl font-semibold text-ink active:bg-surface-sunken"
+                  className="h-20 flex-1 rounded-2xl border border-line bg-surface text-2xl font-semibold text-ink active:bg-surface-sunken"
                 >
                   撤销（{undoLeft} 秒内）
                 </button>
@@ -125,7 +125,7 @@ export function MedicationCard({
               <button
                 type="button"
                 onClick={onExit}
-                className="h-24 rounded-2xl bg-brand px-12 text-3xl font-bold text-ink-inverse active:bg-brand-strong"
+                className="h-20 rounded-2xl bg-brand px-12 text-2xl font-bold text-ink-inverse active:bg-brand-strong"
               >
                 完成
               </button>
@@ -135,7 +135,7 @@ export function MedicationCard({
             <button
               type="button"
               onClick={onExit}
-              className="h-24 w-full rounded-2xl bg-brand text-3xl font-bold text-ink-inverse active:bg-brand-strong"
+              className="h-20 w-full rounded-2xl bg-brand text-2xl font-bold text-ink-inverse active:bg-brand-strong"
             >
               返回主界面
             </button>
@@ -144,12 +144,12 @@ export function MedicationCard({
       }
     >
       {/* 药品快照：历史提醒保留旧值，不随药单修改变化 */}
-      <div className="rounded-2xl border border-line bg-surface-sunken p-6">
-        <p className="text-lg text-ink-muted">本次提醒的药品</p>
-        <p className="mt-2 text-4xl font-bold leading-tight text-ink">
+      <div className="rounded-2xl border border-line bg-surface-sunken p-5">
+        <p className="text-base text-ink-muted">本次提醒的药品</p>
+        <p className="mt-2 text-3xl font-bold leading-tight text-ink">
           {data.drugName}
         </p>
-        <div className="mt-5 grid grid-cols-3 gap-4 border-t border-line pt-4">
+        <div className="mt-4 grid grid-cols-3 gap-4 border-t border-line pt-4">
           <Info label="剂量" value={data.dose} />
           <Info label="计划时间" value={data.scheduledAt} />
           <Info label="服用方式" value={data.usage} />
@@ -157,7 +157,7 @@ export function MedicationCard({
       </div>
 
       {/* 状态行：信号色只出现在徽标上；打断播报是播报控制，不与确认动作混排 */}
-      <div className="mt-5 flex items-center justify-between gap-6">
+      <div className="mt-4 flex items-center justify-between gap-6">
         <div className="flex flex-wrap items-center gap-3">
           <StatusBadge tone="success" size="sm">
             卡片已送达
@@ -191,7 +191,7 @@ export function MedicationCard({
         </button>
       </div>
 
-      <p className="mt-4 text-lg text-ink-muted">
+      <p className="mt-3 text-base text-ink-muted">
         {data.snapshotAt} · 第 {data.attemptNo} 次提醒 · 也可以直接说「吃了」
         {state === "taken" && undoLeft > 0 && " · 10 秒内可撤销"}
       </p>
