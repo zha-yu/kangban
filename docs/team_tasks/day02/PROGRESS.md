@@ -20,10 +20,10 @@
 | 计划 | 状态 |
 | --- | --- |
 | `docs/plans/day02/adhoc-20261104-鉴权内核审查底稿.md` | 🚧 进行中（待主理人逐段签署） |
-| `docs/plans/day02/task-03-库与模型基座.md` | ❔ 已冻结 |
+| `docs/plans/day02/task-03-库与模型基座.md` | 🔒 已冻结 |
 | `docs/plans/day02/task-04-鉴权内核.md` | 🚧 进行中（T1、T2、T3、T4a、T4b-1、T4b-2、T5 已完成；剩 T6 人工审查交付） |
-| `docs/plans/day02/task-05-登录与凭证接口.md` | ❔ 草稿 |
-| `docs/plans/day02/task-06-长者CRUD与设备绑定.md` | ❔ 已冻结 |
+| `docs/plans/day02/task-05-登录与凭证接口.md` | 📝 草稿 |
+| `docs/plans/day02/task-06-长者CRUD与设备绑定.md` | 🔒 已冻结 |
 
 ## 契约冻结：（本日无 contracts.md）
 

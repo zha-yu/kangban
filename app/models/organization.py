@@ -60,6 +60,7 @@ class Room(Base):
 
     __tablename__ = "rooms"
     __table_args__ = (
+        UniqueConstraint("room_no"),
         CheckConstraint("status IN ('available', 'partial', 'full', 'maintenance')", name="status"),
         {"comment": "房间表"},
     )
@@ -67,7 +68,9 @@ class Room(Base):
     room_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
-    room_no: Mapped[str] = mapped_column(Text(), nullable=False, comment="房号（如 A-301）")
+    room_no: Mapped[str] = mapped_column(
+        Text(), nullable=False, comment="房号（如 A-301），uq_rooms_room_no 全局唯一"
+    )
     status: Mapped[str] = mapped_column(
         Text(),
         nullable=False,
@@ -114,7 +117,9 @@ class Bed(Base):
     __tablename__ = "beds"
     __table_args__ = (
         UniqueConstraint("room_id", "bed_no"),
-        CheckConstraint("status IN ('available', 'occupied', 'maintenance')", name="status"),
+        CheckConstraint(
+            "status IN ('available', 'occupied', 'maintenance', 'disabled')", name="status"
+        ),
         {"comment": "床位表"},
     )
 
