@@ -177,6 +177,8 @@ export class RealtimeClient {
       });
     } catch (err) {
       console.warn("[vad] 端侧 TEN-VAD 不可用，回落服务端 webrtcvad:", err);
+      // W4：端侧 VAD 自检失败必须上报，否则服务端 VadFallbackController 永远不激活（听不见）
+      this.sendDiag("vad", false, err instanceof Error ? err.message : String(err));
       this.cb.onSubtitle("语音检测已切换为服务端模式", "notice");
     }
 
