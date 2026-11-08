@@ -27,6 +27,7 @@ import time
 from typing import Any
 
 from app.core.context import get_trace_id
+from app.core.runtime_context import get_identity
 from app.services.metrics_service import get_metrics_recorder
 
 logger = logging.getLogger("app.core.metrics")
@@ -45,7 +46,14 @@ def _record_db(
     """metrics 表轨：组装行数据交给唯一写库入口（校验/丢弃/降级在 service 内）。
 
     trace_id 取自请求上下文；取不到的行不入库、只留日志轨（自裁 Z4）。
+    elder_id 兜底：调用点未显式传时（asr / tts_first_packet 在引擎层无身份入参），
+    从 runtime_context 读服务端注入的身份（AGENTS 红线 9）——WS 握手已 set_identity，
+    打点协程均自该上下文派生；无身份上下文或 staff/guardian 身份则保持 None。
     """
+    if elder_id is None:
+        identity = get_identity()
+        if identity is not None:
+            elder_id = identity.elder_id
     get_metrics_recorder().record_stage(get_trace_id(), elder_id, stage, duration_ms, source)
 
 

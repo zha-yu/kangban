@@ -530,7 +530,8 @@ async def _authenticate(conn: ConnectionContext, session: AsyncSession) -> Ident
     # Day 5 唤醒段打点（裁决 R2，day03/contracts.md v1.5）：auth 首帧带 wake_ts 用端侧
     # 口径（source=client，duration=accept−wake_ts，时钟偏移防护在 record_wakeup 内）；
     # 未带走 WS accept 兜底（source=backend，duration=0 占位）。elder_id 随行入表
-    # （服务端注入口径，AGENTS 红线 9；asr/tts 行的 elder_id 由复算侧按 trace_id JOIN 本行补全）。
+    # （服务端注入口径，AGENTS 红线 9；asr/tts 行由 _record_db 从 runtime_context
+    # 身份上下文兜底取，见 app/core/metrics.py）。
     wake_ts = first.get("wake_ts")
     elder_id = identity.elder_id
     if isinstance(wake_ts, (int, float)) and wake_ts > 0:
