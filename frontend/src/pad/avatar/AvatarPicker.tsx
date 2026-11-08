@@ -96,7 +96,7 @@ function AvatarCard({
 }
 
 /** headerExtra：由主屏注入的常显操作（SOS），放在「返回」右侧，与主屏顶栏的最右位置一致。
- *  topBar：主屏注入的开发态任务切换条，保证换形象时入口不消失。 */
+ *  topBar：主屏注入的开发态任务切换（固定浮层，脱离文档流），保证换形象时入口不消失。 */
 export function AvatarPicker({
   onDone,
   headerExtra,

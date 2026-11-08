@@ -424,6 +424,8 @@ class FunASRWSProvider(ASRProvider):
                 ping_interval=None,  # 禁 ping 帧：开了会被 FunASR 判超时踢掉
                 open_timeout=self._connect_timeout,
                 ssl=_ssl_context_for(self._url, self._insecure),
+                proxy=None,  # 本地 FunASR 禁走系统代理：websockets ≥17 会读 ALL_PROXY，
+                # SOCKS 代理且未装 python-socks 时直接 ImportError（asr_task_error 根因）
             )
         except (OSError, WebSocketException, ssl.SSLError) as exc:  # TimeoutError 是 OSError 子类
             raise ASRUnavailable(f"FunASR 连接失败：{exc}") from exc
