@@ -1,6 +1,6 @@
 # dev-C · 前端 pad 语音与 3D（执行计划）
 
-> 状态：进行中　｜　版本：v1.3　｜　日期：2026-11-08
+> 状态：进行中　｜　版本：v1.4　｜　日期：2026-11-08
 > 关联：docs/team_tasks/day05/dev-c-前端pad语音与3D.md（任务卡 v1.1）、docs/plans/day05/day-05-延迟基线与护栏.md（Day5 总计划 v1.3）、docs/plans/day05/dev-b-护栏与降级.md（dev-B 执行计划 v3.1，N2 口径已冻结）
 > 上游依据：PRD §5.3（AC-40/42）、FR-3D-01、FR-VPR-01~03（验收）｜技术设计文档 §8 Day 5（实现口径）｜dag-项目工作流总览与联调节点.md §2.1（N1/N2/N5 接口规范）
 > 变更记录见文末
@@ -131,12 +131,12 @@
 
 **交付物**：C-5/C-6 端侧改动 + 对齐联调记录。
 
-**自检校验**：
-- [ ] 桩期线上行为与现状零差异（开关/空值兜底生效）
-- [ ] protocol.ts 扩展与 dev-A A-2 落地字段名完全一致（逐字段 diff）
-- [ ] metrics 表 `source=client/backend` 两路径各有数据
-- [ ] playback 打点无隐私字段（自查 payload）
-- [ ] build 通过
+**自检校验**（v1.4：A-2 已落地，桩期跳过，直接对齐收口）：
+- [x] ~~桩期线上行为与现状零差异~~——桩期跳过（A-2 已落地，2026-11-08）
+- [x] protocol.ts 扩展与 dev-A A-2 落地字段名完全一致（逐字段核对：AuthMsg 可选 `wake_ts: float` epoch 秒＝signaling.py L96；ClientDiagStage 追加 `playback`＝后端 `_CLIENT_DIAG_STAGES`；ClientDiagMsg 追加 `duration_ms?: number`＝signaling.py L934 校验；**wakeup 不走 diag**——后端统一 C2 auth 首帧口径，pad 侧未加 wakeup stage）
+- [ ] metrics 表 `source=client/backend` 两路径各有数据——待与 dev-A 联调回查（S3 步骤 6）
+- [x] playback 打点无隐私字段（payload 自查：仅 type/stage/ok/error=""/duration_ms，无转写全文）
+- [x] build 通过（2026-11-08 实测 tsc + vite 1.62s）
 
 ### S4 · C-2 20 次延迟测量执行（约 1.5h，依赖 S0 冒烟 + S3 对齐 + A-3 SQL 口径）
 
@@ -212,3 +212,4 @@
 | v1.1 | 2026-11-07 | 主理人通报 dev-A 已加 wake_ts，复核后更新 §2 核查项 7：打点原语 `record_wakeup`（metrics.py L68）与单测已就位，signaling 接线（auth 解析 wake_ts、client_diag 扩 stage）仍未完成；§7 问题 2 影响范围相应收窄，S3 对齐时间窗预期提前 |
 | v1.2 | 2026-11-07 | S0 执行完毕：新增裁决 C-D4（方案 A 字幕覆盖升级）；§7 问题 1 关闭；S0 自检四项全勾（对话主链卡仍标进行中属卡未回填、种子就绪结论、build 基线 867KB 实测）；状态改「进行中」 |
 | v1.3 | 2026-11-08 | C-1 端侧实现收口：新增 frontend/src/pad/degrade.ts（slow/failure 优先级状态机，unavailable > slow 防回退）+ realtime.ts error 分支/asr_partial/onSpeechStart/teardown 接线；本地自测 10/10 通过（三档 slow 渲染、slow→失败升级、失败→slow 压制、新轮复位）；build 门禁通过（pad chunk 867.60kB 持平）。复核更新 §2 核查项 7/8/9：dev-A A-2 全部落地（S3 免桩直接对齐）、dev-B B-2 代码已落地、metrics 0006 迁移已建；§7 问题 2/3/4 关闭。任务卡状态行更新为「进行中」。遗留：C-1 与 dev-B B2-6 联演录屏、C-4 口型录屏待真人操作 |
+| v1.4 | 2026-11-08 | S3 对齐阶段端侧收口（桩期跳过，commit 7e90613 为 C-1 前置）：①C-5——kws-detector 命中回调捕获 epoch 秒 wake_ts（App.tsx wakeTsRef）→ realtime.start 透传 → signal-socket auth 首帧携带、消费一次即清（重连 auth 不重发旧值走 backend 兜底），呼叫按钮路径不填；②C-6——realtime.ts tts_text 起表 / onended 与打断双路径结算，经 sendDiag(stage=playback, duration_ms) 上报（打断记实际已播时长如实入档）；③protocol.ts 正式扩展 AuthMsg.wake_ts / ClientDiagStage.playback / ClientDiagMsg.duration_ms（与 A-2 契约 v1.5 逐字段一致，wakeup 不走 diag）。build 门禁通过。遗留：metrics 表 client/backend 两路径数据回查待与 dev-A 联调（S3 步骤 6），完成后进 S4 |
