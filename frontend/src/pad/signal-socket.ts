@@ -30,6 +30,7 @@ export class SignalSocket {
   private backoffIndex = 0;
   private failCount = 0;
   private stopped = false;
+  private wakeTs: number | undefined = undefined;
 
   onStateChange: ((state: SocketState) => void) | null = null;
   onServerSignal: ((msg: ServerSignal) => void) | null = null;
@@ -39,6 +40,14 @@ export class SignalSocket {
   onGiveUp: (() => void) | null = null;
 
   constructor(private token: string) {}
+
+  /**
+   * C-5：本轮 KWS 命中时刻（epoch 秒），随 auth 首帧上报（C2 契约 v1.5 可选字段）。
+   * 消费一次即清：中断重连的 auth 不重发旧 wake_ts（时长会失真，服务端按 backend 兜底）。
+   */
+  setWakeTs(wakeTs: number): void {
+    this.wakeTs = wakeTs;
+  }
 
   connect(): void {
     if (this.stopped) return;
@@ -58,7 +67,14 @@ export class SignalSocket {
 
     ws.onopen = () => {
       // C2：连接后 300ms 内必须首发 auth（同步发送，留足余量）
-      this.send({ type: "auth", token: this.token });
+      // C-5：wake_ts 只随首个 auth 上报一次，重连 auth 不带（时长已失真，走 backend 兜底）
+      const wakeTs = this.wakeTs;
+      this.wakeTs = undefined;
+      if (wakeTs === undefined) {
+        this.send({ type: "auth", token: this.token });
+      } else {
+        this.send({ type: "auth", token: this.token, wake_ts: wakeTs });
+      }
       this.setState("authing");
       this.lastFrameAt = Date.now();
       this.pingTimer = setInterval(() => this.send({ type: "ping" }), PING_INTERVAL_MS);

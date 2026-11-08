@@ -17,10 +17,13 @@ export const SIGNAL_WS_PATH = "/ws/signal";
 
 /* ---- C→S 客户端发送 ---- */
 
-/** 连接后 300ms 内必须首发；token 为设备会话 access_token（E4 签发），不进 URL */
+/** 连接后 300ms 内必须首发；token 为设备会话 access_token（E4 签发），不进 URL。
+ *  wake_ts（v1.5 可选）：端侧 KWS 命中时刻（epoch 秒）；未命中/呼叫按钮路径不填，
+ *  服务端按 WS accept 时刻兜底（source=backend），metrics wakeup 段不缺行 */
 export interface AuthMsg {
   type: "auth";
   token: string;
+  wake_ts?: number;
 }
 
 /** WebRTC offer（客户端发起） */
@@ -51,15 +54,18 @@ export interface AsrEndMsg {
   type: "asr_end";
 }
 
-/** client_diag 的 stage 取值（C5 契约：3D / WebRTC / 链路诊断） */
-export type ClientDiagStage = "vrm_load" | "webrtc" | "vad" | "asr";
+/** client_diag 的 stage 取值（C5 契约：3D / WebRTC / 链路诊断；
+ *  v1.5 追加 playback：端侧 TTS 播放耗时上报，服务端代打 metrics，wakeup 不走本路径） */
+export type ClientDiagStage = "vrm_load" | "webrtc" | "vad" | "asr" | "playback";
 
-/** C5 追加（v2）：客户端诊断上行，仅日志、服务端不回执；error 必须已脱敏 */
+/** C5 追加（v2）：客户端诊断上行，仅日志、服务端不回执；error 必须已脱敏。
+ *  duration_ms（v1.5）：stage=playback 时必填（端侧播放耗时 ≥0），其余 stage 不带 */
 export interface ClientDiagMsg {
   type: "client_diag";
   stage: ClientDiagStage;
   ok: boolean;
   error: string;
+  duration_ms?: number;
 }
 
 export type ClientSignal =
