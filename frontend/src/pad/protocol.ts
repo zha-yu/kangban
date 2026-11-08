@@ -68,6 +68,31 @@ export interface ClientDiagMsg {
   duration_ms?: number;
 }
 
+/** C5 追加：声纹低置信/不可用时服务端主动确认身份（candidates 恒 1 位 = 设备绑定长者） */
+export interface IdentityAskMsg {
+  type: "identity_ask";
+  /** 本次确认的唯一 id；confirm 必须回带 */
+  ask_id: string;
+  reason: "low_confidence" | "vp_unavailable";
+  candidates: { elder_id: string; display_name: string }[];
+  /** 恒 30（秒），前端超时展示同步收起 */
+  timeout_s: number;
+}
+
+/** C5 追加：pad 大按钮点选确认；elder_id 必须等于 candidates[0].elder_id，否则按未确认处理 */
+export interface IdentityConfirmMsg {
+  type: "identity_confirm";
+  ask_id: string;
+  elder_id: string;
+}
+
+/** C5 追加：服务端告知最终身份模式；generic（超时/无法确认）时 elder_id 为 null */
+export interface IdentityResultMsg {
+  type: "identity_result";
+  source: "voice" | "confirm" | "generic";
+  elder_id: string | null;
+}
+
 export type ClientSignal =
   | AuthMsg
   | OfferMsg
@@ -75,7 +100,8 @@ export type ClientSignal =
   | PingMsg
   | AsrStartMsg
   | AsrEndMsg
-  | ClientDiagMsg;
+  | ClientDiagMsg
+  | IdentityConfirmMsg;
 
 /* ---- S→C 服务端下发 ---- */
 
@@ -149,7 +175,9 @@ export type ServerSignal =
   | AsrPartialMsg
   | AsrFinalMsg
   | TtsTextMsg
-  | ErrorMsg;
+  | ErrorMsg
+  | IdentityAskMsg
+  | IdentityResultMsg;
 
 export type ServerSignalType = ServerSignal["type"];
 
@@ -163,6 +191,8 @@ const SERVER_SIGNAL_TYPES: readonly ServerSignalType[] = [
   "asr_final",
   "tts_text",
   "error",
+  "identity_ask",
+  "identity_result",
 ];
 
 /**
