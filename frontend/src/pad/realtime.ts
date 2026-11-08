@@ -12,6 +12,7 @@
 import type { PadStatus } from "./types";
 import type { SubtitleSource } from "./components/BigSubtitle";
 import type { ClientDiagStage, ServerSignal } from "./protocol";
+import { nextDegradeLevel, type DegradeLevel } from "./degrade";
 import { MicCapture } from "./audio/capture";
 import { TenVad } from "./audio/vad";
 import { SignalSocket } from "./signal-socket";
@@ -37,6 +38,8 @@ export class RealtimeClient {
   private socketReady = false;
   /** TTS 是否在播（打断判定用；tts_text 置位，打断/新一轮 partial 复位） */
   private ttsPlaying = false;
+  /** C-1 本轮降级提示级别（degrade.ts 状态机）：speechstart/asr_partial 新一轮复位 */
+  private degradeLevel: DegradeLevel | null = null;
 
   constructor(private cb: RealtimeCallbacks) {}
 
@@ -97,6 +100,7 @@ export class RealtimeClient {
         break;
       case "asr_partial":
         this.ttsPlaying = false; // 新一轮识别，打断态复位
+        this.degradeLevel = null; // 新一轮对话，降级提示级别复位
         this.cb.onSubtitle(msg.text, "partial");
         this.cb.onStatus("listening");
         break;
@@ -111,9 +115,15 @@ export class RealtimeClient {
         this.cb.onSubtitle(msg.text, "reply");
         this.cb.onStatus("speaking");
         break;
-      case "error":
+      case "error": {
+        // C-1（C-D4 方案 A）：slow 为占位级，unavailable/timeout 为失败终态；
+        // 失败已显后同轮迟到的 slow 压制不渲染，防止话术从失败回退成等待
+        const level = nextDegradeLevel(this.degradeLevel, msg.code);
+        if (level === "suppressed") break;
+        this.degradeLevel = level;
         this.cb.onSubtitle(msg.message, "notice");
         break;
+      }
       case "pong":
       case "auth_fail":
         break; // auth_fail 已由 SignalSocket 处理
@@ -145,6 +155,7 @@ export class RealtimeClient {
             this.cb.audioEl.pause();
             this.cb.onSubtitle("", "final");
           }
+          this.degradeLevel = null; // 新一轮开口，降级提示级别复位
           this.cb.onStatus("listening");
           this.socket?.send({ type: "asr_start" });
           this.mic?.flushPreRollToTrack(); // asr_start 后立即轨上回放 600ms preRoll（句首保完整）
@@ -199,6 +210,7 @@ export class RealtimeClient {
   private async teardownSession(): Promise<void> {
     this.vad?.free();
     this.vad = null;
+    this.degradeLevel = null;
     if (this.pc) {
       this.pc.onicecandidate = null;
       this.pc.ontrack = null;

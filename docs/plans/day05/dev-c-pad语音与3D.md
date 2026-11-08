@@ -1,6 +1,6 @@
 # dev-C · 前端 pad 语音与 3D（执行计划）
 
-> 状态：进行中　｜　版本：v1.2　｜　日期：2026-11-07
+> 状态：进行中　｜　版本：v1.3　｜　日期：2026-11-08
 > 关联：docs/team_tasks/day05/dev-c-前端pad语音与3D.md（任务卡 v1.1）、docs/plans/day05/day-05-延迟基线与护栏.md（Day5 总计划 v1.3）、docs/plans/day05/dev-b-护栏与降级.md（dev-B 执行计划 v3.1，N2 口径已冻结）
 > 上游依据：PRD §5.3（AC-40/42）、FR-3D-01、FR-VPR-01~03（验收）｜技术设计文档 §8 Day 5（实现口径）｜dag-项目工作流总览与联调节点.md §2.1（N1/N2/N5 接口规范）
 > 变更记录见文末
@@ -37,9 +37,9 @@
 | 4 | KWS 命中回调 | kws/kws-detector.ts 有命中回调链路，wake_ts 捕获点在此 | frontend/src/pad/kws/kws-detector.ts |
 | 5 | client_diag 发送单点 | realtime.ts L68 `send({type:"client_diag", stage, ok, error})`，stage 现仅 vrm_load/webrtc/vad/asr 四值 | frontend/src/pad/realtime.ts L36-68 |
 | 6 | TTS 播放时机 | `tts_text` 消息到达即播放（realtime.ts L107-112），playback 段计时起点在此 | frontend/src/pad/realtime.ts L107-112 |
-| 7 | dev-A A-2 契约修订 | **部分落地（2026-11-07 复核）**：打点原语已就位——`app/core/metrics.py` L68 `record_wakeup(source: client\|backend, wake_ts, connection_ms)` + 单测；但 **signaling 接线未完成**：auth 处理未解析 AuthMsg.wake_ts（全仓无 `record_wakeup(` 调用方）、signaling.py L77 仍限定 client_diag 四阶段且 handler「不进 metrics」（C-6 需要的 stage 扩展未做）；任务卡引用的 `docs/plans/day05/a-后端观测与数据.md` 文件不存在（引用悬空） | app/core/metrics.py L68-81、tests/test_core_metrics.py L80-99、signaling.py L77/L891-892 |
-| 8 | dev-B B-2 降级事件 | 规范已冻结（v3.1）但**代码未实现**（tests/test_degrade_timeout.py 不存在） | dev-b-护栏与降级.md §1 |
-| 9 | metrics 表 / 0006 迁移 | **未建**（alembic 现有至 0005），C-2 回查前提尚缺 | alembic/versions/ |
+| 7 | dev-A A-2 契约修订 | **全部落地（2026-11-08 复核）**：`record_wakeup` 接线 + signaling auth 解析 `wake_ts`（signaling.py L96/L530-531，day03/contracts.md v1.5）+ client_diag 七段扩展 + playback 服务端代打（commit 155b1ec）；`docs/plans/day05/a-后端观测与数据.md` 已存在。**S3 无需桩期，直接进对齐阶段** | app/core/metrics.py、app/audio/signaling.py L96/L530、docs/plans/day05/a-后端观测与数据.md |
+| 8 | dev-B B-2 降级事件 | **代码已落地（2026-11-08 复核）**：`_ERROR_TALKBACK` 常量 + 三档 slow watchdog（webrtc.py L1358-1367、main.py L214-224）+ tests/test_degrade_timeout.py 存在；C-1 可直接联演 | app/audio/webrtc.py、app/main.py、tests/test_degrade_timeout.py |
+| 9 | metrics 表 / 0006 迁移 | **已建（2026-11-08 复核）**：第 27 张表 metrics 三件套 + 0006 迁移（commit c783394/155b1ec）；C-2 回查前提就绪 | alembic/versions/、app/models/metrics.py |
 | 10 | 声纹 pad 侧 | 录入页 VoiceprintEnroll.tsx、身份确认 IdentityConfirm.tsx 已存在；阈值 0.55 已五处落地；缺真人闭环实测记录 | frontend/src/pad/voiceprint/、pages/IdentityConfirm.tsx |
 | 11 | 口型 | lipsync.ts 能量近似已在跑，C-4 仅需录屏取证，无开发 | frontend/src/pad/avatar/lipsync.ts |
 | 12 | 构建门禁 | Day5 A1 收口时 `pnpm build` 三入口零报错（基线），本计划各阶段以 `tsc --noEmit` + `pnpm build` 为门禁 | day05/a1 任务卡 v1.1 |
@@ -94,11 +94,11 @@
 **交付物**：C-4 录屏；C-1 实现代码 + 联演录屏 + N2 签字记录。
 
 **自检校验**：
-- [ ] 三档 slow code 渲染文案与后端 `_ERROR_TALKBACK` 同源（前端不写死话术）
-- [ ] slow→unavailable 覆盖合并生效，无双提示叠加
-- [ ] 三档逐个联演无一次白屏或静默（录屏逐段核对）
-- [ ] `pnpm --dir frontend build` 通过，pad chunk 无越界变化
-- [ ] C-4 录屏口型开合可见
+- [x] 三档 slow code 渲染文案与后端 `_ERROR_TALKBACK` 同源（前端只渲染 msg.message，不写死话术；degrade.ts + realtime.ts error 分支，2026-11-08）
+- [x] slow→unavailable 覆盖合并生效，无双提示叠加（degrade.ts 优先级状态机，BigSubtitle 单状态位原地覆盖；本地自测 10/10 通过）
+- [ ] 三档逐个联演无一次白屏或静默（录屏逐段核对）——待与 dev-B B2-6 联演
+- [x] `pnpm --dir frontend build` 通过，pad chunk 无越界变化（2026-11-08 实测 1.81s，pad chunk 867.60kB 与基线一致）
+- [ ] C-4 录屏口型开合可见——待真人操作录屏
 
 ### S2 · C-3 声纹闭环真人实测（约 1.5h，依赖 dev-A 后端在线）
 
@@ -198,9 +198,9 @@
 | # | 问题 | 状态 | 影响阶段 |
 | --- | --- | --- | --- |
 | 1 | 任务卡 C-1「degrade 事件」vs dev-B 冻结「error 通道三档 slow」口径差异 | ✅ 已确认（C-D4，2026-11-07）：按 dev-B error 通道口径 + 方案 A 覆盖升级交互 | S1 |
-| 2 | `docs/plans/day05/a-后端观测与数据.md` 文件不存在（任务卡引用悬空），dev-A A-2 落地时间窗 | 🔶 部分收窄（v1.1 复核）：打点原语已落地，剩 signaling 接线；时间窗待 dev-A 通报 | S3/S4 |
-| 3 | 王奶奶人设 + 固定种子设备数据就绪性 | ⏳ S0 核对 | S4 |
-| 4 | dev-C 桩期不越权改 protocol.ts、用本地扩展类型的边界是否认可 | ⏳ S0 报备待确认 | S3 |
+| 2 | `docs/plans/day05/a-后端观测与数据.md` 文件不存在（任务卡引用悬空），dev-A A-2 落地时间窗 | ✅ 已解决（2026-11-08 复核）：文件已存在，A-2 全部落地（wake_ts 接线 + client_diag 七段 + playback 代打，commit 155b1ec） | S3/S4 |
+| 3 | 王奶奶人设 + 固定种子设备数据就绪性 | ✅ 已确认（S0，2026-11-07）：现有种子张桂芬 …1102 + 设备 …1106 可用，无需造数 | S4 |
+| 4 | dev-C 桩期不越权改 protocol.ts、用本地扩展类型的边界是否认可 | ✅ 已消解（2026-11-08 复核）：dev-A A-2 已落地，S3 跳过桩期直接对齐，protocol.ts 可正式扩展 | S3 |
 
 ---
 
@@ -211,3 +211,4 @@
 | v1.0 | 2026-11-07 | 首版：基于任务卡 v1.1、Day5 总计划 v1.3、dev-B 执行计划 v3.1 与 pad 端代码级核查（12 项现状证据）制定；含主理人三裁决（C-D1 先桩后并、C-D2 演示纳入、C-D3 同事配合）、S0–S5 分阶段推进（每阶段汇报制）、N1/N2/N5 联调清单与 R1–R6 风险预案 |
 | v1.1 | 2026-11-07 | 主理人通报 dev-A 已加 wake_ts，复核后更新 §2 核查项 7：打点原语 `record_wakeup`（metrics.py L68）与单测已就位，signaling 接线（auth 解析 wake_ts、client_diag 扩 stage）仍未完成；§7 问题 2 影响范围相应收窄，S3 对齐时间窗预期提前 |
 | v1.2 | 2026-11-07 | S0 执行完毕：新增裁决 C-D4（方案 A 字幕覆盖升级）；§7 问题 1 关闭；S0 自检四项全勾（对话主链卡仍标进行中属卡未回填、种子就绪结论、build 基线 867KB 实测）；状态改「进行中」 |
+| v1.3 | 2026-11-08 | C-1 端侧实现收口：新增 frontend/src/pad/degrade.ts（slow/failure 优先级状态机，unavailable > slow 防回退）+ realtime.ts error 分支/asr_partial/onSpeechStart/teardown 接线；本地自测 10/10 通过（三档 slow 渲染、slow→失败升级、失败→slow 压制、新轮复位）；build 门禁通过（pad chunk 867.60kB 持平）。复核更新 §2 核查项 7/8/9：dev-A A-2 全部落地（S3 免桩直接对齐）、dev-B B-2 代码已落地、metrics 0006 迁移已建；§7 问题 2/3/4 关闭。任务卡状态行更新为「进行中」。遗留：C-1 与 dev-B B2-6 联演录屏、C-4 口型录屏待真人操作 |
