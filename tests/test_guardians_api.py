@@ -7,7 +7,7 @@
 - 重复绑定 409；第三位 active 监护人 409（≤2 位是服务层校验，不落 DDL）；
 - `unbound` 的旧绑定不占名额（能再绑一位）。
 
-跑法与 `test_staff_api.py` 同构：NullPool + 每用例事务回滚 + 真实 ASGI 链路。
+跑法与 `test_staff_api.py` 同构：conftest 共享引擎 + 每用例事务回滚 + 真实 ASGI 链路。
 无 PostgreSQL 时 `pytest.skip` 并打印原因。
 """
 
@@ -24,9 +24,7 @@ from sqlalchemy.ext.asyncio import (
     AsyncConnection,
     AsyncEngine,
     AsyncSession,
-    create_async_engine,
 )
-from sqlalchemy.pool import NullPool
 
 from app.api import guardians as guardians_api
 from app.core.config import get_settings
@@ -47,6 +45,15 @@ G4 = uuid.UUID("cccccccc-cccc-4ccc-8ccc-ccccccccccc4")
 
 ADMIN_PHONE = "13800000001"
 
+# 阶段 A 提速：seeded 夹具 function 级、每用例重复 7 次 cost-12 哈希（约 2s/用例），
+# 模块级预计算一次全文件复用；bcrypt 随机盐不影响 verify_password 对同一明文的校验。
+_HASH_ADMIN = hash_password("Admin@2026")
+_HASH_WORKER = hash_password("Care@2026")
+_HASH_G1 = hash_password("Fam@2026aa")
+_HASH_G2 = hash_password("Fam@2026bb")
+_HASH_G3 = hash_password("Fam@2026cc")
+_HASH_G4 = hash_password("Fam@2026dd")
+
 
 @pytest.fixture
 def jwt_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
@@ -57,16 +64,8 @@ def jwt_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 @pytest.fixture
-async def db_engine() -> AsyncIterator[AsyncEngine]:
-    engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
-    try:
-        yield engine
-    finally:
-        await engine.dispose()
-
-
-@pytest.fixture
 async def db(db_engine: AsyncEngine) -> AsyncIterator[AsyncConnection]:
+    """每用例一个事务、结束回滚（db_engine 为 conftest 的 module 级共享引擎）。"""
     try:
         conn = await db_engine.connect()
     except Exception as exc:
@@ -93,7 +92,7 @@ async def seeded(db: AsyncConnection) -> AsyncConnection:
                 name="测试管理员",
                 role="admin",
                 phone=ADMIN_PHONE,
-                password_hash=hash_password("Admin@2026"),
+                password_hash=_HASH_ADMIN,
                 status="active",
             ),
             StaffAccount(
@@ -101,7 +100,7 @@ async def seeded(db: AsyncConnection) -> AsyncConnection:
                 name="测试护工",
                 role="care_worker",
                 phone="13800000002",
-                password_hash=hash_password("Care@2026"),
+                password_hash=_HASH_WORKER,
                 status="active",
             ),
             Elder(elder_id=ELDER_ID, name="测试长者", status="active"),
@@ -109,28 +108,28 @@ async def seeded(db: AsyncConnection) -> AsyncConnection:
                 guardian_id=G1,
                 name="家属一",
                 phone="13900000001",
-                password_hash=hash_password("Fam@2026aa"),
+                password_hash=_HASH_G1,
                 status="active",
             ),
             GuardianAccount(
                 guardian_id=G2,
                 name="家属二",
                 phone="13900000002",
-                password_hash=hash_password("Fam@2026bb"),
+                password_hash=_HASH_G2,
                 status="active",
             ),
             GuardianAccount(
                 guardian_id=G3,
                 name="家属三",
                 phone="13900000003",
-                password_hash=hash_password("Fam@2026cc"),
+                password_hash=_HASH_G3,
                 status="active",
             ),
             GuardianAccount(
                 guardian_id=G4,
                 name="家属四",
                 phone="13900000004",
-                password_hash=hash_password("Fam@2026dd"),
+                password_hash=_HASH_G4,
                 status="active",
             ),
         ]

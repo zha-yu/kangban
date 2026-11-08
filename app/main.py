@@ -43,6 +43,7 @@ from app.core.auth import (
 from app.core.config import Settings, get_settings
 from app.core.context import TRACE_HEADER, get_trace_id
 from app.core.logging import configure_logging
+from app.core.metrics import get_metrics_recorder
 from app.core.security import TokenExpiredError
 from app.core.trace import TraceIdMiddleware
 from app.db import session_factory
@@ -267,6 +268,67 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             return
 
         if reply is not None:
+            # ---------- Day 5 B-2：TTS 并行 watchdog（方案2：先合成再下发） ----------
+            # ★ 顺序反转：watchdog + synthesize → 成功后才 deliver tts_text
+            # watchdog 只在"文字还没下发"期间允许发 slow notice（用户还在等，合理）；
+            # 合成完成后文字立即下发，watchdog cancel，不会再触发 slow 提示
+            # TTS 失败时仍需下发文字保持 C1 降级边界（大字幕不丢）
+            _tts_state: dict[str, bool] = {"slow_degraded": False}
+            _tts_watchdog: asyncio.Task[None] | None = None
+            _settings = get_settings()
+
+            async def _tts_slow_watchdog() -> None:
+                from app.audio.signaling import _ERROR_TALKBACK
+
+                await asyncio.sleep(_settings.degrade_tts_slow_ms / 1000)
+                # 此时文字尚未下发 → 用户还在等待回复 → slow notice 语义成立
+                if not _tts_state["slow_degraded"]:
+                    _tts_state["slow_degraded"] = True
+                    signaling.deliver(
+                        device_id,
+                        {
+                            "type": "error",
+                            "code": "tts_slow",
+                            "message": _ERROR_TALKBACK["tts_slow"],
+                        },
+                    )
+
+            _tts_watchdog = asyncio.create_task(_tts_slow_watchdog())
+            pcm: bytes | None = None
+            synthesize_ok = False
+
+            try:
+                pcm = await tts_provider.synthesize(reply.text)
+                synthesize_ok = True
+            except TTSUnavailable as exc:
+                # C1 降级边界：保留大字幕，不因 TTS 失败静默
+                logger.warning(
+                    "tts_unavailable",
+                    extra={
+                        "trace_id": trace_id,
+                        "device_id": device_id,
+                        "turn_id": turn_id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+            except Exception as exc:
+                logger.error(
+                    "tts_failed",
+                    extra={
+                        "trace_id": trace_id,
+                        "device_id": device_id,
+                        "turn_id": turn_id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+            finally:
+                # ★ try/finally 强制清理 watchdog
+                if _tts_watchdog is not None and not _tts_watchdog.done():
+                    _tts_watchdog.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await _tts_watchdog
+
+            # ★ 合成（无论成败）完成后再下发文字（顺序反转的核心）
             delivered = signaling.deliver(
                 device_id,
                 {"type": "tts_text", "text": reply.text, "degraded": reply.degraded},
@@ -283,78 +345,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 },
             )
             if not delivered:
-                # WS 已断：正文都没送到，不再合成音频
+                # WS 已断：正文都没送到，不再 enqueue 音频
                 logger.warning(
                     "dialogue_text_not_delivered",
                     extra={"trace_id": trace_id, "device_id": device_id, "turn_id": turn_id},
                 )
                 return
 
-            # ---------- Day 5 B-2：TTS 并行 watchdog（单次 await synthesize） ----------
-            _tts_state: dict[str, bool] = {"slow_degraded": False}
-            _tts_watchdog: asyncio.Task[None] | None = None
-            _settings = get_settings()
-
-            async def _tts_slow_watchdog() -> None:
-                from app.audio.signaling import _ERROR_TALKBACK
-
-                await asyncio.sleep(_settings.degrade_tts_slow_ms / 1000)
-                if not _tts_state["slow_degraded"]:
-                    _tts_state["slow_degraded"] = True
-                    signaling.deliver(
-                        device_id,
-                        {
-                            "type": "error",
-                            "code": "tts_slow",
-                            "message": _ERROR_TALKBACK["tts_slow"],
-                        },
-                    )
-
-            _tts_watchdog = asyncio.create_task(_tts_slow_watchdog())
-
-            try:
-                pcm = await tts_provider.synthesize(reply.text)
-            except TTSUnavailable as exc:
-                # C1 降级边界：保留大字幕，不因 TTS 失败静默
-                logger.warning(
-                    "tts_unavailable",
+            # 只有合成成功时才 enqueue 音频
+            if synthesize_ok and pcm is not None:
+                audio_enqueued = await enqueue_tts_for_device(device_id, turn_id, pcm)
+                logger.info(
+                    "dialogue_audio_enqueued",
                     extra={
                         "trace_id": trace_id,
                         "device_id": device_id,
                         "turn_id": turn_id,
-                        "error_type": type(exc).__name__,
+                        "audio_enqueued": audio_enqueued,
+                        "pcm_bytes": len(pcm),
                     },
                 )
-                return
-            except Exception as exc:
-                logger.error(
-                    "tts_failed",
-                    extra={
-                        "trace_id": trace_id,
-                        "device_id": device_id,
-                        "turn_id": turn_id,
-                        "error_type": type(exc).__name__,
-                    },
-                )
-                return
-            finally:
-                # ★ try/finally 强制清理
-                if _tts_watchdog is not None and not _tts_watchdog.done():
-                    _tts_watchdog.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await _tts_watchdog
-
-            audio_enqueued = await enqueue_tts_for_device(device_id, turn_id, pcm)
-            logger.info(
-                "dialogue_audio_enqueued",
-                extra={
-                    "trace_id": trace_id,
-                    "device_id": device_id,
-                    "turn_id": turn_id,
-                    "audio_enqueued": audio_enqueued,
-                    "pcm_bytes": len(pcm),
-                },
-            )
 
     signaling.set_dialogue_final_handler(_on_dialogue_final)
     signaling.set_identity_confirm_handler(_on_identity_confirm)
@@ -372,6 +382,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         signaling.set_dialogue_final_handler(None)
         signaling.set_identity_confirm_handler(None)
         signaling.set_identity_timeout_handler(None)
+        # Day 5：metrics 批量缓冲冲刷（裁决 B6/D2）——先停 worker 再 drain，避免丢批
+        await get_metrics_recorder().stop()
         await llm_service.aclose()
         # redis-py 的 asyncio 关闭方法；当前 stubs 尚未同步 aclose
         await redis_client.aclose()  # type: ignore[attr-defined]

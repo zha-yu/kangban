@@ -9,9 +9,10 @@
 - 每条写操作都回查 DB，失败用例同时断言「没有部分写入」；
 - 无 PostgreSQL 时 `pytest.skip` 并打印原因，绝不静默通过。
 
-为什么自建 NullPool 引擎而不是直接用 conftest 的 `db_conn`：task-3 夹具的模块级连接池
-会把上一个事件循环的 asyncpg 连接留给下一个用例（任务板 P-03），而本文件同时需要
-测试事务与 ASGI 请求处在同一事件循环。契约与 `db_conn` 相同：一事务、结束回滚、无库即 skip。
+为什么自建事务夹具而不是直接用 conftest 的 `db_conn`：本文件同时需要
+测试事务与 ASGI 请求处在同一事务/连接上（create_savepoint 模式）。
+契约与 `db_conn` 相同：一事务、结束回滚、无库即 skip；引擎已统一为
+conftest 的 module 级共享引擎（阶段 B 夹具治理，P-03 根治）。
 """
 
 from __future__ import annotations
@@ -30,9 +31,7 @@ from sqlalchemy.ext.asyncio import (
     AsyncConnection,
     AsyncEngine,
     AsyncSession,
-    create_async_engine,
 )
-from sqlalchemy.pool import NullPool
 
 from app.api import devices as devices_api
 from app.api import elders as elders_api
@@ -118,17 +117,8 @@ def jwt_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 @pytest.fixture
-async def db_engine() -> AsyncIterator[AsyncEngine]:
-    engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
-    try:
-        yield engine
-    finally:
-        await engine.dispose()
-
-
-@pytest.fixture
 async def db(db_engine: AsyncEngine) -> AsyncIterator[AsyncConnection]:
-    """每用例一个事务、结束回滚；连不上库就 skip 并打印原因（与 conftest 同契约）。"""
+    """每用例一个事务、结束回滚（db_engine 为 conftest 的 module 级共享引擎）。"""
     try:
         conn = await db_engine.connect()
     except Exception as exc:  # 超时/拒绝/口令错一律算「无库」

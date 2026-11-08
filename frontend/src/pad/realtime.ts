@@ -11,7 +11,8 @@
  */
 import type { PadStatus } from "./types";
 import type { SubtitleSource } from "./components/BigSubtitle";
-import type { ClientDiagStage, ServerSignal } from "./protocol";
+import type { ClientDiagMsg, ClientDiagStage, ServerSignal } from "./protocol";
+import { nextDegradeLevel, type DegradeLevel } from "./degrade";
 import { MicCapture } from "./audio/capture";
 import { TenVad } from "./audio/vad";
 import { SignalSocket } from "./signal-socket";
@@ -37,14 +38,19 @@ export class RealtimeClient {
   private socketReady = false;
   /** TTS 是否在播（打断判定用；tts_text 置位，打断/新一轮 partial 复位） */
   private ttsPlaying = false;
+  /** C-1 本轮降级提示级别（degrade.ts 状态机）：speechstart/asr_partial 新一轮复位 */
+  private degradeLevel: DegradeLevel | null = null;
+  /** C-6 playback 段计时起点（tts_text 到达即起表；播完/打断结算上报后清空） */
+  private playbackStartMs: number | null = null;
 
   constructor(private cb: RealtimeCallbacks) {}
 
-  async start(token: string): Promise<void> {
+  async start(token: string, wakeTs?: number): Promise<void> {
     if (this.starting) return;
     this.starting = true;
 
     this.socket = new SignalSocket(token);
+    if (wakeTs !== undefined) this.socket.setWakeTs(wakeTs); // C-5：KWS 命中时刻随 auth 首帧
     this.socket.onStateChange = (state) => {
       this.socketReady = state === "ready";
       // connecting ≠ 断开：状态条显示「连接中」；否则上层会把建连初期误判为会话结束
@@ -62,10 +68,15 @@ export class RealtimeClient {
     this.socket?.retry();
   }
 
-  /** C5 客户端诊断上行（仅日志，服务端不回执）：未就绪时静默丢弃，不排队不重发 */
-  sendDiag(stage: ClientDiagStage, ok: boolean, error: string): void {
+  /** C5 客户端诊断上行（仅日志，服务端不回执）：未就绪时静默丢弃，不排队不重发。
+   *  durationMs 仅 stage=playback 携带（C2/C5 契约 v1.5，服务端代打 metrics） */
+  sendDiag(stage: ClientDiagStage, ok: boolean, error: string, durationMs?: number): void {
     if (!this.socketReady) return;
-    this.socket?.send({ type: "client_diag", stage, ok, error });
+    const msg: ClientDiagMsg =
+      durationMs === undefined
+        ? { type: "client_diag", stage, ok, error }
+        : { type: "client_diag", stage, ok, error, duration_ms: durationMs };
+    this.socket?.send(msg);
   }
 
   async stop(): Promise<void> {
@@ -97,6 +108,7 @@ export class RealtimeClient {
         break;
       case "asr_partial":
         this.ttsPlaying = false; // 新一轮识别，打断态复位
+        this.degradeLevel = null; // 新一轮对话，降级提示级别复位
         this.cb.onSubtitle(msg.text, "partial");
         this.cb.onStatus("listening");
         break;
@@ -106,14 +118,21 @@ export class RealtimeClient {
         break;
       case "tts_text":
         this.ttsPlaying = true;
+        this.playbackStartMs = performance.now(); // C-6：播放段计时起点
         this.cb.audioEl.muted = false; // 真 TTS 到了才出声
         void this.cb.audioEl.play().catch(() => {});
         this.cb.onSubtitle(msg.text, "reply");
         this.cb.onStatus("speaking");
         break;
-      case "error":
+      case "error": {
+        // C-1（C-D4 方案 A）：slow 为占位级，unavailable/timeout 为失败终态；
+        // 失败已显后同轮迟到的 slow 压制不渲染，防止话术从失败回退成等待
+        const level = nextDegradeLevel(this.degradeLevel, msg.code);
+        if (level === "suppressed") break;
+        this.degradeLevel = level;
         this.cb.onSubtitle(msg.message, "notice");
         break;
+      }
       case "pong":
       case "auth_fail":
         break; // auth_fail 已由 SignalSocket 处理
@@ -144,7 +163,9 @@ export class RealtimeClient {
             this.cb.audioEl.muted = true; // 打断即静音，输出通路立即关闭
             this.cb.audioEl.pause();
             this.cb.onSubtitle("", "final");
+            this.reportPlayback(); // C-6：打断也结算（实际已播时长，如实入档）
           }
+          this.degradeLevel = null; // 新一轮开口，降级提示级别复位
           this.cb.onStatus("listening");
           this.socket?.send({ type: "asr_start" });
           this.mic?.flushPreRollToTrack(); // asr_start 后立即轨上回放 600ms preRoll（句首保完整）
@@ -156,6 +177,8 @@ export class RealtimeClient {
       });
     } catch (err) {
       console.warn("[vad] 端侧 TEN-VAD 不可用，回落服务端 webrtcvad:", err);
+      // W4：端侧 VAD 自检失败必须上报，否则服务端 VadFallbackController 永远不激活（听不见）
+      this.sendDiag("vad", false, err instanceof Error ? err.message : String(err));
       this.cb.onSubtitle("语音检测已切换为服务端模式", "notice");
     }
 
@@ -177,6 +200,7 @@ export class RealtimeClient {
       this.cb.audioEl.srcObject = e.streams[0] ?? null;
       this.cb.audioEl.onended = () => {
         this.ttsPlaying = false;
+        this.reportPlayback(); // C-6：播完结算 playback 打点
       };
       void this.cb.audioEl.play().catch(() => {
         this.cb.onSubtitle("点击屏幕后开始播放语音", "notice");
@@ -196,9 +220,19 @@ export class RealtimeClient {
     this.cb.onStatus("listening");
   }
 
+  /** C-6：结算 playback 段并经 client_diag 上报（duration_ms 必填，服务端代打 metrics）；
+   *  无计时起点（未播过/已结算）时静默跳过 */
+  private reportPlayback(): void {
+    const start = this.playbackStartMs;
+    this.playbackStartMs = null;
+    if (start === null) return;
+    this.sendDiag("playback", true, "", Math.max(0, Math.round(performance.now() - start)));
+  }
+
   private async teardownSession(): Promise<void> {
     this.vad?.free();
     this.vad = null;
+    this.degradeLevel = null;
     if (this.pc) {
       this.pc.onicecandidate = null;
       this.pc.ontrack = null;

@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://silvermate:silvermate@localhost:5432/silvermate"
     database_pool_size: int = 10
     database_pool_max_overflow: int = 20
+    # 测试专用库（阶段 C 根治）：pytest 走这里，与开发库物理隔离，并行才不会互相踩数据。
+    # None 时由 tests/conftest.py 从 database_url 推导 <库名>_test，绝不回退到开发库本身。
+    database_url_test: str | None = None
 
     # ---------------------------- LangGraph Checkpoint（独立 schema + 独立连接池） ----------------------------
     langgraph_checkpoint_database_url: str = (

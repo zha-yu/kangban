@@ -61,6 +61,8 @@ function MainScreen({
   const audioRef = useRef<HTMLAudioElement>(null);
   const clientRef = useRef<RealtimeClient | null>(null);
   const kwsRef = useRef<{ detector: KwsDetector; mic: MicCapture } | null>(null);
+  // C-5：端侧 KWS 命中时刻（epoch 秒），随本轮 auth 首帧上报；呼叫按钮路径不填走后端兜底
+  const wakeTsRef = useRef<number | undefined>(undefined);
   // S5 形象选择：pickerOpen 仅 standby 期可开（会话中禁止换装）；stageKey 变化触发
   // AvatarStage 重挂载读取新 localStorage（D-3 显式换装流程，不做热切换）
   const [pickerOpen, setPickerOpen] = useState(
@@ -179,7 +181,10 @@ function MainScreen({
         void mic.stop(); // 双跑竞态守卫：cleanup 已跑则立即释放，防双麦
         return;
       }
-      detector.onHit = beginSession;
+      detector.onHit = () => {
+        wakeTsRef.current = Date.now() / 1000; // C-5：命中时刻捕获（epoch 秒，N1 规范）
+        beginSession();
+      };
       mic.onFrame = (pcm) => detector.feed(pcm); // 仅本机推理，不出端（AGENTS 红线 10）
       kwsRef.current = { detector, mic };
       setKwsState("listening");
@@ -208,7 +213,8 @@ function MainScreen({
       audioEl: audioRef.current,
     });
     clientRef.current = client;
-    void client.start(session.access_token);
+    void client.start(session.access_token, wakeTsRef.current);
+    wakeTsRef.current = undefined; // 消费一次即清：断线重连不重发旧 wake_ts
 
     // T-H 方案 A 定案（无 refresh 通道，过期回登录）：会话中途到期的主动守护——
     // 30s 周期 + 页面回前台时校验 expires_at，过期即清会话回登录页；

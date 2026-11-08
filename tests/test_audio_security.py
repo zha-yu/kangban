@@ -21,9 +21,7 @@ from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
-    create_async_engine,
 )
-from sqlalchemy.pool import NullPool
 
 from app.api import audio as audio_api
 from app.audio.asr import ASRProvider, ASRUnavailable, MockASRProvider
@@ -33,7 +31,6 @@ from app.core.auth import (
     CredentialInvalidError,
     CredentialRevokedError,
 )
-from app.core.config import get_settings
 from app.core.security import TokenExpiredError, sha256_hex
 from app.db import get_session as _app_get_session
 from app.main import handle_http_exception
@@ -48,31 +45,15 @@ _DEVICE_SECRET_PLAIN = "device-long-secret-plain-abc123"
 
 
 @pytest.fixture
-async def sec_engine() -> AsyncIterator[AsyncEngine]:
-    engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(
-                __import__("sqlalchemy").text(
-                    "TRUNCATE elder_guardians, elder_staff_assignments, "
-                    "guardian_accounts, staff_accounts, staff_tokens, "
-                    "devices, elders, beds, personas, rooms CASCADE"
-                )
-            )
-        yield engine
-    finally:
-        await engine.dispose()
-
-
-@pytest.fixture
-async def sec_session(sec_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
+async def sec_session(db_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
     """外层事务包住整个用例：service 层（device-sessions 登录）的真实 commit 只释放
     savepoint，结束整体回滚，共享 dev 库零残留（模式同 test_elders_api.client）。
 
     不能用裸 session：登录 commit 会把种子数据落进共享库，文件组合顺序变化时
     污染 elders 计数用例（2026-11-06 实测 +1 elder +1 device）。
+    db_engine 为 conftest 的 module 级共享引擎，模块开始时已 TRUNCATE 清残留。
     """
-    async with sec_engine.connect() as conn:
+    async with db_engine.connect() as conn:
         trans = await conn.begin()
         sf = async_sessionmaker(
             bind=conn, expire_on_commit=False, join_transaction_mode="create_savepoint"

@@ -148,9 +148,13 @@ class TestA301FrameConversion:
     def test_60_seconds_produces_1000_frames(self) -> None:
         normalizer = AudioNormalizer()
         total_frames: list[PcmFrame] = []
-        # 60 s / 20 ms = 3000 个 stereo 48k 源帧
+        # 60 s / 20 ms = 3000 个 stereo 48k 源帧。
+        # 阶段 A 提速：逐采样合成正弦波占原用例 6.9s 里的绝大部分（约 576 万次 sin 调用），
+        # 而本用例验证的是 60 s 音频的帧计数与缓冲翻转，与波形内容无关——
+        # 只合成一个 20 ms 声纹块，循环喂同一帧，60 s 语义不变、合成开销只付一次。
+        block = _audio_frame(48_000, 2, 960)
         for _ in range(3000):
-            total_frames.extend(normalizer.feed(_audio_frame(48_000, 2, 960)))
+            total_frames.extend(normalizer.feed(block))
         tail = normalizer.flush()
         total_frames.extend(tail)
         # 60 s / 20 ms = 3000 个 canonical
@@ -369,10 +373,12 @@ class TestA309Backpressure:
 class TestA310ICETimeout:
     @pytest.mark.asyncio
     async def test_ice_timeout_moves_to_failed(self) -> None:
+        # 阶段 A 提速：看门狗 sleep 的是 config.ice_timeout_seconds（int 约束，取 1 而非 2），
+        # 等待量随超时同比缩短，验证路径不变
         sess = MediaSession(
             connection_id="c1",
             trace_id="t1",
-            config=_config(ice_timeout_seconds=2),
+            config=_config(ice_timeout_seconds=1),
         )
         sess.create_peer_connection()
 
@@ -380,12 +386,12 @@ class TestA310ICETimeout:
         assert answer
         assert sess.state is MediaState.ANSWER_CREATED
 
-        # ICE 看门狗 2s + 少量 guard
-        await asyncio.sleep(2.5)
+        # ICE 看门狗 1s + 少量 guard
+        await asyncio.sleep(1.3)
         # 允许两种中间态：FAILED（还在等 close schedule）或 CLOSED（已经跑完）
         assert sess.state in (MediaState.FAILED, MediaState.CLOSED)
 
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.3)
         # 最终一定是 CLOSED
         assert sess.state is MediaState.CLOSED
 
