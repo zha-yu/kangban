@@ -129,6 +129,51 @@ class TestDbTrack:
         assert stub.rows[0]["trace_id"] is None
 
 
+class TestElderIdFallback:
+    """_record_db 兜底口径：调用点未显式传 elder_id 时从 runtime_context 身份取。
+
+    覆盖 asr / tts_first_packet 两段（引擎层无身份入参，AGENTS 红线 9 的
+    服务端注入口径）；显式传参（wakeup/connection/playback/llm_first_token）优先。
+    """
+
+    _DEVICE_ID = "11111111-1111-1111-1111-111111111111"
+    _ELDER_ID = "22222222-2222-2222-2222-222222222222"
+
+    def test_falls_back_to_context_identity(
+        self, stub: _StubRecorder, trace  # type: ignore[no-untyped-def]
+    ) -> None:
+        from app.core.runtime_context import Identity, identity_scope
+
+        identity = Identity(kind="device", device_id=self._DEVICE_ID, elder_id=self._ELDER_ID)
+        with identity_scope(identity):
+            record_stage("asr", 100.0, source="funasr")
+        assert stub.rows[0]["elder_id"] == self._ELDER_ID
+
+    def test_explicit_elder_id_wins(
+        self, stub: _StubRecorder, trace  # type: ignore[no-untyped-def]
+    ) -> None:
+        from app.core.runtime_context import Identity, identity_scope
+
+        identity = Identity(kind="device", device_id=self._DEVICE_ID, elder_id=self._ELDER_ID)
+        with identity_scope(identity):
+            record_stage("llm_first_token", 733.0, elder_id="elder-explicit", source="non_stream")
+        assert stub.rows[0]["elder_id"] == "elder-explicit"
+
+    def test_staff_identity_keeps_none(
+        self, stub: _StubRecorder, trace  # type: ignore[no-untyped-def]
+    ) -> None:
+        from app.core.runtime_context import Identity, identity_scope
+
+        identity = Identity(
+            kind="staff",
+            staff_id="33333333-3333-3333-3333-333333333333",
+            role="care_worker",
+        )
+        with identity_scope(identity):
+            record_stage("tts_first_packet", 200.0, source="non_stream")
+        assert stub.rows[0]["elder_id"] is None
+
+
 class TestClientDiagPlayback:
     """裁决 R3：client_diag stage=playback 由服务端代打入 metrics。"""
 
