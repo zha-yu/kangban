@@ -55,6 +55,7 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-grpc>=1.28",
     "langfuse>=2.54",
     "websockets>=17.4",
+    "edge-tts>=7.3.1",
 ]
 
 # uv：本项目是应用而非可分发包，不需要 build-system，也不安装自身
