@@ -29,6 +29,7 @@ from app.api import ROUTERS
 from app.api.elders import _is_request_format_error
 from app.api.schemas.auth import ErrorResponse
 from app.audio import signaling  # Day 3 T2：WS 信令路由（/ws/signal）
+from app.audio.signaling import _ERROR_TALKBACK  # 失败终态话术表（C-1/C-D4）
 from app.audio.tts import TTSUnavailable, build_tts
 from app.audio.webrtc import (  # Day 3 T3：A3 媒体层接线
     enqueue_tts_for_device,
@@ -265,6 +266,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 "dialogue_final_failed",
                 extra={"trace_id": trace_id, "device_id": device_id, "turn_id": turn_id},
             )
+            # C-1：失败必须显性告知（C-D4 方案 A：internal 为失败终态），
+            # 否则 asr_final 已置前端「正在想」，静默 return 会让状态条永久卡住
+            signaling.deliver(
+                device_id,
+                {"type": "error", "code": "internal", "message": _ERROR_TALKBACK["internal"]},
+            )
             return
 
         if reply is not None:
@@ -326,6 +333,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                         "error_type": type(exc).__name__,
                     },
                 )
+                # tts_text 已置前端「正在说」，音频不会再来，必须显性收尾
+                signaling.deliver(
+                    device_id,
+                    {"type": "error", "code": "internal", "message": _ERROR_TALKBACK["internal"]},
+                )
                 return
             except Exception as exc:
                 logger.error(
@@ -336,6 +348,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                         "turn_id": turn_id,
                         "error_type": type(exc).__name__,
                     },
+                )
+                signaling.deliver(
+                    device_id,
+                    {"type": "error", "code": "internal", "message": _ERROR_TALKBACK["internal"]},
                 )
                 return
             finally:
