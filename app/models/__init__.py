@@ -12,6 +12,7 @@
 注意：后续 C/D 组建表时同样「先加模型类，再 autogenerate」，避免同类漂移。
 """
 
+from app.models.audit import AuditLog
 from app.models.base import NAMING_CONVENTION, Base
 from app.models.conversation import ConversationThread
 from app.models.guardian import GuardianAccount
@@ -23,6 +24,7 @@ from app.models.voiceprint import Voiceprint
 
 __all__ = [
     "NAMING_CONVENTION",
+    "AuditLog",
     "Base",
     "Bed",
     "ConversationThread",
