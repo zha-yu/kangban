@@ -2,12 +2,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { PadStatus } from "./types";
 import type { SubtitleSource } from "./components/BigSubtitle";
 import type { DeviceSession } from "./session";
+import type { IdentityAskMsg } from "./protocol";
 import { sessionValid, loadSession, clearSession } from "./session";
 import { StatusBar } from "./components/StatusBar";
 import { BigSubtitle } from "./components/BigSubtitle";
 import { StatusBadge } from "./components/StatusBadge";
 import { SosButton } from "./components/SosButton";
 import { HoldToTalk } from "./components/HoldToTalk";
+import { IdentityConfirm } from "./components/IdentityConfirm";
 import { TaskPanel } from "./components/TaskPanel";
 import { ChatTranscript, type ChatMessage } from "./components/ChatTranscript";
 import { LoginPage } from "./pages/LoginPage";
@@ -96,6 +98,9 @@ function MainScreen({
     INITIAL_DEMO_TASK ? TASK_HINTS[INITIAL_DEMO_TASK] : null,
   );
 
+  // C5：声纹低置信/不可用时的身份确认面板（identity_ask 到达即弹，result/超时收起）
+  const [identityAsk, setIdentityAsk] = useState<IdentityAskMsg | null>(null);
+
   // 唯一订阅点。open 时幂等（同 taskId 不重启面板）、close 时只对得上的任务生效；
   // 任务到达会退出形象选择页，SOS 结果态保持优先、不被任务挤掉。
   useEffect(
@@ -174,6 +179,7 @@ function MainScreen({
   const endSession = useCallback(() => {
     setPhase("standby");
     setStatus("disconnected");
+    setIdentityAsk(null); // C5：会话断开时确认面板一并收起（后端连接关闭已取消计时）
   }, []);
 
   // standby 期：KWS 可用性探测 + 端侧监听（R-5：探测失败落呼叫按钮降级，不阻塞）
@@ -227,6 +233,14 @@ function MainScreen({
       onSubtitle: pushSubtitle,
       onAuthFail: onLogout, // 会话过期/无效 → 回登录页（T-H 方案 A 定案）
       onNeedManualRetry: endSession, // 连续 5 次重连失败 → 同样回待机，按钮重新出现
+      // C5：声纹拿不准 → 弹大按钮确认；定案后收面板（generic 出一行系统提示，confirm/voice 由 TTS 接管）
+      onIdentityAsk: (msg) => setIdentityAsk(msg),
+      onIdentityResult: (msg) => {
+        setIdentityAsk(null);
+        if (msg.source === "generic") {
+          pushSubtitle("这次没能确认您的身份，先陪您聊聊。", "notice");
+        }
+      },
       audioEl: audioRef.current,
     });
     clientRef.current = client;
@@ -332,6 +346,18 @@ function MainScreen({
 
       {/* TTS 下行播放（WebRTC 收轨）；传给 AvatarStage 做口型（P1） */}
       <audio ref={audioRef} />
+
+      {/* C5 身份确认：全屏遮罩置顶，压过 SOS / 任务面板（身份未定，先认人） */}
+      {identityAsk && (
+        <IdentityConfirm
+          ask={identityAsk}
+          onConfirm={(askId, elderId) => {
+            clientRef.current?.confirmIdentity(askId, elderId);
+            setIdentityAsk(null); // result 到达前先收面板，避免重复点击
+          }}
+          onDismiss={() => setIdentityAsk(null)}
+        />
+      )}
 
       {/* 顶栏：状态条 + 退出 + SOS 常显（FR-ALT-06）。SOS 固定在最右 80px 高，
           相位切换、SOS 结果态、形象选择页都不改变它的位置 */}

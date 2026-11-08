@@ -3,33 +3,37 @@
 > ⚠️ **本文件由 `scripts/update_progress.py` 自动生成，不要手改**——改任务卡首部的 `> 状态：` 行，再跑一次脚本（或直接提交，pre-commit 钩子会自动刷新）。
 > 刻意不写生成时间与提交哈希：那两样每次提交都会变，会让看板变成噪音。提交历史看 `git log`。
 
-## 总览：**1 / 2** 张任务卡已收口
+## 总览：**2 / 6** 张任务卡已收口
 
 | # | 任务卡 | 状态 | 文件 |
 | --- | --- | --- | --- |
 | 1 | Task a0 · 设备密钥轮换溯源（联调遗留跟进） | ⬜ 未开始 | `docs/team_tasks/day05/a0-设备密钥轮换溯源.md` |
 | 2 | Task a1 · 本地 VRM 与形象选择页（Day05 A1） | ✅ 已完成 | `docs/team_tasks/day05/a1-本地VRM与形象选择页.md` |
+| 3 | Task dev-A · 后端 · 观测与数据链路（metrics 全链路） | 🚧 进行中（A-1/A-2/A-4 已交付，A-3 待 N1） | `docs/team_tasks/day05/dev-a-后端观测与数据.md` |
+| 4 | Task dev-B · 后端 · 护栏与超时降级（guardrails + 三档超时） | ✅ 已完成 | `docs/team_tasks/day05/dev-b-后端护栏与降级.md` |
+| 5 | Task dev-C · 前端 · pad 端（超时表现、延迟测量、声纹联调） | 🚧 进行中 | `docs/team_tasks/day05/dev-c-前端pad语音与3D.md` |
+| 6 | Task dev-D · 前端 · console/family 双端（admin 页、契约对齐、切换层） | 🚧 进行中 | `docs/team_tasks/day05/dev-d-前端console与family.md` |
 
 ## 计划件状态
 
 | 计划 | 状态 |
 | --- | --- |
 | `docs/plans/day05/a-后端观测与数据.md` | 🚧 进行中 |
-| `docs/plans/day05/a1-本地VRM与形象选择页.md` | ❔ 已冻结 |
-| `docs/plans/day05/d-DAG.md` | ❔ 草稿 |
+| `docs/plans/day05/a1-本地VRM与形象选择页.md` | 🔒 已冻结 |
+| `docs/plans/day05/d-DAG.md` | 📝 草稿 |
 | `docs/plans/day05/d-admin页走查记录.md` | ✅ 已完成（真实端点走查） |
-| `docs/plans/day05/d-prompt-双端前端.md` | ❔ 草稿 |
-| `docs/plans/day05/d-双端前端推进计划.md` | ❔ 草稿 |
+| `docs/plans/day05/d-prompt-双端前端.md` | 📝 草稿 |
+| `docs/plans/day05/d-双端前端推进计划.md` | 📝 草稿 |
 | `docs/plans/day05/d-启动门槛核对.md` | 🚧 进行中 |
-| `docs/plans/day05/d-字段差异清单.md` | ❔ 部分完成（等待 A-4） |
-| `docs/plans/day05/d-家属端切换层说明.md` | ❔ 部分完成（B-3 v1.1 已到，等待 X3 冻结） |
-| `docs/plans/day05/d-家属端契约差异表.md` | 🚧 进行中（B-3 v1.1 已到，等待 X3 冻结） |
-| `docs/plans/day05/d-汇报清单.md` | ❔ 部分完成（D-1 走查通过；N8/N10/N11 阻塞） |
+| `docs/plans/day05/d-字段差异清单.md` | 🚧 进行中（A-4 v0.1 已到，待 N10 双向确认） |
+| `docs/plans/day05/d-家属端切换层说明.md` | 🚧 进行中（B-3 v1.1 已到，X3 冻结未排期） |
+| `docs/plans/day05/d-家属端契约差异表.md` | 🚧 进行中（B-3 v1.1 已到，X3 冻结未排期） |
+| `docs/plans/day05/d-汇报清单.md` | 🚧 进行中（D-1 走查通过；N8/N10/N11 阻塞） |
 | `docs/plans/day05/day-05-延迟基线与护栏.md` | 🚧 进行中 |
-| `docs/plans/day05/dev-b-护栏与降级.md` | 🚧 进行中 |
+| `docs/plans/day05/dev-b-护栏与降级.md` | 🔒 已冻结 |
 | `docs/plans/day05/dev-c-pad语音与3D.md` | 🚧 进行中 |
 
-## 契约冻结：（本日无 contracts.md）
+## 契约冻结：**待冻结（家属端 X3 未排期；照护台 A-4 v0.1 待冻结）**
 
 ## 怎么更新
 

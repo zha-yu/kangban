@@ -1,6 +1,6 @@
 # Day 04 · 3D 数字人与身份闭环 · 后端技术方案与实施计划
 
-> 状态：草稿　｜　版本：v2.3　｜　日期：2026-11-06
+> 状态：已冻结　｜　版本：v2.5　｜　日期：2026-11-07
 > 关联：docs/team_tasks_day04/（任务卡待建，本件为该批卡的后端方案底稿）；day-03-a5（VAD 兜底）、task-a2（信令契约）
 > 上游依据：PRD L258-259（FR-3D-01/02）、L270（FR-DLG-05）、L283-286（FR-VPR-01~03）、L496（AC-15）、L523/L544（FR-UI-11/AC-42 唤醒词，2026-11-06 裁决定 P0）、L571（§6.1 Day 4 验收行）、§3.2 身份双条件模型；技术设计文档 L147（边界 3）、L155（边界 11 不做 diarization）、L163/L191（选型）、L200（System 2 统一 LLM 适配器）、L287（session_seq/thread_id 闸门①）、L347（personas.avatar_url）、L410-420（voiceprints 表·裁决 B2/C1）、L536-545（conversation_threads 表）、L983/L1025-1034（Day 4 实现口径）、L1153-1154（FR 归属日）；参考件 `/Users/min/Downloads/asr/docs/语音智能体接入教程.md` §6 L383-421（仅技术参考，不构成事实依据）
 > 变更记录见文末
@@ -100,9 +100,9 @@ Day 4 主题 =「3D 与身份闭环」（技术文档 §8.3 L1025-1034：把「�
 
 | 接口 | 语义 | 关键口径 |
 | --- | --- | --- |
-| `POST /api/voiceprints/samples` | 上传 1 段注册音频（multipart，16k PCM/WAV，`sample_index` ∈ 1..3） | 服务端现场提取 embedding 落 `voiceprints`（同 `(elder_id, version, sample_index)` 重复上传 409，裁决 C1 唯一约束）；**原始音频提取后即弃，不落盘**（PRD §1.5、AC-36）；3 段齐全才置 active |
-| `GET /api/voiceprints/status` | 查询当前绑定长者注册进度 | 返回 `{registered_samples, version, is_active}` |
-| `DELETE /api/voiceprints` | 删除本人全部声纹（知情可删，页面引导口径） | 连向量一起删（FR-ADM-09 预演）；写审计日志 |
+| `POST /api/voiceprints/samples` | 上传 1 段注册音频（multipart，16k PCM/WAV，`sample_index` ∈ 1..3） | 服务端现场提取 embedding 落 `voiceprints`（同 `(elder_id, version, sample_index)` 重复上传 409，裁决 C1 唯一约束）；**原始音频提取后即弃，不落盘**（PRD §1.5、AC-36）；3 段齐后查询状态为 active |
+| `GET /api/voiceprints/status` | 查询当前绑定长者注册进度 | C4 响应 `{elder_id, status: none|partial|active, registered: [1..3], version}` |
+| `DELETE /api/voiceprints` | 删除本人全部声纹（知情可删，页面引导口径） | 连 embedding 一起删；C4 要求写 `audit_logs`（当前实现差异见 §3.0.1） |
 
 - 身份：设备 JWT → 绑定长者；单/双人间均只操作**本人**的声纹。超时/失败语义：模型推理失败返回 503 `vp_unavailable`，前端引导稍后再试或跳过注册（跳过不阻断其他功能）。
 
@@ -156,7 +156,7 @@ Day 4 主题 =「3D 与身份闭环」（技术文档 §8.3 L1025-1034：把「�
 | # | 文件 | 动作 | 内容 |
 | --- | --- | --- | --- |
 | M14 | `app/api/pad.py`、`app/api/voiceprints.py` | 新建 | I1、I4 路由：只做校验+调 services+序列化；`main.py` 各 +1 行注册 |
-| M15 | `app/core/config.py` | +字段 | `default_avatar_url`、`default_fallback_avatar_url`、`voiceprint_model`、`voiceprint_encrypt_key`、`identity_confirm_timeout_seconds=30`；`.env.example` 同步占位符（**§5 高风险，只加占位**） |
+| M15 | `app/core/config.py` | +字段 | `default_avatar_url`、`default_fallback_avatar_url`、`voiceprint_model`、`voiceprint_fernet_key`、`identity_confirm_timeout_seconds=30`；`.env.example` 同步占位符（**§5 高风险，只加占位**） |
 | M16 | `docker-compose.yml` + nginx 配置 | 改 | 挂载 `deploy/assets/avatars/`（`:ro`）+ MIME/CORS；**§5 高风险文件，人工逐行审 diff** |
 | M17 | `.gitignore` / README / seed | 改 | gitignore 加 `deploy/assets/avatars/`；README 增「VRM 资源放置」「声纹模型下载」两节；seed 填 `personas.avatar_url`（演示声纹不 seed，现场录制） |
 
@@ -174,7 +174,7 @@ M13 vad 接线（依赖 day-03-a5 交付物）
 - **禁触**：`app/audio/asr.py`、`tts.py`（Day 3 冻结适配层）；`app/core/auth*.py`、`security.py`（只复用依赖）；已合入迁移（0001–0003，只新增）。
 - **自裁项**（技术文档未定，依 AGENTS 铁律 6 随代码同提交留痕）：
   1. LLM 适配器落位 `app/services/llm_service.py`（文档只定「统一适配器」未定路径）；
-  2. 声纹 embedding **应用层加密**（Fernet，key 走 Settings `voiceprint_encrypt_key`）——文档只说「加密存储」未定方式；
+  2. 声纹 embedding **应用层加密**（Fernet，key 走 Settings `voiceprint_fernet_key`）——文档只说「加密存储」未定方式；
   3. thread 生命周期：首轮身份判定成功后事务内 `session_seq + 1` 并建 `conversation_threads` 行；**会话中换人（声纹复检变化）→ 结束旧 thread、开新 thread**（支撑「换人内容不进上一位记忆」验收句）；
   4. I2/I5 消息格式：原列自裁，2026-11-06 已获 A2 owner 确认，随 task-a2 契约变更记录留痕（不再是悬置项）。
 
@@ -182,9 +182,9 @@ M13 vad 接线（依赖 day-03-a5 交付物）
 
 ## 3. 交互时序与数据流转
 
-### 3.0 分阶段流程图（按工作线，口径 = v2.3）
+### 3.0 分阶段流程图（按工作线，设计基线 = v2.3）
 
-> 与 §3.1–§3.4 时序图互补的分支视图；身份级联图已按 2026-11-06 裁决更新（设备 1v1 候选集、每会话首轮校验），与早期 beds JOIN 版本不可混用。
+> 与 §3.1–§3.4 时序图互补的分支视图；身份级联图已按 2026-11-06 裁决更新（设备 1v1 候选集、每会话首轮校验），与早期 beds JOIN 版本不可混用。以下目标设计图按 2026-11-07 的代码核对结果补充异常与恢复口径；设计目标不自动代表当前实现已达到。
 
 **① W5 · 唤醒词入口（会话开始前）**
 
@@ -193,10 +193,13 @@ flowchart TD
     A["pad 待机<br/>屏幕常亮 · 呼叫按钮可见"]
     A --> B{"唤醒词「小伴」<br/>端侧 KWS 检测（P0）"}
     B -- "命中" --> C["建连 WebRTC 全双工<br/>≤1.5s（AC-42：20 次中 ≥18 次）"]
-    B -- "未命中" --> A2["原始音频不出端<br/>继续待机"]
-    B -- "KWS 不可用" --> D["降级：呼叫按钮（FR-UI-09 路径复用）"]
-    D --> C
-    A --> C
+    B -- "未命中" --> A2["原始音频不出端<br/>继续本地检测"]
+    A2 --> B
+    B -- "KWS / 麦克风权限不可用" --> D["显示呼叫按钮<br/>（FR-UI-09 路径复用）"]
+    A --> E{"长者点击呼叫按钮？"}
+    E -- "是" --> C
+    E -- "否" --> A
+    D --> E
 ```
 
 配套时序图：
@@ -216,8 +219,8 @@ sequenceDiagram
     BE-->>WS: 连接建立
     K->>BE: WebRTC offer / ICE（coturn TURN）
     BE-->>K: answer · ontrack（TTS 音频轨）
-    BE->>K: greeting → TTS 首包
-    Note over E,BE: 全双工对话开始<br/>说话后走图 ② 身份级联（时序见 §3.1）
+    BE-->>K: 媒体通道 ready
+    Note over E,BE: 建连后才把会话麦克风交给 RealtimeClient<br/>后续 ASR FINAL 走图 ② 身份级联（时序见 §3.1）
 ```
 
 **② W2 · 身份级联（设备 1v1 + 每会话首轮校验）**
@@ -227,14 +230,21 @@ flowchart TD
     S["说话音频 · VAD/ASR 切段"]
     S --> Q{"会话首轮？"}
     Q -- "首轮：强制校验" --> M["与设备绑定长者比对<br/>候选集恒 1 位（1v1）<br/>cosine 阈值 0.85"]
-    Q -- "非首轮：静默复检" --> R{"身份是否变化？"}
-    R -- "否（命中本人）" --> GO["继续本轮对话<br/>不打断"]
-    R -- "是（换人 / 访客插话）" --> E2["结束旧 thread → 开新 thread"]
-    E2 --> M
+    Q -- "非首轮：静默复检" --> R{"复检结果"}
+    R -- "命中当前长者 / generic 未命中 / 推理不可用" --> GO["沿用当前 thread<br/>不打断"]
+    R -- "generic 命中绑定长者" --> E2["结束 generic thread<br/>开 personal thread"]
+    E2 --> V
+    R -- "personal 未命中（< 0.85）" --> E3["结束旧 personal thread<br/>停止读取个人上下文"]
+    E3 --> ASK
     M -- "cosine ≥ 0.85" --> V["命中 · voice<br/>identity_source=voice"]
-    M -- "cosine < 0.85<br/>或声纹服务不可用" --> ASK["低置信 · 主动确认<br/>identity_ask（候选仅绑定长者）<br/>reason=low_confidence / vp_unavailable"]
+    M -- "cosine < 0.85 / 无有效样本" --> ASK["低置信 · 主动确认<br/>identity_ask（候选仅绑定长者）<br/>reason=low_confidence"]
+    M -- "声纹推理服务不可用" --> ASK2["主动确认<br/>reason=vp_unavailable"]
     ASK -- "30s 内 identity_confirm" --> CF["确认成功 · confirm<br/>elder_id 必须等于绑定长者"]
+    ASK2 -- "30s 内 identity_confirm" --> CF
     ASK -- "超时 30s" --> GE["通用模式 · generic<br/>不读记忆 · 不写健康 · 不确认用药"]
+    ASK2 -- "超时 30s" --> GE
+    ASK -- "确认 ID 不匹配候选 / 无有效确认" --> GE
+    ASK2 -- "确认 ID 不匹配候选 / 无有效确认" --> GE
     style GE fill:#fff3e0,stroke:#e65100
     style V fill:#e8f5e9,stroke:#1b5e20
     style CF fill:#e8eaf6,stroke:#283593
@@ -246,16 +256,21 @@ flowchart TD
 
 ```mermaid
 flowchart TD
+    RTC{"WebRTC 媒体链可用？"}
     V0["端侧 TEN-VAD（pad 主 VAD）"]
-    V0 -- "切句帧流" --> U["WS utterance 上行（身份已定）"]
+    RTC -- "可用" --> V0
+    RTC -- "不可用" --> V2["HTTP 按住说话整段上传<br/>POST /api/audio/utterance"]
+    V0 -- "可用：发送切段控制事件" --> U["WebRTC 音频轨上行<br/>WS 仅传 asr_start / asr_end"]
     V0 -- "加载失败 / 不可用" --> V1["服务端 webrtcvad 兜底<br/>app/audio/vad.py"]
-    V1 -- "仍不可用" --> V2["HTTP 按住说话整段上传（降级二）"]
-    U --> C["闸门① · 服务端建 thread<br/>conversation_threads (elder_id, session_seq)"]
-    C --> X["上下文组装<br/>固定前缀人设 + Redis 最近 5 轮<br/>+ 记忆召回（Day 7 起生效）"]
-    X --> L{"LLM 调用<br/>首 token ≤ 800ms"}
-    L -- "成功" --> T["TTS 流式播报<br/>口型 + 大字幕"]
-    L -- "超时 / 限流（退避重试 ≤2 次）" --> F["降级：L1 结果 + 模板话术<br/>并提示人工（FR-DLG-05）"]
-    T --> H["utterance 落库 · session_seq 递增"]
+    V1 -- "正常切段" --> U
+    V1 -- "服务端 VAD 也不可用" --> V2
+    U --> C["ASR FINAL 后做身份判定<br/>新身份才开 thread；同一会话复用"]
+    V2 --> C
+    C --> X["上下文组装<br/>固定前缀 + Redis 最近 5 轮<br/>Day 7 记忆召回仍属后续能力"]
+    X --> L{"LLM 调用<br/>≤800ms 为预算目标，需实测验证"}
+    L -- "成功" --> T["当前：整段 TTS 合成后入队<br/>字幕 + 音频；TTS 失败保留字幕"]
+    L -- "超时 / 限流（退避重试 ≤2 次）" --> F["FR-DLG-05 固定降级话术<br/>当前不接 L1 结果"]
+    T --> H["个人身份：写回 Redis 最近轮次<br/>不创建 utterances 表行"]
     F --> H
     style F fill:#fff3e0,stroke:#e65100
 ```
@@ -268,11 +283,17 @@ flowchart TD
 flowchart TD
     P["pad 启动 · 设备 JWT"]
     P --> G["GET /api/pad/avatar-config<br/>三层取值链：persona → Settings → 前端内置"]
-    G --> N["拉取 avatar_url<br/>nginx /avatars/ · 5s 竞速"]
-    N -- "< 5s 成功" --> OK["渲染 VRM<br/>VRM0 旋 180° + rotation_y_offset"]
-    N -- "失败 / > 5s" --> FB["静态头像 fallback_image_url<br/>核心功能不白屏（AC-15）"]
-    FB --> D2["client_diag 上报（仅日志）"]
-    OK --> O["开场白 greeting → TTS → 口型开合<br/>「5 秒立起并开口说话」"]
+    G -- "401" --> AUTH["设备会话失效<br/>回登录页"]
+    G -- "403 device_not_bound" --> UNB["提示照护台绑定设备<br/>不伪装成形象缺失"]
+    G -- "200 且 avatar_url 为空" --> FB["fallback_image_url<br/>图片失败则内置渐变占位"]
+    G -- "200 且有 avatar_url" --> N["拉取 avatar_url<br/>nginx /avatars/ · 5s 竞速"]
+    G -- "配置网络错误 / 非成功响应" --> LOCAL["内置渐变占位<br/>服务端 fallback URL 不可用"]
+    N -- "< 5s 成功" --> OK["渲染 VRM<br/>rotation_y_offset"]
+    N -- "失败 / > 5s" --> FB
+    FB -- "VRM 下载 / 渲染失败" --> D2["client_diag 上报一次（仅日志）"]
+    OK --> READY["数字人舞台就绪"]
+    FB --> READY
+    LOCAL --> READY
     style FB fill:#fff3e0,stroke:#e65100
     style OK fill:#e8f5e9,stroke:#1b5e20
 ```
@@ -289,16 +310,28 @@ sequenceDiagram
     participant WS as 信令 WS
     P->>API: GET /api/pad/avatar-config（设备 JWT）
     API->>DB: 三层取值链：persona → Settings → 前端内置
-    API-->>P: avatar_url + fallback_image_url + rotation_y_offset + version
-    P->>NG: GET avatar_url（.vrm，5s 竞速）
-    alt 5s 内成功
-        NG-->>P: VRM 文件
-        P->>P: 渲染（VRM0 旋 180° + offset）
-        P->>P: greeting → TTS → 口型开合（「5 秒立起并开口说话」）
-    else 失败 / 超时
-        P->>P: 切静态头像 fallback_image_url（AC-15，不白屏）
-        P->>WS: client_diag {stage, error}（仅日志，P1）
+    alt 200 且响应结构有效
+        API-->>P: avatar_url + fallback_image_url + rotation_y_offset + version
+        alt 200 且 avatar_url 为空
+            P->>P: fallback_image_url；无图时用内置渐变占位
+        else 返回 avatar_url
+            P->>NG: GET avatar_url（.vrm，5s 竞速）
+            alt 5s 内成功
+                NG-->>P: VRM 文件
+                P->>P: 渲染（依据 rotation_y_offset）
+            else 失败 / 超时 / 解析失败
+                P->>P: fallback_image_url；无图时用内置渐变占位（AC-15）
+                P->>WS: client_diag {stage, ok:false, error}（仅日志）
+            end
+        end
+    else 401 设备会话失效
+        API-->>P: 401 → 既有回登录逻辑
+    else 403 device_not_bound
+        API-->>P: 403 → 大字提示照护台绑定设备
+    else 网络错误 / 其他非成功响应
+        P->>P: 配置不可用，直接内置渐变占位（拿不到 fallback_image_url）
     end
+    Note over P,WS: 舞台加载与语音会话、开场白是独立流程；开场白验收见下方逐图核验说明
 ```
 
 **⑤ 前端业务流程 · 设备登录校验（员工端 → pad 引导，W2 前置）**
@@ -306,12 +339,14 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     A["员工端 · 用户信息录入<br/>服务端生成 elder_id"]
-    A --> B["分配设备<br/>获取 device_id + 初始密码<br/>（凭证只展示一次，不落日志）"]
-    B --> C["pad 引导页 · 设备登录<br/>设备会话 JWT（24h）"]
-    C --> D{"登录后校验链<br/>device → elder → voiceprints"}
+    A --> B["分配 / 绑定已登记设备<br/>安全交付 device_id + device_secret"]
+    B --> C["pad 引导页 · 用 device_id + device_secret 换会话<br/>成功后设备会话 JWT（24h）"]
+    C -- "401 / 凭证无效" --> C2["提示重新核对设备凭证<br/>不进入对话"]
+    C --> D{"GET /api/voiceprints/status<br/>device → elder → voiceprints"}
     D -- "未绑定长者" --> X["提示：当前设备没有被绑定<br/>（接口 409 device_unbound）"]
     D -- "已绑定 · 已有 active 声纹" --> Y["进入正常使用流程<br/>会话首轮声纹校验（图 ②）"]
-    D -- "已绑定 · 未注册声纹" --> E["自动弹出引导提示<br/>先完成声纹录入"]
+    D -- "已绑定 · none / partial" --> E["弹出引导提示<br/>完成缺少的声纹样本"]
+    D -- "网络 / 503" --> N["提示声纹状态暂不可用<br/>允许进入对话；个人能力仍须过身份闸门"]
     E --> F["图 ⑥ · 声纹注册"]
     style X fill:#fff3e0,stroke:#e65100
     style Y fill:#e8f5e9,stroke:#1b5e20
@@ -327,19 +362,23 @@ sequenceDiagram
     participant P as pad 引导页
     ST->>API: 创建长者档案（服务端生成 elder_id）
     API-->>ST: elder_id
-    ST->>API: 分配设备并绑定 elder
-    API-->>ST: device_id + 初始密码（只展示一次，不落日志）
+    ST->>API: 分配 / 绑定已登记设备
+    API-->>ST: 设备凭证按设备开通流程安全交付（device_id + device_secret）
     ST->>P: 凭证录入 / 引导登录
-    P->>API: 设备登录（device_id + 初始密码）
+    P->>API: POST /api/device-sessions（device_id + device_secret）
     API-->>P: 设备会话 JWT（24h）
     P->>API: GET /api/voiceprints/status（设备 JWT）
     API->>API: 校验链 device → elder → voiceprints
     alt 未绑定长者
         API-->>P: 409 device_unbound →「当前设备没有被绑定」
-    else 已绑定 · 未注册声纹
-        API-->>P: status=not_registered → 弹声纹录入引导（图 ⑥）
+    else 已绑定 · status=none / partial
+        API-->>P: 弹声纹录入引导（图 ⑥）
     else 已绑定 · 已有 active 声纹
         API-->>P: status=active → 进入正常使用（图 ② / §3.1）
+    else 声纹状态查询网络错误 / 503
+        API-->>P: 暂不可用 → 允许进入对话并显示提示
+    else 设备凭证无效 / 会话过期
+        API-->>P: 401 → 回登录，不启动对话
     end
 ```
 
@@ -353,15 +392,54 @@ flowchart TD
     G --> H["Fernet 加密<br/>key 走 Settings · 不进代码"]
     H --> I["落库 voiceprints<br/>(elder_id, version, sample_index)<br/>每段一行 · 唯一约束"]
     I --> J{"3 段齐？"}
-    J -- "未齐" --> E
-    J -- "齐" --> K["置 active · 随时 DELETE 重录<br/>原始音频取完即弃，不落盘（AC-36）"]
+    J -- "未齐" --> NEXT["保留已成功样本<br/>进入下一个未注册 sample_index"]
+    NEXT --> E
+    J -- "齐" --> K["status 查询自然变为 active<br/>DELETE 是全量重置；原始音频即弃（AC-36）"]
     K --> Y2["进入正常使用（图 ② 会话首轮校验生效）"]
-    F -- "推理失败返回 503" --> E
+    F -- "422 音频 / 参数错误" --> RETAKE["提示原因，重录当前段"]
+    F -- "503 / 网络失败" --> RETRY["保留已提交段<br/>长者稍后点击重试当前段"]
+    F -- "409 已存在" --> CHECK["先 GET status 核对 registered<br/>不可把 409 当成覆盖成功"]
+    CHECK -- "确认该段已保存" --> NEXT
+    CHECK -- "状态不一致" --> STOP["停止自动重录<br/>提示照护人员处理或显式重置全套"]
+    RETAKE --> E
+    RETRY --> E
     style K fill:#e8f5e9,stroke:#1b5e20
     style E fill:#e8eaf6,stroke:#283593
 ```
 
-> 配套时序：见 §3.2 声纹注册时序（逐段上传 / 重复 409 / 推理失败 503 / 置 active 的完整消息流）。
+> 配套时序：见 §3.2 声纹注册时序（逐段上传 / 重复 409 / 推理失败 503 / 三段齐后 status=active 的消息流）。
+
+### 3.0.1 全部流程图逐图核验补充（2026-11-07）
+
+本节逐一覆盖 §3.0 的 6 张 flowchart、3 张配套 sequenceDiagram，以及 §3.1 的主链路 sequenceDiagram，共 10 张 Mermaid 图。图内写的是验收/目标流程；下表补上代码现状、边界和各图必须共用的语义，避免把“任务卡已交付”误读成“所有 PRD 验收均已验证”。
+
+| 图 | 逐图补充与代码核验 |
+| --- | --- |
+| ① W5 唤醒入口 flowchart | 呼叫按钮从待机态始终可用；KWS 未命中只留在 pad 本地继续检测，不能上传音频或建连。KWS 加载失败、麦克风权限失败均收敛到按钮入口。当前端侧实现已接入；`frontend/public/kws/` 运行时资产被忽略、不随 Git 提交，新环境需按 `scripts/build-kws-wasm.md` 生成后才能验证真实唤醒率。 |
+| ① W5 配套 sequenceDiagram | 唤醒命中后先停掉待机 KWS 麦克风，再由 `RealtimeClient` 重新申请麦克风、通过 WS 设备 JWT 鉴权并协商 WebRTC；音频走 WebRTC track，WS 承载认证、信令和切段控制。AC-42 的 1.5 秒是唤醒到进入对话的端到端验收，不等于单独的 KWS 推理耗时；唤醒命中也不等于开场白已播放。 |
+| ② W2 身份级联 flowchart | 候选集恒为设备绑定长者一人。首轮无有效声纹样本落到低置信确认，推理容器不可用用 `vp_unavailable`；两者都只有 30 秒确认窗口。超时、确认值不等于候选 elder_id 或未得到有效确认都必须落 generic，且 generic 不得访问个人 Redis 历史或执行用药/健康动作。后续静默复检中，同人命中、generic 未命中、推理服务不可用都沿用当前线程；generic 命中绑定长者时升级为 personal 新线程；personal 低置信则关闭旧线程并转确认。 |
+| ③ W4+W3 对话 flowchart | TEN-VAD 发 `asr_start/asr_end` 控制消息，PCM 音频走 WebRTC track；端侧 VAD 不可用时由服务端 webrtcvad 接管同一 WebRTC 音频链路，WebRTC 或两级 VAD 都不可用时才走 HTTP 按住说话。当前 `POST /api/audio/utterance` 仍是 Day 3 的 ASR + 模板回声端点，尚未接入身份服务和 LLM，不能按图中目标链路认定回退后仍有个人上下文。身份服务在新身份线程建立时创建 `conversation_threads` 并递增个人 `session_seq`，普通轮次复用线程；当前每轮上下文用 Redis 最近轮次，没有 `utterances` 表落库。Day 7 记忆召回是未来能力。当前 LLM 返回整轮结果、TTS 整段合成后入队；≤800ms 首 token 和流式 TTS 仍需按基线单独验证，降级话术不应称为“L1 结果”（System One 当前未接入这条链）。 |
+| ④ W1 3D flowchart | `avatar-config` 成功响应严格为 `avatar_url`、`fallback_image_url`、`rotation_y_offset`、`version` 四项。401 回登录；403 `device_not_bound` 明示绑定问题；有效响应但空 `avatar_url` 时用 `fallback_image_url`，配置请求失败时只能用前端内置渐变。VRM 下载、解析或渲染失败才发一次 `client_diag`；“未配置形象”是正常降级，不应伪报成加载故障。验收 5 秒应从 pad 舞台启动计时到 VRM 就绪或静态画面可见；avatar-config 与 VRM 下载各自的 5 秒请求超时不能相加当作通过。 |
+| ④ W1 配套 sequenceDiagram | 3D 舞台加载与 WebRTC 会话、身份、开场白是独立流程，VRM 成功不能作为 TTS 成功证据。当前 `AvatarStage` 支持 5 秒加载降级，但 `app/main.py` 创建 `DialogueOrchestrator` 时未传 `persona_provider`，运行装配中也未发现 `personas.greeting` 播放接线；因此“5 秒内立起并开口说话”仍需单独补接并做端到端验收，不能仅凭此图标为已实现。 |
+| ⑤ 设备登录 flowchart | 设备凭证契约字段是 `device_id + device_secret`，不是用户口令；`device_secret` 是长期凭证，成功换取 24 小时设备会话 JWT 后，业务 API 只用会话 JWT。登录 401 回登录提示；状态查询 409 未绑定时阻断对话；查询网络/503 时 pad 当前会放行并提示，后续个人身份仍必须经身份闸门判定。声纹状态取值为 `none / partial / active`。 |
+| ⑤ 设备登录配套 sequenceDiagram | 员工操作应理解为给已登记设备分配/绑定长者，再按设备开通流程安全交付长期 `device_secret`；不要写成“员工端创建并发初始密码”，除非设备管理契约确实如此。pad 的 `/voiceprints/status` 查询失败目前不阻止进入对话；401 则回登录，409 则显示未绑定提示。 |
+| ⑥ W2 声纹注册 flowchart | 每次成功上传的 embedding 即单段持久化，三段都存在时查询结果自然成为 `active`，没有额外“置 active”接口。422 需重录当前段；503/网络失败保留已保存段，只重试未确认段；409 表示该 `sample_index` 已占用，不是覆盖成功，先读 status 的 `registered` 核对。当前 pad 页面没有从 `registered` 恢复进度，且把 409 提示成“重录本段”；与图中的恢复路径不一致，需补前端续录/冲突处理。DELETE 会删掉长者全部样本，是全量重置，不是单段重录。契约要求删除写 `audit_logs`，当前删除服务只提交删除并写应用日志，尚未看到审计表写入。 |
+| §3.1 W2+W3+W4 主链路 sequenceDiagram | 每个正常 turn 不新建 thread、不递增 `session_seq`；只在身份终态首次落地或身份切换时由 `identity_service` 关旧开新，线程 ID 由服务端生成。personal 读取/写回 Redis 最近轮次，generic 不读不写 Redis。当前 `DialogueOrchestrator` 的 persona 注入未接线；LLM 是整轮请求，`CloudTTSProvider` 仍是 `NotImplementedError` 骨架，配置的 TTS provider 返回整段 PCM。流程验收应分别记录身份隔离、字幕送达、音频合成，不把其中一项通过推定为另外两项通过。 |
+
+#### 流程图揭示的实现差异与处置优先级
+
+| 优先级 | 差异 | 补充/处置口径 |
+| --- | --- | --- |
+| P0 | `app/core/config.py` 中 `voiceprint_fernet_key` 存在固定默认值，和“密钥只从 `.env` 注入”的图示及 AGENTS §4.2 冲突。 | 改为无默认值的必填 Settings；缺少密钥时启动失败。已用该默认 key 加密的数据需先确认是否仅本地样本，再安排重加密/清理，不能把默认 key 当生产密钥。 |
+| P1 | 声纹部分注册的页面恢复与 409 分支未闭合；当前失败提示要求重录已占用的 sample_index。 | pad 进入录入页时读取 `registered` 并跳到缺失段；上传响应不确定时重新查状态；显式“重置全部”需确认后调用 DELETE。 |
+| P1 | HTTP 按住说话端点仍是 Day 3 的 ASR + 模板回复，没有接入图中的 identity/thread/LLM 主链。 | 若该路径承担实时链路故障降级，必须复用服务端身份闸门并遵守 generic 限制；不能因入口切换而直接按设备绑定 elder_id 执行个人上下文逻辑。 |
+| P1 | 开场白/人设没有从 persona 服务注入对话运行时，目标验收句尚无代码接线证据。 | 接通 greeting 的触发时机、一次性/重连幂等、TTS 失败字幕回退，并验证“启动 5 秒内开口”；保持与 KWS/按钮入口解耦。 |
+| P1 | 当前 LLM/TTS 实现不能证明基线的首 token/流式语音预算：LLM 等待整轮结果，云 TTS 未实现，Edge TTS 也是整段合成。 | 按基线选择统一实现后补埋点与实测；在实测前把 ≤800ms、流式 TTS 标为目标预算，不作为已达成事实。 |
+| P1 | KWS WASM/模型运行资产不进仓库。 | 发布/验收环境必须有可复现的资产构建步骤与校验；缺资产时检查按钮降级确实可用，并单独记录 AC-42 未执行或已执行的数据。 |
+| P1 | `avatar-config` 请求与 VRM 请求分别有 5 秒超时，流程图若只看 VRM 请求容易漏掉总启动时间和静态画面可见时间。 | 用统一的 pad 启动计时验收；先显示可用静态兜底，VRM 加载成功再替换，避免顺序等待把 5 秒目标拉长。 |
+| P1 | `DELETE /api/voiceprints` 契约要求写 `audit_logs`，当前 `delete_all_for_elder` 只有删除事务与应用日志。 | 在 service 层补充合规审计写入，记录操作人/设备、对象、结果、trace_id；不记录原始音频或 embedding。 |
+
+> 上述差异是“流程目标与当前代码接线/验证证据”的核对项，不回写 Day 04 任务卡完成状态；Day 04 卡片完成情况仍以对应任务卡和自动生成的 PROGRESS 为准。
 
 ### 3.1 对话主链路（W2+W3+W4 合流）
 
@@ -375,28 +453,42 @@ sequenceDiagram
     participant LLM as llm_service
     participant TTS as TTS 适配层
 
-    Pad->>WS: asr_start/asr_end（音频轨流式）
-    WS->>WS: VAD/ASR → asr_final 文本（置信度埋点）
-    WS->>IDE: 文本前先做身份级联（会话首轮强制校验）
+    participant RTC as WebRTC 媒体轨 / ASR
+    Pad->>WS: asr_start / asr_end（切段控制消息）
+    Pad->>RTC: PCM 音频轨（WebRTC）
+    RTC->>WS: asr_final 文本 + 本轮音频 buffer
+    WS->>IDE: 对话处理前先做身份级联（会话首轮强制校验）
     IDE->>VPS: 与设备绑定长者（1v1，恒 1 位）比对
     alt cosine ≥ 0.85（首轮命中后身份锁定）
         IDE-->>WS: elder_id（identity_source=voice）
-    else < 0.85 或声纹服务不可用
-        WS-->>Pad: identity_ask(candidates)（服务不可用 reason=vp_unavailable）
+    else cosine < 0.85 / 无有效样本
+        WS-->>Pad: identity_ask(candidates, reason=low_confidence)
+        alt 30s 内确认且 elder_id 等于唯一候选
+            IDE-->>WS: elder_id（identity_source=confirm）
+        else 超时 / 确认不匹配
+            IDE-->>WS: generic（elder_id=NULL，不读记忆/不写健康/不确认用药）
+        end
+    else 声纹服务不可用
+        WS-->>Pad: identity_ask(candidates, reason=vp_unavailable)
         alt 30s 内 identity_confirm（候选集内）
             IDE-->>WS: elder_id（identity_source=confirm）
-        else 超时/仍不确定
+        else 超时 / 确认不匹配
             IDE-->>WS: generic（elder_id=NULL，不读记忆/不写健康/不确认用药）
         end
     end
-    Note over WS,IDE: 会话内后续轮次静默复检：命中当前身份不打断；身份变化（换人/访客）→ 结束旧 thread、开新 thread
-    WS->>WS: 事务内 session_seq+1 → 建 conversation_threads（闸门①）
-    WS->>DLG: 文本 + elder_id + persona/称呼/时间（取数侧）
-    DLG->>LLM: 固定前缀(system prompt) + 最近 5 轮(Redis) + 本轮
+    Note over WS,IDE: 后续静默复检：同人命中、generic 未命中或推理服务不可用时沿用当前 thread；generic 命中绑定长者则开 personal thread；personal 低置信先关旧 thread 再确认
+    alt 首次身份终态 / 身份切换
+        IDE->>IDE: 事务内创建新 thread；仅 personal thread 的新建递增 session_seq（闸门①）
+    else 同一身份的普通轮次
+        IDE-->>WS: 复用当前 thread_id
+    end
+    WS->>DLG: 文本 + 服务端 identity/thread_id + 当前时间（persona 注入见逐图核验）
+    DLG->>LLM: 固定前缀(system prompt) + personal 最近 5 轮(Redis) + 本轮
     LLM-->>DLG: 回复（超时/失败 → 降级话术，FR-DLG-05）
-    DLG-->>WS: 回复文本（写回 Redis）
-    WS->>TTS: 送合成 → 音频轨下发
-    WS-->>Pad: tts_text（字幕）+ 音频（前端能量驱动口型）
+    DLG-->>WS: 回复文本（personal 写回 Redis；generic 不读写）
+    WS-->>Pad: tts_text（先送字幕）
+    WS->>TTS: 整段合成 PCM → WebRTC 音频队列（当前实现）
+    TTS-->>Pad: 音频轨（前端能量驱动口型）
 ```
 
 要点：
@@ -404,6 +496,8 @@ sequenceDiagram
 2. **elder_id 全程服务端注入**（闸门①③），LLM prompt 与工具参数里的身份不采信模型自报。
 3. **换人开新 thread**（自裁 3）：声纹复检发现说话人变化 → 旧 thread `ended_at` 落库、新 thread 开启，内容互不渗漏。
 4. 声纹 embedding 与原始音频分离：embedding 加密落库，**原始音频不落盘**（AC-36；调试开关默认关，72h 清理属 Day 5 调度）。
+5. **线程不是 turn**：`session_seq` 只在 personal thread 新建时递增；generic thread 用独立服务端 ID 且不读取/写入个人 Redis 历史。当前未建 `utterances` 持久化表。
+6. **预算与实际分开记**：LLM 首 token ≤800ms、TTS 流式及启动 greeting 都是验收目标；当前代码的 LLM/TTS 是整轮/整段调用，greeting/persona 尚未由 `app/main.py` 接入。
 
 > 对应流程图：§3.0 图 ②（身份级联分支视角）+ 图 ③（VAD 兜底与 LLM 降级分支视角）。
 
@@ -411,15 +505,15 @@ sequenceDiagram
 
 ```
 pad 注册页（知情告知）→ 逐段录音 3 次 → POST /api/voiceprints/samples(sample_index)
-  → 服务端 spike 模型提取 embedding → Fernet 加密 → INSERT voiceprints（409 幂等保护）
-  → 3 段齐 → status=active → GET status 展示进度 / DELETE 随时可删（写审计）
+  → 服务端 CAM++ 提取 embedding → Fernet 加密 → INSERT voiceprints（重复 sample_index 返回 409）
+  → 每段成功即落 embedding；3 段齐时 status 派生为 active → GET status 返回注册进度 / DELETE 全量删除（C4 要求写审计）
 ```
 
 > 对应流程图：§3.0 图 ⑥（分支视角：录制 → 上传 → 提取 → 加密 → 落库 → active，含 409/503 回退）。
 
 ### 3.3 3D 展示时序（W1，同 v1.0 结论）
 
-pad 启动 → 设备 JWT → `GET /api/pad/avatar-config` → nginx 拉 `.vrm`（5s 竞速）→ 成功渲染（VRM0 旋 180°+offset）| 失败/超时 → 静态头像 + `client_diag` 上报（仅日志）。开场白：连接成功后服务端取 `personas.greeting` 送 TTS，数字人开口（满足「打开 5 秒内立起并开口说话」技术验收句，不依赖 LLM）；后续多轮对话走 §3.1。
+pad 启动 → 设备 JWT → `GET /api/pad/avatar-config` → nginx 拉 `.vrm`（5s 竞速）→ 成功渲染（VRM0 旋 180°+offset）；失败/超时 → 静态头像或内置渐变占位。仅 VRM 下载/解析/渲染失败上报 `client_diag`（仅日志），配置缺失是正常降级。开场白属于独立验收链：目标是由服务端取 `personas.greeting` 送 TTS，但当前 `app/main.py` 尚无 greeting/persona 接线证据；在补接并端到端验证前，不记作已实现。后续多轮对话走 §3.1。
 
 > 对应流程图与时序图：§3.0 图 ④ 及其配套 sequenceDiagram（后者为本节文本的完整消息流展开）。
 
@@ -511,7 +605,7 @@ pad 启动 → 设备 JWT → `GET /api/pad/avatar-config` → nginx 拉 `.vrm`�
 | FR-VPR-03（L285）通用模式不读记忆/不写健康/不确认用药 | §3.1 要点 1；身份先于一切业务（T7/T10） |
 | FR-DLG-05（L270）LLM 故障降级 | M8 降级话术 + T8/T10 演练 |
 | AC-28（双人间声纹三态）、AC-39（thread_id 伪造 403）、闸门① | §3.1 要点 2/3；T10 演练含伪造 thread 拒绝路径 |
-| 技术文档 L1031-1032 Day 4 功能/技术验收句 | T9/T10 逐条复现（含「5 秒立起并开口说话」由 greeting 保证不依赖 LLM）；**L1031「单人间设备 100% 锁定」已被 2026-11-06 裁决取代（每会话首轮校验一次），两份基线文档待按 AGENTS §4.7 修订留痕** |
+| 技术文档 L1031-1032 Day 4 功能/技术验收句 | 对照项包含「5 秒立起并开口说话」；本方案保留为目标验收，但当前 greeting/persona 运行时接线尚无证据，需补接后复现，不能用 VRM 成功替代开口验收。**L1031「单人间设备 100% 锁定」已被 2026-11-06 裁决取代（每会话首轮校验一次），两份基线文档待按 AGENTS §4.7 修订留痕** |
 | FR-UI-11 + AC-42（L523/L544）唤醒词激活 | W5：端侧 KWS P0（T9/T10 与前端联调）；后端保证建连链路复用、降级按钮路径、未命中音频不出端 |
 | FR-VPR-04 调优报告 | **不在本日**：归属 Day 9（技术文档 L1153）；T3 spike 数据留档供其复用 |
 
@@ -527,3 +621,4 @@ pad 启动 → 设备 JWT → `GET /api/pad/avatar-config` → nginx 拉 `.vrm`�
 | v2.2 | 2026-11-06 | 主理人两项裁决落盘：① 单人间由「设备直锁不跑声纹」改为「每会话首轮强制声纹校验，会话内静默复检仅身份变化时打断」，单/双人间统一级联（§0 W2、§1.1 I5、M6、§3.1 时序、T7/T10）；② 唤醒词端侧 KWS 定为 P0（新增 W5、§3.4、R13、§5.1 选型行、AC-42 纳入验收）。基线修订需求已登记 |
 | v2.3 | 2026-11-06 | 主理人第三项裁决：**声纹候选集由 beds JOIN（单 1/双 2）回正为设备绑定长者 1v1（恒 1 位）**，双人间另一位长者使用其自己的设备——与 PRD FR-VPR-01 验收行原意一致，原 beds JOIN 系 v1.0 起方案笔误。改 W2/I5/M5/M6/§3.1 时序/R6/§6 验收行。**基线文档已同步修订**：PRD v2.6、技术设计文档 v1.5（均含修订记录，同批落盘） |
 | v2.4 | 2026-11-06 | 新增 §3.0 分阶段流程图 6 张（① W5 唤醒词入口 / ② W2 身份级联 / ③ W4+W3 对话闭环 / ④ W1 3D 加载降级 / ⑤ 前端业务流程·设备登录校验三分支 / ⑥ W2 声纹注册 3 段流程），均为 v2.3 口径的分支视图（1v1 候选集、每会话首轮校验、静默复检），与 §3.1–§3.4 时序图互补；标注与早期 beds JOIN 版本不可混用。并为 ①④⑤ 新增 3 张配套 sequenceDiagram（唤醒词建连 / 3D 加载降级 / 设备登录校验三分支），②③ 指注 §3.1、⑥ 指注 §3.2，不重复画 |
+| v2.5 | 2026-11-07 | 完整核对 §3.0 六张 flowchart、三张配套 sequenceDiagram 与 §3.1 主链路 sequenceDiagram；补充每图的协议/异常/恢复分支及当前代码状态，纠正 WebRTC 音频与 WS 控制通道混写、thread/session_seq 生命周期、utterance 持久化、C4 status 字段、Fernet Settings 字段、L1 降级、流式 TTS、avatar greeting、设备凭证和声纹续录等表述；登记当前实现差异与 P0/P1 处置口径。 |

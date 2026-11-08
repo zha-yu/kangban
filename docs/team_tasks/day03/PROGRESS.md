@@ -18,12 +18,12 @@
 | 计划 | 状态 |
 | --- | --- |
 | `docs/plans/day03/adhoc-20261105-A3媒体层执行计划.md` | 🚧 进行中 |
-| `docs/plans/day03/adhoc-20261105-音频传输与设备链路技术方案.md` | ❔ 已冻结 |
-| `docs/plans/day03/day-03-WebRTC与语音闭环.md` | ❔ 草稿 |
-| `docs/plans/day03/day-03-a5-VAD兜底与降级测试.md` | ❔ 草稿 |
+| `docs/plans/day03/adhoc-20261105-音频传输与设备链路技术方案.md` | 🔒 已冻结 |
+| `docs/plans/day03/day-03-WebRTC与语音闭环.md` | 📝 草稿 |
+| `docs/plans/day03/day-03-a5-VAD兜底与降级测试.md` | 📝 草稿 |
 | `docs/plans/day03/task-a1-ASR与TTS适配层.md` | ✅ 已完成（2026-11-05；N0–N9 全部达成，**N8 真链路已出字**，见 §10 v1.4） |
 | `docs/plans/day03/task-a1-DAG.md` | ✅ 已完成（2026-11-05；N0–N9 全部达成，N8 已拿到真实出字） |
-| `docs/plans/day03/task-a2-信令WS与鉴权.md` | ❔ 草稿 |
+| `docs/plans/day03/task-a2-信令WS与鉴权.md` | 📝 草稿 |
 | `docs/plans/day03/task-a4-pad前端执行计划.md` | 🚧 进行中 |
 
 ## 契约冻结：**C1 / C2 / C3 均已冻结**

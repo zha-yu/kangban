@@ -11,7 +11,13 @@
  */
 import type { PadStatus } from "./types";
 import type { SubtitleSource } from "./components/BigSubtitle";
-import type { ClientDiagMsg, ClientDiagStage, ServerSignal } from "./protocol";
+import type {
+  ClientDiagMsg,
+  ClientDiagStage,
+  IdentityAskMsg,
+  IdentityResultMsg,
+  ServerSignal,
+} from "./protocol";
 import { nextDegradeLevel, type DegradeLevel } from "./degrade";
 import { MicCapture } from "./audio/capture";
 import { TenVad } from "./audio/vad";
@@ -23,6 +29,10 @@ export interface RealtimeCallbacks {
   onAuthFail: () => void;
   /** 连续 5 次自动重连失败：上层出「重新连接」按钮，用户点击后调 retry() */
   onNeedManualRetry: () => void;
+  /** C5：声纹低置信/不可用 → 上层弹大按钮确认面板（30s 内不回 confirm 服务端落 generic） */
+  onIdentityAsk: (msg: IdentityAskMsg) => void;
+  /** C5：身份定案（voice/confirm/generic）；generic 时 elder_id 为 null */
+  onIdentityResult: (msg: IdentityResultMsg) => void;
   /** TTS 下行播放元素（登录点击后已有用户手势，autoplay 可用） */
   audioEl: HTMLAudioElement;
 }
@@ -136,7 +146,18 @@ export class RealtimeClient {
       case "pong":
       case "auth_fail":
         break; // auth_fail 已由 SignalSocket 处理
+      case "identity_ask":
+        this.cb.onIdentityAsk(msg);
+        break;
+      case "identity_result":
+        this.cb.onIdentityResult(msg);
+        break;
     }
+  }
+
+  /** C5：长者点选确认（elder_id 必须回带 candidates[0].elder_id；「不是我」不回，等 30s 落 generic） */
+  confirmIdentity(askId: string, elderId: string): void {
+    this.socket?.send({ type: "identity_confirm", ask_id: askId, elder_id: elderId });
   }
 
   /** auth_ok 后建立一轮会话：麦克风 + VAD + PeerConnection + offer */
