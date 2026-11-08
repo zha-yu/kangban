@@ -91,10 +91,11 @@ class TestDbTrack:
 
     def test_wakeup_client_duration_from_wake_ts(self, stub: _StubRecorder, trace) -> None:  # type: ignore[no-untyped-def]
         wake_ts = time.time() - 0.5  # 500ms 前命中
-        record_wakeup(source="client", wake_ts=wake_ts)
+        record_wakeup(source="client", wake_ts=wake_ts, elder_id="elder-1")
         row = stub.rows[0]
         assert row["stage"] == "wakeup"
         assert row["source"] == "client"
+        assert row["elder_id"] == "elder-1"  # auth 身份解析随行入表（A-2 接线补全）
         assert 0.0 < row["duration_ms"] <= 300_000.0  # 时钟偏移防护上界
 
     def test_wakeup_negative_clamped_to_zero(self, stub: _StubRecorder, trace) -> None:  # type: ignore[no-untyped-def]
@@ -111,11 +112,11 @@ class TestDbTrack:
         assert row["duration_ms"] == 0.0
 
     def test_connection_dual_track(self, stub: _StubRecorder, trace) -> None:  # type: ignore[no-untyped-def]
-        record_connection(connection_id="dev-1", elapsed_ms=88.8)
+        record_connection(connection_id="dev-1", elapsed_ms=88.8, elder_id="elder-2")
         assert stub.rows == [
             {
                 "trace_id": "trace-db-track-1",
-                "elder_id": None,
+                "elder_id": "elder-2",
                 "stage": "connection",
                 "duration_ms": 88.8,
                 "source": None,
@@ -133,7 +134,9 @@ class TestClientDiagPlayback:
 
     @staticmethod
     def _fake_conn() -> Any:
-        return types.SimpleNamespace(trace_id="trace-diag-1", device_id="dev-1")
+        return types.SimpleNamespace(
+            trace_id="trace-diag-1", device_id="dev-1", bound_elder_id="elder-9"
+        )
 
     async def test_playback_forwarded_to_metrics(
         self, stub: _StubRecorder, monkeypatch: pytest.MonkeyPatch
@@ -157,7 +160,7 @@ class TestClientDiagPlayback:
         assert stub.rows == [
             {
                 "trace_id": "trace-diag-1",
-                "elder_id": None,
+                "elder_id": "elder-9",
                 "stage": "playback",
                 "duration_ms": 1500.0,
                 "source": "client",
