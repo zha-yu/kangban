@@ -2171,7 +2171,9 @@ async def _handle_offer(
     # W5/S5：建连打点（offer 到达 → answer 产出，AC-42 分段口径）。
     offer_sw = stopwatch()
     answer = await session.handle_offer(sdp)
-    record_connection(connection_id=device_id, elapsed_ms=offer_sw.elapsed_ms())
+    record_connection(
+        connection_id=device_id, elapsed_ms=offer_sw.elapsed_ms(), elder_id=conn.bound_elder_id
+    )
     _deliver(device_id, {"type": "answer", "sdp": answer})
 
 

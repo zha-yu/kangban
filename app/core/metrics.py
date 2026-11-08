@@ -100,6 +100,7 @@ def record_wakeup(
     source: str,
     wake_ts: float | None = None,
     connection_ms: float | None = None,
+    elder_id: str | None = None,
 ) -> None:
     """唤醒打点（AC-42 链路起点）。
 
@@ -109,6 +110,7 @@ def record_wakeup(
     双轨：日志行照旧 + ``metrics`` 表 ``wakeup`` 行——duration = accept−wake_ts
     （client 口径，负值截 0、超 ``WAKEUP_DURATION_MS_CAP`` 视为时钟偏移截断），
     backend 口径 duration=0（KWS 起点未知，仅占位表可查）。
+    ``elder_id``：auth 身份解析结果（服务端注入，AGENTS 红线 9），供按长者口径分析。
     """
     if source not in ("client", "backend"):
         raise ValueError(f"wakeup source must be 'client' or 'backend', got {source!r}")
@@ -117,13 +119,15 @@ def record_wakeup(
         duration_ms = min(max((time.time() - wake_ts) * 1000.0, 0.0), WAKEUP_DURATION_MS_CAP)
     else:
         duration_ms = 0.0
-    _record_db("wakeup", duration_ms, source=source)
+    _record_db("wakeup", duration_ms, elder_id=elder_id, source=source)
 
 
-def record_connection(*, connection_id: str, elapsed_ms: float) -> None:
+def record_connection(
+    *, connection_id: str, elapsed_ms: float, elder_id: str | None = None
+) -> None:
     """建连打点：offer 收到 → answer 产出的耗时（webrtc `_handle_offer` 接线）。"""
     record_event("connection", connection_id=connection_id, elapsed_ms=elapsed_ms)
-    _record_db("connection", elapsed_ms)
+    _record_db("connection", elapsed_ms, elder_id=elder_id)
 
 
 # ---------------------------------------------------------------------------

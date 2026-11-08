@@ -649,16 +649,20 @@ async def test_case12_wakeup_point_with_and_without_wake_ts(
     """auth 首帧带 wake_ts → source=client；不带 → source=backend 兜底。"""
     calls: list[dict[str, Any]] = []
 
-    def _spy_wakeup(*, source: str, wake_ts: float | None = None, connection_ms: float | None = None) -> None:
-        calls.append({"source": source, "wake_ts": wake_ts})
+    def _spy_wakeup(
+        *,
+        source: str,
+        wake_ts: float | None = None,
+        connection_ms: float | None = None,
+        elder_id: str | None = None,
+    ) -> None:
+        calls.append({"source": source, "wake_ts": wake_ts, "elder_id": elder_id})
 
     monkeypatch.setattr(signaling, "record_wakeup", _spy_wakeup)
 
     token = _device_token(seeded_db["device_id_0"], _DEVICE_SECRET_A)
     async with _connect(ws_app) as ws:
-        await ws.send_json(
-            {"type": "auth", "token": token, "wake_ts": time.time() - 0.5}
-        )
+        await ws.send_json({"type": "auth", "token": token, "wake_ts": time.time() - 0.5})
         assert (await ws.receive_json())["type"] == "auth_ok"
     assert calls[-1]["source"] == "client"
     assert calls[-1]["wake_ts"] is not None
@@ -666,7 +670,8 @@ async def test_case12_wakeup_point_with_and_without_wake_ts(
     async with _connect(ws_app) as ws:
         await ws.send_json({"type": "auth", "token": token})  # 不带 wake_ts
         assert (await ws.receive_json())["type"] == "auth_ok"
-    assert calls[-1] == {"source": "backend", "wake_ts": None}
+    assert calls[-1]["source"] == "backend"
+    assert calls[-1]["wake_ts"] is None
 
 
 def test_media_handler_registration_roundtrip() -> None:

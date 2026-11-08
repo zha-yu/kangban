@@ -529,12 +529,14 @@ async def _authenticate(conn: ConnectionContext, session: AsyncSession) -> Ident
     conn.last_frame_at = time.monotonic()
     # Day 5 唤醒段打点（裁决 R2，day03/contracts.md v1.5）：auth 首帧带 wake_ts 用端侧
     # 口径（source=client，duration=accept−wake_ts，时钟偏移防护在 record_wakeup 内）；
-    # 未带走 WS accept 兜底（source=backend，duration=0 占位）。
+    # 未带走 WS accept 兜底（source=backend，duration=0 占位）。elder_id 随行入表
+    # （服务端注入口径，AGENTS 红线 9；asr/tts 行的 elder_id 由复算侧按 trace_id JOIN 本行补全）。
     wake_ts = first.get("wake_ts")
+    elder_id = identity.elder_id
     if isinstance(wake_ts, (int, float)) and wake_ts > 0:
-        record_wakeup(source="client", wake_ts=float(wake_ts))
+        record_wakeup(source="client", wake_ts=float(wake_ts), elder_id=elder_id)
     else:
-        record_wakeup(source="backend")
+        record_wakeup(source="backend", elder_id=elder_id)
     return identity
 
 
@@ -933,7 +935,12 @@ async def _handle_client_diag(conn: ConnectionContext, message: Mapping[str, Any
     if stage == "playback":
         duration_ms = message.get("duration_ms")
         if isinstance(duration_ms, (int, float)) and duration_ms >= 0:
-            record_stage("playback", float(duration_ms), source="client")
+            record_stage(
+                "playback",
+                float(duration_ms),
+                elder_id=conn.bound_elder_id,
+                source="client",
+            )
         else:
             logger.warning(
                 "ws_bad_message",

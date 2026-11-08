@@ -16,7 +16,6 @@
 | --- | --- |
 | `docs/plans/day05/a-后端观测与数据.md` | 🚧 进行中 |
 | `docs/plans/day05/a1-本地VRM与形象选择页.md` | ❔ 已冻结 |
-| `docs/plans/day05/c-联调执行方案.md` | 🚧 进行中 |
 | `docs/plans/day05/d-DAG.md` | ❔ 草稿 |
 | `docs/plans/day05/d-admin页走查记录.md` | ✅ 已完成（真实端点走查） |
 | `docs/plans/day05/d-prompt-双端前端.md` | ❔ 草稿 |
