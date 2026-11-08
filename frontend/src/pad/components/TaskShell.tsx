@@ -31,15 +31,15 @@ export function TaskShell({
 }: TaskShellProps) {
   return (
     <section
-      className="flex h-full max-h-[80vh] w-[960px] max-w-[60vw] shrink-0 flex-col overflow-hidden rounded-2xl border border-line bg-surface p-8"
+      className="flex h-full max-h-[80vh] w-[960px] max-w-[60vw] shrink-0 flex-col overflow-hidden rounded-2xl border border-line bg-surface p-6"
     >
       <header className="flex shrink-0 items-start justify-between gap-8">
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-2">
           <div className="flex flex-wrap items-center gap-4">
-            <span className="text-xl font-semibold text-ink-muted">{eyebrow}</span>
+            <span className="text-lg font-semibold text-ink-muted">{eyebrow}</span>
             {badge}
           </div>
-          <h2 className="text-5xl font-bold leading-tight text-ink">{title}</h2>
+          <h2 className="text-4xl font-bold leading-tight text-ink">{title}</h2>
         </div>
         {onExit && (
           <button
@@ -52,14 +52,14 @@ export function TaskShell({
         )}
       </header>
 
-      {progress && <div className="mt-6 shrink-0">{progress}</div>}
+      {progress && <div className="mt-4 shrink-0">{progress}</div>}
 
-      <div className="mt-6 flex min-h-0 flex-1 flex-col overflow-y-auto">
+      <div className="mt-4 flex min-h-0 flex-1 flex-col overflow-y-auto">
         {children}
       </div>
 
       {footer && (
-        <div className="mt-6 shrink-0 border-t border-line pt-6">{footer}</div>
+        <div className="mt-4 shrink-0 border-t border-line pt-4">{footer}</div>
       )}
     </section>
   );
