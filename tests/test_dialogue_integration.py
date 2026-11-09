@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Iterator
 
@@ -159,6 +160,47 @@ async def test_dispatch_final_subtitle_first_then_handler_once(
     assert calls == [("dev-a", "turn-1", "trace-1", "你好", b"wave-bytes")]
     # 双设备隔离：B 不收到 A 的字幕，也不触发 A 的 handler
     assert conn_b.downstream.empty()
+
+
+async def test_dispatch_final_survives_dispatch_cancellation(
+    seam: dict[str, signaling.ConnectionContext],
+) -> None:
+    """S4 试跑修复①：ws_superseded 取消 dispatch 所在任务链时，在跑的一轮对话不陪葬。
+
+    shield 让 handler 脱离取消传播继续后台执行（分段文字/TTS 喂轨由 deliver 按
+    device_id 接管到新连接），取消语义照常向上传播给旧连接的任务链。
+    """
+    conn = _connect(seam, "dev-a")
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def handler(
+        device_id: str,
+        turn_id: str,
+        trace_id: str,
+        text: str,
+        audio_bytes: bytes | None,
+    ) -> None:
+        started.set()
+        await release.wait()
+        finished.set()
+
+    signaling.set_dialogue_final_handler(handler)
+    task = asyncio.create_task(
+        signaling.dispatch_asr_event("dev-a", "turn-1", "trace-1", _final("你好"), None)
+    )
+    await asyncio.wait_for(started.wait(), timeout=2)
+
+    # 旧连接任务链被取消（ws_superseded 的等价物）
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # handler 不受影响，放行后跑完（分段/喂轨随后经 deliver 落到当前连接）
+    release.set()
+    await asyncio.wait_for(finished.wait(), timeout=2)
+    assert conn.downstream.get_nowait() == {"type": "asr_final", "text": "你好"}
 
 
 async def test_dispatch_handler_failure_does_not_break_subtitle(
