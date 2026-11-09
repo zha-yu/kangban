@@ -220,7 +220,7 @@ def _build_turn_context(
         # device/voice/confirm/generic —— staff 的 elder_id 恒为 None（Identity 强制），
         # 于是「员工发起的对话」会被判成 generic（无人设、无历史），且不报错。
         # 正确做法由调用方（N14 统一出口）把 A1 的 IdentityDecision 产出传进来。
-        inferred_source = "device" if runtime.elder_id else "generic"
+        inferred_source: Literal["device", "generic"] = "device" if runtime.elder_id else "generic"
         identity = DialogueIdentity(source=inferred_source, elder_id=runtime.elder_id)
         logger.warning(
             "companion_identity_inferred runtime_kind=%s inferred_source=%s elder_present=%s",

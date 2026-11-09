@@ -84,20 +84,26 @@ async def create_event(
 
     digest = payload_hash(drug_snapshot)
     existing = (
-        await session.execute(
-            select(MedicationEvent.reminder_id, MedicationEvent.payload_hash).where(
-                MedicationEvent.plan_id == plan_id,
-                MedicationEvent.scheduled_at == scheduled_at,
+        (
+            await session.execute(
+                select(MedicationEvent.reminder_id, MedicationEvent.payload_hash).where(
+                    MedicationEvent.plan_id == plan_id,
+                    MedicationEvent.scheduled_at == scheduled_at,
+                )
             )
         )
-    ).first()
+        .mappings()
+        .first()
+    )
 
     if existing is not None:
         if existing.payload_hash != digest:
             raise MedicationConflict(
                 "same (plan_id, scheduled_at) already exists with a different drug snapshot"
             )
-        return existing.reminder_id
+        # mappings() 取值仍是 Any，显式经 str 构造 UUID 而不是 cast——
+        # 非法值会在这里炸响（宁可抛错也不要把脏数据静默往下传）
+        return uuid.UUID(str(existing["reminder_id"]))
 
     reminder_id = uuid.uuid4()
     try:
@@ -120,18 +126,22 @@ async def create_event(
     except IntegrityError:
         # 并发建同一条：回查一次，按幂等处理（同内容返回、异内容冲突）
         row = (
-            await session.execute(
-                select(MedicationEvent.reminder_id, MedicationEvent.payload_hash).where(
-                    MedicationEvent.plan_id == plan_id,
-                    MedicationEvent.scheduled_at == scheduled_at,
+            (
+                await session.execute(
+                    select(MedicationEvent.reminder_id, MedicationEvent.payload_hash).where(
+                        MedicationEvent.plan_id == plan_id,
+                        MedicationEvent.scheduled_at == scheduled_at,
+                    )
                 )
             )
-        ).first()
+            .mappings()
+            .first()
+        )
         if row is None:
             raise
-        if row.payload_hash != digest:
+        if row["payload_hash"] != digest:
             raise MedicationConflict("concurrent insert with different drug snapshot") from None
-        return row.reminder_id
+        return uuid.UUID(str(row["reminder_id"]))
 
     return reminder_id
 
@@ -165,7 +175,21 @@ async def record_attempt(
             )
             await session.flush()
     except IntegrityError:
-        # 图恢复会重放「发送」这一步；重放不该多出一条触达记录
+        # 图恢复会重放「发送」这一步；重放不该多出一条触达记录。
+        # 但 IntegrityError 不只有唯一键冲突——CHECK 违反也在其中。
+        # 必须回查确认「真有同键记录」才算幂等；查不到说明是**新数据违规**，
+        # 原样抛出。否则 CHECK 拒绝会被静默吞掉：触达记录凭空消失，
+        # 日志还挂着误导性的 duplicate 名，排查时先去对时间戳才发现根本没插进去。
+        duplicate = (
+            await session.execute(
+                select(MedicationAttempt.attempt_id).where(
+                    MedicationAttempt.event_id == event_id,
+                    MedicationAttempt.attempt_no == attempt_no,
+                )
+            )
+        ).scalar_one_or_none()
+        if duplicate is None:
+            raise
         logger.info("medication_attempt_duplicate event_id=%s attempt_no=%s", event_id, attempt_no)
 
 
@@ -260,6 +284,33 @@ async def _update_event(session: AsyncSession, event_id: uuid.UUID, values: dict
 # ------------------------------------------------------------------ 读（复盘与测试用）
 
 
+async def get_drug_name(session: AsyncSession, event_id: uuid.UUID) -> str | None:
+    """取该提醒的药名（drug_snapshot 里的人读字段），话术用；无快照返回 None。"""
+    row = (
+        await session.execute(
+            select(MedicationEvent.drug_snapshot).where(MedicationEvent.reminder_id == event_id)
+        )
+    ).scalar_one_or_none()
+    if not isinstance(row, dict):
+        return None
+    name = row.get("drug_name")
+    return str(name) if name else None
+
+
+async def list_bound_device_ids(session: AsyncSession, *, elder_id: uuid.UUID) -> list[uuid.UUID]:
+    """长者绑定的设备 id（`devices.elder_id`）。
+
+    可能多条（换新设备后旧档案未删）——**逐台下发**，任一台投进队列即算触达成功；
+    这与「长者在哪台设备前不可预知」的现实一致，也避免误删旧设备导致提醒静默丢失。
+    未绑定返回空列表：触达会如实记 `no_bound_device`，不抛错——
+    设备没绑定是运维缺口，不是本轮该失败的原因。
+    """
+    from app.models.organization import Device
+
+    rows = await session.execute(select(Device.device_id).where(Device.elder_id == elder_id))
+    return [row[0] for row in rows.all()]
+
+
 async def get_event(session: AsyncSession, event_id: uuid.UUID) -> dict[str, Any] | None:
     row = (
         (
@@ -306,8 +357,10 @@ __all__ = [
     "MedicationEventNotFound",
     "TerminalStateConflict",
     "create_event",
+    "get_drug_name",
     "get_event",
     "list_attempts",
+    "list_bound_device_ids",
     "payload_hash",
     "record_attempt",
     "record_response",

@@ -1,4 +1,4 @@
-> 状态：已完成（A 线 21.0/21.0；遗留 `TODO(E2)` 与 WD-1/WD-2 已登记）　｜　版本：v1.11　｜　日期：2026-11-09
+> 状态：已完成（A 线 21.0/21.0 + E2 触达接线收尾；遗留 WD-1/WD-2 已登记）　｜　版本：v1.12　｜　日期：2026-11-09
 > 关联：docs/team_tasks/day06/dev-a-历史事件与工具事实.md（任务卡）｜docs/plans/day06/day-06-长者侧Agent闭环.md（Day 6 主计划）｜docs/team_tasks/day06/contracts.md（冻结契约）
 > 上游依据：PRD v2.9 §6.1 Day 6 行、§4.5 用药、FR-DLG-10、AC-08/17/30/35（验收）｜技术设计文档 v2.0 §3.4/§3.6/§6/§7/§8.3（实现）｜ER v0.5 §4.3.11–4.3.13、§5（字段与约束）
 > 变更记录见文末
@@ -20,7 +20,7 @@
 | N00 | 契约中的"表与事件枚举"章节（与主理人共担） | 1.5 | ✅ 已完成（`contracts.md` v1.0 已冻结） |
 | N01 | 迁移 0008 + `models/conversation.py` 三个 Model | 3.5 | ✅ ORM 三类已建，`alembic check` 对三表零差异 |
 | N04 | `HistoryStore`（事件追加 + 轮次投影 + 幂等） | 4.5 | ✅ 六方法 + 12 条测试全绿（含并发 20 写无重号） |
-| N10 | `medication_confirmation_graph` + PG checkpointer | 5.0 | ✅ A08–A11（checkpointer + 子图 + 四次触达 + 终态写一次）+ **A12 升级工单**（`work_order_service`，15 条用例）；触达下发仍为占位（`TODO(E2)`，等 C 的 `deliver()`） |
+| N10 | `medication_confirmation_graph` + PG checkpointer | 5.0 | ✅ A08–A12 全部完成，**E2 触达下发已接真实 `deliver()`**（含 0012 receipt 白名单迁移、3 条用例）；「是否真被听到」的 played 闭环留后续 |
 | N12 | `ToolRegistry` + `ToolExecutor` | 3.5 | ✅ 白名单 + 四类失败 + 幂等 + 审计，13 条测试全绿 |
 | N26 | `ToolExecutor` 接 MCP + 缓存与降级话术 | 1.5 | ✅ 完成：`transport="mcp"` 分支、错误映射复用 `tool_error_class()`、降级话术齐；**缓存由 weather server 侧承担**（A 侧不叠第二层） |
 | N23 | 门禁收口 | 1.5 | ✅ 931 passed / cov 81.51% / 两个 check 0；README §7.4 已回填 |
@@ -483,6 +483,23 @@ uv run python scripts/update_progress.py --check-plans  # → day06 问题数 0
 21.0/21.0 人时。三条明确留白（不是缺陷）：触达下发占位 `TODO(E2)`、WD-1（两套建单口）、
 WD-2（`work_orders` 缺通用幂等列）。
 
+### 8.5 E2 触达接线与 0012（2026-11-09 21:16，主理人裁决 A）
+
+信令层 `deliver()` 就绪后接线，发现并解决四个问题：
+
+| # | 问题 | 处置 |
+| --- | --- | --- |
+| 1 | mypy：`TurnView(status=row.status)` 传 `str` 给 `Literal`（C 的审查截图指出的那条） | `_as_turn_status()` 显式比较链收窄，**不用 cast**——脏值宁可抛错也不喂给上下文 |
+| 2 | 0010 的 `receipt` 白名单是占位三值，真实投递回执全被 CHECK 拒 | **0012**（主理人裁决 A，L11 唯一一次破例）：白名单 3→6 值，ORM 同步，可逆实测通过 |
+| 3 | `record_attempt` 把 CHECK 违反当幂等冲突**静默吞掉**（触达记录凭空消失、日志挂着误导性的 duplicate 名） | except 里回查确认真有同键记录才算幂等，否则原样抛出 |
+| 4 | 迁移名 36 字符超 `alembic_version.version_num` 的 **VARCHAR(32)** 上限（9h9h 报错的真实原因） | 改名 `0012_day6_receipt_whitelist`（27 字符） |
+
+**接线口径**：`remind` → 信令层 `deliver(device_id, {"type":"tts_text","text":"到吃药时间了，请确认氨氯地平是否已经服用。","degraded":false})`。**不带** `response_id`/`epoch`/`segment`（主动触达不属于任何回复流，契约 §4.1 可选字段口径），pad 零改动。回执三态如实记录：`voice_dispatched` / `device_offline` / `no_bound_device`；**下发失败不是放弃治疗的理由**——设备全离线时四次触达照样记满、照样进 `missed_unconfirmed`、照样建工单（有专门用例锁住这个语义）。
+
+**已知留白**：主动触达的「是否真被听到」目前无闭环——前端对不带 `response_id` 的消息上报的 ack 会被四步校验拒掉。若要闭环，需给主动触达分配独立的 response 标识并接进状态机，属 C 的 N07 范围。
+
+**验证**：`pytest tests/test_medication_graph.py` → **8 passed**（5 原有 + 3 E2）；全量 **971 passed / 4 skipped / 1 deselected**；`0012 upgrade→downgrade→upgrade` 可逆；mypy 本文件清零；ruff 全绿。
+
 ## 9. 变更记录
 
 | 版本 | 日期 | 说明 |
@@ -492,6 +509,7 @@ WD-2（`work_orders` 缺通用幂等列）。
 | v1.9 | 2026-11-09 | 按「彻底解」落地最小可合并版：`_build_turn_context` / `CompanionAgent.run` 增可选 `identity`（传了就用，不传回退推断 + `companion_identity_inferred` 告警），同时修掉 generic 崩溃；新增 4 条用例；标注与 C 同文件改动的冲突处置口径 |
 | v1.8 | 2026-11-09 | 复核补充「彻底解」：`IdentityDecision.source` 已备四值、`identity_decision_to_result()` 已产出 `DialogueIdentity`，N14 直接把身份结论传进 `_build_turn_context(identity=...)` 即可，**不在 companion 里推断**；新增 `runtime`（凭证主体）与 `DialogueIdentity`（身份结论）的对照表——两者混用正是该 bug 的根源 |
 | v1.7 | 2026-11-09 | 复核 C 报的 `companion.py` generic 分支缺陷：确认 `DialogueIdentity(source="generic")` 必崩（缺 `elder_id` 参数），并指出两处更值得修的——根因是 `elder_id` 无默认值（应由 B 改 context.py），以及 `if runtime.elder_id` 会把**员工/家属**身份静默判成 generic（员工端无人设无历史）；A 侧 `read_turns(None)` 已正确返回空，历史层无需改动 |
+| v1.12 | 2026-11-09 | **E2 触达接线 + 0012**：修 mypy 544（显式收窄）；`remind` 接真实 `deliver()` 与回执三态；修 `record_attempt` 吞 CHECK 违反的缺陷；0012 白名单 3→6 值（可逆实测）；+3 条 E2 用例；全量 971 passed。详见 §8.5 |
 | v1.11 | 2026-11-09 | **A17 门禁收口，A 线收官**：G-A4 通过（931 passed / cov 81.51% / 两个 check 0）；纠正跑法口径——门禁应为 `-m "not slow"`，此前 `pytest -q` 的 `1 failed` 是外网 edge-tts 用例而非代码问题；README 回填 4 处（新增 §7.4、覆盖率达实际值、容器命令补 `-m`、修正过期进度块）。累计 21.0/21.0 |
 | v1.10 | 2026-11-09 | A12 落地（走 B）：新增 `work_order_service` 与子图 `finalize` 接线；幂等从「四元键 + 两条新索引」改为**确定性单号**（表无 `source_*` 列、0011 已归 C）；补 SAVEPOINT 约束说明；新增 15 条用例 + 子图 6 条断言；登记 WD-1/WD-2；累计 19.5h，剩 A17 |
 | v1.6 | 2026-11-09 | A16 落地：`ToolSpec.transport` + `ToolExecutor._run_mcp`；错误映射只走 `mcp_client.tool_error_class()`，成功透传 `cached`/`observed_at`；**不做第二层缓存**（weather server 已按 `weather_cache_ttl_seconds` 做 TTL + 过期兜底，两套 TTL 必然漂移）；累计 18.5h，剩 2.5h |

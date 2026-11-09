@@ -19,6 +19,7 @@ import logging
 import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 import psycopg
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -83,7 +84,9 @@ async def medication_checkpointer(
 
     await ensure_schema(conninfo, target_schema)
 
-    pool = AsyncConnectionPool(
+    # 显式标注元素泛型：psycopg_pool 默认推断成 AsyncConnection[tuple[Any, ...]]，
+    # 而 AsyncPostgresSaver 要 dict 行（JSONB 列），两者不兼容（mypy arg-type）。
+    pool: AsyncConnectionPool[psycopg.AsyncConnection[dict[str, Any]]] = AsyncConnectionPool(
         conninfo=dsn_with_schema(conninfo, target_schema),
         min_size=settings.langgraph_checkpoint_pool_min_size,
         max_size=settings.langgraph_checkpoint_pool_max_size,

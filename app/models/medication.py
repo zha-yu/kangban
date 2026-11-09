@@ -235,7 +235,11 @@ class MedicationAttempt(Base):
             ondelete="CASCADE",
         ),
         CheckConstraint(
-            "receipt IS NULL OR receipt IN ('card_rendered', 'tts_finished', 'none')",
+            # 白名单含三态投递回执（E2，0012）：voice_dispatched=任一设备收下、
+            # device_offline=有绑定但全离线、no_bound_device=没绑设备（运维缺口）。
+            # 前三值为 0010 占位口径，保留兼容已有行。
+            "receipt IS NULL OR receipt IN ('card_rendered', 'tts_finished', 'none', "
+            "'voice_dispatched', 'device_offline', 'no_bound_device')",
             name="receipt",
         ),
         CheckConstraint(
