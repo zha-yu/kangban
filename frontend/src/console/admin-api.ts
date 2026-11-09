@@ -3,8 +3,8 @@
  *
  * 契约唯一依据：docs/接口契约_身份与权限.md v1.8 §4 E12 / E15 / E13、§7 错误码；
  * Day 6 E20 改绑：docs/team_tasks/day06/contracts.md v1.0 §6（已冻结）。
- * `listStaff`（GET /api/staff）为 **契约增补提案**（J-Contract，主理人 2026-11-09 裁决流程），
- * v1.8 尚无此端点——提案冻结、dev-B 落地前，UI 壳必须禁用提交，不得联调。
+ * `listStaff`（GET /api/staff）为 Day 6 契约增补（主理人 2026-11-09 裁决，dev-B 已落地：
+ * app/api/staff.py `list_staff`）——contracts.md 尚未补登该节，J6 对齐时请 dev-B 补书面口径。
  * E18/E16/E17/E19/E5/E9 一律复用 `elders-api.ts` 既有函数
  * （AGENTS §4 禁区 8：不新增第二套同类封装）。
  *
@@ -79,11 +79,15 @@ export class AdminApiError extends Error {
   }
 }
 
-/** 409 文案随业务场景不同，由调用方给出；其余状态码统一文案 */
-function messageForStatus(status: number, conflictText: string): { kind: AdminApiErrorKind; message: string } {
+/** 409/403 文案随业务场景不同，由调用方给出（缺省用通用文案）；其余状态码统一文案 */
+function messageForStatus(
+  status: number,
+  conflictText: string,
+  forbiddenText = "当前账号无权执行该操作",
+): { kind: AdminApiErrorKind; message: string } {
   switch (status) {
     case 403:
-      return { kind: "forbidden", message: "当前账号无权执行该操作" };
+      return { kind: "forbidden", message: forbiddenText };
     case 409:
       return { kind: "conflict", message: conflictText };
     case 404:
@@ -98,7 +102,11 @@ function messageForStatus(status: number, conflictText: string): { kind: AdminAp
 }
 
 /** 统一请求发送：网络错 / 401 归一为 AdminApiError，其余状态码按契约 §7 分支（POST/PUT 共用） */
-async function adminSend<T>(doSend: () => Promise<Response>, conflictText: string): Promise<T> {
+async function adminSend<T>(
+  doSend: () => Promise<Response>,
+  conflictText: string,
+  forbiddenText?: string,
+): Promise<T> {
   let res: Response;
   try {
     res = await doSend();
@@ -109,7 +117,7 @@ async function adminSend<T>(doSend: () => Promise<Response>, conflictText: strin
     throw new AdminApiError("network", NETWORK_ERROR_TEXT);
   }
   if (!res.ok) {
-    const mapped = messageForStatus(res.status, conflictText);
+    const mapped = messageForStatus(res.status, conflictText, forbiddenText);
     throw new AdminApiError(mapped.kind, mapped.message);
   }
   return (await res.json()) as T;
@@ -152,11 +160,11 @@ export function reassignElders(staffId: string, elderIds: string[]): Promise<Rea
   return adminSend<ReassignResult>(
     () => apiPut(`/api/staff/${encodeURIComponent(staffId)}/elders`, { elder_ids: elderIds }),
     "该长者将失去最后一位责任护工，请先指定接替人",
+    "只有管理员可以调整负责关系",
   );
 }
 
-/** GET /api/staff —— 员工列表（⚠️ 契约增补提案字段，J-Contract 未冻结前不得联调：
- *  提案冻结 + dev-B 落地前 UI 壳禁用提交）。elder_ids 供改绑弹窗「默认勾选当前绑定」。 */
+/** GET /api/staff 列表项（dev-B 已落地实现为准）：与后端 `StaffListItemResponse` 字段名零差异。 */
 export interface StaffListItem {
   staff_id: string;
   name: string;
@@ -164,20 +172,20 @@ export interface StaffListItem {
   status: AccountStatus;
   phone_masked: string;
   /** 当前负责长者（care_worker/doctor 有值）；admin 恒为空数组 */
-  elder_ids: string[];
+  bound_elder_ids: string[];
 }
 
 export async function listStaff(): Promise<StaffListItem[]> {
-  let res: { status: number; body: StaffListItem[] | null };
+  let res: { status: number; body: { items: StaffListItem[] } | null };
   try {
-    res = await apiGetWithStatus<StaffListItem[]>("/api/staff");
+    res = await apiGetWithStatus<{ items: StaffListItem[] }>("/api/staff");
   } catch (err) {
     if (err instanceof ApiError) {
       throw new AdminApiError(err.kind === "invalid" ? "invalid" : "network", err.message);
     }
     throw new AdminApiError("network", NETWORK_ERROR_TEXT);
   }
-  if (res.body !== null) return res.body;
+  if (res.body !== null) return res.body.items;
   if (res.status === 403) {
     throw new AdminApiError("forbidden", "当前账号无权执行该操作");
   }

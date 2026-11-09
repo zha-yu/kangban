@@ -1,8 +1,10 @@
 /**
- * 管理员 · 用户与角色（Day 5 · D-1 / N2）。
+ * 管理员 · 用户与角色（Day 5 · D-1 / N2；Day 6 · N18 员工列表与改绑扩展）。
  *
  * 覆盖四流程中的三条：建员工（E12，含 elder_ids 分配 → 补齐 G2）、
  * 建家属账号（E15）、家属绑定长者（E13，≤2 位由服务端 409 兜底）。
+ * Day 6 新增：员工列表（GET /api/staff 契约增补）+ 调整负责长者（E20 全量覆盖），
+ * 改绑弹窗多选来自真实 E7，是否「最后一位责任护工」不做本地预判，以后端 409 为准。
  * 设备建档见 AdminDevicesPage。
  *
  * 范围边界：不含 E12 PATCH 改角色/停用、教学数据重置、人设配置、审计日志（后续批次）。
@@ -17,9 +19,12 @@ import {
   bindGuardian,
   createGuardian,
   createStaff,
+  listStaff,
+  reassignElders,
   type GuardianCreated,
   type GuardianBinding,
   type StaffCreated,
+  type StaffListItem,
   type StaffRole,
 } from "../admin-api";
 import { listElders, type ElderListItem } from "../elders-api";
@@ -50,10 +55,25 @@ function elderLabel(e: ElderListItem): string {
   return `${e.name}（未入床）`;
 }
 
+function staffRoleLabel(role: StaffRole): string {
+  return ROLE_OPTIONS.find((opt) => opt.value === role)?.label ?? role;
+}
+
 export function AdminUsersPage() {
   // 长者候选（真实 E7，admin 全量）
   const [elders, setElders] = useState<ElderListItem[] | null>(null);
   const [eldersError, setEldersError] = useState<string | null>(null);
+
+  // 员工列表（GET /api/staff，Day 6 契约增补）
+  const [staffList, setStaffList] = useState<StaffListItem[] | null>(null);
+  const [staffListError, setStaffListError] = useState<string | null>(null);
+
+  // 改绑弹窗（E20 全量覆盖）
+  const [reassignTarget, setReassignTarget] = useState<StaffListItem | null>(null);
+  const [reassignIds, setReassignIds] = useState<string[]>([]);
+  const [reassignBusy, setReassignBusy] = useState(false);
+  const [reassignError, setReassignError] = useState<string | null>(null);
+  const [reassignResult, setReassignResult] = useState<{ name: string; added: number; removed: number } | null>(null);
 
   // 建员工
   const [staffName, setStaffName] = useState("");
@@ -94,10 +114,65 @@ export function AdminUsersPage() {
         if (cancelled) return;
         setEldersError(err instanceof ApiError ? err.message : "长者列表加载失败，请稍后重试");
       });
+    listStaff()
+      .then((items) => {
+        if (cancelled) return;
+        setStaffList(items);
+        setStaffListError(null);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setStaffListError(errorText(err));
+      });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  /** 改绑成功后重拉员工列表（服务端为准，不本地推算差集） */
+  async function refreshStaffList() {
+    try {
+      setStaffList(await listStaff());
+      setStaffListError(null);
+    } catch (err) {
+      setStaffListError(errorText(err));
+    }
+  }
+
+  function openReassign(s: StaffListItem) {
+    setReassignResult(null);
+    setReassignError(null);
+    setReassignTarget(s);
+    setReassignIds([...s.bound_elder_ids]);
+  }
+
+  function toggleReassignElder(elderId: string) {
+    setReassignIds((prev) =>
+      prev.includes(elderId) ? prev.filter((id) => id !== elderId) : [...prev, elderId],
+    );
+  }
+
+  async function handleReassignSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!reassignTarget) return;
+    setReassignError(null);
+    setReassignBusy(true);
+    try {
+      const result = await reassignElders(reassignTarget.staff_id, reassignIds);
+      setReassignResult({
+        name: reassignTarget.name,
+        added: result.added.length,
+        removed: result.removed.length,
+      });
+      setReassignTarget(null);
+      await refreshStaffList();
+    } catch (err) {
+      // 403/409 留在弹窗内提示，不关闭（用户可改选后重试）
+      setReassignError(errorText(err));
+    } finally {
+      setReassignBusy(false);
+    }
+  }
 
   function toggleStaffElder(elderId: string) {
     setStaffElderIds((prev) =>
@@ -199,6 +274,62 @@ export function AdminUsersPage() {
 
   return (
     <div className="admin-page">
+      <section className="admin-card" aria-labelledby="admin-staff-list-title">
+        <h2 className="admin-card-title" id="admin-staff-list-title">
+          员工列表
+        </h2>
+        <p className="admin-card-sub">
+          对应 GET /api/staff（Day 6 契约增补）；「调整负责长者」为全量覆盖（E20），保存后未勾选的长者将解除负责关系。
+        </p>
+        {staffListError && (
+          <p className="alert-danger" role="alert">
+            {staffListError}
+          </p>
+        )}
+        {!staffListError && !staffList && <p className="admin-empty">员工列表加载中…</p>}
+        {staffList && staffList.length === 0 && <p className="admin-empty">暂无员工账号</p>}
+        {staffList && staffList.length > 0 && (
+          <table className="admin-table">
+            <thead>
+              <tr>
+                <th>姓名</th>
+                <th>角色</th>
+                <th>手机号</th>
+                <th>负责长者数</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {staffList.map((s) => (
+                <tr key={s.staff_id}>
+                  <td>{s.name}</td>
+                  <td>{staffRoleLabel(s.role)}</td>
+                  <td className="admin-mono">{s.phone_masked}</td>
+                  <td>{s.role === "admin" ? "—" : s.bound_elder_ids.length}</td>
+                  <td>
+                    {s.role !== "admin" && (
+                      <button
+                        type="button"
+                        className="btn-secondary btn-sm"
+                        onClick={() => openReassign(s)}
+                      >
+                        调整负责长者
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {reassignResult && (
+          <p className="admin-result" role="status">
+            已更新 {reassignResult.name} 的负责长者：新增 {reassignResult.added} 位、移除{" "}
+            {reassignResult.removed} 位。
+          </p>
+        )}
+      </section>
+
       <section className="admin-card" aria-labelledby="admin-staff-title">
         <h2 className="admin-card-title" id="admin-staff-title">
           员工建档
@@ -441,6 +572,58 @@ export function AdminUsersPage() {
           </div>
         </form>
       </section>
+
+      {reassignTarget && (
+        <div
+          className="rv-mask"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`调整负责长者 · ${reassignTarget.name}`}
+          onClick={() => !reassignBusy && setReassignTarget(null)}
+        >
+          <form className="rv-dialog" onClick={(e) => e.stopPropagation()} onSubmit={handleReassignSubmit}>
+            <h3 className="wo-dialog-title">调整负责长者 · {reassignTarget.name}</h3>
+            <p className="admin-card-sub">
+              全量覆盖：保存后未勾选的长者将解除负责关系；若某长者因此失去最后一位责任护工，服务端会拒绝并提示。
+            </p>
+            {eldersError && <p className="field-error">{eldersError}</p>}
+            {!eldersError && !elders && <p className="admin-empty">长者列表加载中…</p>}
+            {elders && elders.length === 0 && <p className="admin-empty">暂无在住长者</p>}
+            {elders && elders.length > 0 && (
+              <div className="admin-check-list">
+                {elders.map((e) => (
+                  <label key={e.elder_id} className="admin-check">
+                    <input
+                      type="checkbox"
+                      checked={reassignIds.includes(e.elder_id)}
+                      onChange={() => toggleReassignElder(e.elder_id)}
+                    />
+                    {elderLabel(e)}
+                  </label>
+                ))}
+              </div>
+            )}
+            {reassignError && (
+              <p className="field-error" role="alert">
+                {reassignError}
+              </p>
+            )}
+            <div className="dlg-actions">
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={reassignBusy}
+                onClick={() => setReassignTarget(null)}
+              >
+                取消
+              </button>
+              <button type="submit" className="btn-primary" disabled={reassignBusy || !elders}>
+                {reassignBusy ? "正在保存…" : "保存"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }
