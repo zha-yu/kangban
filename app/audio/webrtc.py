@@ -34,6 +34,7 @@ import contextlib
 import io
 import json
 import logging
+import time
 import uuid
 import wave
 from collections import deque
@@ -650,6 +651,7 @@ class PlaybackAudioTrack(MediaStreamTrack):
         super().__init__()
         self._queue = queue
         self._pts = 0
+        self._frame_count = 0
 
     async def recv(self) -> av.AudioFrame:
         if self.readyState != "live":
@@ -663,7 +665,8 @@ class PlaybackAudioTrack(MediaStreamTrack):
         frame.sample_rate = DOWNLINK_SAMPLE_RATE
 
         pcm: bytes | None = None
-        if not self._queue.empty():
+        queue_depth = self._queue.qsize()
+        if queue_depth > 0:
             item = self._queue.get_nowait()
             if (
                 item.sample_rate == DOWNLINK_SAMPLE_RATE
@@ -678,6 +681,23 @@ class PlaybackAudioTrack(MediaStreamTrack):
         frame.pts = self._pts
         frame.time_base = Fraction(1, DOWNLINK_SAMPLE_RATE)
         self._pts += DOWNLINK_FRAME_SAMPLES
+        self._frame_count += 1
+
+        # 每 100 帧（≈2 秒）打一行诊断，确认 recv 没有卡死
+        if self._frame_count % 100 == 0:
+            _log_event(
+                "playback_track_heartbeat",
+                trace_id="-",
+                connection_id="-",
+                turn_id=None,
+                state="live",
+                reason="heartbeat",
+                frames_since_start=self._frame_count,
+                pts=self._pts,
+                queue_depth_at_recv=queue_depth,
+                pcm_served=pcm is not None,
+            )
+
         return frame
 
 
@@ -766,6 +786,10 @@ class MediaSession:
         self._playback_track: PlaybackAudioTrack | None = None
         self._playback_turn_id: str | None = None
         self._playback_generation = 0
+        # TTS 播放 echo suppression：数字人在说话时，VAD 对 speech_start/end 做抑制
+        # （麦克风会把 TTS 播放声收回去，导致 VAD 误以为有人在说话）。
+        # 计算公式：enqueue 时刻 + 音频时长 + ECHO_COOLDOWN_S 冷却窗口
+        self._playback_active_until: float = 0.0
         self._offer_seen = False
         self._pending_ice: list[tuple[str, str | None, int | None]] = []
         self._pending_ice_keys: set[tuple[str, str | None, int | None]] = set()
@@ -1283,6 +1307,11 @@ class MediaSession:
 
         for frame in frames:
             queue.put_nowait(frame)
+        duration_ms = sum(frame.duration_ms for frame in frames)
+        # Echo suppression：TTS 播放期间 + 1.5s 冷却窗口内，VAD 事件被抑制
+        # （麦克风会把 TTS 播放声收回去，干扰 VAD 判决）
+        ECHO_COOLDOWN_S = 1.5
+        self._playback_active_until = time.monotonic() + duration_ms / 1000.0 + ECHO_COOLDOWN_S
         _log_event(
             "tts pcm enqueued",
             trace_id=self.trace_id,
@@ -1291,8 +1320,9 @@ class MediaSession:
             state=self._state.value,
             reason="tts_enqueued",
             frames=len(frames),
-            duration_ms=sum(frame.duration_ms for frame in frames),
+            duration_ms=duration_ms,
             queue_depth=queue.qsize(),
+            echo_suppress_until=self._playback_active_until,
         )
 
     def barge_in(self) -> None:
@@ -1303,6 +1333,8 @@ class MediaSession:
         self._playback_generation += 1
         cleared = self._drain_playback_queue()
         self._playback_turn_id = None
+        # 打断意味着 TTS 播放被中断，echo suppression 窗口也应清零
+        self._playback_active_until = 0.0
         _log_event(
             "playback barged",
             trace_id=self.trace_id,
@@ -1560,6 +1592,21 @@ class MediaSession:
             MediaState.CLOSED,
             MediaState.FAILED,
         ):
+            return
+        # Echo suppression：TTS 播放期间 + 冷却窗口内，抑制 VAD 事件
+        # （麦克风会把 TTS 播放声收回去，导致 VAD 频繁误判 speech_start/speech_end，
+        # 前端误以为数字人还在说话、不发 asr_start，对话卡死）
+        if time.monotonic() < self._playback_active_until:
+            _log_event(
+                "vad event suppressed",
+                trace_id=self.trace_id,
+                connection_id=self.connection_id,
+                turn_id=self._turn_id,
+                state=self._state.value,
+                reason=event.kind.value,
+                suppress_until=self._playback_active_until,
+                remaining_ms=int((self._playback_active_until - time.monotonic()) * 1000),
+            )
             return
         try:
             self.spawn(self._emit_vad_event(event))

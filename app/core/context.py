@@ -18,8 +18,11 @@ from collections.abc import Sequence
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
 from zoneinfo import ZoneInfo
+
+if TYPE_CHECKING:
+    from app.services.state_service import StateSnapshot
 
 # 对外约定：请求头与响应头同名
 TRACE_HEADER = "X-Trace-Id"
@@ -195,15 +198,452 @@ def _format_time(value: datetime) -> str:
     return value.astimezone(_DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M")
 
 
+# ------------------------------------------------------------------ ContextBuilder 九层装配（Day 6 N06）
+
+# 九层装配（讲义 §7.1 固化顺序；任务卡 §3.2：九层顺序即代码，调用方不得自定义）
+ContextPriority = Literal[
+    "safety_and_policy",
+    "identity_and_scope",
+    "runtime_info",
+    "active_task",
+    "authoritative_facts",
+    "relevant_memories",
+    "older_summary",
+]
+
+_CONTEXT_LAYERS: Final[tuple[tuple[ContextPriority, Literal["must_keep", "can_trim"]], ...]] = (
+    ("safety_and_policy", "must_keep"),
+    ("identity_and_scope", "must_keep"),
+    ("runtime_info", "can_trim"),
+    ("active_task", "must_keep"),
+    ("authoritative_facts", "can_trim"),
+    ("relevant_memories", "can_trim"),
+    ("older_summary", "can_trim"),
+)
+
+CONTEXT_BUDGET_TOKENS: Final[int] = 4000
+
+_CONTEXT_PRIORITY_TAIL_FIRST: Final[list[str]] = [
+    "older_summary",
+    "relevant_memories",
+    "authoritative_facts",
+    "runtime_info",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class ContextBuilderConfig:
+    budget_tokens: int = CONTEXT_BUDGET_TOKENS
+    max_history_turns: int = DIALOGUE_MAX_ROUNDS
+    max_memories: int = 5
+    max_authoritative_facts: int = 3
+
+
+@dataclass(slots=True)
+class ContextLayerResult:
+    layer: ContextPriority
+    content: str
+    token_estimate: int
+    degraded: bool = False
+    degraded_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TurnContext:
+    messages: list[dict[str, str]]
+    budget_used_tokens: int
+    budget_total_tokens: int
+    degraded_layers: tuple[str, ...] = ()
+
+
+def _estimate_tokens(text: str) -> int:
+    """粗略 token 估算：2 字符 ≈ 1 token（讲义 §7.3 口径，引入精确 tokenizer 留给后续）。"""
+    if not text:
+        return 0
+    return max(1, len(text) // 2)
+
+
+def _boundary_wrap(
+    kind: str, source: str, identifier: str, confidence: float | None, inner: str
+) -> str:
+    """讲义 §7.5 不可信数据边界标签。"""
+    confidence_str = f" version={confidence:.2f}" if confidence is not None else ""
+    return (
+        f"<retrieved_knowledge kind={kind} source={source} id={identifier}{confidence_str}>\n"
+        f"{inner.strip()}\n"
+        f"</retrieved_knowledge>"
+    )
+
+
+async def build_turn_context(
+    *,
+    identity: DialogueIdentity,
+    user_text: str,
+    thread_id: str,
+    state_snapshot: StateSnapshot | None = None,
+    config: ContextBuilderConfig | None = None,
+    now: datetime | None = None,
+) -> TurnContext:
+    """九层装配 + 预算裁剪 + 不可信数据边界标签。
+
+    L8 写锁承诺：**绝不改** `build_dialogue_messages` 的签名。Day 3–5 的
+    `test_dialogue_*` 套件必须继续绿。
+    """
+    cfg = config or ContextBuilderConfig()
+    text = user_text.strip()
+    if not text:
+        raise ValueError("user_text must be non-empty")
+
+    layers: list[ContextLayerResult] = []
+
+    # [0] safety_and_policy —— FIXED_SYSTEM_PROMPT（保 cache，逐字节稳定）
+    layers.append(
+        ContextLayerResult(
+            layer="safety_and_policy",
+            content=FIXED_SYSTEM_PROMPT,
+            token_estimate=_estimate_tokens(FIXED_SYSTEM_PROMPT),
+        )
+    )
+
+    # [1] identity_and_scope —— runtime_context + 闸门② elder_id
+    layers.append(
+        ContextLayerResult(
+            layer="identity_and_scope",
+            content=_assemble_identity_and_scope(identity),
+            token_estimate=_estimate_tokens(_assemble_identity_and_scope(identity)),
+        )
+    )
+
+    # [2] runtime_info —— 时间（Asia/Shanghai）
+    runtime_text = _assemble_runtime_info(now)
+    layers.append(
+        ContextLayerResult(
+            layer="runtime_info",
+            content=runtime_text,
+            token_estimate=_estimate_tokens(runtime_text),
+        )
+    )
+
+    # [3] active_task —— N05 StateSnapshot.task
+    layers.append(
+        ContextLayerResult(
+            layer="active_task",
+            content=_assemble_active_task(state_snapshot),
+            token_estimate=_estimate_tokens(_assemble_active_task(state_snapshot)),
+        )
+    )
+
+    # [4] authoritative_facts —— memory_chunks 偏好类事实（闸门② elder_id）
+    facts_text = await _assemble_authoritative_facts(identity, cfg)
+    layers.append(
+        ContextLayerResult(
+            layer="authoritative_facts",
+            content=facts_text,
+            token_estimate=_estimate_tokens(facts_text),
+            degraded=(facts_text == "" and not identity.is_generic),
+            degraded_reason="memory_chunks_not_queried" if facts_text == "" else None,
+        )
+    )
+
+    # [5] relevant_memories —— memory_chunks 召回（骨架 N08 负责，Day 6 桩复用 authoritative_facts）
+    memories_text = await _assemble_relevant_memories(identity, cfg)
+    layers.append(
+        ContextLayerResult(
+            layer="relevant_memories",
+            content=memories_text,
+            token_estimate=_estimate_tokens(memories_text),
+            degraded=(memories_text == "" and not identity.is_generic),
+            degraded_reason="memory_service_not_ready" if memories_text == "" else None,
+        )
+    )
+
+    # [6] older_summary —— 历史对话摘要（dev-A HistoryStore 桩，返回空 + degraded）
+    older_text = await _assemble_older_summary(thread_id, identity, cfg)
+    layers.append(
+        ContextLayerResult(
+            layer="older_summary",
+            content=older_text,
+            token_estimate=_estimate_tokens(older_text),
+            degraded=(older_text == "" and not identity.is_generic),
+            degraded_reason="history_store_not_ready" if older_text == "" else None,
+        )
+    )
+
+    # waiting_for 绑定（讲义 §7.2）—— 独立于七层，不进预算裁剪
+    waiting_for_text = _assemble_waiting_for_binding(state_snapshot)
+
+    # --- 预算裁剪 ---
+    degraded_names: list[str] = []
+    layers_total = sum(layer_result.token_estimate for layer_result in layers)
+
+    if layers_total > cfg.budget_tokens:
+        must_keep_total = sum(
+            layer_result.token_estimate
+            for layer_result in layers
+            if _layer_priority_keeps(layer_result.layer)
+        )
+        remaining_budget = cfg.budget_tokens - must_keep_total
+
+        trimmed_can_trim: list[ContextLayerResult] = []
+        current_trimmed_total = 0
+        for layer_name in _CONTEXT_PRIORITY_TAIL_FIRST:
+            target_layer = next(
+                (layer_result for layer_result in layers if layer_result.layer == layer_name), None
+            )
+            if target_layer is None:
+                continue
+            if current_trimmed_total + target_layer.token_estimate <= remaining_budget:
+                trimmed_can_trim.append(target_layer)
+                current_trimmed_total += target_layer.token_estimate
+            else:
+                degraded_names.append(layer_name)
+
+        final_layers: list[ContextLayerResult] = []
+        for original_name, _ in _CONTEXT_LAYERS:
+            layer = next(
+                (layer_result for layer_result in layers if layer_result.layer == original_name),
+                None,
+            )
+            if layer is None:
+                continue
+            if _layer_priority_keeps(layer.layer) or layer in trimmed_can_trim:
+                final_layers.append(layer)
+        layers = final_layers
+        layers_total = must_keep_total + current_trimmed_total
+
+    # --- 组装 messages ---
+    messages: list[dict[str, str]] = []
+    for layer in layers:
+        if layer.content.strip():
+            messages.append({"role": "system", "content": layer.content})
+
+    if waiting_for_text.strip():
+        messages.append({"role": "system", "content": waiting_for_text})
+
+    history_messages = await _assemble_history_turns(thread_id, identity, cfg)
+    messages.extend(history_messages)
+
+    messages.append({"role": "user", "content": text})
+
+    return TurnContext(
+        messages=messages,
+        budget_used_tokens=layers_total,
+        budget_total_tokens=cfg.budget_tokens,
+        degraded_layers=tuple(degraded_names),
+    )
+
+
+def _layer_priority_keeps(layer: ContextPriority) -> bool:
+    for name, mark in _CONTEXT_LAYERS:
+        if name == layer:
+            return mark == "must_keep"
+    return False
+
+
+def _assemble_identity_and_scope(identity: DialogueIdentity) -> str:
+    if identity.is_generic:
+        return GENERIC_SYSTEM_PROMPT
+    lines = ["当前说话人身份：已确认。"]
+    if identity.display_name:
+        lines.append(f"对长者的称呼：{identity.display_name}。")
+    return "\n".join(lines)
+
+
+def _assemble_runtime_info(now: datetime | None) -> str:
+    if now is None:
+        return ""
+    return f"当前时间：{_format_time(now)}。"
+
+
+def _assemble_active_task(state_snapshot: StateSnapshot | None) -> str:
+    if state_snapshot is None:
+        return ""
+    task = state_snapshot.task or {}
+    active_id = task.get("active_task_id")
+    if not active_id:
+        return ""
+    kind = task.get("kind", "unknown")
+    waiting = task.get("waiting_for")
+    if waiting:
+        return (
+            f"【当前任务进行中】任务类型：{kind}。等待长者输入：{waiting}。"
+            f"请优先结合用户本轮输入判断是否为该任务的回答。"
+        )
+    return f"【当前任务进行中】任务类型：{kind}。等待中。"
+
+
+async def _assemble_authoritative_facts(
+    identity: DialogueIdentity, cfg: ContextBuilderConfig
+) -> str:
+    if identity.is_generic or identity.elder_id is None:
+        return ""
+    try:
+        from sqlalchemy import select
+
+        from app.db import get_session
+        from app.models.memory import MemoryChunk
+
+        async with get_session() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(MemoryChunk)
+                        .where(
+                            MemoryChunk.elder_id == identity.elder_id,
+                            MemoryChunk.status == "active",
+                        )
+                        .order_by(MemoryChunk.importance.desc())
+                        .limit(cfg.max_authoritative_facts)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+    except Exception:
+        return ""
+
+    if not rows:
+        return ""
+    lines: list[str] = []
+    for chunk in rows:
+        lines.append(
+            _boundary_wrap(
+                kind="authoritative_fact",
+                source="memory_chunks",
+                identifier=str(chunk.chunk_id),
+                confidence=float(chunk.confidence) if chunk.confidence is not None else None,
+                inner=chunk.content,
+            )
+        )
+    return "\n".join(lines)
+
+
+async def _assemble_relevant_memories(identity: DialogueIdentity, cfg: ContextBuilderConfig) -> str:
+    if identity.is_generic or identity.elder_id is None:
+        return ""
+    try:
+        from sqlalchemy import select
+
+        from app.db import get_session
+        from app.models.memory import MemoryChunk
+
+        async with get_session() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(MemoryChunk)
+                        .where(
+                            MemoryChunk.elder_id == identity.elder_id,
+                            MemoryChunk.status == "active",
+                        )
+                        .order_by(
+                            MemoryChunk.last_accessed.desc().nullslast(),
+                            MemoryChunk.importance.desc(),
+                        )
+                        .limit(cfg.max_memories)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+    except Exception:
+        return ""
+
+    if not rows:
+        return ""
+    lines: list[str] = []
+    for chunk in rows:
+        lines.append(
+            _boundary_wrap(
+                kind="memory",
+                source="memory_chunks",
+                identifier=str(chunk.chunk_id),
+                confidence=float(chunk.confidence) if chunk.confidence is not None else None,
+                inner=chunk.content,
+            )
+        )
+    return "\n".join(lines)
+
+
+async def _assemble_older_summary(
+    thread_id: str, identity: DialogueIdentity, cfg: ContextBuilderConfig
+) -> str:
+    if identity.is_generic:
+        return ""
+    try:
+        from app.services.history_service import read_turns
+
+        turns = await read_turns(
+            thread_id=thread_id,
+            elder_id=identity.elder_id,
+            limit=cfg.max_history_turns,
+        )
+    except ImportError:
+        return ""
+
+    if not turns:
+        return ""
+    lines = ["【最近对话摘要】"]
+    for t in turns:
+        text = getattr(t, "user_text", str(t))
+        lines.append(f"- 长者说：{text[:80]}{'…' if len(text) > 80 else ''}")
+    return "\n".join(lines)
+
+
+async def _assemble_history_turns(
+    thread_id: str, identity: DialogueIdentity, cfg: ContextBuilderConfig
+) -> list[dict[str, str]]:
+    if identity.is_generic:
+        return []
+    try:
+        from app.services.history_service import read_turns
+
+        turns = await read_turns(
+            thread_id=thread_id,
+            elder_id=identity.elder_id,
+            limit=cfg.max_history_turns,
+        )
+    except ImportError:
+        return []
+
+    messages: list[dict[str, str]] = []
+    for t in turns:
+        messages.append({"role": "user", "content": getattr(t, "user_text", "")})
+        assistant = getattr(t, "assistant_delivered_text", "")
+        if getattr(t, "status", "") == "interrupted":
+            assistant += "\n[标记：本轮回复被打断]"
+        messages.append({"role": "assistant", "content": assistant})
+    return messages
+
+
+def _assemble_waiting_for_binding(state_snapshot: StateSnapshot | None) -> str:
+    if state_snapshot is None:
+        return ""
+    task = state_snapshot.task or {}
+    waiting = task.get("waiting_for")
+    if not waiting:
+        return ""
+    if waiting == "taken_answer":
+        return (
+            "【任务绑定提示】如果本轮用户的回答像是对用药确认（吃了/还没吃/不想吃/吃了半片）的回应，"
+            "优先将用户输入解释为对该用药确认任务的答复。"
+        )
+    return f"【任务绑定提示】当前等待：{waiting}。请结合用户本轮输入判断是否为对应回答。"
+
+
 __all__ = [
     "DIALOGUE_MAX_ROUNDS",
     "FIXED_SYSTEM_PROMPT",
     "GENERIC_SYSTEM_PROMPT",
     "TRACE_HEADER",
+    "ContextBuilderConfig",
+    "ContextLayerResult",
+    "ContextPriority",
     "DialogueIdentity",
     "DialogueTurn",
     "PersonaContext",
     "build_dialogue_messages",
+    "build_turn_context",
     "get_trace_id",
     "is_valid_trace_id",
     "new_trace_id",
