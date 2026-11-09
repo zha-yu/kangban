@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 
 from sqlalchemy import select
@@ -160,7 +160,7 @@ async def extract_preference_candidates(
                         source_type="elder_explicit",
                         confidence=0.8,
                         sensitivity="normal",
-                        valid_from=datetime.utcnow(),
+                        valid_from=datetime.now(UTC),
                     )
                     candidates.append(candidate)
                     break
@@ -247,7 +247,7 @@ async def insert_candidate(candidate: MemoryCandidate, session) -> None:
         source_type=candidate.source_type,
         source_turn_ids=candidate.source_turn_ids,
         status="active",
-        valid_from=candidate.valid_from or datetime.utcnow(),
+        valid_from=candidate.valid_from or datetime.now(UTC),
         embedding=None,  # Day 7 接 pgvector 后填充
     )
     session.add(chunk)
@@ -288,7 +288,7 @@ async def recall_active_chunks(
         MemoryChunk.status == "active",
     )
     # 有效期过滤
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     stmt = stmt.where((MemoryChunk.valid_to.is_(None)) | (MemoryChunk.valid_to > now))
     if min_importance is not None:
         stmt = stmt.where(MemoryChunk.importance >= min_importance)
