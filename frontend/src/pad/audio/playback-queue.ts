@@ -1,5 +1,5 @@
 /**
- * Day 6 · N16 分段播放队列与送达确认（契约来源：docs/team_tasks/day06/contracts.md v1.0 §4）。
+ * Day 6 · N16 分段播放队列与送达确认（契约来源：docs/team_tasks/day06/contracts.md v1.2 §4）。
  *
  * 口径（主计划 Q-2 裁决「下一段到达即结算」）：
  *  - TTS 音频走 WebRTC 单轨连续流，服务端按段顺序下发段音频，并在每段音频开始
@@ -19,9 +19,11 @@
  *  唯一纪律：不得把 played 提前到「开始播」就报——本实现仅在「下一段到达（上一段
  *  音频已被服务端顺序播完）」或「轨结束」时报 played，符合纪律。
  *
- * J3 仍待 dev-C 确认的开放点：
- *  末段轨结束若不可靠（WebRTC 轨不触发 ended），需服务端给复用现有信号的
- *  结束口径；过渡期服务端按「发送即视为 delivered」降级打 delivery_status=unknown。
+ * J3 末段 played（contracts v1.2 §4.2 补充口径，2026-11-09 主理人确认）：
+ *  以客户端 played ack 为准，response_completed 只由末段 played 触发。轨 ended 不可靠
+ *  时 v1.2 允许「该段合成音频时长 + at_ms 计时」兜底，但 tts_text v2 字段零增删、
+ *  客户端无时长来源——计时兜底待 dev-C 明确时长口径后再落；当前以 onended 为主触发，
+ *  服务端另有「下一代 epoch / response_interrupted / WS 45s 判死」三层隐式关闭兜底。
  */
 
 import type { SegmentAckMsg, TtsTextMsg } from "../protocol";
