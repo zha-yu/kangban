@@ -21,7 +21,7 @@ import logging
 import unicodedata
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Final, Literal
 from uuid import UUID
 
 import bcrypt
@@ -263,10 +263,11 @@ TYP_STAFF_CARD = "staff_card"
 PRINCIPAL_TYPE_LITERALS: tuple[str, ...] = (TYP_ACCESS, TYP_DEVICE, TYP_STAFF_CARD)
 
 # `kind` 取值与 `sub` 前缀必须一致，来自契约 §5.1 与 §1 的主体模型。
-KIND_STAFF = "staff"
-KIND_GUARDIAN = "guardian"
-KIND_DEVICE = "device"
-KIND_STAFF_CARD = "staff_card"
+# Literal 注解让调用方（auth_service 等）把这些常量直接传给 Literal 参数而无需 type: ignore。
+KIND_STAFF: Final[Literal["staff"]] = "staff"
+KIND_GUARDIAN: Final[Literal["guardian"]] = "guardian"
+KIND_DEVICE: Final[Literal["device"]] = "device"
+KIND_STAFF_CARD: Final[Literal["staff_card"]] = "staff_card"
 
 # 员工角色（契约 R5）。家属不是员工 role，家属的 `kind=guardian` 令牌不带这个字段。
 STAFF_ROLES = ("admin", "care_worker", "doctor")

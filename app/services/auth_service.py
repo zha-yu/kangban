@@ -32,6 +32,7 @@ from app.core.security import (
     _DEVICE_TOKEN_HASH_PREFIX_LENGTH,
     KIND_GUARDIAN,
     KIND_STAFF,
+    KIND_STAFF_CARD,
     access_ttl_seconds,
     constant_time_equals,
     device_ttl_seconds,
@@ -214,10 +215,15 @@ async def login_with_phone(
         raise AuthRevokedError("账号已停用")
 
     # --- 4. 签发 token ---
-    is_staff = staff_row is not None
-    kind = KIND_STAFF if is_staff else KIND_GUARDIAN
-    principal_id = str(target.staff_id if is_staff else target.guardian_id)
-    role = getattr(target, "role", None)  # GuardianAccount 没有 role
+    kind: Literal["staff", "guardian"]
+    if isinstance(target, StaffAccount):
+        kind = KIND_STAFF
+        principal_id = str(target.staff_id)
+        role: str | None = target.role
+    else:
+        kind = KIND_GUARDIAN
+        principal_id = str(target.guardian_id)
+        role = None  # GuardianAccount 没有 role
 
     access = sign_staff_access(
         kind=kind,
@@ -265,14 +271,18 @@ async def refresh_access_token(
         raise AuthInvalidError("refresh token 无效") from exc
 
     sub = str(claims["sub"])  # "staff:<uuid>" 或 "guardian:<uuid>"
-    kind, _, raw_id = sub.partition(":")
-    if kind == KIND_STAFF:
+    kind_raw, _, raw_id = sub.partition(":")
+    row: StaffAccount | GuardianAccount | None
+    kind: Literal["staff", "guardian"]
+    if kind_raw == KIND_STAFF:
+        kind = KIND_STAFF
         row = (
             await session.execute(
                 select(StaffAccount).where(StaffAccount.staff_id == uuid.UUID(raw_id))
             )
         ).scalar_one_or_none()
-    elif kind == KIND_GUARDIAN:
+    elif kind_raw == KIND_GUARDIAN:
+        kind = KIND_GUARDIAN
         row = (
             await session.execute(
                 select(GuardianAccount).where(GuardianAccount.guardian_id == uuid.UUID(raw_id))
@@ -396,23 +406,25 @@ async def get_current_identity(
     """
     scope_elder_ids: list[str] = []
     name: str | None = None
+    result_kind: Literal["staff", "guardian", "device", "staff_card"]
 
     if identity.kind == KIND_STAFF:
-        row = (
+        result_kind = KIND_STAFF
+        staff_row = (
             await session.execute(
                 select(StaffAccount).where(StaffAccount.staff_id == uuid.UUID(identity.staff_id))
             )
         ).scalar_one_or_none()
-        if row is None:
+        if staff_row is None:
             raise AuthRevokedError("账号已不存在")
-        name = row.name
+        name = staff_row.name
         # admin 全量权限 → scope 为空列表
-        if row.role != "admin":
+        if staff_row.role != "admin":
             assignments = (
                 (
                     await session.execute(
                         select(ElderStaffAssignment.elder_id).where(
-                            ElderStaffAssignment.staff_id == row.staff_id
+                            ElderStaffAssignment.staff_id == staff_row.staff_id
                         )
                     )
                 )
@@ -422,21 +434,22 @@ async def get_current_identity(
             scope_elder_ids = [str(eid) for eid in assignments]
 
     elif identity.kind == KIND_GUARDIAN:
-        row = (
+        result_kind = KIND_GUARDIAN
+        guardian_row = (
             await session.execute(
                 select(GuardianAccount).where(
                     GuardianAccount.guardian_id == uuid.UUID(identity.guardian_id)
                 )
             )
         ).scalar_one_or_none()
-        if row is None:
+        if guardian_row is None:
             raise AuthRevokedError("账号已不存在")
-        name = row.name
+        name = guardian_row.name
         bindings = (
             (
                 await session.execute(
                     select(ElderGuardian.elder_id).where(
-                        ElderGuardian.guardian_id == row.guardian_id,
+                        ElderGuardian.guardian_id == guardian_row.guardian_id,
                         ElderGuardian.status == "active",
                     )
                 )
@@ -447,12 +460,14 @@ async def get_current_identity(
         scope_elder_ids = [str(eid) for eid in bindings]
 
     elif identity.kind == "device":
+        result_kind = "device"
         if identity.elder_id:
             scope_elder_ids = [str(identity.elder_id)]
         # device 不需要 name 字段
 
     elif identity.kind == "staff_card":
         # 工牌：elder_id 从 device 来（S-17），staff_id 走 staff_accounts 拿 name
+        result_kind = KIND_STAFF_CARD
         name_row = (
             await session.execute(
                 select(StaffAccount.name).where(
@@ -465,7 +480,7 @@ async def get_current_identity(
             scope_elder_ids = [str(identity.elder_id)]
 
     return CurrentIdentityResult(
-        kind=identity.kind,
+        kind=result_kind,
         id=identity.staff_id or identity.guardian_id or identity.device_id or "",
         role=getattr(identity, "role", None),
         name=name,

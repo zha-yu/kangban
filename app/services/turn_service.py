@@ -753,13 +753,20 @@ class TurnService:
                 # ---- 第 6 步：再改状态 ----
                 await self._state.apply(runtime.thread_id, state_version, ("response_completed",))
 
-                # ---- 第 7 步：最后下发（response_id 与第 5 步同一枚，事实与下发对账一致） ----
-                handle = await self._response_stream.start(context, result, response_id=response_id)
-
+                # 事实与状态已闭合，先提交再下发。第 7 步 ResponseService.start 内部的
+                # HistoryEventSink 开独立短事务，对同一 conversation_threads 行
+                # SELECT … FOR UPDATE 分配 seq；若在本会话事务窗口内调用，该短事务会
+                # 锁等本会话未提交的行锁——应用层循环等待，PG 不检测、无 lock_timeout，
+                # 静默挂死（trace a5dc0863：response_started 后 40s 零段下发 →
+                # ws_dead 45s 判死）。commit 后行锁释放，下发短事务立即可进。
                 await session.commit()
             except BaseException:
                 await session.rollback()
                 raise
+
+        # ---- 第 7 步：最后下发（事务窗口之外；response_id 与第 5 步同一枚，事实与下发对账一致） ----
+        # 下发失败不回滚已闭合的事实（只追加口径）；客户端侧由 ws_dead / 重连兜底。
+        handle = await self._response_stream.start(context, result, response_id=response_id)
 
         outcome = TurnOutcome(
             turn_id=turn_id,
