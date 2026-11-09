@@ -2,6 +2,8 @@
  * Day 3 模块间接口契约的 A4 侧类型定义（来源：docs/team_tasks_day03/contracts.md v1.0）。
  * 使用规则：下游只准引用本文件的契约类型，不得自行定义接口结构；
  * 契约改动必须先改 contracts.md（群通告 + 冻结人任务卡留痕），再同步此处。
+ * Day 6 增量来源：docs/team_tasks/day06/contracts.md v1.0 §4（tts_text v2 + segment_ack），
+ * 服务端 TypedDict 同步由 dev-C 落 app/audio/signaling.py（写锁 L6）。
  */
 
 /* ===================== C2 · 信令 WS 消息契约（A2 冻结，A4 消费） =====================
@@ -101,7 +103,8 @@ export type ClientSignal =
   | AsrStartMsg
   | AsrEndMsg
   | ClientDiagMsg
-  | IdentityConfirmMsg;
+  | IdentityConfirmMsg
+  | SegmentAckMsg;
 
 /* ---- S→C 服务端下发 ---- */
 
@@ -146,10 +149,37 @@ export interface AsrFinalMsg {
 }
 
 /** 数字人回复文本（大字幕渲染；打断分两层已定案：前端 speechstart 同一刻立即停播，
- *  服务端 A3 收到 asr_start 停写轨清缓冲——前端不等服务端） */
+ *  服务端 A3 收到 asr_start 停写轨清缓冲——前端不等服务端）。
+ *  Day 6 契约扩展（contracts.md v1.0 §4.1，向后兼容）：新字段全部可选，缺失时
+ *  按整段一播处理（旧服务端/回滚路径不报错）；epoch 为客户端原样回传值，前端不得自增；
+ *  分段由服务端切分，前端不二次切分；segment_id 与 index 均 0 基且同值。 */
 export interface TtsTextMsg {
   type: "tts_text";
   text: string;
+  degraded?: boolean;
+  /** 本次回复唯一 id（多段共用）；缺失 → 整段一播 */
+  response_id?: string;
+  /** 会话代次，客户端原样回传，不得自增 */
+  epoch?: number;
+  /** 0 基段号 */
+  segment_id?: number;
+  /** 0 基序号，与 segment_id 同值（保留两字段便于未来乱序） */
+  index?: number;
+  /** 本回复总段数 */
+  total?: number;
+}
+
+/** Day 6 新增（contracts.md v1.0 §4.2）：pad 分段送达确认上报（C→S）。
+ *  status=playing 该段起播 / played 该段播完 / canceled 打断（带最后已确认 played 的段号）；
+ *  at_ms 为客户端单调时钟（ms），只用于折算播放时长，不参与判定；
+ *  上报走「尽力而为 + 1 次重发」，失败只打 client_diag，不阻塞播放。 */
+export interface SegmentAckMsg {
+  type: "segment_ack";
+  response_id: string;
+  epoch: number;
+  segment_id: number;
+  status: "playing" | "played" | "canceled";
+  at_ms: number;
 }
 
 /** 服务端降级/异常通知；message 为已脱敏的长者可读话术 */
