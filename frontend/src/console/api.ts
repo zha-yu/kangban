@@ -274,6 +274,42 @@ export async function apiPost(path: string, body: unknown): Promise<Response> {
   return res;
 }
 
+/** 通用鉴权 PATCH（房间/床位管理）：返回原始 Response，204 也按 ok 正常返回 */
+export async function apiPatch(path: string, body: unknown): Promise<Response> {
+  let res: Response;
+  try {
+    res = await authedFetch(path, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    throw new ApiError("network", NETWORK_ERROR_TEXT);
+  }
+  if (res.status === 401) {
+    // refresh 已在 authedFetch 内尝试并失败 → 登录态已清
+    throw new ApiError("invalid", INVALID_CREDENTIAL_TEXT);
+  }
+  return res;
+}
+
+/** 通用鉴权 DELETE：返回原始 Response，204 也按 ok 正常返回 */
+export async function apiDelete(path: string): Promise<Response> {
+  let res: Response;
+  try {
+    res = await authedFetch(path, { method: "DELETE" });
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    throw new ApiError("network", NETWORK_ERROR_TEXT);
+  }
+  if (res.status === 401) {
+    // refresh 已在 authedFetch 内尝试并失败 → 登录态已清
+    throw new ApiError("invalid", INVALID_CREDENTIAL_TEXT);
+  }
+  return res;
+}
+
 /** 退出登录：清本入口 localStorage 回登录页（task-05 §3 要点 6） */
 export function logout(): void {
   clearSession();

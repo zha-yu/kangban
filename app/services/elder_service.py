@@ -32,6 +32,7 @@ from app.core.context import get_trace_id
 from app.core.runtime_context import Identity
 from app.core.security import KIND_STAFF
 from app.models import Bed, Elder, ElderStaffAssignment, Persona, Room
+from app.services.org_status import aggregate_room_status
 
 logger = logging.getLogger(__name__)
 
@@ -523,8 +524,9 @@ async def assign_bed(
     """E19：把长者安排到床位；若长者已在其他床，先腾空旧床（换床语义）。
 
     目标床位被其他长者占用是 409；长者与床位不存在是 404。
-    `rooms.status` 由 beds 聚合（模型注释），但全仓尚无任何聚合写入口，
-    本函数不引入第二套口径，只写 beds。
+    `rooms.status` 是 beds 的派生值：本函数在写完床位后调用
+    `org_status.aggregate_room_status` 同步受影响房间，与管理端共用同一口径，
+    E19 的请求/响应与冲突语义不变。
     """
     target = f"elder:{elder_id}"
     _require_staff_write(identity, action="elder.assign_bed", target=target)
@@ -557,14 +559,30 @@ async def assign_bed(
 
     # 换床：先腾空该长者当前占用的一切床位，再占新床。
     current = (await session.execute(select(Bed).where(Bed.elder_id == elder_id))).scalars().all()
+    affected_rooms: set[uuid.UUID] = {bed.room_id}
     for old in current:
         if old.bed_id != bed.bed_id:
             old.elder_id = None
             old.status = "available"
+            affected_rooms.add(old.room_id)
 
     bed.elder_id = elder_id
     bed.status = "occupied"
     await session.flush()
+
+    # 与管理端共用 `aggregate_room_status`：入床/换床后同步受影响房间的派生状态。
+    for room_id in affected_rooms:
+        room = await session.get(Room, room_id)
+        if room is None:  # pragma: no cover - beds.room_id 的 FK 保证房间存在
+            continue
+        statuses = (
+            (await session.execute(select(Bed.status).where(Bed.room_id == room_id)))
+            .scalars()
+            .all()
+        )
+        room.status = aggregate_room_status(statuses)
+    await session.flush()
+
     _audit(
         identity,
         action="elder.assign_bed",

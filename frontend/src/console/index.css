@@ -1273,3 +1273,63 @@ body {
 .admin-secret .admin-actions {
   margin-top: 0;
 }
+
+/* ---- 房间/床位管理（实施计划 v1.5 §6）：仅补筛选栏、分页、批量条三处 ---- */
+.admin-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.admin-toolbar .admin-field {
+  flex: 1 1 160px;
+  max-width: 220px;
+}
+
+.admin-toolbar-actions {
+  display: flex;
+  gap: 12px;
+  margin-left: auto;
+}
+
+.admin-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.admin-pager-info {
+  font-size: 13px;
+  color: var(--color-ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 批量操作条：虚线分隔 + 抬升面底，不铺信号色 */
+.admin-batch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px dashed var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-sunken);
+  font-size: 14px;
+}
+
+.admin-batch-count {
+  color: var(--color-ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-batch-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}

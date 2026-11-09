@@ -33,6 +33,7 @@ const NAV_BY_ROLE: Record<string, NavItem[]> = {
   ],
   admin: [
     { key: "users", label: "用户与角色", enabled: true }, // Day 5 D-1 交付（真实端点 E12/E15/E13）
+    { key: "rooms", label: "房间与床位", enabled: true }, // 房间/床位管理（E20–E28）
     { key: "devices", label: "模拟设备", enabled: true }, // Day 5 D-1 交付（E18/E16/E17）
     { key: "reset", label: "教学数据重置", enabled: false },
     { key: "persona", label: "人设配置", enabled: false },

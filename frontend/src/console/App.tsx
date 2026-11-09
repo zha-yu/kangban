@@ -18,6 +18,7 @@ import { MedicationPage } from "./pages/MedicationPage";
 import { MedicationEditPage } from "./pages/MedicationEditPage";
 import { ReviewQueuePage } from "./pages/ReviewQueuePage";
 import { AdminUsersPage } from "./pages/AdminUsersPage";
+import { AdminRoomsPage } from "./pages/AdminRoomsPage";
 import { AdminDevicesPage } from "./pages/AdminDevicesPage";
 
 /**
@@ -36,7 +37,7 @@ import { AdminDevicesPage } from "./pages/AdminDevicesPage";
 type View = "loading" | "login" | "home";
 type CareWorkerView = "workorders" | "elders" | "alerts" | "health-form" | "medication";
 type DoctorView = "review-queue" | "medication-edit";
-type AdminView = "users" | "devices";
+type AdminView = "users" | "rooms" | "devices";
 
 function PlaceholderHome({ principal }: { principal: Principal }) {
   return (
@@ -126,7 +127,13 @@ export default function App() {
           onLogout={handleLogout}
           onNavigate={(key) => setAdminView(key as AdminView)}
         >
-          {adminView === "devices" ? <AdminDevicesPage /> : <AdminUsersPage />}
+          {adminView === "rooms" ? (
+            <AdminRoomsPage />
+          ) : adminView === "devices" ? (
+            <AdminDevicesPage />
+          ) : (
+            <AdminUsersPage />
+          )}
         </AppLayout>
       );
     }
