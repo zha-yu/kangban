@@ -1,16 +1,19 @@
 /**
- * 管理员工 / 家属账号 API 封装（Day 5 · D-1 / N1）。
+ * 管理员工 / 家属账号 API 封装（Day 5 · D-1 / N1；Day 6 · N18 扩展）。
  *
- * 契约唯一依据：docs/接口契约_身份与权限.md v1.8 §4 E12 / E15 / E13、§7 错误码。
- * 只封装 console 尚无封装的三个端点；E18/E16/E17/E19/E5/E9 一律复用
- * `elders-api.ts` 既有函数（AGENTS §4 禁区 8：不新增第二套同类封装）。
+ * 契约唯一依据：docs/接口契约_身份与权限.md v1.8 §4 E12 / E15 / E13、§7 错误码；
+ * Day 6 E20 改绑：docs/team_tasks/day06/contracts.md v1.0 §6（已冻结）。
+ * `listStaff`（GET /api/staff）为 **契约增补提案**（J-Contract，主理人 2026-11-09 裁决流程），
+ * v1.8 尚无此端点——提案冻结、dev-B 落地前，UI 壳必须禁用提交，不得联调。
+ * E18/E16/E17/E19/E5/E9 一律复用 `elders-api.ts` 既有函数
+ * （AGENTS §4 禁区 8：不新增第二套同类封装）。
  *
  * 403/409/404/422 处置走主计划 K2 方案 B：本模块内解析状态码并抛页面级文案，
  * `console/api.ts` 零改动（不新增 forbidden kind，不回归登录页错误分支）。
  * 错误文案用用户语言，不回显 trace_id、detail 原文或内部实现细节。
  */
 
-import { ApiError, NETWORK_ERROR_TEXT, apiPost } from "./api";
+import { ApiError, NETWORK_ERROR_TEXT, apiGetWithStatus, apiPost, apiPut } from "./api";
 
 export type StaffRole = "admin" | "care_worker" | "doctor";
 export type AccountStatus = "active" | "disabled";
@@ -94,11 +97,11 @@ function messageForStatus(status: number, conflictText: string): { kind: AdminAp
   }
 }
 
-/** 统一 POST：网络错 / 401 归一为 AdminApiError，其余状态码按契约 §7 分支 */
-async function adminPost<T>(path: string, body: unknown, conflictText: string): Promise<T> {
+/** 统一请求发送：网络错 / 401 归一为 AdminApiError，其余状态码按契约 §7 分支（POST/PUT 共用） */
+async function adminSend<T>(doSend: () => Promise<Response>, conflictText: string): Promise<T> {
   let res: Response;
   try {
-    res = await apiPost(path, body);
+    res = await doSend();
   } catch (err) {
     if (err instanceof ApiError) {
       throw new AdminApiError(err.kind === "invalid" ? "invalid" : "network", err.message);
@@ -110,6 +113,11 @@ async function adminPost<T>(path: string, body: unknown, conflictText: string): 
     throw new AdminApiError(mapped.kind, mapped.message);
   }
   return (await res.json()) as T;
+}
+
+/** 统一 POST：网络错 / 401 归一为 AdminApiError，其余状态码按契约 §7 分支 */
+async function adminPost<T>(path: string, body: unknown, conflictText: string): Promise<T> {
+  return adminSend<T>(() => apiPost(path, body), conflictText);
 }
 
 /** E12 POST /api/staff —— 建员工账号（仅 admin） */
@@ -129,4 +137,49 @@ export function bindGuardian(elderId: string, guardianId: string, relation: stri
     { guardian_id: guardianId, relation },
     "该家属已绑定此长者，或该长者已满 2 位监护人",
   );
+}
+
+/** E20 PUT /api/staff/{staff_id}/elders —— 全量覆盖式替换员工负责长者（仅 admin）。
+ *  契约：day06 contracts.md v1.0 §6。200 返回差集；409=移除后某长者失去全部 primary_care；
+ *  前端不做「是否最后一位责任护工」本地预判，规则单点在后端（避免两处漂移）。 */
+export interface ReassignResult {
+  staff_id: string;
+  added: string[];
+  removed: string[];
+}
+
+export function reassignElders(staffId: string, elderIds: string[]): Promise<ReassignResult> {
+  return adminSend<ReassignResult>(
+    () => apiPut(`/api/staff/${encodeURIComponent(staffId)}/elders`, { elder_ids: elderIds }),
+    "该长者将失去最后一位责任护工，请先指定接替人",
+  );
+}
+
+/** GET /api/staff —— 员工列表（⚠️ 契约增补提案字段，J-Contract 未冻结前不得联调：
+ *  提案冻结 + dev-B 落地前 UI 壳禁用提交）。elder_ids 供改绑弹窗「默认勾选当前绑定」。 */
+export interface StaffListItem {
+  staff_id: string;
+  name: string;
+  role: StaffRole;
+  status: AccountStatus;
+  phone_masked: string;
+  /** 当前负责长者（care_worker/doctor 有值）；admin 恒为空数组 */
+  elder_ids: string[];
+}
+
+export async function listStaff(): Promise<StaffListItem[]> {
+  let res: { status: number; body: StaffListItem[] | null };
+  try {
+    res = await apiGetWithStatus<StaffListItem[]>("/api/staff");
+  } catch (err) {
+    if (err instanceof ApiError) {
+      throw new AdminApiError(err.kind === "invalid" ? "invalid" : "network", err.message);
+    }
+    throw new AdminApiError("network", NETWORK_ERROR_TEXT);
+  }
+  if (res.body !== null) return res.body;
+  if (res.status === 403) {
+    throw new AdminApiError("forbidden", "当前账号无权执行该操作");
+  }
+  throw new AdminApiError("network", "服务暂时不可用，请稍后重试");
 }
