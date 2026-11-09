@@ -498,7 +498,8 @@ async def list_staff_accounts(
         stmt = stmt.where(StaffAccount.role == role_filter)
     if status_filter:
         stmt = stmt.where(StaffAccount.status == status_filter)
-    stmt = stmt.order_by(StaffAccount.created_at.asc())
+    # 表无 created_at 列（模型亦未定义），按 staff_id 排序保证结果稳定
+    stmt = stmt.order_by(StaffAccount.staff_id.asc())
 
     rows = (await session.execute(stmt)).scalars().all()
 
