@@ -273,6 +273,7 @@ N00 ─┬─ N01 ─┬─ N02 ── N09 ── N10
 | L8 | `app/core/context.py` | dev-B | N06 只新增函数，**不改** `build_dialogue_messages` 现有签名（Day 3–5 测试依赖） |
 | L9 | `mcp-servers/weather/**`、`app/mcp_client/**` | dev-C | N24/N25 合入后由 dev-A 只读接入（N26），**不改 server 契约** |
 | L10 | `app/services/tool_executor.py` | dev-A | N26 只加 mcp 分支，不改 `execute()` 签名 |
+| L11 | `alembic/versions/0011_*` | **dev-C** | 2026-11-09 主理人裁决：**0011 由 dev-C 独占**，dev-A/B 本日**不再新建任何迁移**，避免并行写迁移出现双 head |
 
 ### 3.6 门禁
 
@@ -380,7 +381,7 @@ N00 ─┬─ N01 ─┬─ N02 ── N09 ── N10
 | --- | --- | --- | --- | --- |
 | J1 | W1 末 | A+B+D | 三个迁移文件的 `down_revision` 链 | `alembic heads` 只有一个 head |
 | J2 | W2 末 | A+B | `read_turns` / `snapshot` 两个函数签名与返回结构 | 签名在 contracts.md 里能查到，且 C 能直接调 |
-| J3 | W3 末 | C+D | `tts_text` v2 与 `segment_ack` 字段表 | 双方 TypedDict / interface 字段名逐一对照通过 |
+| J3 | W3 末 | C+D | `tts_text` v2 与 `segment_ack` 字段表 | ✅ **已通过**（2026-11-09）：字段名、0 基 `segment_id`、三态 `status` 逐项对照一致；dev-D 可进 S2（`playback-queue.ts`） |
 | J4 | W4 末 | A+C | `ToolResult` 与 `execute()` 契约 | 工具失败四分类各跑一条 |
 | J5 | W5 末 | C+D+B | 真实语音一轮的 trace | 同一 `trace_id` 串起 asr→turn→response→ack |
 | J6 | W6 末 | A+D | a0 端点与 UI | admin 改绑 A→B 端到端通过 |
@@ -548,7 +549,7 @@ TD line 549 原字段全部保留（`chunk_id` / `elder_id` / `content` / `embed
 
 ---
 
-## 11. 执行记录（截至 2026-11-09 11:45）
+## 11. 执行记录（截至 2026-11-09 14:55）
 
 ### 11.1 已完成
 
@@ -559,6 +560,10 @@ TD line 549 原字段全部保留（`chunk_id` / `elder_id` / `content` / `embed
 | **N01** 迁移 0008 | `alembic/versions/0008_day6_conversation_events.py`（三张事件表 + `last_event_seq`） | `upgrade head` 成功；表数 24（业务表） |
 | **N02** 迁移 0009 | `alembic/versions/0009_day6_memory_chunks.py`（23 列 + `vector(1536)` + 五值 status） | `pg_extension` 含 `vector`；`embedding` 列为 `vector` |
 | **N09** 迁移 0010 | `alembic/versions/0010_day6_medication.py`（用药/风险/工单六表） | 六表齐备；4 个业务唯一索引在 |
+| **N01** ORM（A 线 A02） | `app/models/conversation.py` 三个 Model + `last_event_seq`；`models/__init__.py` 追加导出 | `alembic check` 对三表与 `last_event_seq` 零差异 |
+| **N04** HistoryStore（A 线 A03–A06） | `app/services/history_service.py`；`tests/test_history_store.py` | **12 passed**，含并发 20 写 `seq` 恰为 1..20 |
+| **N12** ToolRegistry + ToolExecutor（A 线 A13–A15） | `app/agents/tool_registry.py`、`app/services/tool_executor.py`；`tests/test_tool_executor.py` | **13 passed**（越权审计、四类失败、幂等三例、护栏预算） |
+| **N10** 用药子图（A 线 A07–A11） | `app/graphs/checkpointer.py`、`app/services/medication_service.py`、`app/graphs/medication_confirmation_graph.py`；`tests/test_medication_graph.py` | **5 passed**（正常确认 / 重启恢复不重发 / 四次触达进 `missed_unconfirmed` / 事件幂等 / 终态不覆盖）；A12 建单未做 |
 
 **可逆性实测**：`0007 → head` 升级成功（表数 25 含 `alembic_version`）→ `downgrade 0007` 回退成功（15）→ `upgrade head` 再成功（25）。满足 G1 门禁的"三次连续成功"。
 
@@ -568,14 +573,76 @@ TD line 549 原字段全部保留（`chunk_id` / `elder_id` / `content` / `embed
 | --- | --- | --- |
 | **G0** | ✅ 通过 | D-1~D-5 全部有结论（D-4/D-5 于 11:26 裁决），`contracts.md` 已冻结，三份基线文档同批留痕 |
 | **G1** | ✅ 通过（迁移部分） | `upgrade → downgrade → upgrade` 三次成功；CHECK 名无双前缀；三张新表 `UNIQUE(thread_id, seq)` 等约束齐全。**未覆盖**：ER 逐列对照表（属 N01/N02 的 PR 描述件，待开工时补） |
+| **G-A2** | ✅ 通过 | `pytest tests/test_history_store.py -q` → 12/12；并发用例 `seq` 集合恰为 1..20 |
 
 ### 11.3 未开始
 
-N03 起的全部节点（消息契约实现、HistoryStore、StateCenter、ContextBuilder、ResponseStream、ToolExecutor、CompanionAgent、用药子图、pad 段确认、a0、天气 MCP、安全层、作业与门禁）——**本轮按主理人指令不启动业务代码开发**，等待后续指令。
+| 线 | 已交付 | 未开始 | 阻塞 |
+| --- | --- | --- | --- |
+| **A 历史与工具** | N01 ORM、N04、N12、N10 子图（**17.0h / 21.0h**） | A12 升级工单、N26 接 MCP、N23 收口 | A12 需与 C 的 `safety.py` 对齐同一个建单服务；N26 等 E3（C 的 `mcp_client`）；触达下发为占位（`TODO(E2)`） |
+| **B 状态与记忆** | — | N02 ORM、N05、N06、N08、N09 ORM、N19、N22 | 未开工 |
+| **C Agent 与出口** | — | N03、N07、N11、N13、N14、N20、N24、N25、N27 | 未开工 |
+| **D 前端与 a0 UI** | — | N03 前端侧、N16、N18 | 未开工 |
+
+> 环境备注：执行迁移时 Docker 引擎未运行，由 `docker desktop start` 拉起后 `silvermate-postgres` / `silvermate-redis` 自动就绪；数据库原停在 `0005`，本次顺带补跑 `0006`（metrics）与 `0007`（audit_logs + rooms/beds 变更）。
+> 契约升 v1.1：`append_event` 增 `call_id` / `trace_id`（可选，向后兼容），否则 0008 建的两列无处可写。
 
 > 环境备注：执行迁移时 Docker 引擎未运行，由 `docker desktop start` 拉起后 `silvermate-postgres` / `silvermate-redis` 自动就绪；数据库原停在 `0005`，本次顺带补跑 `0006`（metrics）与 `0007`（audit_logs + rooms/beds 变更）。
 
 ---
+
+### 11.4 转达件（2026-11-09 15:03，可直接粘贴）
+
+**① 转 dev-D —— J3 已通过，可进 S2**
+
+```
+【结论】J3 通过（2026-11-09）
+字段对照：tts_text v2 四可选字段 ✓　segment_ack 五字段 ✓　segment_id 0 基 ✓　status 三态 ✓
+你可以进 S2：frontend/src/pad/audio/playback-queue.ts
+约束：分段由服务端切，前端不再二次切分；epoch 原样回传、不得自增；打断时上报 canceled
+      并带**上一个成功播放段的 segment_id**（不带的话服务端只能整轮作废）
+回执：S2 完成后跑 20 轮 ack 上报率 ≥95% 的手工回归，把日志贴回来
+```
+
+**② 转 dev-A / dev-B —— 0011 归 dev-C**
+
+```
+【裁决】0011 迁移归 dev-C 建（2026-11-09），写锁 L11
+理由：已有 0008(A)/0009/0010(B) 三条链，再加一条并行迁移会出现双 head，upgrade 直接失败
+对 A/B 的约束：本日**不再新建迁移**。需要新列/新表 → 提给 dev-C 并说明字段与用途，
+              由他在 0011 里一起建；不得自行 `alembic revision`
+现状：dev-A 已交付 0008 与三张事件表 ORM；剩余节点（A12 工单、A16 接 MCP、A17 收口）
+      均不需要新表，不受影响
+```
+
+**③ 转 dev-D —— ack 三态时间点（P1 裁决后，无需改代码）**
+
+```
+【口径确认】三态的时间点不变，前端不改代码：
+- playing ：开播即报（只用于首段开播延迟指标，服务端不推进水位）
+- played  ：该段**真正播完**再报（服务端只认这一种推进水位）
+- canceled：打断时上报，segment_id 填**最后一个已播完的段**；一段都没播完填 -1
+
+唯一要守的纪律：不要把 played 提前到"开始播"就报，否则服务端会把没播完的段算成听过。
+```
+
+> 关联：`docs/plans/day06/handoff-A-to-C-segment-ack.md` v1.2（P1 裁决与截断不变量）；契约 §4.2.1（v1.2）。
+
+**④ 转 dev-C / dev-D —— 末段轨结束（开放点，S4 收口）**
+
+```
+【开放点】末段 played 的判定（dev-D 留到 S4，不影响 A 开工）
+规则：completed  → delivered 按 total 全覆盖（不依赖末段 ack）
+     interrupted → delivered 按 last_acked_segment 截断
+三条前提：
+1. completed 只能由"客户端队列排空 / 末段 ended"触发，不得由服务端超时推断
+   （超时可能是断网，那时并没有播完，用 total 就是高估）
+2. total 取服务端下发的 tts_text.total，不由客户端数 ack 得出
+3. 若 ended 不可靠，用"末段时长 + 100ms 兜底定时器"补报 played，不要干脆不报
+
+A 侧已加观测：completed 但 delivered 为空 → 日志告警 history_completed_without_delivered
+              （历史层不替调用方猜内容，但会留痕，便于复盘时定位"末段 ack 丢了"）
+```
 
 ## 12. 变更记录
 
@@ -584,6 +651,11 @@ N03 起的全部节点（消息契约实现、HistoryStore、StateCenter、Conte
 | v1.0 | 2026-11-09 | 首版：主理人裁决「Day 6 走讲义主线、含用药子图与工作流恢复、a0 并入、后端 3 + pad 1」；含三处冲突处置（C-1~C-3）、24 节点 DAG、6 道门禁、16 项交付物、14 条自检、5 项待裁决、4 条自裁、10 条风险；容量实测 S=41h / M=65.5h / L=74.5h，明确超单日容量并给出裁减顺序 |
 | v1.1 | 2026-11-09 | 主理人补充约束：分类层**不接入任何第三方商业 Jev API 或其他云端分类服务**，维持本地部署约束。改 C-3 口径、§0.3 新增第 6 条禁区、D-3 补三条硬约束（无商业 API / 不新增依赖 / 降级唯一路径为全量走 L2 并打 `route_layer=fallback`）、新增风险 R11；节点、人时、DAG 结构未变 |
 | v2.3 | 2026-11-09 | **AC-04 裁决落地（走 B）**：新增 C-5 口径与 **N27**（`app/router/safety.py` 最小一票否决，2.0h，dev-C），AC-04 留在 Day 6；同步改 §0.3 第 1 条（rules.py/system_one/decision_logs 仍顺延，safety.py 本日做）、C-1 落地动作、阶段表 S2、交付物 D17、自检 V16、风险 R13；分工 C 19.5→21.5、S/M/L = 50.5/68.5/73.0；safety 与天气 MCP 均不列入裁减 |
+| v3.5 | 2026-11-09 | dev-D 回执：转达件③已落地，仅留「末段轨结束」开放点（S4）。§11.4 增转达件④（completed 按 `total` / interrupted 按水位 + 三条前提）；交接件升 v1.3（§8.5）；A 侧补观测——`completed` 但 `delivered_text` 为空时打 `history_completed_without_delivered` 告警，并加 1 条用例（历史测试 12→13） |
+| v3.4 | 2026-11-09 | **P1 裁决收口**：dev-C 选方案 A（水位只由 `played` 推进，`playing`/`canceled` 均不推进），契约升 **v1.2** 新增 §4.2.1「水位与截断」（语义、`-1` 哨兵、截断公式、④ 严格单调这一依赖不变量）；交接件升 v1.2（C 的三条理由 + 不变量风险 + 给 dev-D 的一句话）；§11.4 增转达件③ |
+| v3.3 | 2026-11-09 | **两则转达落档**：① J3 联调**通过**（字段名/0 基 `segment_id`/三态 `status` 一致），dev-D 可进 S2 `playback-queue.ts`；② 主理人裁决 **0011 迁移归 dev-C**，新增写锁 L11，dev-A/B 本日不再新建迁移（避免双 head）；新增 §11.4 转达件（可直接粘贴给 dev-D 与 dev-A/B） |
+| v3.2 | 2026-11-09 | **用药线落地**：A07–A11 完成（`checkpointer` 独立 schema/独立池、`medication_service` 用 `sa.table()` 过渡并标 `TODO(E1)`（主理人签字）、子图 `interrupt` 恢复 + 四次触达 + 终态写一次），5 条测试全绿；A 线累计 17.0/21.0h，剩 A12/A16/A17；§11 同步 |
+| v3.1 | 2026-11-09 | **A 线开工执行**：N01 ORM、N04 HistoryStore、N12 工具执行器完成（13.0/21.0h），新增 `history_service.py` / `tool_registry.py` / `tool_executor.py` 与 25 条测试；§11.1 补三条完成项、§11.2 补 G-A2 结论、§11.3 改为四线矩阵并标出 E1/E2/E3 阻塞；契约升 v1.1（`append_event` 增 `call_id`/`trace_id`）。节点与人时结构未变 |
 | v3.0 | 2026-11-09 | **执行版**：状态改「进行中」；新增 §12 执行记录——N00（三份基线文档 + `contracts.md` v1.0 冻结）、D-5（讲义存档）、N01/N02/N09 三条迁移全部 apply 并通过 `upgrade→downgrade→upgrade` 可逆性实测；G0/G1 结论与未开始节点清单。节点、人时、DAG 结构未变（仍为 25 节点 / S 50.5 / M 68.5 / L 73.0） |
 | v2.2 | 2026-11-09 | **D-4 / D-5 裁决落地**：① 天气 MCP 本日做（新增 C-4 冲突口径、N24 server / N25 mcp_client / N26 接入三节点、交付物 D16、自检 V15、写锁 L9/L10、J7 联调、自裁 Z-5/Z-6、风险 R12）；② 讲义已复制为 `adhoc-20261109-Day06讲义原文存档.md`；③ 为平衡负载把 **N09 迁移从 dev-A 移到 dev-B**（A 21.0 / B 20.0 / C 19.5 / D 10.0）；④ **容量上调**：S 42.0→48.5、M 60.0→66.5、L 64.5→71.0，**S 档本身已超 40h，路径①改为「1.5 日制」**；天气三节点不列入裁减 |
 | v2.1 | 2026-11-09 | **D-1 / D-2 裁决落地**：① 三张事件表定为第 28–30 张（总表数 27→30），新增 §9.1 给出三表逐字段结构与约束、`memory_chunks` 的 11 个增列与 `status` 五值扩展、以及 ER/TD/PRD/README 五步落地顺序；② 修正 §1.2 表数量（原写「已建 21 张」有误，实测 **14 张**：14 个 ORM 类 / 14 次 `create_table`，本日建 10 张、余 6 张留后续）；③ N01/N02 的输入改为「照 §9.1 执行，不得增删列」 |

@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -33,6 +34,13 @@ from sqlalchemy import URL, make_url
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 from app.core.config import Settings, get_settings
+
+# psycopg 3 的**异步**连接不支持 Windows 默认的 ProactorEventLoop（会在 connect 时直接抛
+# InterfaceError）。LangGraph 的 checkpointer 走 psycopg 异步池，所以 Windows 本地跑
+# 用药子图用例必须换 Selector；生产在 Linux 容器里，不受影响。
+# 放在模块顶部是因为策略必须在**任何** event loop 创建之前生效（pytest-asyncio 按需建循环）。
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 # pg advisory lock 固定键：xdist 多 worker 各自跑 session 引导，用它串行化「建库 + 迁移」

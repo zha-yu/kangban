@@ -8,7 +8,10 @@
  * 打断（A2 裁决）：前端本地 speechstart 同一刻立即停播，不等服务端；
  * 服务端 A3 收到 asr_start 停写轨清缓冲（A3 媒体层未落码前联调不会中断）。
  * TEN-VAD 加载失败 → vadFallback：不发 asr_start/end，由服务端 webrtcvad 判定（字幕连续）。
- */
+ * Day 6（N16）：tts_text 带分段字段（contracts.md v1.0 §4）→ PlaybackQueue 结算
+ * playing/played/canceled（「下一段到达即结算」口径，见 playback-queue.ts 头注释）；
+ * 无分段字段 → 整段一播原路径不动（回滚兼容）。C-6 计时改一段一次：上一段未结算
+ * 则在新段到达时先结算。 */
 import type { PadStatus } from "./types";
 import type { SubtitleSource } from "./components/BigSubtitle";
 import type {
@@ -21,6 +24,7 @@ import type {
 import { nextDegradeLevel, type DegradeLevel } from "./degrade";
 import { MicCapture } from "./audio/capture";
 import { TenVad } from "./audio/vad";
+import { PlaybackQueue, isSegmentedTts } from "./audio/playback-queue";
 import { SignalSocket } from "./signal-socket";
 
 export interface RealtimeCallbacks {
@@ -52,6 +56,15 @@ export class RealtimeClient {
   private degradeLevel: DegradeLevel | null = null;
   /** C-6 playback 段计时起点（tts_text 到达即起表；播完/打断结算上报后清空） */
   private playbackStartMs: number | null = null;
+  /** Day 6 N16：分段播放队列与送达确认（仅消费带分段字段的 tts_text） */
+  private playbackQueue = new PlaybackQueue({
+    sendAck: (msg) => {
+      if (!this.socketReady || this.socket?.ready !== true) return false;
+      this.socket.send(msg);
+      return true;
+    },
+    sendDiag: (ok, error) => this.sendDiag("playback", ok, error),
+  });
 
   constructor(private cb: RealtimeCallbacks) {}
 
@@ -117,6 +130,9 @@ export class RealtimeClient {
         }
         break;
       case "asr_partial":
+        // 服务端 VAD 兜底路径本地无 speechstart：识别出新的一轮 → 补一次打断收口
+        //（正常路径已在 speechstart 收口过，此处为幂等 no-op）
+        if (this.ttsPlaying) this.playbackQueue.interrupt();
         this.ttsPlaying = false; // 新一轮识别，打断态复位
         this.degradeLevel = null; // 新一轮对话，降级提示级别复位
         this.cb.onSubtitle(msg.text, "partial");
@@ -127,12 +143,17 @@ export class RealtimeClient {
         this.cb.onStatus("thinking");
         break;
       case "tts_text":
+        // C-6 一段一次计时：分段模式下段到达即上一段播完，先结算上一段再起表；
+        // 整段模式两次 tts_text 间无此场景（服务端一轮只发一条），结算为无害兜底
+        this.reportPlayback();
+        this.playbackStartMs = performance.now();
         this.ttsPlaying = true;
-        this.playbackStartMs = performance.now(); // C-6：播放段计时起点
         this.cb.audioEl.muted = false; // 真 TTS 到了才出声
         void this.cb.audioEl.play().catch(() => {});
         this.cb.onSubtitle(msg.text, "reply");
         this.cb.onStatus("speaking");
+        // Day 6：带分段字段 → 队列结算 playing/played；旧 epoch 丢弃时字幕照常渲染
+        if (isSegmentedTts(msg)) this.playbackQueue.handleSegment(msg);
         break;
       case "error": {
         // C-1（C-D4 方案 A）：slow 为占位级，unavailable/timeout 为失败终态；
@@ -191,6 +212,8 @@ export class RealtimeClient {
             this.cb.audioEl.pause();
             this.cb.onSubtitle("", "final");
             this.reportPlayback(); // C-6：打断也结算（实际已播时长，如实入档）
+            // Day 6：canceled 收口（segment_id 填最后已播完段，无则 -1——dev-C 口径转达件③）
+            this.playbackQueue.interrupt();
           }
           this.degradeLevel = null; // 新一轮开口，降级提示级别复位
           this.cb.onStatus("listening");
@@ -228,6 +251,7 @@ export class RealtimeClient {
       this.cb.audioEl.onended = () => {
         this.ttsPlaying = false;
         this.reportPlayback(); // C-6：播完结算 playback 打点
+        this.playbackQueue.markTrackEnded(); // Day 6：末段 played 结算（Q-2 口径）
       };
       void this.cb.audioEl.play().catch(() => {
         this.cb.onSubtitle("点击屏幕后开始播放语音", "notice");
@@ -260,6 +284,7 @@ export class RealtimeClient {
     this.vad?.free();
     this.vad = null;
     this.degradeLevel = null;
+    this.playbackQueue.reset(); // 重连清旧会话：分段确认状态一并复位（不发 ack）
     if (this.pc) {
       this.pc.onicecandidate = null;
       this.pc.ontrack = null;

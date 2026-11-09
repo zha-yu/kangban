@@ -1,0 +1,140 @@
+"""工具白名单（N12 / 契约 §5.3）。
+
+**为什么需要注册表而不是一堆 `if tool_name == ...`**：
+模型能说出任意工具名。没有白名单时，「未注册的工具」和「已注册但参数错」会走同一条
+失败分支，日志里分不清是「模型幻觉」还是「参数没对上」——两者的处置完全不同。
+
+本模块只描述**工具是什么**（名字、说明、参数 schema、有无副作用、是否幂等）。
+怎么执行、怎么记账、怎么降级，全在 `app/services/tool_executor.py`——那里是唯一写库层。
+
+`executor` 允许为空：本日三条工具分属三个人（记忆归 dev-B、天气归 dev-C、用药确认归
+dev-A 的 N10），注册表先把 spec 定下来，谁实现谁 `bind()`。没绑定就调用 → `not_found`，
+不会静默回退到「让模型自己编一个答案」。
+"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
+from typing import Any
+
+#: 工具执行函数：`(args, runtime) -> dict`。返回值必须是可 JSON 序列化的 dict，
+#: 由 `tool_executor` 统一脱敏后落库；抛异常必须用 `tool_executor` 里的四类域异常。
+ToolExecutorFn = Callable[[dict[str, Any], Any], Awaitable[dict[str, Any]]]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolSpec:
+    """一条工具定义。字段少而硬：多一个可选开关，就多一条没人测的分支。"""
+
+    name: str
+    description: str
+    parameters_schema: dict[str, Any]
+    side_effect: bool
+    idempotent: bool
+    executor: ToolExecutorFn | None = None
+
+    @property
+    def wired(self) -> bool:
+        """是否已绑定实现。未绑定的工具被调用时一律 `not_found`。"""
+        return self.executor is not None
+
+
+class ToolRegistry:
+    """进程内工具白名单。启动时构建一次，运行期只读（`bind` 除外）。"""
+
+    def __init__(self, specs: tuple[ToolSpec, ...] = ()) -> None:
+        self._specs: dict[str, ToolSpec] = {}
+        for spec in specs:
+            self.register(spec)
+
+    def register(self, spec: ToolSpec) -> None:
+        if spec.name in self._specs:
+            raise ValueError(f"tool already registered: {spec.name!r}")
+        self._specs[spec.name] = spec
+
+    def bind(self, name: str, executor: ToolExecutorFn) -> None:
+        """绑定实现。同名重复绑定直接报错——静默覆盖会让「谁最后 import 谁生效」。"""
+        spec = self._specs.get(name)
+        if spec is None:
+            raise KeyError(f"unknown tool: {name!r}")
+        if spec.executor is not None:
+            raise ValueError(f"tool already bound: {name!r}")
+        self._specs[name] = replace(spec, executor=executor)
+
+    def get(self, name: str) -> ToolSpec | None:
+        return self._specs.get(name)
+
+    def require(self, name: str) -> ToolSpec:
+        spec = self._specs.get(name)
+        if spec is None:
+            raise KeyError(f"unknown tool: {name!r}")
+        return spec
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return tuple(self._specs)
+
+    def __len__(self) -> int:
+        return len(self._specs)
+
+
+# ------------------------------------------------------------------ 本日三条工具
+
+
+def default_registry() -> ToolRegistry:
+    """Day 6 的三条工具 spec。实现由各自 owner 在装配处 `bind()`。
+
+    参数 schema 只写**用得到的那部分 JSON Schema**（type / properties / required /
+    additionalProperties）；执行器只做这一层校验，不做完整 JSON Schema 实现——
+    引入一个 jsonschema 依赖只为校验三个字段不值得。
+    """
+    return ToolRegistry(
+        (
+            ToolSpec(
+                name="memory_recall",
+                description="回忆这位长者此前说过的偏好与事实，用于个性化回应",
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "minLength": 1},
+                        "category": {"type": "string"},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+                side_effect=False,
+                idempotent=True,
+            ),
+            ToolSpec(
+                name="get_weather",
+                description="查询指定城市的实时天气（含数据时间），用于回答天气类问题",
+                parameters_schema={
+                    "type": "object",
+                    "properties": {"city": {"type": "string", "minLength": 1}},
+                    "required": ["city"],
+                    "additionalProperties": False,
+                },
+                side_effect=False,
+                idempotent=True,
+            ),
+            ToolSpec(
+                name="medication_confirm",
+                description="记录长者对服药提醒的回答（吃了 / 没吃 / 稍后），推进用药任务",
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "answer": {"type": "string", "minLength": 1},
+                        "plan_id": {"type": "string"},
+                    },
+                    "required": ["answer"],
+                    "additionalProperties": False,
+                },
+                side_effect=True,
+                idempotent=True,
+            ),
+        )
+    )
+
+
+__all__ = ["ToolExecutorFn", "ToolRegistry", "ToolSpec", "default_registry"]
