@@ -583,6 +583,8 @@ erDiagram
 | created_at | timestamptz | 否 | 时间 |
 
 > 只增不改；不承担常规状态流转（那是 `work_order_transitions`）。
+>
+> **落地批次（2026-11-09）**：已由迁移 `0007_admin_org_audit` 提前落地（原排 Day 9，2026-11-08 裁决 D2），同迁移附带 `rooms.room_no` 全局唯一约束与 `beds.status` CHECK 扩 `disabled`。首个使用方为管理端房间/床位写操作（PRD FR-ADM-11）。
 
 #### 4.4.7 `metrics` 分段耗时打点表（Day 5 追加，裁决 B6）
 
@@ -814,3 +816,4 @@ erDiagram
 | v0.3 | 2026-11-04 | 裁决记录**反向下游**：TD 正文已按本文 §1 回改（TD 附 C **v1.6**，不再只加记录）——24→26 张、C 组 9→10、`voiceprints.sample_index`、`embedding` Day 1–3 不建、`work_orders.type` 增 `follow_up`、`decision_logs.trace_id`、P1/P2 的索引与唯一约束、`health_records.source` 四值 CHECK、监护人上限改服务层、枚举一律 CHECK、设备解绑不留流水、Web Push 归 P1；同步关闭 TD 附 B 的「22 张表/`medication_attempts` 是否合并」待确认项。§9 待办 1 更新为「两轮已落地」 |
 | v0.4 | 2026-11-07 | **B6**：Day 5 追加第 27 张表 `metrics`（分段耗时打点，AC-42/PRD §5.3 数据底座）——§4.4.7 表定义、§5.2 两条查询索引、§6 批次表增 Day 5 行（5+5+2+1+1+9+3+1 = 27）。依据：2026-11-07 主理人裁决 D2（docs/plans/day05/day-05-延迟基线与护栏.md S1 自裁留痕）；TD v1.8 修订记录同批。不触碰已合入迁移 0001–0005，走新迁移 0006 |
 | v0.5 | 2026-11-09 | 裁决 **D-1 / D-2**（依据 PRD v2.9、TD v2.0 同日修订）：① 新增第 28–30 张表 `conversation_events`（§4.3.11）/ `conversation_turns`（§4.3.12）/ `tool_executions`（§4.3.13），均为只追加表；② `memory_chunks`（§4.3.10）按结构化字段一次建全——新增 13 列、`status` 由三值扩为五值（+`disputed`/`pending_review`）；③ §5.1 补 2 条唯一约束、§5.3 补 4 类 CHECK、§6 批次改 Day 6 十张 / Day 7 两张 / `decision_logs` 随路由顺延，合计 27→30；④ 头部建表口径同步。C 组 10→13 张。 |
+| v0.6 | 2026-11-09 | **`audit_logs` 提前落地登记**（依据 PRD v3.0 FR-ADM-11、TD v2.1）：§4.4.6 补「落地批次」注记——已由迁移 `0007_admin_org_audit` 建表（原排 Day 9，2026-11-08 裁决 D2），同迁移为 `rooms.room_no` 加全局唯一、`beds.status` CHECK 扩 `disabled`。表结构零变更（字段与索引与 v0.1 定义一致），首个使用方为管理端房间/床位写操作。 |
