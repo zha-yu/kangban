@@ -150,7 +150,7 @@ def _ack_message(
     epoch: int,
     segment_id: int,
     status: str = "playing",
-    at_ms: int | None = 100,
+    at_ms: int = 100,
 ) -> dict[str, Any]:
     message: dict[str, Any] = {
         "type": "segment_ack",
@@ -158,9 +158,8 @@ def _ack_message(
         "epoch": epoch,
         "segment_id": segment_id,
         "status": status,
+        "at_ms": at_ms,
     }
-    if at_ms is not None:
-        message["at_ms"] = at_ms
     return message
 
 
@@ -749,7 +748,10 @@ def test_segment_ack_msg_contract_shape() -> None:
         "status",
         "at_ms",
     }
-    assert "NotRequired" in str(annotations["at_ms"])  # at_ms 可选，其余必填
+    at_ms_ann = str(annotations["at_ms"])
+    assert (
+        "int" in at_ms_ann and "NotRequired" not in at_ms_ann
+    )  # at_ms 必填（与 protocol.ts 一致），其余必填
 
 
 class _FakeConn:

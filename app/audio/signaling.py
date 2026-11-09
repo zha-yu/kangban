@@ -487,7 +487,7 @@ class SegmentAckMsg(TypedDict):  # C→S，分片播放回执
     epoch: int  # 客户端原样回传 tts_text 里的 epoch，不得自增
     segment_id: int  # 0 基；canceled 无一完整播放段时为 -1 哨兵
     status: SegmentAckStatus
-    at_ms: NotRequired[int]  # 客户端单调时钟（ms），只用于折算播放时长，不参与判定
+    at_ms: int  # 客户端单调时钟（ms），只用于折算播放时长，不参与判定；必填（与 protocol.ts 一致，末段 played 计时兜底依赖）
 
 
 SegmentAckHandler = Callable[[ConnectionContext, Mapping[str, Any]], Awaitable[None]]
@@ -522,7 +522,8 @@ async def _handle_segment_ack(conn: ConnectionContext, message: Mapping[str, Any
         or not isinstance(segment_id, int)
         or not isinstance(status, str)
         or status not in _SEGMENT_ACK_STATUSES
-        or (at_ms is not None and (isinstance(at_ms, bool) or not isinstance(at_ms, int)))
+        or isinstance(at_ms, bool)
+        or not isinstance(at_ms, int)
     ):
         logger.warning(
             "ws_bad_message",
