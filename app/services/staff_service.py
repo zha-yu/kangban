@@ -226,11 +226,7 @@ async def update_staff(
         old_role, new_role = staff.role, role
         old_relation = _ROLE_TO_RELATION.get(old_role)
         new_relation = _ROLE_TO_RELATION.get(new_role)
-        if (
-            old_relation is not None
-            and new_relation is not None
-            and old_relation != new_relation
-        ):
+        if old_relation is not None and new_relation is not None and old_relation != new_relation:
             # 同一个 staff 的所有 assignment 的 relation 一起换
             await session.execute(
                 ElderStaffAssignment.__table__.update()
@@ -355,6 +351,132 @@ async def bind_guardian(
     return binding
 
 
+class PrimaryCareGapError(StaffServiceError):
+    """移除后某长者失去全部责任护工（服务层校验，裁决 C4）。"""
+
+
+async def reassign_elders(
+    session: AsyncSession,
+    *,
+    staff_id: uuid.UUID,
+    elder_ids: Sequence[uuid.UUID],
+    operator_id: uuid.UUID | None,
+) -> dict:
+    """全量替换式改绑：计算 diff → 409 判定 → 执行 → 审计。
+
+    事务边界：本函数只 `flush()`，不 `commit()`；调用方在同一事务里传 session，
+    业务回滚则审计一起回滚（`audit_log_service.record_audit` 与业务写入同 session）。
+    """
+    from app.services.audit_log_service import record_audit
+
+    # --- 1. staff 存在性 + 角色合法性 ---
+    staff = (
+        await session.execute(select(StaffAccount).where(StaffAccount.staff_id == staff_id))
+    ).scalar_one_or_none()
+    if staff is None:
+        raise StaffNotFoundError(f"员工账号不存在：{staff_id}")
+
+    relation = _ROLE_TO_RELATION.get(staff.role)
+    if relation is None:
+        # admin 不参与绑定（裁决 D-01）；403 让 API 层映射
+        raise StaffRoleConflictError("管理员账号不参与长者绑定（裁决 D-01）")
+
+    # --- 2. elder_ids 去重 + 全量存在校验 ---
+    wanted_ids = await _ensure_elders(session, elder_ids)
+
+    # --- 3. 查当前已有 assignment（同 relation，同 staff） ---
+    existing_rows = (
+        (
+            await session.execute(
+                select(ElderStaffAssignment.elder_id).where(
+                    ElderStaffAssignment.staff_id == staff_id,
+                    ElderStaffAssignment.relation == relation,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    existing_ids: set[uuid.UUID] = set(existing_rows)
+
+    # --- 4. 算 diff ---
+    wanted_set: set[uuid.UUID] = set(wanted_ids)
+    removed_ids: set[uuid.UUID] = existing_ids - wanted_set
+    added_ids: set[uuid.UUID] = wanted_set - existing_ids
+
+    # 无变化直接返回（仍写审计，便于审计追踪管理员操作）
+    if not removed_ids and not added_ids:
+        await record_audit(
+            session,
+            actor_type="staff",
+            actor_id=operator_id,
+            action="reassign_elders",
+            resource_type="staff",
+            resource_id=staff_id,
+            detail={"added": [], "removed": [], "role": staff.role},
+        )
+        return {"staff_id": staff_id, "added": [], "removed": []}
+
+    # --- 5. 409 判定：只在 care_worker 改绑时检查 primary_care 剩余 ---
+    if staff.role == "care_worker":
+        for elder_id in removed_ids:
+            remaining = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(ElderStaffAssignment)
+                    .where(
+                        ElderStaffAssignment.elder_id == elder_id,
+                        ElderStaffAssignment.relation == "primary_care",
+                        ElderStaffAssignment.staff_id != staff_id,
+                    )
+                )
+            ).scalar_one()
+            if remaining == 0:
+                raise PrimaryCareGapError(f"长者 {elder_id} 移除后将失去全部责任护工")
+
+    # --- 6. 执行 diff ---
+    # 先删后加；两者在同一 flush 内完成
+    if removed_ids:
+        await session.execute(
+            ElderStaffAssignment.__table__.delete().where(
+                ElderStaffAssignment.staff_id == staff_id,
+                ElderStaffAssignment.relation == relation,
+                ElderStaffAssignment.elder_id.in_(removed_ids),
+            )
+        )
+    for elder_id in added_ids:
+        session.add(ElderStaffAssignment(elder_id=elder_id, staff_id=staff_id, relation=relation))
+    await session.flush()
+
+    # --- 7. 写审计（与业务同事务） ---
+    await record_audit(
+        session,
+        actor_type="staff",
+        actor_id=operator_id,
+        action="reassign_elders",
+        resource_type="staff",
+        resource_id=staff_id,
+        detail={
+            "added": [str(eid) for eid in sorted(added_ids, key=str)],
+            "removed": [str(eid) for eid in sorted(removed_ids, key=str)],
+            "role": staff.role,
+        },
+    )
+
+    logger.info(
+        "elders reassigned: staff_id=%s role=%s added=%d removed=%d",
+        staff_id,
+        staff.role,
+        len(added_ids),
+        len(removed_ids),
+    )
+    return {
+        "staff_id": staff_id,
+        "added": sorted(added_ids, key=str),
+        "removed": sorted(removed_ids, key=str),
+    }
+
+
 __all__ = [
     "MAX_ACTIVE_GUARDIANS_PER_ELDER",
     "ElderNotFoundError",
@@ -363,6 +485,7 @@ __all__ = [
     "GuardianDisabledError",
     "GuardianLimitExceededError",
     "GuardianNotFoundError",
+    "PrimaryCareGapError",
     "StaffAccount",
     "StaffConflictError",
     "StaffNotFoundError",
@@ -372,5 +495,6 @@ __all__ = [
     "create_guardian",
     "create_staff",
     "mask_phone",
+    "reassign_elders",
     "update_staff",
 ]

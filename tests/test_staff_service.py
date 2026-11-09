@@ -35,6 +35,7 @@ from app.services.staff_service import (
     GuardianAlreadyBoundError,
     GuardianLimitExceededError,
     GuardianNotFoundError,
+    PrimaryCareGapError,
     StaffConflictError,
     StaffNotFoundError,
     StaffRoleConflictError,
@@ -42,6 +43,7 @@ from app.services.staff_service import (
     create_guardian,
     create_staff,
     mask_phone,
+    reassign_elders,
     update_staff,
 )
 
@@ -403,3 +405,195 @@ async def test_bind_guardian_writes_active_status(session: AsyncSession) -> None
         await session.execute(select(ElderGuardian.status).where(ElderGuardian.id == binding.id))
     ).scalar_one()
     assert stored == "active"
+
+
+# ------------------------------------------------------------------ reassign_elders（N19 / E20）
+
+
+async def test_reassign_elders_staff_not_found(session: AsyncSession) -> None:
+    with pytest.raises(StaffNotFoundError):
+        await reassign_elders(
+            session, staff_id=uuid.uuid4(), elder_ids=[], operator_id=uuid.uuid4()
+        )
+
+
+async def test_reassign_elders_admin_target_is_rejected(session: AsyncSession) -> None:
+    """目标 staff 是 admin → 403（裁决 D-01：admin 不参与绑定）。"""
+    admin = await create_staff(
+        session, name="王管理", role="admin", phone="13700000010", password="Passw0rd!"
+    )
+    with pytest.raises(StaffRoleConflictError, match="管理员账号不参与长者绑定"):
+        await reassign_elders(
+            session, staff_id=admin.staff_id, elder_ids=[ELDER_A], operator_id=uuid.uuid4()
+        )
+
+
+async def test_reassign_elders_missing_elder_rejected(session: AsyncSession) -> None:
+    ghost = uuid.uuid4()
+    staff = await create_staff(
+        session,
+        name="赵护工",
+        role="care_worker",
+        phone="13700000011",
+        password="Passw0rd!",
+        elder_ids=[ELDER_A],
+    )
+    with pytest.raises(ElderNotFoundError, match="长者不存在"):
+        await reassign_elders(
+            session,
+            staff_id=staff.staff_id,
+            elder_ids=[ELDER_A, ghost],
+            operator_id=uuid.uuid4(),
+        )
+
+
+async def test_reassign_elders_normal_diff(session: AsyncSession) -> None:
+    """care_worker：已有 [A] → 请求 [A, B]；added=[B], removed=[]。"""
+    staff = await create_staff(
+        session,
+        name="赵护工",
+        role="care_worker",
+        phone="13700000012",
+        password="Passw0rd!",
+        elder_ids=[ELDER_A],
+    )
+
+    result = await reassign_elders(
+        session,
+        staff_id=staff.staff_id,
+        elder_ids=[ELDER_A, ELDER_B],
+        operator_id=uuid.uuid4(),
+    )
+
+    assert result["staff_id"] == staff.staff_id
+    assert result["added"] == [ELDER_B]
+    assert result["removed"] == []
+
+    # DB 验证
+    rows = (
+        (
+            await session.execute(
+                select(ElderStaffAssignment).where(ElderStaffAssignment.staff_id == staff.staff_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 2
+    for row in rows:
+        assert row.relation == "primary_care"
+
+
+async def test_reassign_elders_no_change_writes_audit(session: AsyncSession) -> None:
+    """请求与现有绑定完全一致 → 返回 added=[], removed=[]；仍写审计（便于管理员操作追踪）。"""
+    staff = await create_staff(
+        session,
+        name="赵护工",
+        role="care_worker",
+        phone="13700000013",
+        password="Passw0rd!",
+        elder_ids=[ELDER_A],
+    )
+
+    result = await reassign_elders(
+        session,
+        staff_id=staff.staff_id,
+        elder_ids=[ELDER_A],
+        operator_id=uuid.uuid4(),
+    )
+
+    assert result == {"staff_id": staff.staff_id, "added": [], "removed": []}
+
+
+async def test_reassign_elders_primary_care_gap_rejected(session: AsyncSession) -> None:
+    """care_worker 是 ELDER_A 唯一的 primary_care → 移除 A 触发 409。"""
+    staff = await create_staff(
+        session,
+        name="赵护工",
+        role="care_worker",
+        phone="13700000014",
+        password="Passw0rd!",
+        elder_ids=[ELDER_A],
+    )
+
+    # 清空 ELDER_A（唯一责任护工） → 409
+    with pytest.raises(PrimaryCareGapError, match=r"长者 .* 移除后将失去全部责任护工"):
+        await reassign_elders(
+            session, staff_id=staff.staff_id, elder_ids=[], operator_id=uuid.uuid4()
+        )
+
+    # 原绑定不应受影响（409 判定失败时 flush 没执行）
+    count = (
+        await session.execute(
+            select(func.count())
+            .select_from(ElderStaffAssignment)
+            .where(ElderStaffAssignment.staff_id == staff.staff_id)
+        )
+    ).scalar_one()
+    assert count == 1
+
+
+async def test_reassign_elders_remove_non_last_care_worker_ok(session: AsyncSession) -> None:
+    """care_worker 是 ELDER_A 的其中一位（还有另一个护工）→ 移除 A 不触发 409。"""
+    staff_a = await create_staff(
+        session,
+        name="护工A",
+        role="care_worker",
+        phone="13700000015",
+        password="Passw0rd!",
+        elder_ids=[ELDER_A],
+    )
+    staff_b = await create_staff(
+        session,
+        name="护工B",
+        role="care_worker",
+        phone="13700000016",
+        password="Passw0rd!",
+        elder_ids=[ELDER_A],
+    )
+
+    # staff_a 清空自己的绑定 → ELDER_A 还有 staff_b 管着 → OK
+    result = await reassign_elders(
+        session, staff_id=staff_a.staff_id, elder_ids=[], operator_id=uuid.uuid4()
+    )
+    assert result["removed"] == [ELDER_A]
+    assert result["added"] == []
+
+    # staff_b 的绑定不受影响
+    count_b = (
+        await session.execute(
+            select(func.count())
+            .select_from(ElderStaffAssignment)
+            .where(ElderStaffAssignment.staff_id == staff_b.staff_id)
+        )
+    ).scalar_one()
+    assert count_b == 1
+
+
+async def test_reassign_elders_doctor_change_no_primary_care_check(session: AsyncSession) -> None:
+    """doctor 改绑不影响 primary_care 责任护工数量 → 移除任何 elder 都不触发 409。"""
+    # ELDER_A 有一位 care_worker 管着 primary_care
+    await create_staff(
+        session,
+        name="赵护工",
+        role="care_worker",
+        phone="13700000017",
+        password="Passw0rd!",
+        elder_ids=[ELDER_A],
+    )
+    # doctor 先绑 ELDER_A
+    doctor = await create_staff(
+        session,
+        name="李医生",
+        role="doctor",
+        phone="13700000018",
+        password="Passw0rd!",
+        elder_ids=[ELDER_A],
+    )
+
+    # doctor 移除 ELDER_A → OK（doctor 不承担 primary_care 责任）
+    result = await reassign_elders(
+        session, staff_id=doctor.staff_id, elder_ids=[], operator_id=uuid.uuid4()
+    )
+    assert result["removed"] == [ELDER_A]
+    assert result["added"] == []
