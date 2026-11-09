@@ -216,7 +216,7 @@ def _build_turn_context(
     if runtime.elder_id:
         identity = DialogueIdentity(source="device", elder_id=runtime.elder_id)
     else:
-        identity = DialogueIdentity(source="generic")
+        identity = DialogueIdentity(source="generic", elder_id=None)
     return build_dialogue_messages(
         identity=identity,
         user_text=user_text,
