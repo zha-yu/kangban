@@ -314,6 +314,27 @@ async def append_event(
 # ------------------------------------------------------------------ 写：回复提交与轮次收口
 
 
+def _as_turn_status(value: str) -> TurnStatus:
+    """把 DB 读出的 `str` 收窄成 `TurnStatus`（mypy strict 的 Literal 校验）。
+
+    用显式比较链而不是 `cast()`：`cast` 会把绕过 CHECK 的脏数据静默放行，
+    而这个值马上要拼进上下文给模型看——宁可抛错让人查，也不要把
+    「一个不存在于状态机的轮次状态」喂给下游。DB 侧 `TURN_STATUSES` 的 CHECK
+    已保证只会出现这四个值；走到兜底分支即说明写入路径被绕过，是数据事故。
+    """
+    if value == "open":
+        return "open"
+    if value == "completed":
+        return "completed"
+    if value == "interrupted":
+        return "interrupted"
+    if value == "failed":
+        return "failed"
+    raise HistoryError(
+        f"unknown turn status in db: {value!r} (expected one of open/completed/interrupted/failed)"
+    )
+
+
 def _apply_delivered(turn: ConversationTurn, delivered_text: str | None) -> None:
     """把已送达文本写进投影；**只接受不更短的版本**。
 
@@ -541,7 +562,7 @@ async def read_turns(
             turn_id=row.turn_id,
             user_text=row.user_text,
             assistant_delivered_text=row.assistant_delivered_text,
-            status=row.status,
+            status=_as_turn_status(row.status),
             started_at=row.started_at,
             ended_at=row.ended_at,
         )

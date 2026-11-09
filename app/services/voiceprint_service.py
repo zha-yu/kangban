@@ -188,7 +188,7 @@ async def register_sample(
     # audio_bytes 用完即弃（AC-36）——函数内无任何持久化操作
 
     # 2. 查询当前版本的已注册样本
-    existing = (
+    existing = list(
         (
             await session.execute(
                 select(Voiceprint).where(
@@ -257,7 +257,8 @@ async def get_status(
         .scalars()
         .all()
     )
-    return VoiceprintStatus.from_rows(rows)
+    # from_rows 的入参是 list（内部会按 version 分组改写 status），Sequence 不可写
+    return VoiceprintStatus.from_rows(list(rows))
 
 
 async def delete_all_for_elder(
@@ -270,9 +271,21 @@ async def delete_all_for_elder(
     actor 由调用方（REST 层）传入，格式 "device:<uuid>" / "admin:<uuid>" 等，
     用于结构化审计日志（Day 4 只写日志，Day 9 回填 audit_logs 表）。
     """
-    result = await session.execute(delete(Voiceprint).where(Voiceprint.elder_id == elder_id))
+    # 不用 result.rowcount：AsyncSession.execute() 的标注是 Result，rowcount 在
+    # CursorResult 上，mypy 拒绝（attr-defined）。RETURNING 数行是等价且类型安全的写法。
+    deleted = (
+        (
+            await session.execute(
+                delete(Voiceprint)
+                .where(Voiceprint.elder_id == elder_id)
+                .returning(Voiceprint.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     await session.commit()
-    count = result.rowcount or 0
+    count = len(list(deleted))
     logger.info(
         "voiceprint delete",
         extra={

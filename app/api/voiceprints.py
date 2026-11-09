@@ -124,11 +124,14 @@ def _validate_wav_bytes(raw: bytes) -> None:
 
 
 def _require_bound_elder(identity: Identity) -> uuid.UUID | None:
-    """取 identity.elder_id 并转 UUID。None 表示设备未绑长者。
+    """取 identity.elder_id。None 表示设备未绑长者。
 
-    Identity.elder_id 存的是 str（令牌文本），服务层签名收 uuid.UUID，在此统一转换。
+    `Identity.elder_id` 存的是字符串形式（runtime_context 的口径），这里显式构造
+    UUID 而不是靠隐式 Any 混过类型检查；非法值会炸响而不是传给下层查询。
     """
-    return uuid.UUID(identity.elder_id) if identity.elder_id else None
+    if identity.elder_id is None:
+        return None
+    return uuid.UUID(str(identity.elder_id))
 
 
 # ---------------------------------------------------------------------------
