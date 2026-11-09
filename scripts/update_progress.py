@@ -6,18 +6,20 @@
 
 扫描规则（自动发现，不需要改配置）：
 - 日目录：`docs/team_tasks/day*/`（day02、day03、day04……按名字排序）
-- 任务卡：`a*.md`（a1/a2/a3…，也含 a0）与 `task-*.md`（task-1/task-01…）
-  排除 `README.md`、`contracts.md`、`PROGRESS.md`
+- 任务卡：`a*.md`（a1/a2/a3…，也含 a0）、`task-*.md`（task-1/task-01…）与
+  `dev-*.md`（dev-a/dev-b…，Day 5 起的多人分工卡）
+  排除 `README.md`、`contracts.md`、`PROGRESS.md`、`dag-*.md`（总览参考件不进看板）
 - 计划件：`docs/plans/day<N>/**/*.md`（递归）与 `docs/plans/day-<N>-*.md`（早期平铺）
   只有带 `> 状态：` 行的才进表，其余只统计条数
 
 用法：
     python scripts/update_progress.py           # 重新生成全部日看板
-    python scripts/update_progress.py --check   # 只检查是否过期（CI / pre-commit 用）
+    python scripts/update_progress.py --check   # 只检查看板是否过期（CI / pre-commit 用）
+    python scripts/update_progress.py --check-plans  # 校验 plans/README.md 索引与计划文件一致
     python scripts/update_progress.py --quiet   # 安静模式（hook 用）
     python scripts/update_progress.py --day 4   # 只处理某一天
 
-退出码：0 正常；1 --check 时存在过期；2 找不到任何日目录。
+退出码：0 正常；1 --check 存在过期或 --check-plans 存在不一致；2 找不到任何日目录。
 """
 
 from __future__ import annotations
@@ -30,7 +32,25 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DAY_ROOT = ROOT / "docs" / "team_tasks"
 PLAN_ROOT = ROOT / "docs" / "plans"
+PLAN_INDEX = PLAN_ROOT / "README.md"
 OUT_NAME = "PROGRESS.md"
+
+# 计划/契约状态词表（用于索引校验时归一化「进行中（…）」这类带后缀的写法）
+STATUS_WORDS = (
+    "已完成",
+    "已收口",
+    "已合入",
+    "已取消",
+    "已冻结",
+    "已废弃",
+    "草稿",
+    "进行中",
+    "待认领",
+    "未开始",
+    "待契约会确认",
+    "待冻结",
+)
+DATE_RE = re.compile(r"日期：\s*(\d{4}-\d{2}-\d{2})")
 
 # 状态 → 图标与排序权重（越靠前越"完成"）
 STATUS_STYLE: list[tuple[str, tuple[str, int]]] = [
@@ -38,6 +58,9 @@ STATUS_STYLE: list[tuple[str, tuple[str, int]]] = [
     ("已收口", ("✅", 0)),
     ("已合入", ("✅", 0)),
     ("已取消", ("🔕", 2)),
+    ("已冻结", ("🔒", 1)),
+    ("已废弃", ("🗑", 2)),
+    ("草稿", ("📝", 3)),
     ("进行中", ("🚧", 1)),
     ("待认领", ("⬜", 3)),
     ("未开始", ("⬜", 3)),
@@ -47,7 +70,7 @@ STATUS_STYLE: list[tuple[str, tuple[str, int]]] = [
 STATUS_RE = re.compile(r"^>\s*状态：\s*(.+?)\s*(?:[｜|]|$)", re.MULTILINE)
 # Day 2 的任务卡用表格行写状态：| 状态 | ✅ 已完成（2026-11-04） |
 TABLE_STATUS_RE = re.compile(r"^\|\s*状态\s*\|\s*(.+?)\s*\|", re.MULTILINE)
-EMOJI_PREFIX_RE = re.compile(r"^[✅🚧⬜🟡🔕❔]\ufe0f?\s*")
+EMOJI_PREFIX_RE = re.compile(r"^[✅🚧⬜🟡🔕❔🔒📝🗑]\ufe0f?\s*")
 TITLE_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 DAY_DIR_RE = re.compile(r"^day(\d{1,2})$")
 
@@ -76,9 +99,15 @@ def is_card(path: Path) -> bool:
     name = path.name
     if name.lower() in SKIP_NAMES:
         return False
-    if path.stem.startswith("a"):
-        return len(path.stem) > 1 and path.stem[1].isdigit()
-    return path.stem.startswith("task-")
+    stem = path.stem
+    if stem.startswith("dag-"):
+        # 总览参考件在首行自述「无任务卡状态行，不进看板」，显式豁免
+        return False
+    if stem.startswith("dev-"):
+        return len(stem) > 4
+    if stem.startswith("a"):
+        return len(stem) > 1 and stem[1].isdigit()
+    return stem.startswith("task-")
 
 
 def discover_days() -> list[tuple[Path, int]]:
@@ -202,12 +231,104 @@ def build(day_dir: Path, day: int) -> str:
     return "\n".join(lines)
 
 
+def parse_index_rows() -> list[dict[str, str]]:
+    """解析 docs/plans/README.md「## 索引」表，返回链接/状态/最后更新三列。"""
+    if not PLAN_INDEX.exists():
+        return []
+    rows: list[dict[str, str]] = []
+    in_index = False
+    for line in PLAN_INDEX.read_text(encoding="utf-8").splitlines():
+        if line.strip() == "## 索引":
+            in_index = True
+            continue
+        if in_index and line.startswith("## "):
+            break
+        if not in_index or not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split(" | ")]
+        if len(cells) != 4:
+            continue
+        match = re.match(r"\[(.+?)\]\((.+?)\)", cells[0])
+        if not match:
+            continue
+        rows.append({"link": match.group(2), "status": cells[2], "updated": cells[3]})
+    return rows
+
+
+def normalize_status(value: str) -> str:
+    """把「进行中（…）」「**待冻结（草案）**」归一化为状态词本身。"""
+    cleaned = value.replace("*", "").replace("`", "").strip()
+    for word in STATUS_WORDS:
+        if cleaned.startswith(word):
+            return word
+    return cleaned
+
+
+def check_plans() -> list[str]:
+    """校验计划索引：文件是否登记、登记状态/日期是否与文件头一致。"""
+    issues: list[str] = []
+    rows = parse_index_rows()
+    if not rows:
+        return [f"[missing] {PLAN_INDEX.relative_to(ROOT)} 不存在或没有「## 索引」表"]
+
+    indexed_names = {row["link"].rsplit("/", 1)[-1] for row in rows}
+    for path in sorted(PLAN_ROOT.rglob("*")):
+        if not path.is_file() or path == PLAN_INDEX:
+            continue
+        if path.suffix.lower() not in {".md", ".yaml"}:
+            continue
+        if path.name not in indexed_names:
+            issues.append(
+                f"[unindexed] {path.relative_to(ROOT).as_posix()} 未登记到 docs/plans/README.md"
+            )
+
+    for row in rows:
+        target = (PLAN_ROOT / row["link"]).resolve()
+        if not target.exists():
+            if "已废弃" in row["status"]:
+                continue
+            issues.append(f"[broken] {row['link']} 指向的文件不存在")
+            continue
+        rel = target.relative_to(ROOT).as_posix() if ROOT in target.parents else row["link"]
+        if target.suffix.lower() != ".md":
+            continue
+        text = target.read_text(encoding="utf-8")
+        file_status = parse_md(target)[1]
+        if file_status == "未标注":
+            continue
+        readme_status = normalize_status(row["status"])
+        if normalize_status(file_status) != readme_status:
+            issues.append(
+                f"[status] {rel}: README「{readme_status}」≠ 文件「{normalize_status(file_status)}」"
+            )
+        date_match = DATE_RE.search(text)
+        if date_match and row["updated"] != date_match.group(1):
+            issues.append(
+                f"[date] {rel}: README「{row['updated']}」≠ 文件「{date_match.group(1)}」"
+            )
+    return issues
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="按天生成任务进度看板")
     parser.add_argument("--check", action="store_true", help="只检查是否过期，不写文件")
+    parser.add_argument(
+        "--check-plans", action="store_true", help="只校验 plans/README.md 索引与计划文件状态/日期"
+    )
     parser.add_argument("--quiet", action="store_true", help="安静模式")
     parser.add_argument("--day", type=int, default=None, help="只处理某一天，如 4")
     args = parser.parse_args(argv)
+
+    if args.check_plans:
+        issues = check_plans()
+        if issues:
+            for issue in issues:
+                print(issue)
+            print(f"[check-plans] {len(issues)} 处不一致，请修正索引或计划文件头", file=sys.stderr)
+            return 1
+        if not args.quiet:
+            print("[check-plans] 索引与计划文件一致")
+        return 0
 
     days = discover_days()
     if args.day is not None:

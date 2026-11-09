@@ -55,6 +55,7 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-grpc>=1.28",
     "langfuse>=2.54",
     "websockets>=17.4",
+    "edge-tts>=7.3.1",
     "pytest-xdist>=3.8.0",
     "edge-tts>=7.3.1",
 ]

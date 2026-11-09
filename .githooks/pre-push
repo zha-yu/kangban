@@ -1,0 +1,35 @@
+#!/bin/sh
+# 推送前校验：看板不过期 + 计划索引与文件头一致
+#
+# 启用方式与 pre-commit 共用一次配置：
+#     git config core.hooksPath .githooks
+#
+# 校验失败即中止推送，避免把过期看板或不一致的索引带到远端。
+
+set -e
+
+root=$(git rev-parse --show-toplevel)
+py=""
+for cand in "$root/.venv/Scripts/python.exe" "$root/.venv/bin/python" python3 python; do
+    if [ -x "$cand" ] || command -v "$cand" >/dev/null 2>&1; then
+        py="$cand"
+        break
+    fi
+done
+
+if [ -z "$py" ]; then
+    echo "[pre-push] 未找到 python，跳过校验（不阻塞推送）" >&2
+    exit 0
+fi
+
+if ! "$py" "$root/scripts/update_progress.py" --check --quiet; then
+    echo "[pre-push] 日看板已过期：先跑 scripts/update_progress.py 再提交" >&2
+    exit 1
+fi
+
+if ! "$py" "$root/scripts/update_progress.py" --check-plans; then
+    echo "[pre-push] 计划索引校验未通过，已中止推送" >&2
+    exit 1
+fi
+
+exit 0

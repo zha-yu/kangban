@@ -27,6 +27,7 @@ import time
 from typing import Any
 
 from app.core.context import get_trace_id
+from app.core.runtime_context import get_identity
 from app.services.metrics_service import get_metrics_recorder
 
 logger = logging.getLogger("app.core.metrics")
@@ -45,7 +46,14 @@ def _record_db(
     """metrics 表轨：组装行数据交给唯一写库入口（校验/丢弃/降级在 service 内）。
 
     trace_id 取自请求上下文；取不到的行不入库、只留日志轨（自裁 Z4）。
+    elder_id 兜底：调用点未显式传时（asr / tts_first_packet 在引擎层无身份入参），
+    从 runtime_context 读服务端注入的身份（AGENTS 红线 9）——WS 握手已 set_identity，
+    打点协程均自该上下文派生；无身份上下文或 staff/guardian 身份则保持 None。
     """
+    if elder_id is None:
+        identity = get_identity()
+        if identity is not None:
+            elder_id = identity.elder_id
     get_metrics_recorder().record_stage(get_trace_id(), elder_id, stage, duration_ms, source)
 
 
@@ -100,6 +108,7 @@ def record_wakeup(
     source: str,
     wake_ts: float | None = None,
     connection_ms: float | None = None,
+    elder_id: str | None = None,
 ) -> None:
     """唤醒打点（AC-42 链路起点）。
 
@@ -109,6 +118,7 @@ def record_wakeup(
     双轨：日志行照旧 + ``metrics`` 表 ``wakeup`` 行——duration = accept−wake_ts
     （client 口径，负值截 0、超 ``WAKEUP_DURATION_MS_CAP`` 视为时钟偏移截断），
     backend 口径 duration=0（KWS 起点未知，仅占位表可查）。
+    ``elder_id``：auth 身份解析结果（服务端注入，AGENTS 红线 9），供按长者口径分析。
     """
     if source not in ("client", "backend"):
         raise ValueError(f"wakeup source must be 'client' or 'backend', got {source!r}")
@@ -117,13 +127,15 @@ def record_wakeup(
         duration_ms = min(max((time.time() - wake_ts) * 1000.0, 0.0), WAKEUP_DURATION_MS_CAP)
     else:
         duration_ms = 0.0
-    _record_db("wakeup", duration_ms, source=source)
+    _record_db("wakeup", duration_ms, elder_id=elder_id, source=source)
 
 
-def record_connection(*, connection_id: str, elapsed_ms: float) -> None:
+def record_connection(
+    *, connection_id: str, elapsed_ms: float, elder_id: str | None = None
+) -> None:
     """建连打点：offer 收到 → answer 产出的耗时（webrtc `_handle_offer` 接线）。"""
     record_event("connection", connection_id=connection_id, elapsed_ms=elapsed_ms)
-    _record_db("connection", elapsed_ms)
+    _record_db("connection", elapsed_ms, elder_id=elder_id)
 
 
 # ---------------------------------------------------------------------------

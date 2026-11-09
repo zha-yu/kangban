@@ -1,6 +1,6 @@
 # dev-B · 后端护栏与降级（执行计划）
 
-> 状态：进行中　｜　版本：v2.0　｜　日期：2026-11-07
+> 状态：已冻结　｜　版本：v3.2　｜　日期：2026-11-08
 > 关联：docs/team_tasks/day05/dev-b-后端护栏与降级.md（任务卡）、docs/plans/day05/day-05-延迟基线与护栏.md（Day5 总计划）
 > 上游依据：PRD FR-DLG-10（MAX_TOOL_CALLS=8、同 Tool 熔断）｜技术设计文档 §8 Day 5（guardrails.py、三档超时）｜PRD §5.3（端到端 ≤1.5s 预算）｜AGENTS §7 硬性数值
 > 变更记录见文末
@@ -394,3 +394,4 @@ Day5 总计划 S0（前置收口）先完成 →
 | v2.0 | 2026-11-07 | **方案 B 全量回改**：① B-2 从「消费 dev-A metrics 表轮询」改成「provider 层旁路 watchdog + 扩 ErrorMsg 枚举」——读代码发现 `asr.py` 两处 adapter 已拿 Stopwatch、`dialogue_service.py` 行 238 LLM 计时点已定位、`signaling.py` 已有四档 ErrorMsg 话术字典可直接扩枚举；② 消掉阻塞项 O-2（B-2 完全不依赖 dev-A A-2）；③ 时间分配 B-2 从 6.5h 压到 4.5h（省 2h）；④ R4 风险消掉、新增 R12（LLM 非流式整段返回语义偏差 Day6 修正）；⑤ N2 联调节点从「新建 degrade 事件」改成「复用 error 通道、pad 前端零改动」；⑥ 现状盘点补代码行号和 grep 证据；⑦ 状态从「草稿」改「进行中」 |
 | v3.0 | 2026-11-07 | **第二轮技术审查 · Must Fix 三条全量修复**：① watchdog 模式从「provider 返回后事后同步检查」改成「真正并行触发」（`asyncio.create_task(asyncio.sleep)`，阈值到了立即发 slow、不等 provider 返回）；② 加 per-request state（provider 函数内局部 dict，天然 per-request、不跨请求共享）；③ provider 异常**不吞**（slow_degraded=True 后 ASRUnavailable 仍然要发，后端两条都发、前端负责状态升级合并）；④ watchdog task 清理强制三件套（cancel + await + CancelledError pass）；⑤ 伪代码模板补齐（三档通用）；⑥ 新增 §3.6 状态流转图；⑦ 验收标准重写为 14 条（覆盖 Must Fix 三条 + 用户 6 条要求 + 三档一致性）；⑧ 依赖说明补 pad 前端慢→不可用状态升级验证；⑨ 风险预案 R5/R6 重写、新增 R13（并发串味）；⑩ B2-5 测试用例从 7 条扩展到 10 条（新增慢响应只发一次、慢后成功、慢后失败、下一轮重置四条） |
 | v3.1 | 2026-11-07 | **编码前收尾**：① watchdog 清理统一用 try/finally（伪代码模板和 R5 全量改写，正常返回 / 异常退出 / 主任务被取消三条路径全覆盖）；② 明确不使用 TaskGroup（主任务正常完成时 TaskGroup 不会自动取消仍在等待的 watchdog，可能阻塞主流程）；③ 清理三处 v2.0 旧方案残留：§0 不在范围表「B-2 消费 dev-A metrics」→「完全不依赖 dev-A」、§1 现状盘点 B-2 行「Stopwatch elapsed_ms 事后检查」→「真正并行 watchdog」、§8 自检清单「只在 provider 成功返回后检查 elapsed_ms」→「并行 watchdog + per-request state + 异常不吞」；④ §8 自检清单新增 try/finally 三件套检查项 |
+| v3.2 | 2026-11-08 | 状态收口：任务卡已置「已完成」，本计划状态由「进行中」改「已冻结」，并校正头部版本 v2.0 → v3.2（v3.0/v3.1 变更此前仅记于文末）。B-1/B-2/B-3 已交付，B-4 真实模型补测仍标注在 spike README |

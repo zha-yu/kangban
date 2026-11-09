@@ -25,14 +25,14 @@
 
 | 计划 | 状态 |
 | --- | --- |
-| `docs/plans/day04/a2-dag-信令与对话.md` | ❔ 草稿 |
-| `docs/plans/day04/a2-impl-信令与对话.md` | ❔ 草稿 |
-| `docs/plans/day04/a2-prompt-信令与对话.md` | ❔ 草稿 |
-| `docs/plans/day04/a2-信令与对话.md` | ❔ 草稿 |
+| `docs/plans/day04/a2-dag-信令与对话.md` | 📝 草稿 |
+| `docs/plans/day04/a2-impl-信令与对话.md` | 📝 草稿 |
+| `docs/plans/day04/a2-prompt-信令与对话.md` | 📝 草稿 |
+| `docs/plans/day04/a2-信令与对话.md` | 📝 草稿 |
 | `docs/plans/day04/a3-3D展示后端.md` | ✅ 已完成 |
 | `docs/plans/day04/a3-DAG.md` | ✅ 已完成 |
-| `docs/plans/day04/a4-VAD主链与遗留修复.md` | ❔ 已冻结 |
-| `docs/plans/day04/day-04-3D与身份闭环.md` | ❔ 草稿 |
+| `docs/plans/day04/a4-VAD主链与遗留修复.md` | 🔒 已冻结 |
+| `docs/plans/day04/day-04-3D与身份闭环.md` | 🔒 已冻结 |
 | `docs/plans/day04/f1-Day4前端联调.md` | 🚧 进行中 |
 | `docs/plans/day04/f1-vad-worker隔离.md` | ✅ 已完成 |
 | `docs/plans/day04/f1-双端登录页.md` | ✅ 已完成 |
@@ -44,7 +44,7 @@
 | `docs/plans/day04/f7-复核队列.md` | ✅ 已完成 |
 | `docs/plans/day04/f8-药单维护.md` | ✅ 已完成 |
 | `docs/plans/day04/f9-长者注册与设备分配.md` | ✅ 已完成 |
-| `docs/plans/day04/task-01-声纹身份.md` | ❔ 草稿 |
+| `docs/plans/day04/task-01-声纹身份.md` | 📝 草稿 |
 
 > 另有 1 个无 `> 状态：` 行的方案/草稿文件，未列入上表。
 

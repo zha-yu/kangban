@@ -91,10 +91,11 @@ class TestDbTrack:
 
     def test_wakeup_client_duration_from_wake_ts(self, stub: _StubRecorder, trace) -> None:  # type: ignore[no-untyped-def]
         wake_ts = time.time() - 0.5  # 500ms 前命中
-        record_wakeup(source="client", wake_ts=wake_ts)
+        record_wakeup(source="client", wake_ts=wake_ts, elder_id="elder-1")
         row = stub.rows[0]
         assert row["stage"] == "wakeup"
         assert row["source"] == "client"
+        assert row["elder_id"] == "elder-1"  # auth 身份解析随行入表（A-2 接线补全）
         assert 0.0 < row["duration_ms"] <= 300_000.0  # 时钟偏移防护上界
 
     def test_wakeup_negative_clamped_to_zero(self, stub: _StubRecorder, trace) -> None:  # type: ignore[no-untyped-def]
@@ -111,11 +112,11 @@ class TestDbTrack:
         assert row["duration_ms"] == 0.0
 
     def test_connection_dual_track(self, stub: _StubRecorder, trace) -> None:  # type: ignore[no-untyped-def]
-        record_connection(connection_id="dev-1", elapsed_ms=88.8)
+        record_connection(connection_id="dev-1", elapsed_ms=88.8, elder_id="elder-2")
         assert stub.rows == [
             {
                 "trace_id": "trace-db-track-1",
-                "elder_id": None,
+                "elder_id": "elder-2",
                 "stage": "connection",
                 "duration_ms": 88.8,
                 "source": None,
@@ -128,12 +129,59 @@ class TestDbTrack:
         assert stub.rows[0]["trace_id"] is None
 
 
+class TestElderIdFallback:
+    """_record_db 兜底口径：调用点未显式传 elder_id 时从 runtime_context 身份取。
+
+    覆盖 asr / tts_first_packet 两段（引擎层无身份入参，AGENTS 红线 9 的
+    服务端注入口径）；显式传参（wakeup/connection/playback/llm_first_token）优先。
+    """
+
+    _DEVICE_ID = "11111111-1111-1111-1111-111111111111"
+    _ELDER_ID = "22222222-2222-2222-2222-222222222222"
+
+    def test_falls_back_to_context_identity(
+        self, stub: _StubRecorder, trace  # type: ignore[no-untyped-def]
+    ) -> None:
+        from app.core.runtime_context import Identity, identity_scope
+
+        identity = Identity(kind="device", device_id=self._DEVICE_ID, elder_id=self._ELDER_ID)
+        with identity_scope(identity):
+            record_stage("asr", 100.0, source="funasr")
+        assert stub.rows[0]["elder_id"] == self._ELDER_ID
+
+    def test_explicit_elder_id_wins(
+        self, stub: _StubRecorder, trace  # type: ignore[no-untyped-def]
+    ) -> None:
+        from app.core.runtime_context import Identity, identity_scope
+
+        identity = Identity(kind="device", device_id=self._DEVICE_ID, elder_id=self._ELDER_ID)
+        with identity_scope(identity):
+            record_stage("llm_first_token", 733.0, elder_id="elder-explicit", source="non_stream")
+        assert stub.rows[0]["elder_id"] == "elder-explicit"
+
+    def test_staff_identity_keeps_none(
+        self, stub: _StubRecorder, trace  # type: ignore[no-untyped-def]
+    ) -> None:
+        from app.core.runtime_context import Identity, identity_scope
+
+        identity = Identity(
+            kind="staff",
+            staff_id="33333333-3333-3333-3333-333333333333",
+            role="care_worker",
+        )
+        with identity_scope(identity):
+            record_stage("tts_first_packet", 200.0, source="non_stream")
+        assert stub.rows[0]["elder_id"] is None
+
+
 class TestClientDiagPlayback:
     """裁决 R3：client_diag stage=playback 由服务端代打入 metrics。"""
 
     @staticmethod
     def _fake_conn() -> Any:
-        return types.SimpleNamespace(trace_id="trace-diag-1", device_id="dev-1")
+        return types.SimpleNamespace(
+            trace_id="trace-diag-1", device_id="dev-1", bound_elder_id="elder-9"
+        )
 
     async def test_playback_forwarded_to_metrics(
         self, stub: _StubRecorder, monkeypatch: pytest.MonkeyPatch
@@ -157,7 +205,7 @@ class TestClientDiagPlayback:
         assert stub.rows == [
             {
                 "trace_id": "trace-diag-1",
-                "elder_id": None,
+                "elder_id": "elder-9",
                 "stage": "playback",
                 "duration_ms": 1500.0,
                 "source": "client",
