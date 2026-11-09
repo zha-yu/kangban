@@ -22,6 +22,7 @@ from app.api.schemas.staff import (
     ElderReassignRequest,
     ElderReassignResponse,
     StaffCreateRequest,
+    StaffListItemResponse,
     StaffResponse,
     StaffUpdateRequest,
 )
@@ -52,6 +53,38 @@ def _to_response(row: staff_service.StaffAccount) -> StaffResponse:
         phone_masked=staff_service.mask_phone(row.phone),
         status=row.status,
     )
+
+
+@router.get("", response_model=dict)
+async def list_staff(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    _admin: Annotated[Identity, Depends(require_roles("admin"))],
+    role: str | None = None,
+    status: str | None = None,
+) -> dict:
+    """列出所有员工（admin 权限）。
+
+    契约 E12 Day 6 补缺口：原契约只冻结 POST/PATCH，Day 6 dev-D N18
+    改绑 UI 需要员工列表渲染，因此追加 GET 读入口（主理人裁决，不升级契约版本）。
+
+    Query:
+        role=care_worker|doctor|admin   可选过滤
+        status=active|disabled           可选过滤
+    """
+    rows = await staff_service.list_staff_accounts(session, role_filter=role, status_filter=status)
+    items: list[StaffListItemResponse] = []
+    for row, elder_ids in rows:
+        items.append(
+            StaffListItemResponse(
+                staff_id=row.staff_id,
+                name=row.name,
+                role=row.role,
+                phone_masked=staff_service.mask_phone(row.phone),
+                status=row.status,
+                bound_elder_ids=elder_ids,
+            )
+        )
+    return {"items": items}
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=StaffResponse)

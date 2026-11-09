@@ -477,6 +477,51 @@ async def reassign_elders(
     }
 
 
+async def list_staff_accounts(
+    session: AsyncSession,
+    *,
+    role_filter: str | None = None,
+    status_filter: str | None = None,
+) -> list[tuple[StaffAccount, list[uuid.UUID]]]:
+    """列出所有员工（可选 role/status 过滤）。
+
+    返回 (StaffAccount, bound_elder_ids) 元组列表，按创建时间正序。
+    `bound_elder_ids` 来自 `elder_staff_assignments` 全部 relation
+    （不仅 primary_care）——改绑 UI 需要当前绑定全集。
+
+    仅用于 GET /api/staff（契约 E12 读入口补齐）。
+    """
+    from sqlalchemy import select
+
+    stmt = select(StaffAccount)
+    if role_filter:
+        stmt = stmt.where(StaffAccount.role == role_filter)
+    if status_filter:
+        stmt = stmt.where(StaffAccount.status == status_filter)
+    stmt = stmt.order_by(StaffAccount.created_at.asc())
+
+    rows = (await session.execute(stmt)).scalars().all()
+
+    if not rows:
+        return []
+
+    staff_ids = [r.staff_id for r in rows]
+
+    # 一次性查出所有 assignment，按 staff_id 分组
+    from app.models.relation import ElderStaffAssignment
+
+    assign_stmt = select(ElderStaffAssignment.staff_id, ElderStaffAssignment.elder_id).where(
+        ElderStaffAssignment.staff_id.in_(staff_ids)
+    )
+    assign_rows = (await session.execute(assign_stmt)).all()
+
+    mapping: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for staff_id, elder_id in assign_rows:
+        mapping.setdefault(staff_id, []).append(elder_id)
+
+    return [(r, mapping.get(r.staff_id, [])) for r in rows]
+
+
 __all__ = [
     "MAX_ACTIVE_GUARDIANS_PER_ELDER",
     "ElderNotFoundError",
@@ -494,6 +539,7 @@ __all__ = [
     "bind_guardian",
     "create_guardian",
     "create_staff",
+    "list_staff_accounts",
     "mask_phone",
     "reassign_elders",
     "update_staff",

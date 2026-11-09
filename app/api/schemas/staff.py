@@ -81,6 +81,19 @@ class GuardianBindResponse(BaseModel):
     status: Literal["active", "unbound"]
 
 
+class StaffListItemResponse(BaseModel):
+    """员工列表条目（GET /api/staff）。StaffResponse 扩充绑定 elders。"""
+
+    staff_id: uuid.UUID
+    name: str
+    role: StaffRole
+    phone_masked: str
+    status: StaffStatus
+    bound_elder_ids: list[uuid.UUID] = Field(
+        default_factory=list, description="当前绑定的长者；admin 为空数组"
+    )
+
+
 class ElderReassignRequest(BaseModel):
     """全量替换式改绑（E20）。空数组表示清空全部绑定。"""
 
@@ -105,6 +118,7 @@ __all__ = [
     "GuardianCreateRequest",
     "GuardianCreateResponse",
     "StaffCreateRequest",
+    "StaffListItemResponse",
     "StaffResponse",
     "StaffRole",
     "StaffStatus",
