@@ -274,6 +274,26 @@ export async function apiPost(path: string, body: unknown): Promise<Response> {
   return res;
 }
 
+/** 通用鉴权 PUT（Day 6 E20 员工改绑长者）：与 apiPost 完全同构，业务码分支由调用方按契约处理 */
+export async function apiPut(path: string, body: unknown): Promise<Response> {
+  let res: Response;
+  try {
+    res = await authedFetch(path, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    throw new ApiError("network", NETWORK_ERROR_TEXT);
+  }
+  if (res.status === 401) {
+    // refresh 已在 authedFetch 内尝试并失败 → 登录态已清
+    throw new ApiError("invalid", INVALID_CREDENTIAL_TEXT);
+  }
+  return res;
+}
+
 /** 退出登录：清本入口 localStorage 回登录页（task-05 §3 要点 6） */
 export function logout(): void {
   clearSession();
