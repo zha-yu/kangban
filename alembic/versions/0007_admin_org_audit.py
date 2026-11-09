@@ -132,15 +132,19 @@ def upgrade() -> None:
     op.create_unique_constraint("uq_rooms_room_no", "rooms", ["room_no"])
 
     # ---------------- 3. beds.status 扩 disabled ----------------
-    op.drop_constraint("ck_beds_status", "beds", type_="check")
-    op.create_check_constraint("ck_beds_status", "beds", _BEDS_STATUS_NEW)
+    # 注意：env.py 的 target_metadata 携带 naming_convention（ck_%(table_name)s_%(constraint_name)s），
+    # op.drop_constraint / op.create_check_constraint 会把显式短名再渲染一层前缀
+    # （ck_beds_status -> ck_beds_ck_beds_status），在按 0003 修复后命名的干净库上必炸。
+    # 与 0003 同一规避手法：CHECK 换名一律走原生 SQL，绕过渲染层。
+    op.execute("ALTER TABLE beds DROP CONSTRAINT ck_beds_status")
+    op.execute(f"ALTER TABLE beds ADD CONSTRAINT ck_beds_status CHECK ({_BEDS_STATUS_NEW})")
 
 
 def downgrade() -> None:
     # 先降级数据再收紧 CHECK，否则存量 disabled 床会让 downgrade 直接失败
     op.execute("UPDATE beds SET status = 'maintenance' WHERE status = 'disabled'")
-    op.drop_constraint("ck_beds_status", "beds", type_="check")
-    op.create_check_constraint("ck_beds_status", "beds", _BEDS_STATUS_OLD)
+    op.execute("ALTER TABLE beds DROP CONSTRAINT ck_beds_status")
+    op.execute(f"ALTER TABLE beds ADD CONSTRAINT ck_beds_status CHECK ({_BEDS_STATUS_OLD})")
 
     op.drop_constraint("uq_rooms_room_no", "rooms", type_="unique")
 
