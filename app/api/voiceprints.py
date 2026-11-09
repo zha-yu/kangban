@@ -124,8 +124,11 @@ def _validate_wav_bytes(raw: bytes) -> None:
 
 
 def _require_bound_elder(identity: Identity) -> uuid.UUID | None:
-    """取 identity.elder_id。None 表示设备未绑长者。"""
-    return identity.elder_id  # 类型：uuid.UUID | None
+    """取 identity.elder_id 并转 UUID。None 表示设备未绑长者。
+
+    Identity.elder_id 存的是 str（令牌文本），服务层签名收 uuid.UUID，在此统一转换。
+    """
+    return uuid.UUID(identity.elder_id) if identity.elder_id else None
 
 
 # ---------------------------------------------------------------------------
@@ -137,9 +140,7 @@ def _require_bound_elder(identity: Identity) -> uuid.UUID | None:
 async def register_voiceprint_sample(
     identity: Annotated[Identity, Depends(current_device)],
     audio: Annotated[UploadFile, File(description="16kHz/16bit/单声道 WAV ≤10s")],
-    sample_index: Annotated[
-        int, Form(description="1/2/3 三段注册的样本序号")
-    ],
+    sample_index: Annotated[int, Form(description="1/2/3 三段注册的样本序号")],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> JSONResponse:
     if sample_index not in (1, 2, 3):
