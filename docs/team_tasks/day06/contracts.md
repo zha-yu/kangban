@@ -1,4 +1,4 @@
-> 状态：已冻结　｜　版本：v1.0　｜　日期：2026-11-09
+> 状态：已冻结　｜　版本：v1.2　｜　日期：2026-11-09
 > 关联：docs/plans/day06/day-06-长者侧Agent闭环.md（§3.1 节点表、§9.1 落地结构）｜docs/team_tasks/day06/dev-a~dev-d 四张任务卡
 > 上游依据：PRD v2.9 §6.1 Day 6 行（验收）｜技术设计文档 v2.0 §3.4/§3.6/§8.3（实现）｜ER v0.5 §4.3.11–4.3.13（字段）
 > 变更记录见文末
@@ -99,6 +99,21 @@
 
 **迟到回调为什么两条都要校验**：只校验 `epoch` 时，同一 epoch 内被打断的回复仍可能被后续 ack 追认；`epoch` 负责"跨代淘汰"，`status` 负责"同代内打断后的追认拦截"。
 
+#### 4.2.1 水位与截断（P1 裁决：方案 A，2026-11-09）
+
+| 项 | 口径 |
+| --- | --- |
+| `last_acked_segment` 语义 | **最后一段「整段播完」的段 id**；初始 `-1`，表示一段都没播完 |
+| 谁推进水位 | **只有 `status=played`**。`playing` 只走 ①②③ 并打 `response_segment` 指标（含首段开播延迟），**不推进**；`canceled` 也**不推进** |
+| `canceled.segment_id` | = 最后一个已确认 `played` 段的 id；**一段都没播完时取 `-1`**（回显水位，与水位同构，不引入第二个概念） |
+| `delivered_text` | `None` 当 `last_acked_segment < 0`；否则按 `index` 升序拼接 `[0 .. last_acked_segment]` |
+| 依赖的不变量 | ④ 的**严格单调**（`>`）保证 `[0..wm]` 全部已 `played`。**若日后把 ④ 放宽为 `>=` 或允许跳号，截断计算会静默出错**，必须同步改本节 |
+
+**为什么 `playing` 不能推进水位**（两条都曾在讨论中出现过，记录在此以免重犯）：
+
+1. 同段随后到达的 `played` 会被 ④（`segment_id > last_acked_segment`）判为迟到而丢弃 → 没有任何段被标记「播完」，`delivered_text` 恒为 `None`，正常播完的一轮也会被记成「一个字都没说」。
+2. 把 ④ 改成 `>=` 能绕过 1，但水位会同时承担「最高见过」与「最后播完」两个语义；打断时两者必然分叉（第 2 段播到一半插话：最高见过 2、实际听完 1），用前者算截断等于把只播了一半的段算成「听过」——这正是 FR-UI-04 要防的事。
+
 ---
 
 ## 5. 后端内部契约
@@ -107,10 +122,10 @@
 
 ```python
 async def begin_turn(*, thread_id, elder_id, device_id, call_id, turn_id,
-                     user_text, trace_id) -> TurnRef
+                     user_text, trace_id, identity_source=None) -> TurnRef
 async def append_event(*, thread_id, event_type, payload, turn_id=None,
                        response_id=None, task_id=None, event_id=None,
-                       ref_event_id=None) -> int          # 返回 seq
+                       ref_event_id=None, call_id=None, trace_id=None) -> int   # 返回 seq
 async def commit_response(*, turn_id, response_id, generated_text,
                           delivered_text, status) -> None  # 同 (turn_id, response_id) 幂等
 async def finish_turn(*, turn_id, status) -> None          # status: completed/interrupted/failed
@@ -121,6 +136,11 @@ async def read_events(*, thread_id, after_seq=0) -> list[EventView]
 - `seq` 分配：同事务内 `SELECT last_event_seq FROM conversation_threads WHERE thread_id=:t FOR UPDATE` → +1 → 写回 → 插事件。**禁止"先查 max 再 +1"**。
 - `generic` 模式（`elder_id is None`）：只写事件，不写 `conversation_turns`；`read_turns` 返回空。
 - `TurnView`：`turn_id / user_text / assistant_delivered_text / status / started_at / ended_at`。
+- `TurnRef`：`turn_id / seq / duplicate`；重复 `turn_id` 时 `seq=None`、`duplicate=True`（没有新事件，就不该给新序号）。
+- `EventView`：`seq / event_type / occurred_at / payload / turn_id / response_id / task_id`。
+- **单写口**：`conversation_turns.status` 终态只由 `finish_turn` 写；`commit_response` 的 `status` 只进事件 payload。否则迟到的 `completed` 会覆盖已发生的 `interrupted`。
+- `read_turns` 返回**对话先后正序**（最早在前），排序依据是各轮 `turn_started` 的 `seq`，**不是** `started_at`——`now()` 取事务开始时间，同事务两轮会撞同一时间戳，按它排等于随机；会话归属与 `elder_id` 不符时返回空而非抛错（读路径不该让整轮对话失败）。
+
 
 ### 5.2 `StateSnapshot`（`app/services/state_service.py`）
 
@@ -217,3 +237,5 @@ body   { "elder_ids": ["uuid", ...] }     # 全量覆盖式替换
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-09 | 首版并冻结：五个标识、12 类事件、`tts_text` v2 与 `segment_ack`、`HistoryStore`/`StateSnapshot`/`ToolResult`/`MCPResult` 四组内部契约、a0 E20、三迁移落地结果、两条禁区（无第三方分类 API、不提前建路由表） |
+| v1.2 | 2026-11-09 | **P1 裁决落地（方案 A）**：§4.2 新增 4.2.1「水位与截断」——`last_acked_segment` 语义定为「最后整段播完的段」、初始 `-1`；**只有 `played` 推进水位**，`playing` 只走 ①②③ 并打指标，`canceled` 不推进且其 `segment_id` 回显水位（无则 `-1`）；补 `delivered_text` 计算式与「④ 严格单调」这一依赖不变量。与 dev-C 在 S2 实现前确认的口径一致（C 侧称 v1.2），**零字段变更、不改四步校验** |
+| v1.1 | 2026-11-09 | 实现 `HistoryStore` 时发现两处**漏参**，按冻结规则升版（**仅加可选参数，向后兼容**）：① `append_event` 增 `call_id` / `trace_id`（0008 已建这两列，原签名无法写入 → 会成为死列，链路排查断线）；② `begin_turn` 增 `identity_source`（缺省取会话行上的值）。同时补齐 `TurnRef` / `EventView` 字段定义与两条单写口约束（`status` 只由 `finish_turn` 写；`read_turns` 时间正序、归属不符返回空）。**现有调用方零改动**：新参数均有默认值。 |
