@@ -480,10 +480,10 @@ async def _assemble_authoritative_facts(
     try:
         from sqlalchemy import select
 
-        from app.db import get_session
+        from app.db import session_factory
         from app.models.memory import MemoryChunk
 
-        async with get_session() as session:
+        async with session_factory() as session:
             rows = (
                 (
                     await session.execute(
@@ -524,10 +524,10 @@ async def _assemble_relevant_memories(identity: DialogueIdentity, cfg: ContextBu
     try:
         from sqlalchemy import select
 
-        from app.db import get_session
+        from app.db import session_factory
         from app.models.memory import MemoryChunk
 
-        async with get_session() as session:
+        async with session_factory() as session:
             rows = (
                 (
                     await session.execute(
