@@ -81,7 +81,25 @@ class GuardianBindResponse(BaseModel):
     status: Literal["active", "unbound"]
 
 
+class ElderReassignRequest(BaseModel):
+    """全量替换式改绑（E20）。空数组表示清空全部绑定。"""
+
+    elder_ids: list[uuid.UUID] = Field(
+        default_factory=list, description="要绑定的长者列表（全量覆盖）"
+    )
+
+
+class ElderReassignResponse(BaseModel):
+    """改绑结果：差集视图，调用方可据此前端提示。"""
+
+    staff_id: uuid.UUID
+    added: list[uuid.UUID] = Field(description="本次新增绑定的长者")
+    removed: list[uuid.UUID] = Field(description="本次解除绑定的长者")
+
+
 __all__ = [
+    "ElderReassignRequest",
+    "ElderReassignResponse",
     "GuardianBindRequest",
     "GuardianBindResponse",
     "GuardianCreateRequest",

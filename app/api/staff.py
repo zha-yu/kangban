@@ -19,6 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.elders import ContractAPIRoute, _error_response
 from app.api.schemas.staff import (
+    ElderReassignRequest,
+    ElderReassignResponse,
     StaffCreateRequest,
     StaffResponse,
     StaffUpdateRequest,
@@ -29,6 +31,7 @@ from app.db import get_session
 from app.services import staff_service
 from app.services.staff_service import (
     ElderNotFoundError,
+    PrimaryCareGapError,
     StaffConflictError,
     StaffNotFoundError,
     StaffRoleConflictError,
@@ -94,6 +97,40 @@ async def update_staff(
     except StaffNotFoundError as exc:
         return _error_response(404, "NOT_FOUND", exc.message)  # type: ignore[return-value]
     return _to_response(row)
+
+
+@router.put("/{staff_id}/elders", response_model=ElderReassignResponse)
+async def reassign_elders(
+    staff_id: uuid.UUID,
+    payload: ElderReassignRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    admin: Annotated[Identity, Depends(require_roles("admin"))],
+) -> ElderReassignResponse:
+    """全量替换式改绑（E20）。
+
+    语义：admin 把目标 staff 当前的长者列表**整体替换**成请求体里的列表。
+    空数组表示清空全部绑定。返回差集（added / removed）供前端提示。
+    """
+    try:
+        result = await staff_service.reassign_elders(
+            session,
+            staff_id=staff_id,
+            elder_ids=payload.elder_ids,
+            operator_id=admin.staff_id,
+        )
+    except StaffNotFoundError as exc:
+        return _error_response(404, "NOT_FOUND", exc.message)  # type: ignore[return-value]
+    except StaffRoleConflictError as exc:
+        return _error_response(403, "ROLE_FORBIDDEN", exc.message)  # type: ignore[return-value]
+    except ElderNotFoundError as exc:
+        return _error_response(404, "NOT_FOUND", exc.message)  # type: ignore[return-value]
+    except PrimaryCareGapError as exc:
+        return _error_response(409, "CONFLICT", exc.message)  # type: ignore[return-value]
+    return ElderReassignResponse(
+        staff_id=result["staff_id"],
+        added=result["added"],
+        removed=result["removed"],
+    )
 
 
 __all__ = ["router"]

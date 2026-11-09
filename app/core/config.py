@@ -152,7 +152,6 @@ class Settings(BaseSettings):
     mcp_weather_server_url: str = "http://localhost:7101"
     mcp_operations_server_url: str = "http://localhost:7102"
     mcp_call_timeout_seconds: int = 5
-    mcp_enable_audit: bool = True
 
     # ---------------------------- 观测 ----------------------------
     langfuse_enabled: bool = False
