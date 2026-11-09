@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger("app.services.memory_service")
 
@@ -146,7 +147,9 @@ async def extract_preference_candidates(
                 if verb in user_text and any(k in user_text for k in verbs):
                     # 粗抽 value（第一个命中的词）
                     value = next((k for k in verbs if k in user_text), category_label)
-                    polarity = "negative" if ("讨厌" in verb or "不喜欢" in verb) else "positive"
+                    polarity: Literal["positive", "negative", "neutral"] = (
+                        "negative" if ("讨厌" in verb or "不喜欢" in verb) else "positive"
+                    )
 
                     candidate = MemoryCandidate(
                         elder_id=elder_id,
@@ -190,7 +193,9 @@ async def extract_preference_candidates(
     return deduped
 
 
-async def insert_candidate(candidate: MemoryCandidate, session) -> None:
+async def insert_candidate(
+    candidate: MemoryCandidate, session: AsyncSession | None = None
+) -> dict[str, str]:
     """单条候选入库（先校验、再查重、再 insert）。
 
     任务卡 §3.3 第 2 条三条硬校验 + 第 3 条同键 diff 处理。
@@ -201,64 +206,81 @@ async def insert_candidate(candidate: MemoryCandidate, session) -> None:
     # --- 硬校验 ---
     _validate_candidate(candidate)
 
-    # --- 查重：同 (elder_id, subject, predicate) 已有 active 条目？ ---
-    existing = (
-        (
-            await session.execute(
-                select(MemoryChunk).where(
-                    MemoryChunk.elder_id == candidate.elder_id,
-                    MemoryChunk.subject == candidate.subject,
-                    MemoryChunk.predicate == candidate.predicate,
-                    MemoryChunk.status == "active",
+    # --- 自开会话（若调用方未注入） ---
+    own_session = False
+    if session is None:
+        from app.db import session_factory
+
+        session = session_factory()
+        own_session = True
+
+    try:
+        # --- 查重：同 (elder_id, subject, predicate) 已有 active 条目？ ---
+        existing = (
+            (
+                await session.execute(
+                    select(MemoryChunk).where(
+                        MemoryChunk.elder_id == candidate.elder_id,
+                        MemoryChunk.subject == candidate.subject,
+                        MemoryChunk.predicate == candidate.predicate,
+                        MemoryChunk.status == "active",
+                    )
                 )
             )
+            .scalars()
+            .first()
         )
-        .scalars()
-        .first()
-    )
 
-    if existing is not None:
-        if str(existing.object_value) == candidate.object_value:
-            # 值完全相同 → 幂等跳过
-            raise MemoryInsertSkipped(candidate.elder_id, candidate.subject, candidate.predicate)
-        # 值不同 → 新插一条 + 打日志（不覆盖旧条目！）
+        if existing is not None:
+            if str(existing.object_value) == candidate.object_value:
+                # 值完全相同 → 幂等跳过
+                raise MemoryInsertSkipped(candidate.elder_id, candidate.subject, candidate.predicate)
+            # 值不同 → 新插一条 + 打日志（不覆盖旧条目！）
+            logger.info(
+                "memory_candidate_pending",
+                extra={
+                    "elder_id": candidate.elder_id,
+                    "subject": candidate.subject,
+                    "predicate": candidate.predicate,
+                    "old_value": str(existing.object_value),
+                    "new_value": candidate.object_value,
+                    "note": "conflict judgment deferred to Day 7",
+                },
+            )
+
+        chunk = MemoryChunk(
+            elder_id=candidate.elder_id,
+            subject=candidate.subject,
+            predicate=candidate.predicate,
+            object_value=candidate.object_value,
+            category=candidate.category,
+            polarity=candidate.polarity,
+            content=candidate.fact or f"{candidate.predicate}={candidate.object_value}",
+            confidence=candidate.confidence,
+            sensitivity=candidate.sensitivity,
+            source_type=candidate.source_type,
+            source_turn_ids=candidate.source_turn_ids,
+            status="active",
+            valid_from=candidate.valid_from or datetime.now(UTC),
+            embedding=None,  # Day 7 接 pgvector 后填充
+        )
+        session.add(chunk)
+        await session.flush()
         logger.info(
-            "memory_candidate_pending",
-            extra={
-                "elder_id": candidate.elder_id,
-                "subject": candidate.subject,
-                "predicate": candidate.predicate,
-                "old_value": str(existing.object_value),
-                "new_value": candidate.object_value,
-                "note": "conflict judgment deferred to Day 7",
-            },
+            "memory_chunk_inserted",
+            extra={"chunk_id": str(chunk.chunk_id), "elder_id": candidate.elder_id},
         )
+    finally:
+        if own_session:
+            await session.close()
 
-    chunk = MemoryChunk(
-        elder_id=candidate.elder_id,
-        subject=candidate.subject,
-        predicate=candidate.predicate,
-        object_value=candidate.object_value,
-        category=candidate.category,
-        polarity=candidate.polarity,
-        content=candidate.fact or f"{candidate.predicate}={candidate.object_value}",
-        confidence=candidate.confidence,
-        sensitivity=candidate.sensitivity,
-        source_type=candidate.source_type,
-        source_turn_ids=candidate.source_turn_ids,
-        status="active",
-        valid_from=candidate.valid_from or datetime.now(UTC),
-        embedding=None,  # Day 7 接 pgvector 后填充
-    )
-    session.add(chunk)
-    logger.info(
-        "memory_candidate_inserted",
-        extra={
-            "elder_id": candidate.elder_id,
-            "predicate": candidate.predicate,
-            "object_value": candidate.object_value,
-        },
-    )
+    return {
+        "chunk_id": str(chunk.chunk_id),
+        "elder_id": candidate.elder_id,
+        "subject": candidate.subject,
+        "predicate": candidate.predicate,
+        "object_value": candidate.object_value,
+    }
 
 
 async def recall_active_chunks(
@@ -267,8 +289,8 @@ async def recall_active_chunks(
     is_generic: bool,
     limit: int = 5,
     min_importance: float | None = None,
-    session=None,
-) -> list:
+    session: AsyncSession | None = None,
+) -> list[object]:
     """召回：闸门② + 有效期过滤 → 返回 status='active' 的条目。
 
     任务卡 §3.3 第 4 条 + PRD FR-MEM-05 闸门②：
@@ -299,9 +321,9 @@ async def recall_active_chunks(
     stmt = stmt.limit(limit)
 
     if session is None:
-        from app.db import get_session
+        from app.db import session_factory
 
-        async with get_session() as s:
+        async with session_factory() as s:
             rows = (await s.execute(stmt)).scalars().all()
     else:
         rows = (await session.execute(stmt)).scalars().all()

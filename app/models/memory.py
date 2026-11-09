@@ -33,7 +33,7 @@ from sqlalchemy.types import UserDefinedType
 from app.models.base import Base
 
 
-class Vector1536(UserDefinedType):
+class Vector1536(UserDefinedType[list[float]]):
     """最小 pgvector 类型声明：ORM 对齐迁移 0009 的 DDL，不引 pgvector 包。"""
 
     cache_ok = True
