@@ -59,6 +59,7 @@ class FakeEventSink:
         self.events: list[tuple[str, dict[str, Any], int | None]] = []
         self.epoch_probe: Callable[[], int] | None = None
         self.fail = False
+        self.cancel_next = False  # S4 试跑修复验证：注入 CancelledError（BaseException 系）
 
     async def append_event(
         self,
@@ -69,6 +70,9 @@ class FakeEventSink:
         turn_id: str | None = None,
         response_id: str | None = None,
     ) -> int:
+        if self.cancel_next:
+            self.cancel_next = False
+            raise asyncio.CancelledError
         if self.fail:
             raise RuntimeError("event sink down")
         epoch = self.epoch_probe() if self.epoch_probe is not None else None
@@ -278,6 +282,33 @@ async def test_start_rejects_empty_text_and_bad_context() -> None:
 # ---------------------------------------------------------------------------
 # ack 四步：unknown_response / stale_epoch / wrong_status / not_monotonic
 # ---------------------------------------------------------------------------
+
+
+async def test_safe_append_event_swallows_cancellation() -> None:
+    """S4 试跑修复②：事件追加被取消（ws_superseded 场景）不得炸穿主链路。
+
+    CancelledError 是 BaseException，except Exception 兜不住——修复前它会从
+    _safe_append_event 逃出 start()，分段循环根本不跑（dev-D 试跑的
+    「response_started 之后段未下发」即此链）。
+    """
+    h = Harness()
+    h.sink.cancel_next = True  # response_started 追加恰好被取消
+    handle = await h.start("你好。今天天气真不错！")  # 2 段
+
+    # 取消被吞掉，分段照常逐段下发
+    assert [msg["text"] for _, msg in h.deliver.messages] == ["你好。", "今天天气真不错！"]
+    assert handle.total == 2
+    # 服务仍然活着：后续 ack 四步照常工作（被取消的只是那一次事件追加）
+    assert (
+        await h.service.ack(
+            device_id="dev-1",
+            response_id=handle.response_id,
+            epoch=handle.epoch,
+            segment_id=0,
+            status="playing",
+        )
+        is True
+    )
 
 
 async def test_ack_unknown_response_rejected(caplog: pytest.LogCaptureFixture) -> None:

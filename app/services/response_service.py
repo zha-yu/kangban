@@ -34,6 +34,7 @@ identity 三点位同款先例）；被拒绝的 ack 走 `response_ack_rejected`
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -574,7 +575,11 @@ class ResponseService:
     async def _safe_append_event(
         self, state: _ResponseState, event_type: str, payload: Mapping[str, object]
     ) -> None:
-        """事件追加失败不拖垮主链路（与 dialogue_service 写回降级同口径）。"""
+        """事件追加失败不拖垮主链路（与 dialogue_service 写回降级同口径）。
+
+        `CancelledError` 是 `BaseException`（3.12），`except Exception` 兜不住——
+        事件写入是尽力而为的观测面，取消（如旧连接被顶掉）时不许从这里炸穿。
+        """
         try:
             await self._events.append_event(
                 thread_id=state.thread_id,
@@ -582,6 +587,11 @@ class ResponseService:
                 payload=dict(payload),
                 turn_id=state.turn_id,
                 response_id=state.response_id,
+            )
+        except asyncio.CancelledError:
+            logger.warning(
+                "response_event_append_cancelled",
+                extra=self._log_extra(state, event_type=event_type),
             )
         except Exception as exc:
             logger.error(

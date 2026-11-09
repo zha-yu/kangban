@@ -53,6 +53,7 @@ from app.core.runtime_context import Identity
 from app.core.security import TokenExpiredError
 from app.core.trace import TraceIdMiddleware
 from app.db import session_factory
+from app.mcp_client import MCPClient
 from app.router.safety import SafetyDecision
 from app.services import identity_service, voiceprint_service
 from app.services.auth_service import (
@@ -94,8 +95,15 @@ class _SessionToolExecutor:
       的行随 rollback 丢弃。
     """
 
-    def __init__(self, factory: Callable[[], AbstractAsyncContextManager[AsyncSession]]) -> None:
+    def __init__(
+        self,
+        factory: Callable[[], AbstractAsyncContextManager[AsyncSession]],
+        *,
+        mcp_client: Any | None = None,
+    ) -> None:
         self._factory = factory
+        #: N26 最后一环：MCP 工具客户端（weather），透传给每次调用的 ToolExecutor
+        self._mcp = mcp_client
 
     async def execute(
         self,
@@ -108,7 +116,7 @@ class _SessionToolExecutor:
     ) -> ToolResult:
         async with self._factory() as session:
             try:
-                result = await ToolExecutor(session).execute(
+                result = await ToolExecutor(session, mcp_client=self._mcp).execute(
                     tool_name=tool_name,
                     args=args,
                     runtime=runtime,
@@ -258,7 +266,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         llm=llm_service,
         # AGENTS §7 硬性数值：单轮 ≤8 次工具调用；同一 Tool 1 分钟内第 3 次熔断
         guardrails=Guardrails(max_tool_calls=8, repeat_window_s=60, repeat_threshold=3),
-        tool_executor=_SessionToolExecutor(session_factory),
+        tool_executor=_SessionToolExecutor(
+            session_factory,
+            # N26 收口：weather MCP 客户端进执行器（懒连接，server 未起时按
+            # mcp_client 四分类降级「查不到」，不阻塞启动）
+            mcp_client=MCPClient(settings),
+        ),
         on_event=_agent_event_sink,
     )
     # Day 6 S4：ResponseService 提升为 lifespan 局部变量——TurnService 持有做第 7 步

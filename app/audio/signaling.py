@@ -454,8 +454,36 @@ async def dispatch_asr_event(
         return delivered
 
     text = event.result.text if event.result else ""
+    # Day 6 S4 试跑修复：ws_superseded 会取消旧连接的任务链——正在跑的一轮对话
+    # 不能陪葬（否则七步状态/事件半写、分段下发与 TTS 喂轨全断，CancelledError
+    # 还会沿链炸穿 ASGI）。shield 让对话任务脱离旧连接的取消传播：旧连接死后，
+    # 新连接经 deliver 按 device_id 自动接管分段文字与音频（response_service 的
+    # 打断五步 / WS 45s 判死仍是收敛兜底，不会产生孤儿播放）。
+    task = asyncio.create_task(handler(device_id, turn_id, trace_id, text, audio_bytes))
     try:
-        await handler(device_id, turn_id, trace_id, text, audio_bytes)
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # 外层（旧连接任务链）被取消：对话任务继续后台执行，取消语义照常向上传播
+        logger.warning(
+            "dialogue_final_dispatch_cancelled",
+            extra={"trace_id": trace_id, "device_id": device_id, "turn_id": turn_id},
+        )
+
+        def _reap(t: asyncio.Task[None]) -> None:
+            exc = t.exception() if not t.cancelled() else None
+            if exc is not None:
+                logger.error(
+                    "dialogue_final_handler_failed",
+                    extra={
+                        "trace_id": trace_id,
+                        "device_id": device_id,
+                        "turn_id": turn_id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+
+        task.add_done_callback(_reap)
+        raise
     except Exception as exc:
         # 只记录异常类型，不把 handler 内部消息/堆栈写进日志，避免敏感内容外泄
         logger.error(
