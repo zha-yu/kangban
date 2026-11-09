@@ -20,6 +20,7 @@
 | --- | --- |
 | `docs/plans/day06/adhoc-20261109-Day06讲义原文存档.md` | ✅ 已完成 |
 | `docs/plans/day06/d-DAG.md` | 🚧 进行中（N00 与 S1 数据底座已执行） |
+| `docs/plans/day06/d-推进计划-pad送达与改绑.md` | 📝 草稿 |
 | `docs/plans/day06/day-06-长者侧Agent闭环.md` | 🚧 进行中（N00 与 S1 数据底座已执行，其余节点待开工） |
 | `docs/plans/day06/dev-a-DAG.md` | 🚧 进行中（历史线、工具核心、用药子图已交付；剩 A12/A16/A17） |
 | `docs/plans/day06/dev-a-prompt-历史与工具.md` | 📝 草稿 |
