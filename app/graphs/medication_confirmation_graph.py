@@ -28,9 +28,16 @@ START → remind → wait_confirm ─┬─ 说了"吃了"   → mark_taken  ┐
 
 **E2 已接（2026-11-09 21:10）**：`remind` 经信令层 `deliver()` 把提醒以 `tts_text`
 下发到长者绑定设备——不带 `response_id`/`epoch`/`segment`（它不属于任何回复流，
-客户端按整段一播，契约 §4.1 的可选字段口径）。触达回执 = **投递**结果：
-`voice_dispatched`（任一台设备收下）/ `device_offline`（都离线）/ `no_bound_device`
-（没绑设备）；「是否真被听到」由前端 played ack 才能闭环，主动触达暂无此闭环，见交接件。
+客户端按整段一播，契约 §4.1 的可选字段口径）。
+
+⚠️ **触达目前只有字幕、没有声音**：`tts_text` 是**文本通道**（前端渲染大字幕），
+真正的声音来自 WebRTC 远端音轨或 HTTP 的 `/api/audio/utterance`，而 WS 侧的 TTS
+队列目前是 `NullTtsQueue` 桩（dev-C 的 N07 同款，全队一致，非本线缺口）。
+`voice_dispatched` 的准确含义是「**提醒文本已投递给设备**」，不是「已出声」。
+
+触达回执 = **投递**结果：`voice_dispatched`（任一台设备收下）/ `device_offline`
+（都离线）/ `no_bound_device`（没绑设备）；「是否真被听到」需要 played ack 闭环，
+主动触达暂无此闭环（见交接件与执行计划的技术债登记）。
 
 **A12 已接（2026-11-09）**：`finalize` 在写完结态后，对 `missed_unconfirmed` 建漏服工单
 （`work_order_service.open_missed_medication`）。**先写终态、再建单**——终态是事实，
@@ -151,7 +158,8 @@ async def _deliver_reminder(
 
     回执三态（如实记录，不做美化和重试——重试是 scheduler 的职责）：
 
-    - `voice_dispatched`：至少一台绑定设备把消息收进了发送队列；
+    - `voice_dispatched`：至少一台绑定设备把消息收进了发送队列（**文本已投递**，
+      不代表已出声——WS 侧 TTS 仍是 `NullTtsQueue` 桩）；
     - `device_offline`：有绑定设备但全部离线/未鉴权；
     - `no_bound_device`：根本没绑设备——运维缺口，同样不算本轮失败。
     """
@@ -161,6 +169,7 @@ async def _deliver_reminder(
         if drug_name
         else "到吃药时间了，请确认您的药是否已经服用。"
     )
+    # 文本通道：前端渲染字幕并切状态；声音待 WS 语音链路就绪后另行接线。
     message = {"type": "tts_text", "text": text, "degraded": False}
 
     device_ids = await medication_service.list_bound_device_ids(session, elder_id=elder_id)
@@ -207,17 +216,31 @@ def build_medication_graph(
         event_id = _uuid(state["reminder_id"])
         attempt_no = int(state.get("attempt_no") or 1)
 
-        # E2 触达：先下发、再记回执、再进等待。顺序不可换——record_attempt 对
-        # (event_id, attempt_no) 幂等，重放安全；下发失败也要记（触达尝试是事实）。
-        receipt = await _deliver_reminder(
-            session,
-            _deliver,
-            elder_id=_uuid(state["elder_id"]),
-            reminder_id=event_id,
+        # E2 触达：**先问这次触达是否已经发生过**。
+        # 图恢复会重放本节点；`record_attempt` 的幂等只挡记录、挡不住投递——
+        # 不先查就会给长者再播一遍同一次提醒。已有记录 → 跳过投递，只推进状态。
+        # （同一 reminder 不会并发执行：图按 thread 串行，故「先查后发」无竞态。）
+        already = await medication_service.get_attempt(
+            session, event_id=event_id, attempt_no=attempt_no
         )
-        await medication_service.record_attempt(
-            session, event_id=event_id, attempt_no=attempt_no, receipt=receipt
-        )
+        if already is not None:
+            logger.info(
+                "medication_reminder_skipped_replay reminder_id=%s attempt_no=%s receipt=%s",
+                state["reminder_id"],
+                attempt_no,
+                already.get("receipt"),
+            )
+        else:
+            receipt = await _deliver_reminder(
+                session,
+                _deliver,
+                elder_id=_uuid(state["elder_id"]),
+                reminder_id=event_id,
+            )
+            # 下发失败也要记：触达尝试是事实（设备离线四次后照样升级工单）
+            await medication_service.record_attempt(
+                session, event_id=event_id, attempt_no=attempt_no, receipt=receipt
+            )
         await medication_service.set_waiting_confirm(
             session, event_id=event_id, graph_thread_id=state.get("graph_thread_id")
         )

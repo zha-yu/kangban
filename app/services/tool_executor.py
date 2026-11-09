@@ -40,7 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.guardrails import Guardrails
 from app.agents.tool_registry import ToolRegistry, ToolSpec, default_registry
 from app.core.runtime_context import Identity
-from app.models.conversation import TOOL_ERROR_CLASSES, ToolExecution
+from app.models.conversation import TOOL_ERROR_CLASSES, ConversationTurn, ToolExecution
 from app.services.audit_log_service import record_audit
 
 logger = logging.getLogger(__name__)
@@ -297,6 +297,26 @@ class ToolExecutor:
         # 6) 落 running 行（副作用工具才记账，只读工具不灌表）
         row: ToolExecution | None = None
         if spec.side_effect:
+            if turn_id is not None:
+                # **插入前**校验轮次存在：外键违反发生在 flush 里，SAVEPOINT 救不了
+                # ——flush 失败会把 session 打成 rollback 状态，调用方拿到的会是
+                # PendingRollbackError（原始异常被包住，排查时反而看不清）。
+                # 轮次不存在是**调用方的参数错**，按 bad_args 明确返回，
+                # 不让它走到 DB 约束那一层。
+                turn_exists = (
+                    await self._session.execute(
+                        select(ConversationTurn.turn_id).where(ConversationTurn.turn_id == turn_id)
+                    )
+                ).scalar_one_or_none()
+                if turn_exists is None:
+                    logger.warning(
+                        "tool_execution_unknown_turn tool=%s turn_id=%s", tool_name, turn_id
+                    )
+                    return ToolResult(
+                        status="failed",
+                        error_class="bad_args",
+                        message=MESSAGES["bad_args"],
+                    )
             row = ToolExecution(
                 tool_name=tool_name,
                 idempotency_key=idempotency_key,
@@ -311,7 +331,20 @@ class ToolExecutor:
                 async with self._session.begin_nested():
                     await self._session.flush()
             except IntegrityError:
-                # 并发同键：另一个请求刚插进去，让调用方按 transient 处理即可
+                # 并发同键：另一个请求刚插进去，让调用方按 transient 处理即可。
+                # 但 IntegrityError 不只有唯一键冲突——CHECK 违反（tool_name 不在白名单等）
+                # 与外键违反（turn_id 指向不存在的轮次）也在其中。必须回查确认
+                # 「真有同键记录」才算并发；查不到说明是**数据违规**，原样抛出，
+                # 否则「turn_id 无效」会被伪装成「并发冲突」，排查时完全找错方向。
+                existing = (
+                    await self._session.execute(
+                        select(ToolExecution.execution_id).where(
+                            ToolExecution.idempotency_key == idempotency_key
+                        )
+                    )
+                ).scalar_one_or_none()
+                if existing is None:
+                    raise
                 return ToolResult(
                     status="failed",
                     error_class="transient",

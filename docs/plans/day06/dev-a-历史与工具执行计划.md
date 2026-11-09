@@ -1,4 +1,4 @@
-> 状态：已完成（A 线 21.0/21.0 + E2 触达接线收尾；遗留 WD-1/WD-2 已登记）　｜　版本：v1.12　｜　日期：2026-11-09
+> 状态：已完成（A 线 21.0/21.0 + E2 接线 + 收口复查修复；遗留 WD-1/WD-2/TD-1/TD-2 已登记）　｜　版本：v1.13　｜　日期：2026-11-09
 > 关联：docs/team_tasks/day06/dev-a-历史事件与工具事实.md（任务卡）｜docs/plans/day06/day-06-长者侧Agent闭环.md（Day 6 主计划）｜docs/team_tasks/day06/contracts.md（冻结契约）
 > 上游依据：PRD v2.9 §6.1 Day 6 行、§4.5 用药、FR-DLG-10、AC-08/17/30/35（验收）｜技术设计文档 v2.0 §3.4/§3.6/§6/§7/§8.3（实现）｜ER v0.5 §4.3.11–4.3.13、§5（字段与约束）
 > 变更记录见文末
@@ -500,6 +500,29 @@ WD-2（`work_orders` 缺通用幂等列）。
 
 **验证**：`pytest tests/test_medication_graph.py` → **8 passed**（5 原有 + 3 E2）；全量 **971 passed / 4 skipped / 1 deselected**；`0012 upgrade→downgrade→upgrade` 可逆；mypy 本文件清零；ruff 全绿。
 
+### 8.6 收口复查（同日 21:40，主理人要求「再检查一遍」）
+
+复查不是走形式，确实翻出**三处真问题**：
+
+| # | 发现 | 严重度 | 处置 |
+| --- | --- | --- | --- |
+| 1 | **图重放会导致重复投递**：E2 接线的 `remind` 是「先投递、后记 `record_attempt`」，而 `record_attempt` 的幂等只挡**记录**、挡不住**投递**——图恢复重放该节点时，长者会听到同一句提醒两遍。这违反我自己写进 DAG 的语义（「重放不该让长者收到第 2 次提醒」） | **高**（用户可感知的重复骚扰） | 改为**先查后发**：新增 `medication_service.get_attempt()`，`remind` 先问「这次触达发生过吗」，发生过就跳过投递只推进状态；新增用例 + 变异验证（去掉保护 → 用例变红） |
+| 2 | **`ToolExecutor` 把外键违反伪装成「并发冲突」**：`except IntegrityError` 一把兜住所有完整性错误并返回 transient，于是「`turn_id` 指向不存在的轮次」被说成「并发同键」，调用方按瞬时故障重试。且真撞到 FK 时 flush 失败会把 session 打成 rollback 状态，调用方拿到的是 `PendingRollbackError`（原始异常被包住，排查时反而看不清） | 中（排查方向被带偏） | 改为**插入前**校验轮次存在 → 按 `bad_args` 明确返回（四类失败契约里的正确分类），不碰 DB 约束那一层；except 分支保留「回查确认真有同键记录才算并发」 |
+| 3 | **我修过的「吞 CHECK 违反」缺陷没有回归用例锁住** | 中（同类缺陷会复发） | 补两条用例：① 非法回执必须抛 IntegrityError 且不留记录；② 同键重复写仍是幂等无操作 |
+
+**另外发现一处措辞不实**：我原先把 E2 触达写成「下发语音提醒」。实际上 `tts_text` 是**文本通道**（前端渲染大字幕），声音来自 WebRTC 远端音轨或 HTTP 的 `/api/audio/utterance`，而 WS 侧的 TTS 队列目前是 `NullTtsQueue` 桩（dev-C 的 N07 同款，**全队一致**，非本线缺口）。`voice_dispatched` 的准确含义是「**提醒文本已投递给设备**」，不是「已出声」。措辞已在代码与契约里改正。
+
+**一条必须记录的测试教训**：新写的「重放保护」用例最初是**恒过的假用例**——因为测试没绑设备，`reminder` 走 `no_bound_device` 分支，投递函数压根没被调用，断言 `calls == []` 无论实现对错都成立。是变异测试（把保护改成 `already = None`）暴露了它；补上设备绑定后，变异下变红、还原后变绿，这次用例才真的有效。**结论：断言「某动作没发生」的用例，必须先证明该动作在正确实现下会发生。**
+
+**技术债登记**
+
+| 债 | 内容 | 归属 | 何时还 |
+| --- | --- | --- | --- |
+| **TD-1** | WS 语音链路未接线（`NullTtsQueue` 桩）：用药触达与 WS 回复**只有字幕没有声音** | dev-C（N07 装配层） | WS 侧 TTS 接线时；Day 7 联调前需确认 |
+| **TD-2** | 主动触达的 played 闭环缺失：不带 `response_id` 的 `tts_text` 前端不上报 ack，故「是否真被听到」无法回传 | dev-C + dev-D | 给主动触达分配独立 response 标识并接进状态机时 |
+
+**验证**：975 passed / 4 skipped / 1 deselected（新增 4 条）；mypy dev-A 仍 0 条（全仓 30 条全在 B/C/D 文件）；ruff 全绿；两条新用例均经变异验证有效。
+
 ## 9. 变更记录
 
 | 版本 | 日期 | 说明 |
@@ -509,6 +532,7 @@ WD-2（`work_orders` 缺通用幂等列）。
 | v1.9 | 2026-11-09 | 按「彻底解」落地最小可合并版：`_build_turn_context` / `CompanionAgent.run` 增可选 `identity`（传了就用，不传回退推断 + `companion_identity_inferred` 告警），同时修掉 generic 崩溃；新增 4 条用例；标注与 C 同文件改动的冲突处置口径 |
 | v1.8 | 2026-11-09 | 复核补充「彻底解」：`IdentityDecision.source` 已备四值、`identity_decision_to_result()` 已产出 `DialogueIdentity`，N14 直接把身份结论传进 `_build_turn_context(identity=...)` 即可，**不在 companion 里推断**；新增 `runtime`（凭证主体）与 `DialogueIdentity`（身份结论）的对照表——两者混用正是该 bug 的根源 |
 | v1.7 | 2026-11-09 | 复核 C 报的 `companion.py` generic 分支缺陷：确认 `DialogueIdentity(source="generic")` 必崩（缺 `elder_id` 参数），并指出两处更值得修的——根因是 `elder_id` 无默认值（应由 B 改 context.py），以及 `if runtime.elder_id` 会把**员工/家属**身份静默判成 generic（员工端无人设无历史）；A 侧 `read_turns(None)` 已正确返回空，历史层无需改动 |
+| v1.13 | 2026-11-09 | **收口复查**：修三处真问题——图重放重复投递（改先查后发 + 变异验证）、`ToolExecutor` 把外键违反伪装成并发冲突（改插入前校验 → bad_args）、补两条「吞 CHECK 违反」回归用例；改正「下发语音提醒」的不实措辞（实为字幕通道，WS 语音仍是 `NullTtsQueue` 桩）；登记 TD-1/TD-2；记录「恒过假用例」的教训 |
 | v1.12 | 2026-11-09 | **E2 触达接线 + 0012**：修 mypy 544（显式收窄）；`remind` 接真实 `deliver()` 与回执三态；修 `record_attempt` 吞 CHECK 违反的缺陷；0012 白名单 3→6 值（可逆实测）；+3 条 E2 用例；全量 971 passed。详见 §8.5 |
 | v1.11 | 2026-11-09 | **A17 门禁收口，A 线收官**：G-A4 通过（931 passed / cov 81.51% / 两个 check 0）；纠正跑法口径——门禁应为 `-m "not slow"`，此前 `pytest -q` 的 `1 failed` 是外网 edge-tts 用例而非代码问题；README 回填 4 处（新增 §7.4、覆盖率达实际值、容器命令补 `-m`、修正过期进度块）。累计 21.0/21.0 |
 | v1.10 | 2026-11-09 | A12 落地（走 B）：新增 `work_order_service` 与子图 `finalize` 接线；幂等从「四元键 + 两条新索引」改为**确定性单号**（表无 `source_*` 列、0011 已归 C）；补 SAVEPOINT 约束说明；新增 15 条用例 + 子图 6 条断言；登记 WD-1/WD-2；累计 19.5h，剩 A17 |

@@ -24,9 +24,9 @@
 | `docs/plans/day06/d-DAG.md` | 🚧 进行中（N00 与 S1 数据底座已执行） |
 | `docs/plans/day06/d-推进计划-pad送达与改绑.md` | 📝 草稿 |
 | `docs/plans/day06/day-06-长者侧Agent闭环.md` | 🚧 进行中（N00 与 S1 数据底座已执行，其余节点待开工） |
-| `docs/plans/day06/dev-a-DAG.md` | ✅ 已完成（G-A4 通过 + E2 触达接线收尾，含 0012 迁移） |
+| `docs/plans/day06/dev-a-DAG.md` | ✅ 已完成（G-A4 通过 + E2 接线 + 收口复查修复） |
 | `docs/plans/day06/dev-a-prompt-历史与工具.md` | 📝 草稿 |
-| `docs/plans/day06/dev-a-历史与工具执行计划.md` | ✅ 已完成（A 线 21.0/21.0 + E2 触达接线收尾；遗留 WD-1/WD-2 已登记） |
+| `docs/plans/day06/dev-a-历史与工具执行计划.md` | ✅ 已完成（A 线 21.0/21.0 + E2 接线 + 收口复查修复；遗留 WD-1/WD-2/TD-1/TD-2 已登记） |
 | `docs/plans/day06/dev-b-状态中心与上下文记忆.md` | 📝 草稿 |
 | `docs/plans/day06/dev-c-Agent与统一出口.md` | 📝 草稿 |
 | `docs/plans/day06/handoff-A-to-C-segment-ack.md` | ✅ 已完成（与 N07 实现已对齐，1 个开放点留 S4） |

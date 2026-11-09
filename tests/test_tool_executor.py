@@ -27,6 +27,7 @@ from app.agents.tool_registry import ToolRegistry, ToolSpec
 from app.core.runtime_context import Identity
 from app.mcp_client.client import MCPResult
 from app.models import AuditLog
+from app.models.conversation import ToolExecution
 from app.services.tool_executor import (
     MESSAGES,
     ToolArgumentError,
@@ -384,7 +385,6 @@ async def test_guardrail_budget_denies(session: AsyncSession, identity: Identity
 
 
 async def test_side_effect_writes_execution_row(session: AsyncSession, identity: Identity) -> None:
-    from app.models.conversation import ToolExecution
 
     async def _executor(args: dict[str, Any], runtime: Identity) -> dict[str, Any]:
         return {"done": True}
@@ -555,3 +555,46 @@ def test_mcp_tool_cannot_bind_local_executor() -> None:
 
     with pytest.raises(ValueError):
         registry.bind("get_weather", _nope)
+
+
+# ------------------------------------------------------------------ 9. 数据违规不得伪装成并发
+
+
+async def test_unknown_turn_id_is_bad_args_not_fake_transient(
+    session: AsyncSession, identity: Identity
+) -> None:
+    """`turn_id` 指向不存在的轮次 → **bad_args**，不得伪装成「并发冲突」。
+
+    修复前有两个问题叠在一起：① `except IntegrityError` 一把兜住所有完整性错误并
+    返回 transient，「轮次不存在」被说成「并发同键」，调用方按瞬时故障重试；
+    ② 真让它撞到外键，flush 失败会把 session 打成 rollback 状态，调用方拿到的是
+    PendingRollbackError（原始异常被包住，排查时反而看不清）。
+
+    现在改为**插入前**校验轮次存在 → 按 bad_args 明确返回，不碰 DB 约束那一层。
+    """
+    registry = ToolRegistry((_spec(side_effect=True),))
+
+    async def _impl(args: dict[str, Any], runtime: Any) -> dict[str, Any]:
+        return {"ok": True}
+
+    registry.bind("probe", _impl)
+    executor = ToolExecutor(session, registry=registry)
+
+    result = await executor.execute(
+        tool_name="probe",
+        args={"city": "杭州"},
+        runtime=identity,
+        turn_id="no-such-turn",
+        idempotency_key="fk-violation-1",
+    )
+
+    assert result.status == "failed"
+    assert result.error_class == "bad_args", "轮次不存在是参数错，不是并发、也不是瞬时故障"
+    assert result.message == MESSAGES["bad_args"]
+
+    rows = (
+        (await session.execute(select(ToolExecution).where(ToolExecution.tool_name == "probe")))
+        .scalars()
+        .all()
+    )
+    assert list(rows) == [], "校验失败不应留下记账行"
