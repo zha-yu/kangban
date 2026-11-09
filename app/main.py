@@ -12,9 +12,9 @@ import asyncio
 import logging
 import os
 from collections import OrderedDict
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, suppress
-from typing import Literal
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
+from typing import Any, Literal
 from uuid import UUID
 
 import redis.asyncio as redis_asyncio
@@ -23,8 +23,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import __version__
+from app.agents.companion import CompanionAgent
+from app.agents.guardrails import Guardrails
+from app.agents.session_coordinator import SessionCoordinator
 from app.api import ROUTERS
 from app.api.elders import _is_request_format_error
 from app.api.schemas.auth import ErrorResponse
@@ -45,9 +49,11 @@ from app.core.config import Settings, get_settings
 from app.core.context import TRACE_HEADER, get_trace_id
 from app.core.logging import configure_logging
 from app.core.metrics import get_metrics_recorder
+from app.core.runtime_context import Identity
 from app.core.security import TokenExpiredError
 from app.core.trace import TraceIdMiddleware
 from app.db import session_factory
+from app.router.safety import SafetyDecision
 from app.services import identity_service, voiceprint_service
 from app.services.auth_service import (
     AuthConflictError,
@@ -64,6 +70,56 @@ from app.services.dialogue_service import (
     identity_decision_to_result,
 )
 from app.services.llm_service import LLMService
+from app.services.response_service import ResponseService
+from app.services.safety_service import escalate_safety_event
+from app.services.state_service import StateCenter
+from app.services.tool_executor import ToolExecutor, ToolResult
+from app.services.turn_service import (
+    ContextBuilder,
+    CoordinatorStateCenterAdapter,
+    HistoryEventSink,
+    TurnService,
+)
+
+
+class _SessionToolExecutor:
+    """CompanionAgent 的 ToolExecutor 协议 → 每次调用独立短会话（装配层适配）。
+
+    - `ToolExecutor` 是「一个会话一个实例」（N22 契约），而 Agent 持单例；
+      故在此按调用开短会话并在成功路径补 commit（ToolExecutor 只 flush 不
+      commit，事务边界与 `_escalate_safety` 同口径在装配层闭合）；
+    - Guardrails 不传：预算/熔断判定权在 Agent 侧 Guardrails（每轮 reset），
+      执行器侧再判一次会把同一份预算双计；
+    - ToolExecutor 不抛业务异常，仅编程错误上抛 → 原样透传，会话内已 flush
+      的行随 rollback 丢弃。
+    """
+
+    def __init__(self, factory: Callable[[], AbstractAsyncContextManager[AsyncSession]]) -> None:
+        self._factory = factory
+
+    async def execute(
+        self,
+        *,
+        tool_name: str,
+        args: Mapping[str, object],
+        runtime: Identity,
+        turn_id: str,
+        idempotency_key: str,
+    ) -> ToolResult:
+        async with self._factory() as session:
+            try:
+                result = await ToolExecutor(session).execute(
+                    tool_name=tool_name,
+                    args=args,
+                    runtime=runtime,
+                    turn_id=turn_id,
+                    idempotency_key=idempotency_key,
+                )
+                await session.commit()
+                return result
+            except Exception:
+                await session.rollback()
+                raise
 
 
 @asynccontextmanager
@@ -167,9 +223,65 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         while len(thread_cache) > thread_cache_max:
             thread_cache.popitem(last=False)
 
+    # Day 6 N14：L0 安全一票否决（N27）的三表落库面——红档命中时 orchestrator
+    # 调本回调，事务内写 risk_events / work_orders / notifications 后 commit。
+    # 事务边界在本回调内闭合：escalation 失败上抛由 orchestrator 记日志不反抛。
+    async def _escalate_safety(
+        *,
+        elder_id: str,
+        decision: SafetyDecision,
+        thread_id: str,
+    ) -> bool:
+        async with session_factory() as session:
+            await escalate_safety_event(
+                session,
+                elder_id=UUID(elder_id),
+                decision=decision,
+                thread_id=thread_id,
+            )
+            await session.commit()
+        return True
+
+    # ---------- Day 6 S3 对齐：N14 统一出口真身装配（N05 真状态中心 + N06 真构建器） ----------
+    # N05：真 StateCenter（Redis 存储 + Lua CAS；构造不持锁，Redis 不可用时读写自动
+    # 降级进程内存——闲聊可用性优先）→ SessionCoordinator 按 thread 串行化提交 →
+    # CoordinatorStateCenterAdapter 贴到七步契约（显式 CAS，不走 submit，见适配器 docstring）。
+    state_center = StateCenter(redis_client, key_prefix=settings.redis_key_prefix)
+    coordinator = SessionCoordinator(state_center)
+
+    async def _agent_event_sink(event_type: str, payload: Mapping[str, object]) -> None:
+        # CompanionAgent 工具事件 → 统一出口缓冲回灌（turn_service 在下方构造，
+        # 闭包按调用时解析；Agent 只在轮次内调用，不存在未定义窗口）
+        await turn_service.agent_event_sink(event_type, payload)
+
+    agent = CompanionAgent(
+        llm=llm_service,
+        # AGENTS §7 硬性数值：单轮 ≤8 次工具调用；同一 Tool 1 分钟内第 3 次熔断
+        guardrails=Guardrails(max_tool_calls=8, repeat_window_s=60, repeat_threshold=3),
+        tool_executor=_SessionToolExecutor(session_factory),
+        on_event=_agent_event_sink,
+    )
+    # Day 6 S4：ResponseService 提升为 lifespan 局部变量——TurnService 持有做第 7 步
+    # 分段下发，装配层另持引用注册 segment_ack 回调（同一实例，ack 才能命中会话 epoch）
+    response_service = ResponseService(
+        deliver=signaling.deliver,
+        events=HistoryEventSink(session_factory),
+    )
+    turn_service = TurnService(
+        session_factory=session_factory,
+        agent=agent,
+        response_stream=response_service,
+        state_center=CoordinatorStateCenterAdapter(
+            coordinator=coordinator, state_center=state_center
+        ),
+        context_builder=ContextBuilder(),
+    )
+
     orchestrator = DialogueOrchestrator(
         service=dialogue_service,
         identity_thread_resolver=_resolve_identity,
+        turn_service=turn_service,
+        safety_escalator=_escalate_safety,
     )
 
     async def _on_dialogue_final(
@@ -263,6 +375,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 from app.audio.signaling import _ERROR_TALKBACK
 
                 await asyncio.sleep(_settings.degrade_tts_slow_ms / 1000)
+                # N14 分支：文字已随 tts_text v2 分段先行到达（第 7 步），
+                # 「文字尚未下发」前提不成立 → slow notice 语义不适用
+                if reply.response_id is not None:
+                    return
                 # 此时文字尚未下发 → 用户还在等待回复 → slow notice 语义成立
                 if not _tts_state["slow_degraded"]:
                     _tts_state["slow_degraded"] = True
@@ -311,28 +427,42 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                         await _tts_watchdog
 
             # ★ 合成（无论成败）完成后再下发文字（顺序反转的核心）
-            delivered = signaling.deliver(
-                device_id,
-                {"type": "tts_text", "text": reply.text, "degraded": reply.degraded},
-            )
-            logger.info(
-                "dialogue_reply_delivered",
-                extra={
-                    "trace_id": trace_id,
-                    "device_id": device_id,
-                    "turn_id": turn_id,
-                    "degraded": reply.degraded,
-                    "delivered": delivered,
-                    "text_len": len(reply.text),
-                },
-            )
-            if not delivered:
-                # WS 已断：正文都没送到，不再 enqueue 音频
-                logger.warning(
-                    "dialogue_text_not_delivered",
-                    extra={"trace_id": trace_id, "device_id": device_id, "turn_id": turn_id},
+            # N14 统一出口分支（response_id 非 None）：第 7 步 ResponseService.start
+            # 已按 tts_text v2 分段下发，此处不再整段重发（防双发/重复播放）；
+            # TTS 音频仍走 Day 5 整段合成入队，文字分段与音频互不影响。
+            if reply.response_id is not None:
+                logger.info(
+                    "dialogue_reply_already_streamed",
+                    extra={
+                        "trace_id": trace_id,
+                        "device_id": device_id,
+                        "turn_id": turn_id,
+                        "response_id": reply.response_id,
+                    },
                 )
-                return
+            else:
+                delivered = signaling.deliver(
+                    device_id,
+                    {"type": "tts_text", "text": reply.text, "degraded": reply.degraded},
+                )
+                logger.info(
+                    "dialogue_reply_delivered",
+                    extra={
+                        "trace_id": trace_id,
+                        "device_id": device_id,
+                        "turn_id": turn_id,
+                        "degraded": reply.degraded,
+                        "delivered": delivered,
+                        "text_len": len(reply.text),
+                    },
+                )
+                if not delivered:
+                    # WS 已断：正文都没送到，不再 enqueue 音频
+                    logger.warning(
+                        "dialogue_text_not_delivered",
+                        extra={"trace_id": trace_id, "device_id": device_id, "turn_id": turn_id},
+                    )
+                    return
 
             # 只有合成成功时才 enqueue 音频
             if synthesize_ok and pcm is not None:
@@ -348,14 +478,32 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     },
                 )
 
+    async def _on_segment_ack(
+        conn: signaling.ConnectionContext, message: Mapping[str, Any]
+    ) -> None:
+        """C→S segment_ack：解包 device_id 后转交 ResponseService 四步校验（N07 契约）。
+
+        形状校验已在 signaling 层完成；此处只做连接身份解包，四步契约校验
+        （含 rejected_reason 四枚举与单调水位）全部在 response_service。
+        """
+        if conn.device_id is None:
+            logger.warning(
+                "segment_ack_without_device",
+                extra={"trace_id": conn.trace_id, "response_id": str(message.get("response_id"))},
+            )
+            return
+        await response_service.handle_segment_ack(device_id=conn.device_id, message=message)
+
     signaling.set_dialogue_final_handler(_on_dialogue_final)
     signaling.set_identity_confirm_handler(_on_identity_confirm)
     signaling.set_identity_timeout_handler(_on_identity_timeout)
+    signaling.set_segment_ack_handler(_on_segment_ack)
     app.state.redis = redis_client
     app.state.llm_service = llm_service
     app.state.tts_provider = tts_provider
     app.state.dialogue_service = dialogue_service
     app.state.dialogue_orchestrator = orchestrator
+    app.state.turn_service = turn_service  # Day 6 S3 对齐：N14 统一出口真身（检视/联调用）
 
     logger.info("application starting", extra={"app_env": settings.app_env})
     try:
@@ -364,6 +512,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         signaling.set_dialogue_final_handler(None)
         signaling.set_identity_confirm_handler(None)
         signaling.set_identity_timeout_handler(None)
+        signaling.set_segment_ack_handler(None)
         # Day 5：metrics 批量缓冲冲刷（裁决 B6/D2）——先停 worker 再 drain，避免丢批
         await get_metrics_recorder().stop()
         await llm_service.aclose()

@@ -144,6 +144,9 @@ class TurnContext:
     turn_id: str
     device_id: str
     elder_id: str | None = None  # generic 模式为 None
+    # N06 记忆召回产物：本长者 status='active' 且在有效期的偏好事实（自然语言）。
+    # 召回失败 / generic 一律空元组——本轮不加载记忆，绝不臆造（PRD 口径）。
+    memory_notes: tuple[str, ...] = ()
 
 
 class EventSink(Protocol):
@@ -263,11 +266,20 @@ class ResponseService:
 
     # -------------------------------------------------- start：分段逐段下发
 
-    async def start(self, turn: TurnContext, result: GenerationResultLike) -> ResponseHandle:
+    async def start(
+        self,
+        turn: TurnContext,
+        result: GenerationResultLike,
+        *,
+        response_id: str | None = None,
+    ) -> ResponseHandle:
         """服务端分段并把每段以 tts_text v2 下发（N14 七步的最后一步）。
 
         会话 epoch +1 开新代：同一 thread 上未打断的旧 response 的迟到 ack 将因
         ② stale_epoch 被淘汰（interrupt 的 +1 同理，见 contracts.md §4.2）。
+
+        `response_id` 可选注入：N14 统一出口在第 5 步先记生成时已铸造同一枚
+        response_id，第 7 步下发沿用，保证事实与下发可对账；缺省时自行铸造。
         """
         if not turn.thread_id or not THREAD_ID_PATTERN.match(turn.thread_id):
             raise ValueError("thread_id must be a server-generated safe token")
@@ -278,7 +290,7 @@ class ResponseService:
             raise ValueError("generation text must be non-empty before response stream")
 
         stopwatch = Stopwatch()
-        response_id = uuid.uuid4().hex
+        response_id = response_id if response_id is not None else uuid.uuid4().hex
         self._epochs[turn.thread_id] = self.session_epoch(turn.thread_id) + 1
         epoch = self._epochs[turn.thread_id]
         segments = split_segments(text)
