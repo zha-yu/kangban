@@ -8,7 +8,10 @@
 ④ 工具失败四类各有可读话术（transient/forbidden 终态收尾，bad_args/not_found 回灌模型）；
 ⑤ 安全红档否决：escalated_to_agent=False、Agent.run 未被调用、N27 升级面被调用（generic 跳过）；
 ⑥ 超预算收尾话术 + 桩期协议（StateCenter 冲突 / state_degraded / ContextBuilder 缝 /
-   HistoryEventSink 落库）。
+   HistoryEventSink 落库）；
+⑦ S3 对齐（Day 6）：N05 真身适配器（内存模式往返 / 显式 CAS 冲突冒泡 / 12 值契约外
+   事件跳过）、N06 真构建器（召回注入 / 失败不臆造 / generic 不召回）、装配冒烟
+   （真 StateCenter + 适配器 + 真构建器跑一轮七步全绿）。
 
 DB 隔离沿用 test_history_store 写法：db_engine + savepoint，用例结束整体回滚；
 无库时 skip（不许静默通过）。工具失败类用内存桩（不依赖 DB），幂等/顺序类用真库。
@@ -22,6 +25,7 @@ import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -36,6 +40,7 @@ from app.agents.companion import (
     ToolResult,
 )
 from app.agents.guardrails import Guardrails
+from app.agents.session_coordinator import SessionCoordinator
 from app.core.context import DialogueIdentity, DialogueTurn
 from app.core.runtime_context import Identity
 from app.models.conversation import (
@@ -44,6 +49,7 @@ from app.models.conversation import (
     ConversationThread,
     ConversationTurn,
 )
+from app.models.memory import MemoryChunk
 from app.models.organization import Device, Elder, Room
 from app.router.safety import SafetyDecision
 from app.services.dialogue_service import (
@@ -52,9 +58,18 @@ from app.services.dialogue_service import (
     IdentityThreadResult,
 )
 from app.services.llm_service import LLMReply
+from app.services.memory_service import recall_active_chunks
 from app.services.response_service import ResponseService
+from app.services.state_service import (
+    StateCenter as RealStateCenter,
+)
+from app.services.state_service import (
+    StateVersionConflict as RealStateVersionConflict,
+)
 from app.services.tool_executor import MESSAGES
 from app.services.turn_service import (
+    ContextBuilder,
+    CoordinatorStateCenterAdapter,
     HistoryEventSink,
     MemoryStateCenter,
     MinimalContextBuilder,
@@ -1081,3 +1096,238 @@ async def test_empty_asr_final_rejected_at_unified_exit(
     with pytest.raises(ValueError, match="non-empty"):
         await service.handle_user_turn(runtime, "   ", call_id=None, turn_id="turn-e1")
     assert agent.run_calls == []
+
+
+# ---------------------------------------------------------------------------
+# ⑦ S3 对齐（Day 6）：N05 真身适配器 / N06 真构建器 / 装配冒烟
+# ---------------------------------------------------------------------------
+
+
+def _real_state_stack() -> CoordinatorStateCenterAdapter:
+    """真 StateCenter（内存模式：不传 Redis）+ SessionCoordinator + 适配器。"""
+    center = RealStateCenter(None)
+    return CoordinatorStateCenterAdapter(
+        coordinator=SessionCoordinator(center), state_center=center
+    )
+
+
+async def test_adapter_snapshot_apply_roundtrip_memory_mode() -> None:
+    """适配器对真 StateCenter（内存模式）的 snapshot/apply 往返：显式 CAS、版本自增。"""
+    adapter = _real_state_stack()
+
+    snap = await adapter.snapshot("t-adapter-a")
+    assert snap.thread_id == "t-adapter-a"
+    assert snap.version == 0
+
+    new_version = await adapter.apply("t-adapter-a", 0, ("turn_started", "asr_final_committed"))
+    assert new_version == 2
+
+    after = await adapter.snapshot("t-adapter-a")
+    assert after.version == 2
+    # 字符串事件已映射为 StateEvent 并被真状态中心的 _apply_event 映射表应用：
+    # turn_started（payload 空 → active_turn_id=None）置 input.status=active
+    assert after.input["status"] == "active"
+    assert after.output["status"] == "idle"
+
+
+async def test_adapter_apply_bubbles_real_version_conflict(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """版本不符 → 真身 state_service.StateVersionConflict 冒泡不吞（日志后上抛）。"""
+    adapter = _real_state_stack()
+    await adapter.apply("t-adapter-b", 0, ("turn_started",))
+    with (
+        caplog.at_level(logging.WARNING, logger="app.services.turn_service"),
+        pytest.raises(RealStateVersionConflict),
+    ):
+        await adapter.apply("t-adapter-b", 0, ("response_completed",))  # 期望 0，实际已 1
+    assert any(r.getMessage() == "state_apply_version_conflict" for r in caplog.records)
+
+
+async def test_adapter_maps_string_events_skips_out_of_contract(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """state_degraded 等契约外事件跳过（durable 留痕在 history 流水），12 值事件正常映射。"""
+    adapter = _real_state_stack()
+    with caplog.at_level(logging.WARNING, logger="app.services.turn_service"):
+        version = await adapter.apply("t-adapter-c", 0, ("turn_started", "state_degraded"))
+    # state_degraded 不在 StateCenter 12 值契约内 → 适配器跳过，不发明第 13 种事件
+    assert version == 1
+    assert any(
+        r.getMessage() == "state_event_skipped_not_in_center_contract" for r in caplog.records
+    )
+    snap = await adapter.snapshot("t-adapter-c")
+    assert snap.input["status"] == "active"  # turn_started 已应用
+    assert snap.input["active_turn_id"] is None  # payload 缺省空 dict（适配器不臆造负载）
+
+
+class _StubMemoryChunk:
+    """memory_service 召回行的最小同构（ContextBuilder 只读 content）。"""
+
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class _RecordingRecall:
+    """recall_active_chunks 替身：记录入参，按脚本返回或抛错。"""
+
+    def __init__(
+        self, *, chunks: Sequence[_StubMemoryChunk] = (), error: Exception | None = None
+    ) -> None:
+        self._chunks = tuple(chunks)
+        self._error = error
+        self.calls: list[dict[str, Any]] = []
+
+    async def __call__(
+        self,
+        *,
+        elder_id: str | None,
+        is_generic: bool,
+        limit: int = 5,
+        min_importance: float | None = None,
+        session: Any = None,
+    ) -> list[_StubMemoryChunk]:
+        self.calls.append({"elder_id": elder_id, "is_generic": is_generic, "limit": limit})
+        if self._error is not None:
+            raise self._error
+        return list(self._chunks)
+
+
+class _CapturingBuilder(ContextBuilder):
+    """真构建器 + 产物捕获（断言 memory_notes 进下发上下文）。"""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.last_context: Any = None
+
+    async def build(self, runtime: Any, snapshot: Any, turn: Any) -> Any:
+        context = await super().build(runtime, snapshot, turn)
+        self.last_context = context
+        return context
+
+
+async def test_context_builder_injects_recalled_memory() -> None:
+    """personal 轮：召回结果按真身签名注入上下文 memory_notes。"""
+    recall = _RecordingRecall(
+        chunks=(_StubMemoryChunk("长者爱听越剧"), _StubMemoryChunk("长者偏好清淡口味"))
+    )
+    builder = _CapturingBuilder(recall=recall)
+    agent = _ScriptedAgent([AgentTurnResult(text="想起您爱听越剧。")])
+    service, _ = _memory_service(agent, context_builder=builder)
+
+    await service.handle_user_turn(
+        _runtime("t-mem-1", elder_id=_ELDER_ID), "放一段戏", call_id=None, turn_id="turn-mem-1"
+    )
+
+    outcome = service.outcome_of("turn-mem-1")
+    assert outcome is not None and outcome.text == "想起您爱听越剧。"
+    assert recall.calls == [{"elder_id": _ELDER_ID, "is_generic": False, "limit": 5}]
+    assert builder.last_context is not None
+    assert builder.last_context.memory_notes == ("长者爱听越剧", "长者偏好清淡口味")
+
+
+async def test_context_builder_recall_failure_skips_memory_and_survives_turn(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """召回抛错 → 本轮不加载记忆、绝不臆造，轮次照常完成（PRD 口径）。"""
+    recall = _RecordingRecall(error=RuntimeError("pg down"))
+    builder = _CapturingBuilder(recall=recall)
+    agent = _ScriptedAgent([AgentTurnResult(text="您好，我在。")])
+    service, _ = _memory_service(agent, context_builder=builder)
+
+    await service.handle_user_turn(
+        _runtime("t-mem-2", elder_id=_ELDER_ID), "你好", call_id=None, turn_id="turn-mem-2"
+    )
+
+    outcome = service.outcome_of("turn-mem-2")
+    assert outcome is not None and outcome.text == "您好，我在。"
+    assert builder.last_context is not None
+    assert builder.last_context.memory_notes == ()
+    assert any(
+        r.getMessage() == "memory_recall_failed_skip_memory_this_turn" for r in caplog.records
+    )
+
+
+async def test_context_builder_generic_never_calls_recall() -> None:
+    """generic（elder_id None）不召回：recall 零调用，memory_notes 恒空。"""
+    recall = _RecordingRecall(chunks=(_StubMemoryChunk("不该出现的记忆"),))
+    builder = _CapturingBuilder(recall=recall)
+    agent = _ScriptedAgent([AgentTurnResult(text="您好，我在。")])
+    service, _ = _memory_service(agent, context_builder=builder)
+
+    await service.handle_user_turn(
+        _runtime("t-mem-3", elder_id=None), "你好", call_id=None, turn_id="turn-mem-3"
+    )
+
+    assert recall.calls == []  # 闸门②：generic 不召回
+    assert builder.last_context is not None
+    assert builder.last_context.memory_notes == ()
+
+
+async def test_smoke_real_state_stack_full_turn(
+    turn_db: async_sessionmaker[AsyncSession], seeded: dict[str, str]
+) -> None:
+    """装配冒烟：真 StateCenter（内存模式）+ 适配器 + 真构建器，一轮七步全绿。"""
+    async with turn_db() as session:
+        session.add(
+            MemoryChunk(
+                elder_id=uuid.UUID(seeded["elder_id"]),
+                subject=seeded["elder_id"],
+                predicate="preferred_opera_genre",
+                object_value="越剧",
+                category="private",
+                polarity="positive",
+                content="长者爱听越剧",
+                confidence=0.8,
+                sensitivity="private",
+                source_type="elder_explicit",
+                source_turn_ids=["seed-turn"],
+                valid_from=datetime.now(UTC),
+                status="active",
+            )
+        )
+        await session.commit()  # 只释放 savepoint（外层事务仍在，用例结束整体回滚）
+
+    async def _recall(**kwargs: Any) -> Any:
+        # 真召回函数，绑定本用例的事务连接（app.db.get_session 指向开发库，测试不直连）
+        async with turn_db() as session:
+            return await recall_active_chunks(session=session, **kwargs)
+
+    builder = _CapturingBuilder(recall=_recall)
+    adapter = _real_state_stack()
+    agent = _ScriptedAgent([AgentTurnResult(text="想起您爱听越剧，这就给您安排。")])
+    sink = _RecordingSink()
+    deliver = _RecordingDeliver()
+    service = TurnService(
+        session_factory=turn_db,
+        agent=agent,
+        response_stream=ResponseService(deliver=deliver, events=sink),
+        state_center=adapter,
+        context_builder=builder,
+    )
+    runtime = _runtime(
+        seeded["thread_id"], elder_id=seeded["elder_id"], device_id=seeded["device_id"]
+    )
+
+    handle = await service.handle_user_turn(
+        runtime, "给我放一段戏", call_id=None, turn_id="turn-smoke-1"
+    )
+
+    # 七步全绿：handle → agent 走真身路径 → response_completed 事件 → 下发
+    assert handle.turn_id == "turn-smoke-1" and handle.total >= 1
+    outcome = service.outcome_of("turn-smoke-1")
+    assert outcome is not None and outcome.escalated_to_agent is True
+    assert deliver.messages and deliver.messages[0][0] == seeded["device_id"]
+    assert sink.events and sink.events[0]["event_type"] == "response_started"
+
+    # N06 闭环：召回结果进了下发上下文
+    assert builder.last_context is not None
+    assert builder.last_context.memory_notes == ("长者爱听越剧",)
+
+    # N05 真状态机：第 2 步应用 2 事件（0→2），第 6 步以契约版本原样 CAS 再应用 1 事件（2→3）
+    final_snap = await adapter.snapshot(seeded["thread_id"])
+    assert final_snap.version == 3
+    assert (
+        final_snap.input["status"] == "active"
+    )  # turn_started 已应用（turn_completed 不在七步内）
+    assert final_snap.output["status"] == "completed"  # response_completed 已应用

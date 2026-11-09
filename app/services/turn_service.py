@@ -10,12 +10,16 @@
     6. state_center.apply        —— 再改状态
     7. response_stream.start     —— 最后下发
 
-桩期协议（N05 StateCenter / N06 ContextBuilder 未到货）：
-    - `StateCenterLike` / `ContextBuilderLike` Protocol 定义装配缝；模块级默认桩
-      `MemoryStateCenter` / `MinimalContextBuilder` 提供最小语义（version 自增、
-      最小 TurnContext）。N05/N06 到货后由装配层注入真身，**签名不变**。
-    - N05 到位后：`StateSnapshot` 改为装配层提供的真实快照，下游读取
-      `StateSnapshot.output.generation_epoch` 等字段（当前桩只有 version）。
+装配缝与真身（N05/N06 已到货，Day 6 S3 对齐）：
+    - `StateCenterLike` / `ContextBuilderLike` Protocol 定义装配缝；默认桩
+      `MemoryStateCenter` / `MinimalContextBuilder` 保留（测试与未注入兜底用）。
+    - N05 真身经 `CoordinatorStateCenterAdapter` 注入：snapshot 直通
+      SessionCoordinator（per-thread 锁）；apply 显式 CAS 直调真 StateCenter
+      （为什么不走 submit，见适配器 docstring）。真身返回
+      `state_service.StateSnapshot`（thread_id/version 与桩同构，另有
+      identity/input/output/media/task 真实字段）。
+    - N06 真身 `ContextBuilder`：最小上下文 + 长期记忆召回注入
+      （`memory_service.recall_active_chunks`，闸门②；召回失败不臆造）。
 
 分层约束（AGENTS §2）：本模块属 services（唯一写库层）；对 history_service /
 response_service / CompanionAgent 只调用、不改其公开签名。
@@ -29,9 +33,9 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Final, Protocol
+from typing import TYPE_CHECKING, Any, Final, Protocol, get_args, get_type_hints
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,14 +53,28 @@ from app.services.history_service import (
 from app.services.history_service import (
     commit_response as _hs_commit_response,
 )
+from app.services.memory_service import recall_active_chunks
 from app.services.response_service import (
     ResponseHandle,
     ResponseService,
     TurnContext,
 )
+from app.services.state_service import (
+    StateCenter,
+    StateEvent,
+)
+from app.services.state_service import (
+    StateSnapshot as CenterStateSnapshot,
+)
+from app.services.state_service import (
+    StateVersionConflict as StateCenterVersionConflict,
+)
 
 if TYPE_CHECKING:  # 避免运行时依赖 CompanionAgent 具体类型（结构化协议即可满足）
     from app.agents.companion import AgentTurnResult
+
+    # SessionCoordinator 仅作适配器构造参数标注（运行时鸭子类型调用 snapshot）
+    from app.agents.session_coordinator import SessionCoordinator
 
 logger = logging.getLogger("app.services.turn_service")
 
@@ -231,6 +249,83 @@ class HistoryLike(Protocol):
     ) -> None: ...
 
 
+# ---------------------------------------------------------------- N05 真身适配器（装配层注入 TurnService）
+
+
+_STATE_EVENT_TYPES: Final[frozenset[str]] = frozenset(
+    get_args(get_type_hints(StateEvent)["event_type"])
+)
+"""state_service.StateEvent 冻结的 12 值事件枚举。
+
+单一事实源：直接从真身 dataclass 的 Literal 注解取值，本模块不手抄第二份——
+state_service 增删事件时适配器自动跟随，不会出现「状态中心已认、适配器漏映射」。
+"""
+
+
+class CoordinatorStateCenterAdapter:
+    """真 StateCenter / SessionCoordinator → `StateCenterLike` 适配器。
+
+    为什么 apply 走 `StateCenter.apply` 而不是 `SessionCoordinator.submit`：
+    submit 内部会**重取最新版本**并在冲突时自动重试，这会绕过七步契约的显式
+    版本语义——第 2 步按 snapshot 版本 CAS 应用启动事件，第 6 步必须以第 2 步
+    返回的版本号**原样**再 CAS；若经 submit，两步之间的并发写入会被静默重试
+    吞掉（lost update 不再显性失败）。版本不符时真身的
+    `state_service.StateVersionConflict` **冒泡不翻译不吞**：本侧只留日志再
+    上抛，事务回滚由 `TurnService.handle_user_turn` 已有的
+    `except BaseException` 兜住。
+
+    `snapshot` 直通 `SessionCoordinator.snapshot`（per-thread 锁保证与提交方
+    读写一致），返回真 `state_service.StateSnapshot`：thread_id/version 与桩期
+    `StateSnapshot` 同构，结构上满足装配缝；下游可按需读 output.generation_epoch、
+    input.status 等真实字段。
+    """
+
+    def __init__(self, *, coordinator: SessionCoordinator, state_center: StateCenter) -> None:
+        self._coordinator = coordinator
+        self._center = state_center
+
+    async def snapshot(self, thread_id: str) -> CenterStateSnapshot:
+        return await self._coordinator.snapshot(thread_id)
+
+    async def apply(self, thread_id: str, version: int, events: Sequence[str]) -> int:
+        state_events: list[StateEvent] = []
+        for name in events:
+            if name not in _STATE_EVENT_TYPES:
+                # 12 值契约外的字符串事件（如 state_degraded）：durable 留痕在
+                # history_service 事件流水，状态中心跳过，不发明第 13 种事件
+                logger.warning(
+                    "state_event_skipped_not_in_center_contract",
+                    extra={
+                        "trace_id": get_trace_id() or "-",
+                        "thread_id": thread_id,
+                        "event_type": name,
+                    },
+                )
+                continue
+            # StateEvent 必填字段仅 event_type；payload 缺省空 dict——
+            # turn_started / response_completed 等事件的状态字段语义由真身
+            # `_apply_event` 映射表维护，适配器不臆造负载
+            state_events.append(StateEvent(event_type=name))
+        try:
+            new_snap = await self._center.apply(
+                thread_id=thread_id,
+                expected_version=version,
+                events=state_events,
+            )
+        except StateCenterVersionConflict as exc:
+            logger.warning(
+                "state_apply_version_conflict",
+                extra={
+                    "trace_id": get_trace_id() or "-",
+                    "thread_id": thread_id,
+                    "expected": exc.expected,
+                    "actual": exc.actual,
+                },
+            )
+            raise
+        return new_snap.version
+
+
 # ---------------------------------------------------------------- 默认桩 / 默认网关
 
 
@@ -340,10 +435,9 @@ class MemoryStateCenter:
 
 
 class MinimalContextBuilder:
-    """桩期默认 ContextBuilder：返回最小 TurnContext 供第 7 步下发。
+    """默认 ContextBuilder：返回最小 TurnContext 供第 7 步下发（测试/未注入兜底用）。
 
-    N06 到位后由装配层替换注入；届时此处承载记忆召回/任务态注入，并改读
-    StateSnapshot 的真实字段（桩期注释留痕，见模块 docstring）。
+    N06 真身 `ContextBuilder` 由装配层注入；生产路径应使用真身（承载记忆召回）。
     """
 
     async def build(
@@ -355,6 +449,68 @@ class MinimalContextBuilder:
             device_id=runtime.device_id or "",
             elder_id=runtime.elder_id,
         )
+
+
+class _MemoryRecallFn(Protocol):
+    """`memory_service.recall_active_chunks` 的消费面（闸门②：强制 elder_id + status=active + 有效期）。"""
+
+    async def __call__(
+        self,
+        *,
+        elder_id: str | None,
+        is_generic: bool,
+        limit: int = 5,
+        min_importance: float | None = None,
+        session: Any = None,
+    ) -> Sequence[Any]: ...
+
+
+class ContextBuilder(MinimalContextBuilder):
+    """N06 真身构建器：最小上下文 + 长期记忆召回注入（dev-B memory_service 到货）。
+
+    召回走 `recall_active_chunks`（闸门②在真身内部强制：elder_id + status=active +
+    有效期过滤）。PRD 口径：**召回失败（异常/空）→ 本轮不加载记忆，绝不臆造**——
+    捕获后日志并继续组装，产物仅缺 memory_notes，不拖垮轮次。
+
+    `recall` 可注入（测试绑定用例事务；缺省为真函数，内部自开 `app.db.get_session`）。
+    """
+
+    def __init__(self, *, recall: _MemoryRecallFn | None = None, limit: int = 5) -> None:
+        self._recall: _MemoryRecallFn = recall if recall is not None else recall_active_chunks
+        self._limit = limit
+
+    async def build(
+        self, runtime: TurnRuntime, snapshot: StateSnapshot, turn: TurnRef
+    ) -> TurnContext:
+        memory_notes: tuple[str, ...] = ()
+        if runtime.elder_id is not None:
+            try:
+                chunks = await self._recall(
+                    elder_id=runtime.elder_id, is_generic=False, limit=self._limit
+                )
+                memory_notes = tuple(str(chunk.content) for chunk in chunks)
+            except Exception as exc:  # 召回失败不拖垮轮次（PRD：本轮不加载记忆、绝不臆造）
+                logger.warning(
+                    "memory_recall_failed_skip_memory_this_turn",
+                    extra={
+                        "trace_id": get_trace_id() or "-",
+                        "thread_id": runtime.thread_id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+            else:
+                logger.info(
+                    "context_memory_loaded",
+                    extra={
+                        "trace_id": get_trace_id() or "-",
+                        "thread_id": runtime.thread_id,
+                        "memory_count": len(memory_notes),
+                    },
+                )
+        context = await super().build(runtime, snapshot, turn)
+        if not memory_notes:
+            return context
+        return replace(context, memory_notes=memory_notes)
 
 
 class HistoryEventSink:
@@ -638,7 +794,9 @@ __all__ = [
     "DELIVERY_STATUS_PLAYING",
     "SEEN_CAPACITY",
     "AgentLike",
+    "ContextBuilder",
     "ContextBuilderLike",
+    "CoordinatorStateCenterAdapter",
     "HistoryEventSink",
     "HistoryGateway",
     "HistoryLike",

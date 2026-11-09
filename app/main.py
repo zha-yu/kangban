@@ -12,8 +12,8 @@ import asyncio
 import logging
 import os
 from collections import OrderedDict
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, suppress
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from typing import Literal
 from uuid import UUID
 
@@ -23,8 +23,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import __version__
+from app.agents.companion import CompanionAgent
+from app.agents.guardrails import Guardrails
+from app.agents.session_coordinator import SessionCoordinator
 from app.api import ROUTERS
 from app.api.elders import _is_request_format_error
 from app.api.schemas.auth import ErrorResponse
@@ -45,6 +49,7 @@ from app.core.config import Settings, get_settings
 from app.core.context import TRACE_HEADER, get_trace_id
 from app.core.logging import configure_logging
 from app.core.metrics import get_metrics_recorder
+from app.core.runtime_context import Identity
 from app.core.security import TokenExpiredError
 from app.core.trace import TraceIdMiddleware
 from app.db import session_factory
@@ -65,7 +70,56 @@ from app.services.dialogue_service import (
     identity_decision_to_result,
 )
 from app.services.llm_service import LLMService
+from app.services.response_service import ResponseService
 from app.services.safety_service import escalate_safety_event
+from app.services.state_service import StateCenter
+from app.services.tool_executor import ToolExecutor, ToolResult
+from app.services.turn_service import (
+    ContextBuilder,
+    CoordinatorStateCenterAdapter,
+    HistoryEventSink,
+    TurnService,
+)
+
+
+class _SessionToolExecutor:
+    """CompanionAgent 的 ToolExecutor 协议 → 每次调用独立短会话（装配层适配）。
+
+    - `ToolExecutor` 是「一个会话一个实例」（N22 契约），而 Agent 持单例；
+      故在此按调用开短会话并在成功路径补 commit（ToolExecutor 只 flush 不
+      commit，事务边界与 `_escalate_safety` 同口径在装配层闭合）；
+    - Guardrails 不传：预算/熔断判定权在 Agent 侧 Guardrails（每轮 reset），
+      执行器侧再判一次会把同一份预算双计；
+    - ToolExecutor 不抛业务异常，仅编程错误上抛 → 原样透传，会话内已 flush
+      的行随 rollback 丢弃。
+    """
+
+    def __init__(self, factory: Callable[[], AbstractAsyncContextManager[AsyncSession]]) -> None:
+        self._factory = factory
+
+    async def execute(
+        self,
+        *,
+        tool_name: str,
+        args: Mapping[str, object],
+        runtime: Identity,
+        turn_id: str,
+        idempotency_key: str,
+    ) -> ToolResult:
+        async with self._factory() as session:
+            try:
+                result = await ToolExecutor(session).execute(
+                    tool_name=tool_name,
+                    args=args,
+                    runtime=runtime,
+                    turn_id=turn_id,
+                    idempotency_key=idempotency_key,
+                )
+                await session.commit()
+                return result
+            except Exception:
+                await session.rollback()
+                raise
 
 
 @asynccontextmanager
@@ -188,9 +242,42 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await session.commit()
         return True
 
+    # ---------- Day 6 S3 对齐：N14 统一出口真身装配（N05 真状态中心 + N06 真构建器） ----------
+    # N05：真 StateCenter（Redis 存储 + Lua CAS；构造不持锁，Redis 不可用时读写自动
+    # 降级进程内存——闲聊可用性优先）→ SessionCoordinator 按 thread 串行化提交 →
+    # CoordinatorStateCenterAdapter 贴到七步契约（显式 CAS，不走 submit，见适配器 docstring）。
+    state_center = StateCenter(redis_client, key_prefix=settings.redis_key_prefix)
+    coordinator = SessionCoordinator(state_center)
+
+    async def _agent_event_sink(event_type: str, payload: Mapping[str, object]) -> None:
+        # CompanionAgent 工具事件 → 统一出口缓冲回灌（turn_service 在下方构造，
+        # 闭包按调用时解析；Agent 只在轮次内调用，不存在未定义窗口）
+        await turn_service.agent_event_sink(event_type, payload)
+
+    agent = CompanionAgent(
+        llm=llm_service,
+        # AGENTS §7 硬性数值：单轮 ≤8 次工具调用；同一 Tool 1 分钟内第 3 次熔断
+        guardrails=Guardrails(max_tool_calls=8, repeat_window_s=60, repeat_threshold=3),
+        tool_executor=_SessionToolExecutor(session_factory),
+        on_event=_agent_event_sink,
+    )
+    turn_service = TurnService(
+        session_factory=session_factory,
+        agent=agent,
+        response_stream=ResponseService(
+            deliver=signaling.deliver,
+            events=HistoryEventSink(session_factory),
+        ),
+        state_center=CoordinatorStateCenterAdapter(
+            coordinator=coordinator, state_center=state_center
+        ),
+        context_builder=ContextBuilder(),
+    )
+
     orchestrator = DialogueOrchestrator(
         service=dialogue_service,
         identity_thread_resolver=_resolve_identity,
+        turn_service=turn_service,
         safety_escalator=_escalate_safety,
     )
 
@@ -378,6 +465,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.tts_provider = tts_provider
     app.state.dialogue_service = dialogue_service
     app.state.dialogue_orchestrator = orchestrator
+    app.state.turn_service = turn_service  # Day 6 S3 对齐：N14 统一出口真身（检视/联调用）
 
     logger.info("application starting", extra={"app_env": settings.app_env})
     try:

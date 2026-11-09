@@ -144,6 +144,9 @@ class TurnContext:
     turn_id: str
     device_id: str
     elder_id: str | None = None  # generic 模式为 None
+    # N06 记忆召回产物：本长者 status='active' 且在有效期的偏好事实（自然语言）。
+    # 召回失败 / generic 一律空元组——本轮不加载记忆，绝不臆造（PRD 口径）。
+    memory_notes: tuple[str, ...] = ()
 
 
 class EventSink(Protocol):
