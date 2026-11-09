@@ -153,6 +153,9 @@ export class RealtimeClient {
         this.cb.onIdentityAsk(msg);
         break;
       case "identity_result":
+        // C5 定案即本轮结束：触发确认的那句话不会被回复（已被身份流程消费），
+        // 状态从「正在想」拉回「在听」，由上层提示长者再讲一遍
+        this.cb.onStatus("listening");
         this.cb.onIdentityResult(msg);
         break;
     }
