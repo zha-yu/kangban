@@ -19,6 +19,7 @@
 | 计划 | 状态 |
 | --- | --- |
 | `docs/plans/day06/adhoc-20261109-Day06讲义原文存档.md` | ✅ 已完成 |
+| `docs/plans/day06/d-DAG.md` | 🚧 进行中（N00 与 S1 数据底座已执行） |
 | `docs/plans/day06/day-06-长者侧Agent闭环.md` | 🚧 进行中（N00 与 S1 数据底座已执行，其余节点待开工） |
 
 ## 契约冻结：**已冻结**
