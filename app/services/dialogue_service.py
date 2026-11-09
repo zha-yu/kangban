@@ -199,11 +199,17 @@ class DialogueReply:
     `escalated_to_agent`：N14 断言面——True=正常路由（Agent/LLM 已执行）；
     False=安全一票否决短路（模板话术，Agent 未被调用）。缺省 True 保证
     遗留路径与既有比较断言不受影响。
+
+    `response_id`：N14 统一出口分支非 None——第 7 步 ResponseService.start
+    已按 tts_text v2 分段下发，发送层不得再整段重发（防双发）；遗留路径与
+    安全否决短路为 None（短模板话术走 Day 5 整段通道，契约 §4.1 五新字段
+    可选即为此兼容）。
     """
 
     text: str
     degraded: bool
     escalated_to_agent: bool = True
+    response_id: str | None = None
 
 
 class DialogueService:
@@ -740,6 +746,7 @@ class DialogueOrchestrator:
             text=outcome.text,
             degraded=outcome.degraded,
             escalated_to_agent=outcome.escalated_to_agent,
+            response_id=outcome.response_id,
         )
 
 

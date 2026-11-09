@@ -14,7 +14,7 @@ import os
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 import redis.asyncio as redis_asyncio
@@ -261,13 +261,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         tool_executor=_SessionToolExecutor(session_factory),
         on_event=_agent_event_sink,
     )
+    # Day 6 S4：ResponseService 提升为 lifespan 局部变量——TurnService 持有做第 7 步
+    # 分段下发，装配层另持引用注册 segment_ack 回调（同一实例，ack 才能命中会话 epoch）
+    response_service = ResponseService(
+        deliver=signaling.deliver,
+        events=HistoryEventSink(session_factory),
+    )
     turn_service = TurnService(
         session_factory=session_factory,
         agent=agent,
-        response_stream=ResponseService(
-            deliver=signaling.deliver,
-            events=HistoryEventSink(session_factory),
-        ),
+        response_stream=response_service,
         state_center=CoordinatorStateCenterAdapter(
             coordinator=coordinator, state_center=state_center
         ),
@@ -372,6 +375,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 from app.audio.signaling import _ERROR_TALKBACK
 
                 await asyncio.sleep(_settings.degrade_tts_slow_ms / 1000)
+                # N14 分支：文字已随 tts_text v2 分段先行到达（第 7 步），
+                # 「文字尚未下发」前提不成立 → slow notice 语义不适用
+                if reply.response_id is not None:
+                    return
                 # 此时文字尚未下发 → 用户还在等待回复 → slow notice 语义成立
                 if not _tts_state["slow_degraded"]:
                     _tts_state["slow_degraded"] = True
@@ -420,28 +427,42 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                         await _tts_watchdog
 
             # ★ 合成（无论成败）完成后再下发文字（顺序反转的核心）
-            delivered = signaling.deliver(
-                device_id,
-                {"type": "tts_text", "text": reply.text, "degraded": reply.degraded},
-            )
-            logger.info(
-                "dialogue_reply_delivered",
-                extra={
-                    "trace_id": trace_id,
-                    "device_id": device_id,
-                    "turn_id": turn_id,
-                    "degraded": reply.degraded,
-                    "delivered": delivered,
-                    "text_len": len(reply.text),
-                },
-            )
-            if not delivered:
-                # WS 已断：正文都没送到，不再 enqueue 音频
-                logger.warning(
-                    "dialogue_text_not_delivered",
-                    extra={"trace_id": trace_id, "device_id": device_id, "turn_id": turn_id},
+            # N14 统一出口分支（response_id 非 None）：第 7 步 ResponseService.start
+            # 已按 tts_text v2 分段下发，此处不再整段重发（防双发/重复播放）；
+            # TTS 音频仍走 Day 5 整段合成入队，文字分段与音频互不影响。
+            if reply.response_id is not None:
+                logger.info(
+                    "dialogue_reply_already_streamed",
+                    extra={
+                        "trace_id": trace_id,
+                        "device_id": device_id,
+                        "turn_id": turn_id,
+                        "response_id": reply.response_id,
+                    },
                 )
-                return
+            else:
+                delivered = signaling.deliver(
+                    device_id,
+                    {"type": "tts_text", "text": reply.text, "degraded": reply.degraded},
+                )
+                logger.info(
+                    "dialogue_reply_delivered",
+                    extra={
+                        "trace_id": trace_id,
+                        "device_id": device_id,
+                        "turn_id": turn_id,
+                        "degraded": reply.degraded,
+                        "delivered": delivered,
+                        "text_len": len(reply.text),
+                    },
+                )
+                if not delivered:
+                    # WS 已断：正文都没送到，不再 enqueue 音频
+                    logger.warning(
+                        "dialogue_text_not_delivered",
+                        extra={"trace_id": trace_id, "device_id": device_id, "turn_id": turn_id},
+                    )
+                    return
 
             # 只有合成成功时才 enqueue 音频
             if synthesize_ok and pcm is not None:
@@ -457,9 +478,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     },
                 )
 
+    async def _on_segment_ack(
+        conn: signaling.ConnectionContext, message: Mapping[str, Any]
+    ) -> None:
+        """C→S segment_ack：解包 device_id 后转交 ResponseService 四步校验（N07 契约）。
+
+        形状校验已在 signaling 层完成；此处只做连接身份解包，四步契约校验
+        （含 rejected_reason 四枚举与单调水位）全部在 response_service。
+        """
+        if conn.device_id is None:
+            logger.warning(
+                "segment_ack_without_device",
+                extra={"trace_id": conn.trace_id, "response_id": str(message.get("response_id"))},
+            )
+            return
+        await response_service.handle_segment_ack(device_id=conn.device_id, message=message)
+
     signaling.set_dialogue_final_handler(_on_dialogue_final)
     signaling.set_identity_confirm_handler(_on_identity_confirm)
     signaling.set_identity_timeout_handler(_on_identity_timeout)
+    signaling.set_segment_ack_handler(_on_segment_ack)
     app.state.redis = redis_client
     app.state.llm_service = llm_service
     app.state.tts_provider = tts_provider
@@ -474,6 +512,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         signaling.set_dialogue_final_handler(None)
         signaling.set_identity_confirm_handler(None)
         signaling.set_identity_timeout_handler(None)
+        signaling.set_segment_ack_handler(None)
         # Day 5：metrics 批量缓冲冲刷（裁决 B6/D2）——先停 worker 再 drain，避免丢批
         await get_metrics_recorder().stop()
         await llm_service.aclose()
