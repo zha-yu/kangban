@@ -12,13 +12,16 @@
  *    的段直接丢弃（stale_segment_dropped）——「不串音」的前端最后一道闸。
  *  - ack 尽力而为：发送失败最多重发 1 次，失败只打 client_diag，绝不阻塞播放。
  *
- * J3 待 dev-C 确认的开放点（不影响本文件结构）：
- *  ① contracts.md §4.2 校验④「segment_id > last_acked_segment」的字面语义与
- *    playing/played 成对上报的相容性（建议 last_acked 仅在 played 时前进）；
- *  ② 首段未播完即被打断时 canceled 的 segment_id 取值（无已确认段时本实现暂不发
- *    canceled，依赖打断信令让服务端自行收口）；
- *  ③ 末段轨结束若不可靠（WebRTC 轨不触发 ended），需服务端给复用现有信号的
- *    结束口径；过渡期服务端按「发送即视为 delivered」降级打 delivery_status=unknown。
+ * J3 已对齐口径（dev-C 确认，主计划 §11.4 转达件③ 2026-11-09）：
+ *  ① played = 该段真正播完再报，是唯一推进水位的信号；playing 只用于首段开播延迟
+ *    指标，服务端不推进水位（本实现每段都发 playing，兼容）；
+ *  ② canceled：打断时上报，segment_id 填「最后一个已播完的段」，一段都没播完填 -1；
+ *  唯一纪律：不得把 played 提前到「开始播」就报——本实现仅在「下一段到达（上一段
+ *  音频已被服务端顺序播完）」或「轨结束」时报 played，符合纪律。
+ *
+ * J3 仍待 dev-C 确认的开放点：
+ *  末段轨结束若不可靠（WebRTC 轨不触发 ended），需服务端给复用现有信号的
+ *  结束口径；过渡期服务端按「发送即视为 delivered」降级打 delivery_status=unknown。
  */
 
 import type { SegmentAckMsg, TtsTextMsg } from "../protocol";
@@ -109,11 +112,11 @@ export class PlaybackQueue {
   }
 
   /**
-   * 打断收口：当前未结算段与队列剩余全部作废，上报 canceled（带最后已确认段）。
-   * 尚无任何已确认段时不发 canceled（canceled 必须带成功播放段号，契约无「零段」取值——J3 开放点②）。
+   * 打断收口：当前未结算段与队列剩余全部作废，上报 canceled。
+   * segment_id 填「最后一个已播完的段」；一段都没播完填 -1（dev-C 口径确认，
+   * 主计划 §11.4 转达件③ 2026-11-09——J3 开放点②就此落定）。
    */
   interrupt(): void {
-    if (!this.active) return;
     this.flushCanceled();
   }
 
@@ -136,12 +139,12 @@ export class PlaybackQueue {
     if (!this.active) return;
     const { responseId, epoch, lastConfirmedPlayed } = this.active;
     this.active = null;
-    if (lastConfirmedPlayed === null) return;
     this.deliverAck({
       type: "segment_ack",
       response_id: responseId,
       epoch,
-      segment_id: lastConfirmedPlayed,
+      // 无任何已播完段时填 -1（dev-C 口径：服务端据此识别「首段都没听完就被打断」）
+      segment_id: lastConfirmedPlayed ?? -1,
       status: "canceled",
       at_ms: Math.round(performance.now()),
     });
