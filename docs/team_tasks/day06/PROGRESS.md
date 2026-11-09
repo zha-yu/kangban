@@ -19,14 +19,14 @@
 
 | 计划 | 状态 |
 | --- | --- |
-| `docs/plans/day06/a12-工单建单服务接口设计.md` | ✅ 已完成（v1.1 已按 C 的实现对齐，2 项待确认） |
+| `docs/plans/day06/a12-工单建单服务接口设计.md` | ❔ 已实现（走 B；WD-1/WD-2 已登记） |
 | `docs/plans/day06/adhoc-20261109-Day06讲义原文存档.md` | ✅ 已完成 |
 | `docs/plans/day06/d-DAG.md` | 🚧 进行中（N00 与 S1 数据底座已执行） |
 | `docs/plans/day06/d-推进计划-pad送达与改绑.md` | 📝 草稿 |
 | `docs/plans/day06/day-06-长者侧Agent闭环.md` | 🚧 进行中（N00 与 S1 数据底座已执行，其余节点待开工） |
-| `docs/plans/day06/dev-a-DAG.md` | 🚧 进行中（历史线、工具（含 MCP）、用药子图已交付；剩 A12/A17） |
+| `docs/plans/day06/dev-a-DAG.md` | ✅ 已完成（7 个主节点 / 18 个执行节点全部收口，G-A4 通过） |
 | `docs/plans/day06/dev-a-prompt-历史与工具.md` | 📝 草稿 |
-| `docs/plans/day06/dev-a-历史与工具执行计划.md` | 🚧 进行中（A02–A11、A13–A15 已交付；剩 A12 升级工单、A16 接 MCP、A17 收口） |
+| `docs/plans/day06/dev-a-历史与工具执行计划.md` | ✅ 已完成（A 线 21.0/21.0；遗留 `TODO(E2)` 与 WD-1/WD-2 已登记） |
 | `docs/plans/day06/dev-b-状态中心与上下文记忆.md` | 📝 草稿 |
 | `docs/plans/day06/dev-c-Agent与统一出口.md` | 📝 草稿 |
 | `docs/plans/day06/handoff-A-to-C-segment-ack.md` | ✅ 已完成（与 N07 实现已对齐，1 个开放点留 S4） |

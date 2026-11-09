@@ -1,12 +1,8 @@
 """用药事实的**唯一写库出口**（N10 的 service 侧）。
 
-> **TODO(E1)**：`medication_*` 六张表的 ORM（`app/models/medication.py`）归 dev-B，
-> 本文件在它落地前用 `sa.table()` 临时映射顶着。B 交付后**本文件是唯一需要改的地方**：
-> 把 `_events` / `_attempts` 换成 `from app.models.medication import MedicationEvent, ...`，
-> 调用方（子图）一行不动。
-> 为什么不自建 ORM 类：那样会出现两份 `medication_events` 定义，谁先 import 谁生效，
-> 且 `Base.metadata` 里多一张同名表，`alembic check` 会开始报「重复表」。
-> **签字**：2026-11-09 主理人确认接受该过渡方案（`docs/plans/day06/dev-a-DAG.md` 回退条款）。
+> 2026-11-09 更新：dev-B 的 `app/models/medication.py` 已合入，本文件从 `sa.table()`
+> 临时映射**切到 ORM**（原 `TODO(E1)` 已偿清）。子图与调用方一行未动——这正是当初把
+> 映射关在一个文件里的目的。
 
 三条不变式（子图写不进去，只能在这里守）：
 
@@ -28,10 +24,11 @@ import logging
 import uuid
 from typing import Any
 
-import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.medication import MedicationAttempt, MedicationEvent
 
 logger = logging.getLogger(__name__)
 
@@ -45,40 +42,6 @@ TERMINAL_STATES: tuple[str, ...] = (
 
 #: 事件状态四值
 EVENT_STATUSES: tuple[str, ...] = ("calling", "waiting_confirm", "confirmed", "escalated")
-
-_UUID = postgresql.UUID(as_uuid=True)
-
-#: TODO(E1)：B 的 `app/models/medication.py` 到位后删除以下两个临时映射
-_events = sa.table(
-    "medication_events",
-    sa.column("reminder_id", _UUID),
-    sa.column("plan_id", _UUID),
-    sa.column("elder_id", _UUID),
-    sa.column("scheduled_at", sa.DateTime(timezone=True)),
-    sa.column("drug_snapshot", postgresql.JSONB()),
-    sa.column("payload_hash", sa.Text()),
-    sa.column("triggered_by", sa.Text()),
-    sa.column("status", sa.Text()),
-    sa.column("terminal_state", sa.Text()),
-    sa.column("late_taken", sa.Boolean()),
-    sa.column("failure_reason", sa.Text()),
-    sa.column("retry_count", sa.Integer()),
-    sa.column("confirmed_at", sa.DateTime(timezone=True)),
-    sa.column("confirm_channel", sa.Text()),
-    sa.column("graph_thread_id", sa.Text()),
-)
-
-_attempts = sa.table(
-    "medication_attempts",
-    sa.column("attempt_id", _UUID),
-    sa.column("event_id", _UUID),
-    sa.column("attempt_no", sa.Integer()),
-    sa.column("sent_at", sa.DateTime(timezone=True)),
-    sa.column("receipt", sa.Text()),
-    sa.column("tts_result", sa.Text()),
-    sa.column("response", sa.Text()),
-    sa.column("response_channel", sa.Text()),
-)
 
 
 class MedicationError(ValueError):
@@ -122,9 +85,9 @@ async def create_event(
     digest = payload_hash(drug_snapshot)
     existing = (
         await session.execute(
-            sa.select(_events.c.reminder_id, _events.c.payload_hash).where(
-                _events.c.plan_id == plan_id,
-                _events.c.scheduled_at == scheduled_at,
+            select(MedicationEvent.reminder_id, MedicationEvent.payload_hash).where(
+                MedicationEvent.plan_id == plan_id,
+                MedicationEvent.scheduled_at == scheduled_at,
             )
         )
     ).first()
@@ -139,8 +102,8 @@ async def create_event(
     reminder_id = uuid.uuid4()
     try:
         async with session.begin_nested():
-            await session.execute(
-                sa.insert(_events).values(
+            session.add(
+                MedicationEvent(
                     reminder_id=reminder_id,
                     plan_id=plan_id,
                     elder_id=elder_id,
@@ -153,13 +116,14 @@ async def create_event(
                     late_taken=False,
                 )
             )
+            await session.flush()
     except IntegrityError:
         # 并发建同一条：回查一次，按幂等处理（同内容返回、异内容冲突）
         row = (
             await session.execute(
-                sa.select(_events.c.reminder_id, _events.c.payload_hash).where(
-                    _events.c.plan_id == plan_id,
-                    _events.c.scheduled_at == scheduled_at,
+                select(MedicationEvent.reminder_id, MedicationEvent.payload_hash).where(
+                    MedicationEvent.plan_id == plan_id,
+                    MedicationEvent.scheduled_at == scheduled_at,
                 )
             )
         ).first()
@@ -188,8 +152,8 @@ async def record_attempt(
 
     try:
         async with session.begin_nested():
-            await session.execute(
-                sa.insert(_attempts).values(
+            session.add(
+                MedicationAttempt(
                     attempt_id=uuid.uuid4(),
                     event_id=event_id,
                     attempt_no=attempt_no,
@@ -199,6 +163,7 @@ async def record_attempt(
                     response_channel=response_channel,
                 )
             )
+            await session.flush()
     except IntegrityError:
         # 图恢复会重放「发送」这一步；重放不该多出一条触达记录
         logger.info("medication_attempt_duplicate event_id=%s attempt_no=%s", event_id, attempt_no)
@@ -218,8 +183,11 @@ async def record_response(
     拆成两行会让「第 3 次提醒到底有没有回」需要 JOIN 才能回答。
     """
     await session.execute(
-        sa.update(_attempts)
-        .where(_attempts.c.event_id == event_id, _attempts.c.attempt_no == attempt_no)
+        update(MedicationAttempt)
+        .where(
+            MedicationAttempt.event_id == event_id,
+            MedicationAttempt.attempt_no == attempt_no,
+        )
         .values(response=response[:200], response_channel=channel)
     )
 
@@ -250,8 +218,8 @@ async def set_terminal(
 
     row = (
         await session.execute(
-            sa.select(_events.c.terminal_state, _events.c.status).where(
-                _events.c.reminder_id == event_id
+            select(MedicationEvent.terminal_state, MedicationEvent.status).where(
+                MedicationEvent.reminder_id == event_id
             )
         )
     ).first()
@@ -283,7 +251,7 @@ async def set_terminal(
 
 async def _update_event(session: AsyncSession, event_id: uuid.UUID, values: dict[str, Any]) -> None:
     result = await session.execute(
-        sa.update(_events).where(_events.c.reminder_id == event_id).values(**values)
+        update(MedicationEvent).where(MedicationEvent.reminder_id == event_id).values(**values)
     )
     if result.rowcount == 0:  # type: ignore[attr-defined]
         raise MedicationEventNotFound(f"medication event not found: {event_id}")
@@ -296,16 +264,16 @@ async def get_event(session: AsyncSession, event_id: uuid.UUID) -> dict[str, Any
     row = (
         (
             await session.execute(
-                sa.select(
-                    _events.c.reminder_id,
-                    _events.c.plan_id,
-                    _events.c.elder_id,
-                    _events.c.status,
-                    _events.c.terminal_state,
-                    _events.c.retry_count,
-                    _events.c.late_taken,
-                    _events.c.graph_thread_id,
-                ).where(_events.c.reminder_id == event_id)
+                select(
+                    MedicationEvent.reminder_id,
+                    MedicationEvent.plan_id,
+                    MedicationEvent.elder_id,
+                    MedicationEvent.status,
+                    MedicationEvent.terminal_state,
+                    MedicationEvent.retry_count,
+                    MedicationEvent.late_taken,
+                    MedicationEvent.graph_thread_id,
+                ).where(MedicationEvent.reminder_id == event_id)
             )
         )
         .mappings()
@@ -317,14 +285,14 @@ async def get_event(session: AsyncSession, event_id: uuid.UUID) -> dict[str, Any
 async def list_attempts(session: AsyncSession, event_id: uuid.UUID) -> list[dict[str, Any]]:
     rows = (
         await session.execute(
-            sa.select(
-                _attempts.c.attempt_no,
-                _attempts.c.receipt,
-                _attempts.c.response,
-                _attempts.c.response_channel,
+            select(
+                MedicationAttempt.attempt_no,
+                MedicationAttempt.receipt,
+                MedicationAttempt.response,
+                MedicationAttempt.response_channel,
             )
-            .where(_attempts.c.event_id == event_id)
-            .order_by(_attempts.c.attempt_no)
+            .where(MedicationAttempt.event_id == event_id)
+            .order_by(MedicationAttempt.attempt_no)
         )
     ).mappings()
     return [dict(r) for r in rows]

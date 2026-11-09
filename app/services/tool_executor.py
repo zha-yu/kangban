@@ -191,12 +191,15 @@ class ToolExecutor:
         guardrails: Guardrails | None = None,
         max_attempts: int = 3,
         retry_backoff_seconds: float = 0.05,
+        mcp_client: Any | None = None,
     ) -> None:
         self._session = session
         self._registry = registry if registry is not None else default_registry()
         self._guardrails = guardrails
         self._max_attempts = max(1, max_attempts)
         self._backoff = retry_backoff_seconds
+        #: `app/mcp_client.MCPClient`（或同协议的测试替身）。为 None 时 MCP 工具按「未接线」处理。
+        self._mcp = mcp_client
 
     @property
     def registry(self) -> ToolRegistry:
@@ -268,7 +271,11 @@ class ToolExecutor:
                 message=f"{MESSAGES['bad_args']}（{problem}）",
             )
 
-        # 4) 已注册但未绑定实现
+        # 4) MCP 工具走客户端（失败分类由 mcp_client.tool_error_class 统一决定）
+        if spec.transport == "mcp":
+            return await self._run_mcp(spec=spec, args=cleaned, runtime=runtime)
+
+        # 5) 本地工具：已注册但未绑定实现
         if not spec.wired:
             return ToolResult(
                 status="failed",
@@ -335,6 +342,63 @@ class ToolExecutor:
                 },
             )
         return result
+
+    async def _run_mcp(self, *, spec: ToolSpec, args: dict[str, Any], runtime: Any) -> ToolResult:
+        """走 MCP 客户端调用远端工具，把 `MCPResult` 收敛成 `ToolResult`。
+
+        三件事只在这里做：
+
+        1. **不做第二层缓存**。weather server 的 `WeatherService` 已按
+           `weather_cache_ttl_seconds` 做了 TTL 缓存 + 过期兜底，并回 `cached` 标记。
+           A 侧再缓存会出现两个 TTL、两套命中率，且进程内缓存不跨 worker——
+           排查「为什么这台机器数据旧」会变成玄学。
+        2. **失败分类只用 `tool_error_class()`**（C 的 `app/mcp_client/client.py`），
+           本函数不另立映射表；否则同一个超时在不同层会有两个 error_class。
+        3. **成功也把 `cached` / `observed_at` 原样透传**：Agent 要据此播「（数据时间 08:12）」，
+           这里改写字段等于让播报说错时间。
+
+        失败时本层**不再写 `tool_failed` 审计**：MCP 客户端在 `call_tool` 内对每次调用都写
+        `audit_logs`（契约 §5.4），这里再写一条会让同一次超时出现两条记录，
+        排查时反而要先去对时间戳。
+        """
+        if self._mcp is None:
+            # 未注入客户端 = N25 还没接线；按 not_found 处理，绝不让模型自己编天气
+            logger.warning("tool_mcp_not_wired tool=%s", spec.name)
+            return ToolResult(
+                status="failed",
+                error_class="not_found",
+                message=MESSAGES["not_found"],
+            )
+
+        from app.mcp_client.client import tool_error_class
+
+        try:
+            result = await self._mcp.call_tool(spec.name, args)
+        except Exception:  # 客户端自身异常（连接被拒等）也不该掀翻整轮对话
+            logger.exception("tool_mcp_client_crashed tool=%s", spec.name)
+            return ToolResult(
+                status="failed",
+                error_class="transient",
+                message=MESSAGES["transient"],
+            )
+
+        if result.ok:
+            data = dict(result.data or {})
+            data.setdefault("cached", False)  # server 未给标记时按「实时」理解
+            return ToolResult(status="succeeded", data=data)
+
+        error_class = tool_error_class(result) or "transient"
+        logger.info(
+            "tool_mcp_failed tool=%s error=%s error_class=%s",
+            spec.name,
+            getattr(result, "error", None),
+            error_class,
+        )
+        return ToolResult(
+            status="denied" if error_class == "forbidden" else "failed",
+            error_class=error_class,
+            message=MESSAGES[error_class],
+        )
 
     # ---------------------------------------------------------------- 内部
 

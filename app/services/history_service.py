@@ -30,6 +30,8 @@ from __future__ import annotations
 import datetime
 import logging
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -156,6 +158,19 @@ def _validate_event_type(event_type: str) -> None:
         raise InvalidEventType(
             f"unknown event_type {event_type!r}; expected one of {list(EVENT_TYPES)}"
         )
+
+
+@asynccontextmanager
+async def _read_only_session() -> AsyncIterator[AsyncSession]:
+    """自开一条只读会话（仅当调用方没传 session 时用）。
+
+    延迟 import `app.db`：service 模块在 import 期不应该建 engine（`app/db.py` 建的是
+    进程级引擎，测试里用独立测试库，提前 import 会让 DSN 在错误的时机固定下来）。
+    """
+    from app.db import session_factory
+
+    async with session_factory() as owned:
+        yield owned
 
 
 # ------------------------------------------------------------------ 写：轮次开始
@@ -299,6 +314,19 @@ async def append_event(
 # ------------------------------------------------------------------ 写：回复提交与轮次收口
 
 
+def _apply_delivered(turn: ConversationTurn, delivered_text: str | None) -> None:
+    """把已送达文本写进投影；**只接受不更短的版本**。
+
+    重连重放可能带来更短的文本（例如打断后重发 completed），写进去等于抹掉后来播完的
+    那半句。同等长度允许覆盖——分段文本可能被修正，但不会因此丢内容。
+    """
+    if delivered_text is not None and (
+        turn.assistant_delivered_text is None
+        or len(delivered_text) >= len(turn.assistant_delivered_text)
+    ):
+        turn.assistant_delivered_text = delivered_text
+
+
 async def commit_response(
     session: AsyncSession,
     *,
@@ -315,6 +343,8 @@ async def commit_response(
       `finish_turn` 写，两个写口会让迟到的 completed 覆盖已发生的 interrupted。
     - 幂等判定用「该 `(turn_id, response_id)` 是否已有 `response_completed` 事件」，
       不另建幂等表——事件流水本身就是事实源。
+    - **该事件可能已由响应层（N07）先写**（契约 §3：末段 played / 打断时写）。此时本函数
+      只补投影、不重复写事件——否则响应层一先写，delivered 就永远为空。
     """
     if not response_id:
         raise HistoryError("response_id is required")
@@ -335,7 +365,10 @@ async def commit_response(
 
     already = (
         await session.execute(
-            select(ConversationEvent.event_id)
+            select(
+                ConversationEvent.event_id,
+                ConversationEvent.payload_json["generated_text"].label("payload_generated"),
+            )
             .where(
                 ConversationEvent.turn_id == turn_id,
                 ConversationEvent.response_id == response_id,
@@ -343,18 +376,28 @@ async def commit_response(
             )
             .limit(1)
         )
-    ).scalar_one_or_none()
+    ).first()
     if already is not None:
-        logger.info("history_response_duplicate turn_id=%s response_id=%s", turn_id, response_id)
+        # `response_completed` 由响应层（dev-C 的 N07）在末段 played / 打断时先写，
+        # 这是契约 §3 定的写入时机。此时本函数**只补投影**：再写一条会让事件流水重复，
+        # 直接 return 又会让 delivered 永远为空——上下文里每一句助手回复都会消失。
+        logger.info(
+            "history_response_duplicate turn_id=%s response_id=%s projection_only=True",
+            turn_id,
+            response_id,
+        )
+        _apply_delivered(turn, delivered_text)
+        if generated_text and already.payload_generated is None:
+            # 响应层那条事件只写了 total_segments（契约 §3 允许）。生成全文是审计用的，
+            # 缺它不影响上下文，但会削弱复盘，留个可检索的痕迹。
+            logger.warning(
+                "history_generated_text_not_persisted turn_id=%s response_id=%s",
+                turn_id,
+                response_id,
+            )
         return
 
-    # 防御性：正常路径上第二次调用已在上面幂等返回，走不到这里；但若事件被清理/迁移过，
-    # 也不允许用更短的文本覆盖更长的已送达内容。
-    if delivered_text is not None and (
-        turn.assistant_delivered_text is None
-        or len(delivered_text) >= len(turn.assistant_delivered_text)
-    ):
-        turn.assistant_delivered_text = delivered_text
+    _apply_delivered(turn, delivered_text)
 
     await append_event(
         session,
@@ -426,7 +469,7 @@ async def finish_turn(session: AsyncSession, *, turn_id: str, status: FinishStat
 
 
 async def read_turns(
-    session: AsyncSession,
+    session: AsyncSession | None = None,
     *,
     thread_id: str,
     elder_id: uuid.UUID | str | None,
@@ -439,10 +482,19 @@ async def read_turns(
     完全相同的时间戳，按它排序等于让数据库随机决定先后——上下文一旦错序，
     「刚才那个」这类指代就会指到别处。
 
+    `session` 可省略：契约 §5.1 的签名里没有它，而 `app/core/context.py` 的上下文层
+    是直接 `read_turns(thread_id=..., elder_id=...)` 调的（dev-B 的实现与契约一致）。
+    省略时自开一条只读会话——**只读**，不参与调用方事务；需要读到同一事务内未提交的
+    历史时，请显式把 `session` 传进来。
+
     - generic（`elder_id is None`）返回空：未确认身份的历史不进任何人的上下文。
     - 会话归属与 `elder_id` 不符时返回空，而不是抛异常——读路径不该因为「查错了会话」
       让整轮对话失败；写路径才需要硬失败（那里会写脏数据）。
     """
+    if session is None:
+        async with _read_only_session() as owned:
+            return await read_turns(owned, thread_id=thread_id, elder_id=elder_id, limit=limit)
+
     elder = _as_text(elder_id)
     if elder is None:
         return []
@@ -500,12 +552,16 @@ async def read_turns(
 
 
 async def read_events(
-    session: AsyncSession, *, thread_id: str, after_seq: int = 0
+    session: AsyncSession | None = None, *, thread_id: str, after_seq: int = 0
 ) -> list[EventView]:
     """增量读事件（`seq > after_seq`），按 `seq` 正序。
 
     给重连补帧与复盘用：客户端记住已收到的最大 `seq`，重连后只要增量。
     """
+    if session is None:
+        async with _read_only_session() as owned:
+            return await read_events(owned, thread_id=thread_id, after_seq=after_seq)
+
     rows = (
         await session.execute(
             select(ConversationEvent)

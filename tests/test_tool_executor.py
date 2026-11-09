@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from app.agents.guardrails import Guardrails
 from app.agents.tool_registry import ToolRegistry, ToolSpec
 from app.core.runtime_context import Identity
+from app.mcp_client.client import MCPResult
 from app.models import AuditLog
 from app.services.tool_executor import (
     MESSAGES,
@@ -404,3 +405,153 @@ async def test_side_effect_writes_execution_row(session: AsyncSession, identity:
     assert row.status == "succeeded"
     assert row.finished_at is not None
     assert row.result_json == {"done": True}
+
+
+# ------------------------------------------------------------------ 8. MCP 分支（N26）
+
+
+class _FakeMCP:
+    """MCP 客户端替身：只实现 `call_tool`，并记录被调参数。"""
+
+    def __init__(self, result: MCPResult | Exception) -> None:
+        self._result = result
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def call_tool(self, tool_name: str, args: dict[str, Any]) -> MCPResult:
+        self.calls.append((tool_name, args))
+        if isinstance(self._result, Exception):
+            raise self._result
+        return self._result
+
+
+def _weather_executor(session: AsyncSession, client: _FakeMCP | None) -> ToolExecutor:
+    from app.agents.tool_registry import default_registry
+
+    return ToolExecutor(session, registry=default_registry(), mcp_client=client)
+
+
+async def test_mcp_success_passes_through_cached_and_observed_at(
+    session: AsyncSession, identity: Identity
+) -> None:
+    """成功时 `cached` / `observed_at` 必须原样透传——Agent 要据此播「数据时间」。"""
+    payload = {
+        "ok": True,
+        "city": "杭州",
+        "condition": "晴",
+        "temperature_c": 18.5,
+        "observed_at": "2026-11-09T08:12:00+00:00",
+        "cached": True,
+    }
+    client = _FakeMCP(MCPResult(ok=True, data=payload, error=None))
+    executor = _weather_executor(session, client)
+
+    result = await executor.execute(
+        tool_name="get_weather",
+        args={"city": "杭州", "elder_id": "99999999-9999-9999-9999-999999999999"},
+        runtime=identity,
+        turn_id=None,
+        idempotency_key="mcp-1",
+    )
+
+    assert result.ok
+    assert result.data == payload, "成功载荷不得被改写（cached/observed_at 尤其）"
+    assert client.calls == [("get_weather", {"city": "杭州"})], "身份字段应先被剥离再下发"
+
+
+async def test_mcp_timeout_maps_to_transient(session: AsyncSession, identity: Identity) -> None:
+    client = _FakeMCP(MCPResult(ok=False, data=None, error="timeout"))
+    executor = _weather_executor(session, client)
+
+    result = await executor.execute(
+        tool_name="get_weather",
+        args={"city": "杭州"},
+        runtime=identity,
+        turn_id=None,
+        idempotency_key="mcp-2",
+    )
+    assert result.status == "failed"
+    assert result.error_class == "transient"
+    assert result.message == MESSAGES["transient"], "必须给可播报的降级话术，不许编造天气"
+
+
+async def test_mcp_unauthorized_maps_to_forbidden(
+    session: AsyncSession, identity: Identity
+) -> None:
+    client = _FakeMCP(MCPResult(ok=False, data=None, error="unauthorized"))
+    executor = _weather_executor(session, client)
+
+    result = await executor.execute(
+        tool_name="get_weather",
+        args={"city": "杭州"},
+        runtime=identity,
+        turn_id=None,
+        idempotency_key="mcp-3",
+    )
+    assert result.status == "denied"
+    assert result.error_class == "forbidden"
+
+
+async def test_mcp_bad_request_refines_to_bad_args(
+    session: AsyncSession, identity: Identity
+) -> None:
+    """`bad_request` 是参数错，应由 tool_error_class 细化为 bad_args，而不是 transient。"""
+    client = _FakeMCP(
+        MCPResult(
+            ok=False,
+            data={"ok": False, "error": "bad_request", "message": "城市无法解析"},
+            error="upstream_error",
+        )
+    )
+    executor = _weather_executor(session, client)
+
+    result = await executor.execute(
+        tool_name="get_weather",
+        args={"city": "火星"},
+        runtime=identity,
+        turn_id=None,
+        idempotency_key="mcp-4",
+    )
+    assert result.error_class == "bad_args"
+
+
+async def test_mcp_client_crash_is_transient(session: AsyncSession, identity: Identity) -> None:
+    client = _FakeMCP(ConnectionError("connection refused"))
+    executor = _weather_executor(session, client)
+
+    result = await executor.execute(
+        tool_name="get_weather",
+        args={"city": "杭州"},
+        runtime=identity,
+        turn_id=None,
+        idempotency_key="mcp-5",
+    )
+    assert result.error_class == "transient"
+    assert result.message == MESSAGES["transient"]
+
+
+async def test_mcp_tool_without_client_is_not_found(
+    session: AsyncSession, identity: Identity
+) -> None:
+    executor = _weather_executor(session, None)
+    result = await executor.execute(
+        tool_name="get_weather",
+        args={"city": "杭州"},
+        runtime=identity,
+        turn_id=None,
+        idempotency_key="mcp-6",
+    )
+    assert result.status == "failed"
+    assert result.error_class == "not_found"
+
+
+def test_mcp_tool_cannot_bind_local_executor() -> None:
+    """MCP 工具不允许再绑本地实现：两条执行路径会让失败分类各说各话。"""
+    from app.agents.tool_registry import default_registry
+
+    registry = default_registry()
+
+    async def _nope(args: dict[str, Any], runtime: Any) -> dict[str, Any]:
+        return {}
+
+    with pytest.raises(ValueError):
+        registry.bind("get_weather", _nope)

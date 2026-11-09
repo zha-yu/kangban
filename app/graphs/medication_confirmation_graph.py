@@ -26,8 +26,13 @@ START → remind → wait_confirm ─┬─ 说了"吃了"   → mark_taken  ┐
 4. **终态只写一次**。`finalize` 调 `medication_service.set_terminal`，后者对"已定终态再改"
    抛 `TerminalStateConflict`；补确认（AC-08）走 `late_taken` 追加，不覆盖原终态。
 
-**本节点不做**（A12 的范围）：升级工单。`finalize` 只在状态里置 `needs_escalation=True`，
-由 A12 的 `escalate` 节点消费——先建工单再补这里，会让「谁来建单」出现两个写口。
+**A12 已接（2026-11-09）**：`finalize` 在写完结态后，对 `missed_unconfirmed` 建漏服工单
+（`work_order_service.open_missed_medication`）。**先写终态、再建单**——终态是事实，
+建单是派单动作；建单失败时事实仍成立，重跑 `finalize` 可凭终态补建（两侧都幂等）。
+主理人裁决走 B：与 dev-C 的 `safety_service`（急症）**两套并存**，已登记技术债 WD-1。
+
+`needs_escalation` 仍保留：它表达「这一轮需要人介入」，与「有没有建成单」是两件事——
+建单成功不代表护工已看到，建单失败也不代表这事不需要人管。
 """
 
 from __future__ import annotations
@@ -39,7 +44,7 @@ from typing import Any, Literal, TypedDict
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
-from app.services import medication_service
+from app.services import medication_service, work_order_service
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +92,42 @@ def _normalize(answer: Any) -> str:
     if isinstance(answer, dict):
         answer = answer.get("answer", "")
     return str(answer).strip().lower()
+
+
+async def _escalate_missed_medication(session: Any, state: MedicationState) -> None:
+    """漏服 → 升级工单（A12）。
+
+    **失败不吞**：漏服是安全相关事件，静默失败会让「这轮没人管」变成看板上看不见的事故。
+    抛出后 scheduler 重试会重跑 `finalize`——`set_terminal` 对同值幂等、建单按确定性
+    单号幂等，所以重跑安全，不会产生第二张单。
+    """
+    raw_elder = state.get("elder_id")
+    reminder_id = state.get("reminder_id")
+    if not raw_elder or not reminder_id:
+        # 缺 elder_id 就没法建单（work_orders.elder_id 非空）。这是数据问题，
+        # 不是本轮该静默跳过的情况，留痕以便回查是哪条事件少了字段。
+        logger.warning(
+            "medication_escalation_skipped reason=missing_identity reminder_id=%s",
+            reminder_id,
+        )
+        return
+
+    elder_id = _uuid(raw_elder)
+    assignee_id = await work_order_service.resolve_primary_care_staff(session, elder_id=elder_id)
+    ref = await work_order_service.open_missed_medication(
+        session,
+        elder_id=elder_id,
+        reminder_id=_uuid(reminder_id),
+        assignee_id=assignee_id,
+    )
+    logger.info(
+        "medication_escalated reminder_id=%s order_id=%s order_no=%s created=%s assignee=%s",
+        reminder_id,
+        ref.order_id,
+        ref.order_no,
+        ref.created,
+        assignee_id,
+    )
 
 
 def build_medication_graph(*, session: Any, checkpointer: Any) -> Any:
@@ -151,6 +192,9 @@ def build_medication_graph(*, session: Any, checkpointer: Any) -> Any:
             retry_count=max(0, attempts - 1),
             confirm_channel="voice" if terminal == "taken_reported" else None,
         )
+        # 终态写完才建单（顺序不可交换）：见文件头 A12 段的说明。
+        if terminal == "missed_unconfirmed":
+            await _escalate_missed_medication(session, state)
         return {}
 
     def route_answer(state: MedicationState) -> Literal["mark_taken", "mark_refused", "retry"]:

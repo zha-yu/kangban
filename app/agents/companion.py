@@ -205,6 +205,7 @@ def _build_turn_context(
     history: Sequence[DialogueTurn] = (),
     persona: PersonaContext | None = None,
     now: datetime | None = None,
+    identity: DialogueIdentity | None = None,
 ) -> list[dict[str, str]]:
     """[占位实现，将由 dev-B N06 的 ContextBuilder 替换]。
 
@@ -213,10 +214,20 @@ def _build_turn_context(
     应由 A1 的 identity 结论传入）、无记忆召回、无 ``waiting_for`` 任务态注入。
     替换时保持「返回 OpenAI 兼容 messages 列表、末条为本轮 user」的形态即可。
     """
-    if runtime.elder_id:
-        identity = DialogueIdentity(source="device", elder_id=runtime.elder_id)
-    else:
-        identity = DialogueIdentity(source="generic")
+    if identity is None:
+        # 兜底：**从凭证主体推断身份结论是不可靠的**，只为本函数单独可调用而保留。
+        # `runtime.kind` 只有 device/staff/guardian/staff_card，而上下文要的是
+        # device/voice/confirm/generic —— staff 的 elder_id 恒为 None（Identity 强制），
+        # 于是「员工发起的对话」会被判成 generic（无人设、无历史），且不报错。
+        # 正确做法由调用方（N14 统一出口）把 A1 的 IdentityDecision 产出传进来。
+        inferred_source = "device" if runtime.elder_id else "generic"
+        identity = DialogueIdentity(source=inferred_source, elder_id=runtime.elder_id)
+        logger.warning(
+            "companion_identity_inferred runtime_kind=%s inferred_source=%s elder_present=%s",
+            runtime.kind,
+            inferred_source,
+            bool(runtime.elder_id),
+        )
     return build_dialogue_messages(
         identity=identity,
         user_text=user_text,
@@ -337,12 +348,19 @@ class CompanionAgent:
         history: Sequence[DialogueTurn] = (),
         persona: PersonaContext | None = None,
         now: datetime | None = None,
+        identity: DialogueIdentity | None = None,
     ) -> AgentTurnResult:
         """跑一轮 ReAct：上下文 → LLM ⇄ 工具 → 最终文本。
 
         ``runtime`` 是服务端构造的 ``Identity``（工具层只从这里读身份，
         PRD FR-ADM-06 ③）；``history`` / ``persona`` / ``now`` 由调用方
         （N14 统一出口）提供，本方法不读 Redis / DB。
+
+        ``identity`` 是**本次会话的身份结论**（A1 `IdentityDecision` 的产物，
+        见 `identity_decision_to_result()`），决定人设、历史与记忆开关。
+        它与 ``runtime`` 是两个概念：前者说「这次认出来是谁」，后者说「哪个凭证在连」。
+        不传时按 `runtime.elder_id` 推断并打 `companion_identity_inferred` 告警——
+        员工/家属身份的 `elder_id` 恒为 None，推断结果会退化成 generic。
         """
         text = user_text.strip()
         if not text:
@@ -353,7 +371,12 @@ class CompanionAgent:
         self._guardrails.reset()
 
         messages = _build_turn_context(
-            runtime=runtime, user_text=text, history=history, persona=persona, now=now
+            runtime=runtime,
+            user_text=text,
+            history=history,
+            persona=persona,
+            now=now,
+            identity=identity,
         )
         if self._tools:
             messages.insert(len(messages) - 1, _tool_protocol_message(self._tools))

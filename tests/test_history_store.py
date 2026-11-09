@@ -299,6 +299,62 @@ async def test_completed_without_delivered_emits_warning(
     turn = await session.get(ConversationTurn, "turn-empty")
     assert turn is not None and turn.assistant_delivered_text is None, "不得凭空补内容"
 
+
+async def test_commit_fills_projection_when_response_layer_already_wrote_event(
+    session: AsyncSession, seeded: dict
+) -> None:
+    """响应层（dev-C 的 N07）先写 `response_completed` 时，commit 仍要补投影。
+
+    这是集成期最容易踩的一脚：事件已存在 → 若直接 return，`assistant_delivered_text`
+    永远为空，上下文里每一句助手回复都会消失。
+    """
+    await begin_turn(
+        session,
+        thread_id=seeded["thread_a"],
+        elder_id=seeded["elder_a"],
+        turn_id="turn-n07",
+        user_text="今天天气怎么样",
+    )
+    # 模拟响应层：末段 played 时先写完成事件（payload 里没有生成全文）
+    await append_event(
+        session,
+        thread_id=seeded["thread_a"],
+        event_type="response_completed",
+        payload={"total_segments": 2},
+        turn_id="turn-n07",
+        response_id="resp-n07",
+    )
+
+    await commit_response(
+        session,
+        turn_id="turn-n07",
+        response_id="resp-n07",
+        generated_text="今天晴，二十度。风不大。",
+        delivered_text="今天晴，二十度。",
+        status="completed",
+    )
+
+    turn = await session.get(ConversationTurn, "turn-n07")
+    assert turn is not None and turn.assistant_delivered_text == "今天晴，二十度。"
+    events = [
+        e
+        for e in await read_events(session, thread_id=seeded["thread_a"])
+        if e.event_type == "response_completed"
+    ]
+    assert len(events) == 1, "响应层已写过，commit 不得再写第二条"
+
+
+async def test_read_functions_work_without_explicit_session(seeded: dict) -> None:
+    """契约 §5.1 的读签名没有 `session`；上下文层就是那样调的，不得 TypeError。"""
+    import inspect
+
+    from app.services import history_service
+
+    for fn in (history_service.read_turns, history_service.read_events):
+        param = inspect.signature(fn).parameters["session"]
+        assert param.default is not inspect.Parameter.empty, f"{fn.__name__} 的 session 必须可省略"
+
+
 # ------------------------------------------------------------------ 5. 终态不被覆盖
 
 

@@ -7,7 +7,9 @@
 3. 无回应：重试到第 4 次触达后进 `missed_unconfirmed`，`retry_count=3`、
    `needs_escalation=True`（A12 的交接位）；
 4. 事件幂等：同 `(plan_id, scheduled_at)` 同内容返回同一 `reminder_id`，异内容抛冲突；
-5. 终态不覆盖：已定终态再写另一个 → `TerminalStateConflict`。
+5. 终态不覆盖：已定终态再写另一个 → `TerminalStateConflict`；
+6. **A12 建单**：`missed_unconfirmed` 落一张 `missed_medication` / yellow 工单，
+   且 `needs_escalation` 与「有没有建成单」互不替代。
 
 checkpointer 用**独立 schema + 独立池**（与生产同一条代码路径）；
 业务行用 savepoint 夹具，用例结束回滚。
@@ -215,6 +217,23 @@ async def test_no_answer_retries_then_missed(
     snapshot = await graph.aget_state(graph_config(reminder_id))
     assert snapshot.values["needs_escalation"] is True, "missed 必须交给 A12 建单"
     assert final.get("terminal") in (None, "missed_unconfirmed")
+
+    # A12：finalize 写完结态后建漏服单（表里没有 source 列，靠确定性单号幂等）
+    from sqlalchemy import select
+
+    from app.models.medication import WorkOrder
+
+    orders = list(
+        (
+            await session.execute(select(WorkOrder).where(WorkOrder.elder_id == seeded["elder_id"]))
+        ).scalars()
+    )
+    assert len(orders) == 1, "一次漏服只建一张单"
+    assert orders[0].type == "missed_medication"
+    assert orders[0].severity == "yellow", "漏服是黄档；判红会稀释急症"
+    assert orders[0].status == "new"
+    assert orders[0].assignee_id is None, "该长者未配责任护工 → 未分派是真实状态"
+    assert orders[0].order_no.startswith("WO-")
 
 
 # ------------------------------------------------------------------ 4. 事件幂等

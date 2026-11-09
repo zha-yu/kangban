@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Literal
 
 #: 工具执行函数：`(args, runtime) -> dict`。返回值必须是可 JSON 序列化的 dict，
 #: 由 `tool_executor` 统一脱敏后落库；抛异常必须用 `tool_executor` 里的四类域异常。
@@ -33,11 +33,15 @@ class ToolSpec:
     side_effect: bool
     idempotent: bool
     executor: ToolExecutorFn | None = None
+    #: `local` = 进程内实现（绑 `executor`）；`mcp` = 走 `app/mcp_client` 的远端工具。
+    #: 两者不能混：MCP 工具的失败分类必须由 `mcp_client.tool_error_class()` 说了算，
+    #: 否则同一个天气超时会出现两套 error_class。
+    transport: Literal["local", "mcp"] = "local"
 
     @property
     def wired(self) -> bool:
-        """是否已绑定实现。未绑定的工具被调用时一律 `not_found`。"""
-        return self.executor is not None
+        """是否可执行。本地工具看是否绑了实现；MCP 工具看客户端是否注入（由执行器判）。"""
+        return self.executor is not None or self.transport == "mcp"
 
 
 class ToolRegistry:
@@ -54,10 +58,18 @@ class ToolRegistry:
         self._specs[spec.name] = spec
 
     def bind(self, name: str, executor: ToolExecutorFn) -> None:
-        """绑定实现。同名重复绑定直接报错——静默覆盖会让「谁最后 import 谁生效」。"""
+        """绑定本地实现。同名重复绑定直接报错——静默覆盖会让「谁最后 import 谁生效」。
+
+        `transport="mcp"` 的工具**不允许**绑本地实现：那等于给同一个工具留两条执行路径，
+        出问题时无法判断走的是哪条、用的哪套超时与失败分类。
+        """
         spec = self._specs.get(name)
         if spec is None:
             raise KeyError(f"unknown tool: {name!r}")
+        if spec.transport == "mcp":
+            raise ValueError(
+                f"tool {name!r} is an MCP tool; inject an mcp_client instead of binding"
+            )
         if spec.executor is not None:
             raise ValueError(f"tool already bound: {name!r}")
         self._specs[name] = replace(spec, executor=executor)
@@ -117,6 +129,7 @@ def default_registry() -> ToolRegistry:
                 },
                 side_effect=False,
                 idempotent=True,
+                transport="mcp",  # N26：走 app/mcp_client，失败分类由 tool_error_class 定
             ),
             ToolSpec(
                 name="medication_confirm",
