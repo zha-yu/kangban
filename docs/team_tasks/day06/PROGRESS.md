@@ -25,6 +25,7 @@
 | `docs/plans/day06/dev-a-DAG.md` | 🚧 进行中（历史线、工具核心、用药子图已交付；剩 A12/A16/A17） |
 | `docs/plans/day06/dev-a-prompt-历史与工具.md` | 📝 草稿 |
 | `docs/plans/day06/dev-a-历史与工具执行计划.md` | 🚧 进行中（A02–A11、A13–A15 已交付；剩 A12 升级工单、A16 接 MCP、A17 收口） |
+| `docs/plans/day06/dev-b-状态中心与上下文记忆.md` | 📝 草稿 |
 | `docs/plans/day06/dev-c-Agent与统一出口.md` | 📝 草稿 |
 | `docs/plans/day06/handoff-A-to-C-segment-ack.md` | ✅ 已完成（P1 已裁决，1 个开放点留 S4） |
 

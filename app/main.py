@@ -48,6 +48,7 @@ from app.core.metrics import get_metrics_recorder
 from app.core.security import TokenExpiredError
 from app.core.trace import TraceIdMiddleware
 from app.db import session_factory
+from app.router.safety import SafetyDecision
 from app.services import identity_service, voiceprint_service
 from app.services.auth_service import (
     AuthConflictError,
@@ -64,6 +65,7 @@ from app.services.dialogue_service import (
     identity_decision_to_result,
 )
 from app.services.llm_service import LLMService
+from app.services.safety_service import escalate_safety_event
 
 
 @asynccontextmanager
@@ -167,9 +169,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         while len(thread_cache) > thread_cache_max:
             thread_cache.popitem(last=False)
 
+    # Day 6 N14：L0 安全一票否决（N27）的三表落库面——红档命中时 orchestrator
+    # 调本回调，事务内写 risk_events / work_orders / notifications 后 commit。
+    # 事务边界在本回调内闭合：escalation 失败上抛由 orchestrator 记日志不反抛。
+    async def _escalate_safety(
+        *,
+        elder_id: str,
+        decision: SafetyDecision,
+        thread_id: str,
+    ) -> bool:
+        async with session_factory() as session:
+            await escalate_safety_event(
+                session,
+                elder_id=UUID(elder_id),
+                decision=decision,
+                thread_id=thread_id,
+            )
+            await session.commit()
+        return True
+
     orchestrator = DialogueOrchestrator(
         service=dialogue_service,
         identity_thread_resolver=_resolve_identity,
+        safety_escalator=_escalate_safety,
     )
 
     async def _on_dialogue_final(

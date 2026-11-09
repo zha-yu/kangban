@@ -5,9 +5,13 @@
 1. `RedisTurnStore`：`<redis_key_prefix>:dialogue:<thread_id>:turns` 的轮次存取；
    `RPUSH + LTRIM` 在同一事务管线内原子完成，不增加 TTL；
 2. `DialogueService`：加载最近 5 轮 → `app.core.context.build_dialogue_messages` →
-   `LLMService.chat` → 写回本轮；generic 不读、不写任何历史；
+   `LLMService.chat` → 写回本轮；generic 不读、不写任何历史。Day 6 N14 后
+   respond() 保留为遗留路径（未注入统一出口时兼容），durable 事实源上移
+   `history_service`，Redis 只作最近 5 轮缓存（`load_cached_history`/`cache_turn`）；
 3. `DialogueOrchestrator`：ASR FINAL 的唯一 awaitable 入口，顺序固定为
-   A1 `identity_service`（身份 + thread）→ 最近 5 轮 → LLM → 写回 → 文本/degraded。
+   A1 `identity_service`（身份 + thread）→ **L0 安全一票否决（N27，先于一切路由）**
+   → 统一出口 `TurnService.handle_user_turn`（N14，注入 `turn_service` 时启用）
+   或遗留 respond() → 文本/degraded。
 
 边界（`docs/plans/day04/a2-impl-信令与对话.md` N04/N06）：
 
@@ -46,13 +50,25 @@ from app.core.context import (
     set_trace_id,
 )
 from app.core.metrics import Stopwatch, record_stage
+from app.core.runtime_context import Identity
+from app.router.safety import SEVERITY_RED, SafetyDecision, safety_check
 from app.services.llm_service import LLMService
 
 if TYPE_CHECKING:
     # A1 的 IdentityDecision 只用于类型标注；运行时不 import，避免 services 硬耦合。
     from app.services.identity_service import IdentityDecision
 
+    # N14 统一出口只走注入（运行时也不 import：turn_service → response_service
+    # → 本模块，顶层 import 会成环；运行时 import 放在 N14 分支方法内）。
+    from app.services.turn_service import TurnService
+
 logger = logging.getLogger("app.services.dialogue_service")
+
+# Day 6 N14 · L0 安全一票否决命中的模板话术（红档短路，不调 Agent）。
+# 口径：不诊断、安抚 + 告知已通知护工 + 指引 SOS 呼叫按钮（PRD §1.5 不替代 SOS）。
+SAFETY_VETO_REPLY_TEXT: str = (
+    "别担心，我已经帮您通知护工了，请先原地休息。紧急情况请按床头的呼叫按钮，我陪着您。"
+)
 
 # ------------------------------------------------------------------ C6 契约（contracts.md v1.2 修订）
 # 方向标记：C→S 客户端发，S→C 服务端发。
@@ -178,10 +194,16 @@ def _parse_turn(raw_text: str) -> DialogueTurn | None:
 
 @dataclass(frozen=True, slots=True)
 class DialogueReply:
-    """对话服务返回给编排/发送层的最小结果。"""
+    """对话服务返回给编排/发送层的最小结果。
+
+    `escalated_to_agent`：N14 断言面——True=正常路由（Agent/LLM 已执行）；
+    False=安全一票否决短路（模板话术，Agent 未被调用）。缺省 True 保证
+    遗留路径与既有比较断言不受影响。
+    """
 
     text: str
     degraded: bool
+    escalated_to_agent: bool = True
 
 
 class DialogueService:
@@ -276,6 +298,55 @@ class DialogueService:
         )
         return DialogueReply(text=reply.text, degraded=reply.degraded)
 
+    async def load_cached_history(
+        self, *, thread_id: str, identity: DialogueIdentity
+    ) -> tuple[list[DialogueTurn], bool]:
+        """最近 5 轮缓存读（N14：durable 事实源上移 history_service，Redis 只作缓存）。
+
+        generic 不读；Redis 故障退化为空历史（闲聊退化单进程短会话），
+        degraded=True 供统一出口补 `state_degraded` 状态事件留痕。
+        """
+        if identity.is_generic:
+            return [], False
+        try:
+            return await self._store.load_recent_turns(thread_id), False
+        except (RedisError, OSError, ValueError) as exc:
+            logger.warning(
+                "dialogue_history_unavailable",
+                extra={
+                    "trace_id": get_trace_id() or "-",
+                    "thread_id": thread_id,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return [], True
+
+    async def cache_turn(
+        self,
+        *,
+        thread_id: str,
+        identity: DialogueIdentity,
+        user_text: str,
+        assistant_text: str,
+    ) -> None:
+        """最近 5 轮缓存写（N14）；generic 不写，Redis 故障静默（不拖垮事实层）。"""
+        if identity.is_generic:
+            return
+        try:
+            await self._store.append_turn(
+                thread_id,
+                DialogueTurn(user=user_text, assistant=assistant_text),
+            )
+        except (RedisError, OSError, ValueError) as exc:
+            logger.warning(
+                "dialogue_writeback_failed",
+                extra={
+                    "trace_id": get_trace_id() or "-",
+                    "thread_id": thread_id,
+                    "error_type": type(exc).__name__,
+                },
+            )
+
 
 # ------------------------------------------------------------------ FINAL 编排入口
 
@@ -354,6 +425,18 @@ class PersonaProvider(Protocol):
     async def __call__(self, *, elder_id: str) -> PersonaContext | None: ...
 
 
+class SafetyEscalator(Protocol):
+    """N27 一票否决的三表落库面（risk_events / work_orders / notifications）。
+
+    装配层注入：内部开 session 调 `safety_service.escalate_safety_event` 并 commit，
+    本模块不开库连接。返回 True 表示升级已落库；异常由实现方自行决定上抛。
+    """
+
+    async def __call__(
+        self, *, elder_id: str, decision: SafetyDecision, thread_id: str
+    ) -> bool: ...
+
+
 _ORCHESTRATION_SEEN_CAPACITY = 512
 
 
@@ -367,6 +450,15 @@ def _validate_identity_result(result: IdentityThreadResult) -> None:
         or result.session_seq < 0
     ):
         raise ValueError("session_seq must be a non-negative int or None")
+
+
+def _device_identity(*, device_id: str, elder_id: str | None) -> Identity:
+    """A2 编排上下文 → runtime_context 设备身份（闸门③注入面；generic elder_id=None）。
+
+    只用于 N14 分支：Identity 会重校验 device_id/elder_id 的 UUID 规范形，
+    A1 传出的脏值在此显性失败而不是带病进统一出口。
+    """
+    return Identity(kind="device", device_id=device_id, elder_id=elder_id)
 
 
 class DialogueOrchestrator:
@@ -387,10 +479,16 @@ class DialogueOrchestrator:
         service: DialogueService,
         identity_thread_resolver: IdentityThreadResolver,
         persona_provider: PersonaProvider | None = None,
+        turn_service: TurnService | None = None,
+        safety_escalator: SafetyEscalator | None = None,
     ) -> None:
         self._service = service
         self._identity_thread_resolver = identity_thread_resolver
         self._persona_provider = persona_provider
+        # N14：注入统一出口后走七步契约路径；None 时保留 Day 4/5 遗留 respond() 路径
+        self._turn_service = turn_service
+        # N27：红档命中时的三表落库面；None 时只短路不落库（测试桩期）
+        self._safety_escalator = safety_escalator
         # 同 (device_id, turn_id) 只编排一次；进程内去重，不做分布式锁
         self._seen_turns: OrderedDict[tuple[str, str], None] = OrderedDict()
 
@@ -405,7 +503,14 @@ class DialogueOrchestrator:
     ) -> DialogueReply | None:
         """FINAL 文本 → 文本/degraded；空文本与重复 turn 返回 None，零 LLM 调用。"""
         final_text = text.strip()
-        if not device_id or not trace_id or not turn_id or not final_text:
+        if not device_id or not trace_id or not turn_id:
+            return None
+        if not final_text:
+            # ASR 空文本前置拦截（Day 4 已存在）；N14 补断言日志便于对账
+            logger.info(
+                "dialogue_empty_final_ignored",
+                extra={"trace_id": trace_id, "device_id": device_id, "turn_id": turn_id},
+            )
             return None
 
         dedupe_key = (device_id, turn_id)
@@ -463,11 +568,35 @@ class DialogueOrchestrator:
                     },
                 )
 
+                # ---------- L0 安全一票否决（N27；先于一切路由，FR-DLG-01/AC-04） ----------
+                decision = safety_check(final_text)
+                if decision.is_sensitive and decision.severity == SEVERITY_RED:
+                    return await self._veto_on_safety(
+                        identity=identity,
+                        decision=decision,
+                        thread_id=thread_id,
+                        device_id=device_id,
+                        turn_id=turn_id,
+                        trace_id=trace_id,
+                    )
+
                 persona: PersonaContext | None = None
                 if not identity.is_generic and self._persona_provider is not None:
                     elder_id = identity.elder_id
                     if elder_id is not None:
                         persona = await self._persona_provider(elder_id=elder_id)
+
+                if self._turn_service is not None:
+                    # N14 统一出口：七步契约（事实先落 → 状态 → 生成 → 记生成 → 改状态 → 下发）
+                    return await self._handle_with_turn_service(
+                        result=result,
+                        device_id=device_id,
+                        final_text=final_text,
+                        thread_id=thread_id,
+                        identity=identity,
+                        persona=persona,
+                        turn_id=turn_id,
+                    )
 
                 return await self._service.respond(
                     thread_id=thread_id,
@@ -482,8 +611,140 @@ class DialogueOrchestrator:
             self._seen_turns.pop(dedupe_key, None)
             raise
 
+    async def _veto_on_safety(
+        self,
+        *,
+        identity: DialogueIdentity,
+        decision: SafetyDecision,
+        thread_id: str,
+        device_id: str,
+        turn_id: str,
+        trace_id: str,
+    ) -> DialogueReply:
+        """红档命中：N27 三表落库 + 模板话术短路，不调 Agent（escalated_to_agent=False）。
+
+        - generic（elder_id 不可得）无法落 risk_events（elder_id 非空约束）：跳过落库；
+        - 装配层未注入 escalator（桩期）：短路生效，三表缺位告警留痕；
+        - 升级落库失败不拖垮否决短路（长者侧优先收到安抚与 SOS 指引）。
+        """
+        if identity.is_generic or identity.elder_id is None:
+            logger.warning(
+                "safety_veto_generic_no_escalation",
+                extra={
+                    "trace_id": trace_id,
+                    "device_id": device_id,
+                    "turn_id": turn_id,
+                    "thread_id": thread_id,
+                    "category": decision.category,
+                },
+            )
+        elif self._safety_escalator is None:
+            logger.warning(
+                "safety_escalator_missing",
+                extra={
+                    "trace_id": trace_id,
+                    "device_id": device_id,
+                    "turn_id": turn_id,
+                    "thread_id": thread_id,
+                },
+            )
+        else:
+            try:
+                await self._safety_escalator(
+                    elder_id=identity.elder_id,
+                    decision=decision,
+                    thread_id=thread_id,
+                )
+            except Exception as exc:
+                logger.error(
+                    "safety_escalation_failed",
+                    extra={
+                        "trace_id": trace_id,
+                        "device_id": device_id,
+                        "turn_id": turn_id,
+                        "thread_id": thread_id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+        logger.warning(
+            "safety_veto_triggered",
+            extra={
+                "trace_id": trace_id,
+                "device_id": device_id,
+                "turn_id": turn_id,
+                "thread_id": thread_id,
+                "category": decision.category,
+                "severity": decision.severity,
+                "matched_rule": decision.matched_rule,
+                "escalated_to_agent": False,
+            },
+        )
+        return DialogueReply(text=SAFETY_VETO_REPLY_TEXT, degraded=True, escalated_to_agent=False)
+
+    async def _handle_with_turn_service(
+        self,
+        *,
+        result: IdentityThreadResult,
+        device_id: str,
+        final_text: str,
+        thread_id: str,
+        identity: DialogueIdentity,
+        persona: PersonaContext | None,
+        turn_id: str,
+    ) -> DialogueReply:
+        """N14 分支：组装 TurnRuntime → 统一出口七步 → 组装 DialogueReply。
+
+        Redis 最近 5 轮只作缓存（读喂上下文、写回本轮）；generic 不读不写，
+        读失败退化为空历史并让统一出口补 state_degraded。
+        """
+        # 运行时 import 避环：turn_service → response_service → 本模块（见文件头说明）
+        from app.services.turn_service import TurnRuntime
+
+        history, history_degraded = await self._service.load_cached_history(
+            thread_id=thread_id, identity=identity
+        )
+        runtime = TurnRuntime(
+            identity=_device_identity(device_id=device_id, elder_id=identity.elder_id),
+            thread_id=thread_id,
+            history=tuple(history),
+            persona=persona,
+            identity_source=identity.source,
+            history_degraded=history_degraded,
+        )
+        handle = await self._turn_service.handle_user_turn(
+            runtime, final_text, call_id=None, turn_id=turn_id
+        )
+        outcome = self._turn_service.outcome_of(turn_id)
+        if outcome is None:
+            # 统一出口承诺：返回 handle 时事实面必已落缓存；缺失属编程错误，显性失败
+            raise RuntimeError(f"turn_service produced no outcome for turn {turn_id!r}")
+        await self._service.cache_turn(
+            thread_id=thread_id,
+            identity=identity,
+            user_text=final_text,
+            assistant_text=outcome.text,
+        )
+        logger.info(
+            "dialogue_reply_via_unified_exit",
+            extra={
+                "trace_id": get_trace_id() or "-",
+                "device_id": device_id,
+                "turn_id": turn_id,
+                "thread_id": thread_id,
+                "response_id": outcome.response_id,
+                "handle_turn_id": handle.turn_id,
+                "degraded": outcome.degraded,
+            },
+        )
+        return DialogueReply(
+            text=outcome.text,
+            degraded=outcome.degraded,
+            escalated_to_agent=outcome.escalated_to_agent,
+        )
+
 
 __all__ = [
+    "SAFETY_VETO_REPLY_TEXT",
     "THREAD_ID_PATTERN",
     "DialogueOrchestrator",
     "DialogueReply",
@@ -493,6 +754,7 @@ __all__ = [
     "IdentityThreadResult",
     "PersonaProvider",
     "RedisTurnStore",
+    "SafetyEscalator",
     "ThreadInfo",
     "TtsTextMsgV2",
     "identity_decision_to_result",
