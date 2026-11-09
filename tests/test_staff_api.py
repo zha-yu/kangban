@@ -21,7 +21,7 @@ from collections.abc import AsyncIterator, Iterator
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
     AsyncEngine,
@@ -417,3 +417,217 @@ async def test_update_role_noop_no_sync(client: AsyncClient, seeded: AsyncConnec
         await session.execute(select(StaffAccount).where(StaffAccount.staff_id == new_staff_id))
     ).scalar_one()
     assert staff.token_version == 0
+
+
+# ---------------------------------------------------------------- 改绑 PUT /api/staff/{staff_id}/elders（E20 · N19）
+
+
+async def test_reassign_no_token_401(client: AsyncClient) -> None:
+    """无凭证 → 401 TOKEN_INVALID。"""
+    resp = await client.put(
+        f"/api/staff/{CAREWORKER_ID}/elders", json={"elder_ids": [str(ELDER_ID)]}
+    )
+    assert resp.status_code == 401
+
+
+async def test_reassign_non_admin_403(client: AsyncClient) -> None:
+    """护工 token 调改绑 → 403 ROLE_FORBIDDEN（admin only）。"""
+    resp = await client.put(
+        f"/api/staff/{CAREWORKER_ID}/elders",
+        json={"elder_ids": [str(ELDER_ID)]},
+        headers=_worker_headers(),
+    )
+    assert resp.status_code == 403
+    assert resp.json()["code"] == "ROLE_FORBIDDEN"
+
+
+async def test_reassign_staff_not_found_404(client: AsyncClient) -> None:
+    """目标 staff 不存在 → 404 NOT_FOUND。"""
+    resp = await client.put(
+        f"/api/staff/{uuid.uuid4()}/elders",
+        json={"elder_ids": []},
+        headers=_admin_headers(),
+    )
+    assert resp.status_code == 404
+    assert resp.json()["code"] == "NOT_FOUND"
+
+
+async def test_reassign_admin_target_403(client: AsyncClient) -> None:
+    """目标 staff 是 admin → 403 ROLE_FORBIDDEN（裁决 D-01）。"""
+    resp = await client.put(
+        f"/api/staff/{ADMIN_ID}/elders",
+        json={"elder_ids": [str(ELDER_ID)]},
+        headers=_admin_headers(),
+    )
+    assert resp.status_code == 403
+    assert resp.json()["code"] == "ROLE_FORBIDDEN"
+
+
+async def test_reassign_unknown_elder_404(client: AsyncClient) -> None:
+    """请求体里有不存在的 elder → 404 NOT_FOUND。"""
+    ghost = uuid.uuid4()
+    resp = await client.put(
+        f"/api/staff/{CAREWORKER_ID}/elders",
+        json={"elder_ids": [str(ghost)]},
+        headers=_admin_headers(),
+    )
+    assert resp.status_code == 404
+    assert resp.json()["code"] == "NOT_FOUND"
+
+
+async def test_reassign_success_add_new(
+    client: AsyncClient, seeded: AsyncConnection
+) -> None:
+    """CAREWORKER_ID 当前无 assignment → PUT [ELDER_ID] → added=[ELDER_ID]。"""
+    resp = await client.put(
+        f"/api/staff/{CAREWORKER_ID}/elders",
+        json={"elder_ids": [str(ELDER_ID)]},
+        headers=_admin_headers(),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["staff_id"] == str(CAREWORKER_ID)
+    assert body["added"] == [str(ELDER_ID)]
+    assert body["removed"] == []
+    # trace_id 在响应 header 里（成功响应体是 Pydantic 模型，不带 trace_id 字段）
+    assert "x-trace-id" in {k.lower() for k in resp.headers}
+
+    # DB 验证：确实写入了 assignment
+    session = AsyncSession(bind=seeded, expire_on_commit=False)
+    rows = (
+        (
+            await session.execute(
+                select(ElderStaffAssignment).where(
+                    ElderStaffAssignment.staff_id == CAREWORKER_ID
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].elder_id == ELDER_ID
+    assert rows[0].relation == "primary_care"
+
+
+async def test_reassign_success_diff_remove(
+    client: AsyncClient, seeded: AsyncConnection
+) -> None:
+    """已有 [ELDER_A, ELDER_B] → 只留 [ELDER_B] → removed=[ELDER_A]。
+
+    关键前置：ELDER_A 必须有至少一位其他 primary_care，否则移 CAREWORKER_ID 会触发 409。
+    """
+    elder_b = Elder(
+        elder_id=uuid.UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1"),
+        name="长者乙",
+        status="active",
+    )
+    # 再造一个 staff 当 ELDER_ID 的兜底 primary_care
+    backup = StaffAccount(
+        staff_id=uuid.UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2"),
+        name="备用护工",
+        role="care_worker",
+        phone="13700000020",
+        password_hash="$2b$12$placeholderplaceholderplaceholderplaceholder",
+        status="active",
+        token_version=0,
+    )
+    sess = AsyncSession(
+        bind=seeded, expire_on_commit=False, join_transaction_mode="create_savepoint"
+    )
+    # 父表先 flush，再插子表（AGENTS：多表带外键必须父表先 flush）
+    sess.add_all([elder_b, backup])
+    await sess.flush()
+    sess.add_all(
+        [
+            ElderStaffAssignment(
+                elder_id=ELDER_ID, staff_id=CAREWORKER_ID, relation="primary_care"
+            ),
+            ElderStaffAssignment(
+                elder_id=elder_b.elder_id, staff_id=CAREWORKER_ID, relation="primary_care"
+            ),
+            # 兜底：backup 也是 ELDER_ID 的 primary_care，这样 CAREWORKER_ID 移除后不触发 gap
+            ElderStaffAssignment(
+                elder_id=ELDER_ID, staff_id=backup.staff_id, relation="primary_care"
+            ),
+        ]
+    )
+    await sess.commit()
+    await sess.close()
+
+    # 只保留 ELDER_B → ELDER_ID 应出现在 removed 里
+    resp = await client.put(
+        f"/api/staff/{CAREWORKER_ID}/elders",
+        json={"elder_ids": [str(elder_b.elder_id)]},
+        headers=_admin_headers(),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["staff_id"] == str(CAREWORKER_ID)
+    assert body["added"] == []
+    assert body["removed"] == [str(ELDER_ID)]
+
+    # DB 验证：CAREWORKER_ID 只剩 ELDER_B
+    session = AsyncSession(bind=seeded, expire_on_commit=False)
+    rows = (
+        (
+            await session.execute(
+                select(ElderStaffAssignment.elder_id).where(
+                    ElderStaffAssignment.staff_id == CAREWORKER_ID
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert rows == [elder_b.elder_id]
+
+
+async def test_reassign_primary_care_gap_409(
+    client: AsyncClient, seeded: AsyncConnection
+) -> None:
+    """CAREWORKER_ID 是 ELDER_ID 唯一的 primary_care → 清空绑定 → 409 CONFLICT。"""
+    sess = AsyncSession(
+        bind=seeded, expire_on_commit=False, join_transaction_mode="create_savepoint"
+    )
+    sess.add(
+        ElderStaffAssignment(
+            elder_id=ELDER_ID, staff_id=CAREWORKER_ID, relation="primary_care"
+        )
+    )
+    await sess.commit()
+    await sess.close()
+
+    resp = await client.put(
+        f"/api/staff/{CAREWORKER_ID}/elders",
+        json={"elder_ids": []},
+        headers=_admin_headers(),
+    )
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body["code"] == "CONFLICT"
+    assert body["trace_id"] != "-"
+    # 错误体是契约格式，不是 FastAPI 默认的 `{"detail": "..."}`
+    assert "detail" in body
+
+    # 原绑定不应受影响
+    session = AsyncSession(bind=seeded, expire_on_commit=False)
+    count = (
+        await session.execute(
+            select(func.count())
+            .select_from(ElderStaffAssignment)
+            .where(ElderStaffAssignment.staff_id == CAREWORKER_ID)
+        )
+    ).scalar_one()
+    assert count == 1
+
+
+async def test_reassign_bad_uuid_path_400(client: AsyncClient) -> None:
+    """路径参数 staff_id 不是合法 UUID → 400 BAD_REQUEST（契约 §7：路径格式错归 BAD_REQUEST）。"""
+    resp = await client.put(
+        "/api/staff/not-a-valid-uuid/elders",
+        json={"elder_ids": []},
+        headers=_admin_headers(),
+    )
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "BAD_REQUEST"
