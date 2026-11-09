@@ -348,22 +348,6 @@ async def test_apply_generic_identity_once(rig: IdentityRig) -> None:
     await _expect_no_frame(ws)
 
 
-async def test_begin_identity_recheck_allows_second_result(rig: IdentityRig) -> None:
-    conn, ws = await rig.connect()
-    assert await signaling.apply_voice_identity(conn.device_id or "", elder_id="elder-1") is True
-    first = await _next_frame(ws)
-    assert first == {"type": "identity_result", "source": "voice", "elder_id": "elder-1"}
-
-    assert await signaling.begin_identity_recheck(conn.device_id or "") is True
-    assert conn.identity_state is signaling.IdentityState.UNKNOWN
-    assert conn.identity_result_sent is False
-    assert conn.active_elder_id is None
-
-    # 复检后允许再下发一次新 voice 结果
-    assert await signaling.apply_voice_identity(conn.device_id or "", elder_id="elder-1") is True
-    assert await _next_frame(ws) == first
-
-
 async def test_identity_confirm_calls_registered_handler(rig: IdentityRig) -> None:
     conn, ws = await rig.connect()
     await signaling.request_identity_confirmation(conn.device_id or "", reason="low_confidence")

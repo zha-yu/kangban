@@ -112,34 +112,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         cached = thread_cache.get(cache_key)
         if cached is not None:
             thread_cache.move_to_end(cache_key)
-            # 后续 utterance 交给 A1 静默复检；无音频时沿用当前 thread
-            if audio_bytes is None:
-                return cached
-            async with session_factory() as session:
-                try:
-                    changed = await identity_service.recheck_session_identity(
-                        session,
-                        device_id=UUID(device_id),
-                        current_thread_id=cached.thread_id,
-                        audio_bytes=audio_bytes,
-                    )
-                except voiceprint_service.VoiceprintInvalidAudio:
-                    # 语音段过短/格式异常：不打断当前身份，继续沿用当前 thread
-                    logger.warning(
-                        "voiceprint_recheck_invalid_audio",
-                        extra={"trace_id": trace_id, "device_id": device_id},
-                    )
-                    return cached
-            if changed is None:
-                return cached
-            if changed.thread_id is None:
-                # 旧 thread 已在 A1 结束；清缓存，等 confirm/timeout 再建新 thread
-                thread_cache.pop(cache_key, None)
-            await signaling.begin_identity_recheck(device_id)
-            await _publish_identity(device_id, changed)
-            result = identity_decision_to_result(changed)
-            thread_cache[cache_key] = result
-            return result
+            # 静默复检已移除（TD v1.9 主理人裁决，2026-11-09）：会话内身份以首轮
+            # 校验与主动确认为准，后续 utterance 直接沿用当前 thread
+            return cached
 
         async with session_factory() as session:
             try:

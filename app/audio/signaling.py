@@ -134,7 +134,6 @@ __all__ = [
     "TtsTextMsg",
     "apply_generic_identity",
     "apply_voice_identity",
-    "begin_identity_recheck",
     "dispatch_asr_event",
     "request_identity_confirmation",
     "set_dialogue_final_handler",
@@ -830,26 +829,6 @@ async def apply_generic_identity(device_id: str) -> bool:
     _cancel_identity_timer(conn)
     conn.pending_ask_id = None
     return _send_identity_result(conn, source="generic", elder_id=None)
-
-
-async def begin_identity_recheck(device_id: str) -> bool:
-    """换人/复检前复位 C5 轮次：保留设备绑定，清空本轮结果，允许再次下发。
-
-    A1 `recheck_session_identity` 返回新决策后调用；A2 不自行创建 thread。
-    """
-    conn = _registry.get(device_id)
-    if conn is None or not conn.authed:
-        return False
-    if conn.identity_state is IdentityState.CLOSED:
-        return False
-
-    _cancel_identity_timer(conn)
-    conn.pending_ask_id = None
-    conn.active_elder_id = None
-    conn.identity_result_sent = False
-    conn.identity_state = IdentityState.UNKNOWN
-    logger.info("identity_recheck_reset", extra=_log_extra(conn))
-    return True
 
 
 async def _handle_identity_confirm(conn: ConnectionContext, message: Mapping[str, Any]) -> None:
