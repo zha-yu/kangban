@@ -1,4 +1,4 @@
-> 状态：已冻结　｜　版本：v1.0　｜　日期：2026-11-09
+> 状态：已冻结　｜　版本：v1.2　｜　日期：2026-11-09
 > 关联：docs/plans/day06/day-06-长者侧Agent闭环.md（§3.1 节点表、§9.1 落地结构）｜docs/team_tasks/day06/dev-a~dev-d 四张任务卡
 > 上游依据：PRD v2.9 §6.1 Day 6 行（验收）｜技术设计文档 v2.0 §3.4/§3.6/§8.3（实现）｜ER v0.5 §4.3.11–4.3.13（字段）
 > 变更记录见文末
@@ -96,6 +96,13 @@
 
 **服务端校验四步**（任一不过即丢弃并记 `response_ack_rejected`）：
 ① `response_id` 存在 → ② `epoch` 等于当前会话 epoch → ③ `response.status == playing` → ④ `segment_id > last_acked_segment`。
+
+**v1.2 补充口径（J3 核对裁决，2026-11-09 主理人确认）**：
+
+- **canceled 的 segment_id 取值**：= 最后一个已确认 `played` 段的 segment_id；**尚无一完整播放段时为 `-1`**（哨兵，0 基合法域 [0, total-1] 之外，不与合法段号混淆）。服务端 `last_acked_segment` 初始值同为 `-1`，两端同构；`response_interrupted.last_played_segment` 与 `delivered_text`（只拼 played 段）沿用同值。
+- **canceled 类 ack 的校验范围**：只走 ①②③，**跳过规则④**（陈述性上报，不受单调性约束）；`playing`/`played` 走完整四步。
+- **rejected_reason 枚举**（`response_ack_rejected` 日志携带，服务端内部口径）：`unknown_response / stale_epoch / wrong_status / not_monotonic`。
+- **末段 played 触发**：以客户端 `played` ack 为准，`response_completed` 只由末段 played 触发；可靠性兜底不改契约——客户端「尽力而为 + 1 次重发」照旧，WebRTC 轨无可靠 ended 事件时 pad 端可用「该段合成音频时长 + at_ms 单调时钟计时」触发 played（复用现有信号，不新增消息类型）；服务端另以「下一代 epoch 出现 / `response_interrupted` / WS 45s 判死」作为 playing 的隐式关闭。
 
 **迟到回调为什么两条都要校验**：只校验 `epoch` 时，同一 epoch 内被打断的回复仍可能被后续 ack 追认；`epoch` 负责"跨代淘汰"，`status` 负责"同代内打断后的追认拦截"。
 
@@ -217,3 +224,5 @@ body   { "elder_ids": ["uuid", ...] }     # 全量覆盖式替换
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-09 | 首版并冻结：五个标识、12 类事件、`tts_text` v2 与 `segment_ack`、`HistoryStore`/`StateSnapshot`/`ToolResult`/`MCPResult` 四组内部契约、a0 E20、三迁移落地结果、两条禁区（无第三方分类 API、不提前建路由表） |
+| v1.1 | 2026-11-09 | 主理人裁决（C-0-5/C-0-6）：N27 通知环节提前——新增 0011 迁移建 `notifications` 表 + `app/models/notifications.py` ORM（仅此一笔迁移/一张表解禁）；N27 命中写护工通知（`status=generated`，`dedupe_key` 部分唯一防重，落库即视为已通知）；mock-operations 与家属通知仍留 Day 8，范围不变 |
+| v1.2 | 2026-11-09 | J3 核对裁决（主理人确认，dev-D 提清单）：`canceled.segment_id` 无一完整播放段时取 `-1` 哨兵（服务端 `last_acked_segment` 初始同值）；canceled 类 ack 跳过校验④；`rejected_reason` 四枚举（unknown_response/stale_epoch/wrong_status/not_monotonic）；末段 played 触发与三层兜底口径。字段本身零增删，§4.2 增补充口径块；protocol.ts 注释同步由 dev-D 落 |

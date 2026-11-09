@@ -1,4 +1,4 @@
-> 状态：草稿　｜　版本：v1.1　｜　日期：2026-11-09
+> 状态：草稿　｜　版本：v1.2　｜　日期：2026-11-09
 > 关联：docs/team_tasks/day06/dev-c-Agent与统一出口.md（任务卡 v1.3）｜docs/plans/day06/day-06-长者侧Agent闭环.md（主计划 v3.0，节点规格唯一事实源）｜docs/plans/day06/d-DAG.md（顺序源 v1.0）｜docs/team_tasks/day06/contracts.md（冻结契约 v1.0）｜dev-a/dev-b/dev-d 三张同日任务卡
 > 上游依据：技术设计文档 line 822-834（§6.1 ReAct）、line 836-846（§6.2 护栏）、line 860-869（§6.4 四类失败）｜PRD line 266-275（FR-DLG-01~10）、line 485（AC-04）、line 516（AC-35）、FR-CON-01/02｜AGENTS.md §5（安全审查清单）、§7（硬性数值）
 > 变更记录见文末
@@ -33,6 +33,7 @@
 - 拟题原则：覆盖闲聊/点播/用药查询/天气/告别等高频场景，**刻意混入易误杀表达**（「心里难受」「腰酸背疼」「想起去世的老伴」等情绪表达不触发急症口径的边界样本），与 FR-DLG-07 敏感边界集互斥。
 - 用途：`tests/test_safety.py` 断言 `sum(safety_check(s).is_sensitive for s in NORMAL_CORPUS) <= 2`。
 - 语料定稿后在此回填：拟题时间、条数、易误杀样本数、实测误报数。
+- **已回填（2026-11-09，S1 验收）**：`tests/fixtures/safety_normal_corpus.py` 定稿 50 句（闲聊 10/点播 8/用药查询 8/天气时间 6/告别问候 6/播放控制与其他 6/易误杀 6——心里难受、腰酸背疼、想起去世的老伴、摔跤已恢复、差点摔倒、头疼已缓解）；实测误报 **0**（预算 ≤2，`tests/test_safety.py::test_normal_corpus_false_positive_budget` 可复算）；与 FR-DLG-07 边界四类互斥已断言。
 
 ---
 
@@ -235,7 +236,7 @@ uv run python scripts/update_progress.py --check                     # 退出码
 
 | 时点 | 对象 | 我给出 | 我要到 | 完成判据 |
 | --- | --- | --- | --- | --- |
-| J3 · W3 末 | dev-D | `tts_text` v2 字段表、`segment_ack` 服务端校验四步 | 前端 interface 定义 | TypedDict ↔ interface 逐字段对照通过，L6 释放 |
+| J3 · W3 末 | dev-D | `tts_text` v2 字段表、`segment_ack` 服务端校验四步 | 前端 interface 定义 | TypedDict ↔ interface 逐字段对照通过，L6 释放。**已完成核对（2026-11-09）**：① protocol.ts ↔ contracts.md 零差异（服务端 TypedDict 待 N07 落）；② 0 基双方确认；③ 末段 played 以客户端 ack 为准 + 计时兜底不改契约；④ 无一完整播放时 `canceled.segment_id = -1`（哨兵，主理人确认）；⑤ rejected_reason 四枚举。已登记 contracts.md v1.2 |
 | J4 · W4 末 | dev-A | Agent 侧工具调用点、四类失败预期行为 | `execute()` 与 `ToolResult` 实现 | 四类失败各跑一条留证据 |
 | J7 · W4 末 | dev-A | `get_weather` 入参/返回 schema、`MCPResult` 错误映射（我持有 L9） | N26 的 mcp 分支接入 | 「今天天气」经 MCP 返回；越权被拒留审计 |
 | J5 · W5 末 | dev-A/B/D | 真实一轮的 `trace_id` 与事件流水 | 事件落库、ack 落库 | 同一 `trace_id` 串起 asr→turn→response→ack |
@@ -269,3 +270,4 @@ uv run python scripts/update_progress.py --check                     # 退出码
 | --- | --- | --- |
 | v1.0 | 2026-11-09 | 首版：通读 PRD/TD/主计划/DAG/冻结契约/任务卡与 dev-C 相关代码后制定；三项已确认裁决（全量照任务卡、文件名、先桩后并）+ 两项待报备裁决（Q-1 安全语料来源、Q-2 N27 通知形态）；8 节点拆为 C-1~C-8，S0–S5 六阶段逐步确认制；交付物规格 11 项、自检 9 命令、风险 10 条 |
 | v1.1 | 2026-11-09 | 主理人裁决落档：Q-1 → dev-C 自拟 50 例语料（C-0-4）；Q-2 → 方案 A 提前建 `notifications` 表，N27 三表同事务落库、落库即视为已通知（C-0-5）；0011 迁移 + ORM 授权 dev-C 建、禁触目录仅限该笔解禁（C-0-6）。S1 由四节点变五步（+0011，约 9.5h），N27 验收补通知三表齐与 dedupe 断言，交付物表 +2 项、自检 +alembic 三次验证、风险 R-10 关闭并新增 R-11/R-12 |
+| v1.2 | 2026-11-09 | J3 核对完成并登记 contracts.md v1.2（dev-D 提清单、主理人确认）：protocol.ts ↔ 契约零差异；0 基确认；末段 played 以客户端 ack 为准 + 计时兜底不改契约；canceled 无一完整播放取 -1 哨兵；rejected_reason 四枚举。dev-D 侧 protocol.ts 注释同步待其落（frontend/ 在我禁触清单） |
