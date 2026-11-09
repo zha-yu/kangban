@@ -26,7 +26,7 @@
 | A09 | 子图骨架：`MedicationState` + 五个节点签名 | 1.0 | ✅ | N10 |
 | A10 | `wait_confirm` + `interrupt` 恢复路径 | 1.0 | ✅ | N10 |
 | A11 | 重试 ≤3 + 终态四值分流 | 0.5 | ✅ | N10 |
-| A12 | 升级工单（经 `medication_service` → `work_orders`） | 1.0 | ⬜ | N10 |
+| A12 | 升级工单（经 `medication_service` → `work_orders`） | 1.0 | ⬜（接口已定，待 C 确认后落实现） | N10 |
 | A13 | `tool_registry.py`：白名单 + 参数 schema | 1.0 | ✅ | N12 |
 | A14 | `tool_executor`：身份注入 + 四类失败 + 审计 | 1.5 | ✅ | N12 |
 | A15 | `tool_executor`：`tool_executions` 幂等 | 1.0 | ✅ | N12 |
@@ -189,5 +189,6 @@ A00 ✅ ── A01 ✅ ── A02 ── A03 ── A04 ── A05 ── A06 �
 | --- | --- | --- |
 | v1.0 | 2026-11-09 | 首版：18 个执行节点（合计 21.0h，已完成 4.0h）、16 条内部边 + 3 个外部等待点、4 道门禁、4 条回退；明确「单线程 + 外部阻塞」的真实风险结构 |
 | v1.1 | 2026-11-09 | 开工执行：A02–A06、A13–A15 标记完成（累计 13.0h，剩 8.0h）；G-A2 通过。执行中修正两处设计缺陷：`read_turns` 改按 `turn_started.seq` 排序（`now()` 同事务撞同一时间戳）、`finish_turn` 对 generic 轮次补 `turn_completed` 事件（原实现会让通用模式永远不闭合） |
+| v1.4 | 2026-11-09 | A12 前置：新增 `docs/plans/day06/a12-工单建单服务接口设计.md` v1.0（只定签名与幂等键，未落实现）——与 C 的 N27 共用唯一建单口 `open_work_order`/`transition`，四元幂等键 `(elder_id, order_type, source_type, source_id)`，并请求 C 把两条索引并入 0011；A12 由「未开始」改为「接口已定，待 C 确认」 |
 | v1.3 | 2026-11-09 | 接收两则转达：① J3 **通过**（`tts_text` v2 / `segment_ack` 字段一致），dev-D 进 S2；② **0011 迁移归 dev-C**（写锁 L11），A/B 本日不再新建迁移——A 线剩余 A12/A16/A17 均不涉及新表，不受影响；若 A12 后续确需新列，提给 C 并入 0011 |
 | v1.2 | 2026-11-09 | 用药线落地：A07（按主理人签字改用 `sa.table()` + `TODO(E1)`）、A08 checkpointer（独立 schema + 独立池，`search_path` 钉进连接串）、A09–A11 子图（`interrupt` 恢复、四次触达、终态写一次）；累计 17.0h，剩 4.0h。G-A3 子图部分通过。新增 Windows 本地约束：psycopg 异步连接不支持 ProactorEventLoop，`tests/conftest.py` 统一换 Selector 策略 |
