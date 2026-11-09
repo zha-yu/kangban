@@ -26,6 +26,12 @@ START → remind → wait_confirm ─┬─ 说了"吃了"   → mark_taken  ┐
 4. **终态只写一次**。`finalize` 调 `medication_service.set_terminal`，后者对"已定终态再改"
    抛 `TerminalStateConflict`；补确认（AC-08）走 `late_taken` 追加，不覆盖原终态。
 
+**E2 已接（2026-11-09 21:10）**：`remind` 经信令层 `deliver()` 把提醒以 `tts_text`
+下发到长者绑定设备——不带 `response_id`/`epoch`/`segment`（它不属于任何回复流，
+客户端按整段一播，契约 §4.1 的可选字段口径）。触达回执 = **投递**结果：
+`voice_dispatched`（任一台设备收下）/ `device_offline`（都离线）/ `no_bound_device`
+（没绑设备）；「是否真被听到」由前端 played ack 才能闭环，主动触达暂无此闭环，见交接件。
+
 **A12 已接（2026-11-09）**：`finalize` 在写完结态后，对 `missed_unconfirmed` 建漏服工单
 （`work_order_service.open_missed_medication`）。**先写终态、再建单**——终态是事实，
 建单是派单动作；建单失败时事实仍成立，重跑 `finalize` 可凭终态补建（两侧都幂等）。
@@ -130,17 +136,87 @@ async def _escalate_missed_medication(session: Any, state: MedicationState) -> N
     )
 
 
-def build_medication_graph(*, session: Any, checkpointer: Any) -> Any:
-    """编译子图。`session` 是本次运行的事务会话，`checkpointer` 由 N10 的 A08 提供。"""
+async def _deliver_reminder(
+    session: Any,
+    deliver_fn: Any,
+    *,
+    elder_id: uuid.UUID,
+    reminder_id: uuid.UUID,
+) -> str:
+    """把用药提醒下发到长者绑定设备，返回触达回执（E2）。
+
+    消息形状：`{"type": "tts_text", "text": ..., "degraded": false}`——**不带**
+    `response_id` / `epoch` / `segment_id`。它不属于任何回复流，是子图的主动触达；
+    契约 §4.1 里这些字段全部可选，缺省时客户端按整段一播，pad 侧零改动。
+
+    回执三态（如实记录，不做美化和重试——重试是 scheduler 的职责）：
+
+    - `voice_dispatched`：至少一台绑定设备把消息收进了发送队列；
+    - `device_offline`：有绑定设备但全部离线/未鉴权；
+    - `no_bound_device`：根本没绑设备——运维缺口，同样不算本轮失败。
+    """
+    drug_name = await medication_service.get_drug_name(session, event_id=reminder_id)
+    text = (
+        f"到吃药时间了，请确认{drug_name}是否已经服用。"
+        if drug_name
+        else "到吃药时间了，请确认您的药是否已经服用。"
+    )
+    message = {"type": "tts_text", "text": text, "degraded": False}
+
+    device_ids = await medication_service.list_bound_device_ids(session, elder_id=elder_id)
+    if not device_ids:
+        logger.warning(
+            "medication_reminder_no_device reminder_id=%s elder_id=%s", reminder_id, elder_id
+        )
+        return "no_bound_device"
+
+    dispatched = False
+    for device_id in device_ids:
+        if deliver_fn(str(device_id), message):
+            dispatched = True
+    if not dispatched:
+        logger.info(
+            "medication_reminder_offline reminder_id=%s devices=%s", reminder_id, len(device_ids)
+        )
+        return "device_offline"
+    logger.info(
+        "medication_reminder_dispatched reminder_id=%s devices=%s", reminder_id, len(device_ids)
+    )
+    return "voice_dispatched"
+
+
+def _default_deliver(device_id: str, message: dict[str, Any]) -> bool:
+    """信令层的下行投递（延迟 import：graphs 层不在 import 期依赖 audio 层）。"""
+    from app.audio.signaling import deliver
+
+    return deliver(device_id, message)
+
+
+def build_medication_graph(
+    *, session: Any, checkpointer: Any, deliver_fn: Any | None = None
+) -> Any:
+    """编译子图。`session` 是本次运行的事务会话，`checkpointer` 由 N10 的 A08 提供。
+
+    `deliver_fn(device_id, message) -> bool` 是 **E2 触达出口**（信令层
+    `app.audio.signaling.deliver` 的同形接口）：设备不在线返回 False、不抛异常。
+    缺省用真实信令层；测试注入假函数即可覆盖「在线 / 离线 / 未绑设备」三路。
+    """
+    _deliver = deliver_fn if deliver_fn is not None else _default_deliver
 
     async def remind(state: MedicationState) -> dict[str, Any]:
         event_id = _uuid(state["reminder_id"])
         attempt_no = int(state.get("attempt_no") or 1)
 
-        # TODO(E2)：这里应调用 dev-C 的 deliver(reminder) 下发语音/卡片并取回回执。
-        # 目前以「卡片已渲染」占位，等 N07 的触达出口到位后替换，接口形状见契约 §5.1。
+        # E2 触达：先下发、再记回执、再进等待。顺序不可换——record_attempt 对
+        # (event_id, attempt_no) 幂等，重放安全；下发失败也要记（触达尝试是事实）。
+        receipt = await _deliver_reminder(
+            session,
+            _deliver,
+            elder_id=_uuid(state["elder_id"]),
+            reminder_id=event_id,
+        )
         await medication_service.record_attempt(
-            session, event_id=event_id, attempt_no=attempt_no, receipt="card_rendered"
+            session, event_id=event_id, attempt_no=attempt_no, receipt=receipt
         )
         await medication_service.set_waiting_confirm(
             session, event_id=event_id, graph_thread_id=state.get("graph_thread_id")
@@ -256,14 +332,18 @@ async def start_medication_task(
         "deadline": deadline,
         "graph_thread_id": f"medication:{reminder_id}",
     }
-    return await graph.ainvoke(state, graph_config(reminder_id))
+    result: dict[str, Any] = await graph.ainvoke(state, graph_config(reminder_id))
+    return result
 
 
 async def resume_medication_task(
     graph: Any, *, reminder_id: uuid.UUID, answer: str
 ) -> dict[str, Any]:
     """把长者的回答送回去，继续跑到下一次阻塞或结束。"""
-    return await graph.ainvoke(Command(resume={"answer": answer}), graph_config(reminder_id))
+    result: dict[str, Any] = await graph.ainvoke(
+        Command(resume={"answer": answer}), graph_config(reminder_id)
+    )
+    return result
 
 
 __all__ = [

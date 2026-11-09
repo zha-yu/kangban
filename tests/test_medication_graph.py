@@ -37,7 +37,7 @@ from app.graphs.medication_confirmation_graph import (
     resume_medication_task,
     start_medication_task,
 )
-from app.models.organization import Elder
+from app.models.organization import Device, Elder, Room
 from app.models.staff import StaffAccount
 from app.services import medication_service
 from app.services.medication_service import (
@@ -271,3 +271,123 @@ async def test_terminal_state_is_write_once(session: AsyncSession, seeded: dict[
         await medication_service.set_terminal(
             session, event_id=reminder_id, terminal_state="missed_unconfirmed"
         )
+
+
+# ------------------------------------------------------------------ 7. E2 触达下发
+
+
+def _fake_deliver(calls: list[tuple[str, dict[str, Any]]], ok: bool):
+    def _deliver(device_id: str, message: dict[str, Any]) -> bool:
+        calls.append((device_id, message))
+        return ok
+
+    return _deliver
+
+
+async def _bind_device(session: AsyncSession, seeded: dict[str, Any]) -> Device:
+    room = Room(room_no=f"R-{uuid.uuid4().hex[:8]}")
+    session.add(room)
+    await session.flush()
+    device = Device(room_id=room.room_id, elder_id=seeded["elder_id"], token_hash="x" * 32)
+    session.add(device)
+    await session.flush()
+    return device
+
+
+async def test_reminder_dispatches_to_bound_device(
+    session: AsyncSession, seeded: dict[str, Any], saver: AsyncPostgresSaver
+) -> None:
+    """设备在线：触达 = voice_dispatched，消息是 tts_text 且带药名（pad 零改动）。"""
+    device = await _bind_device(session, seeded)
+    reminder_id = await _new_event(session, seeded)
+    calls: list[tuple[str, dict[str, Any]]] = []
+    graph = build_medication_graph(
+        session=session, checkpointer=saver, deliver_fn=_fake_deliver(calls, ok=True)
+    )
+
+    await start_medication_task(
+        graph,
+        reminder_id=reminder_id,
+        plan_id=seeded["plan_id"],
+        elder_id=seeded["elder_id"],
+        deadline="2026-11-09T08:15:00+00:00",
+    )
+
+    assert calls == [(str(device.device_id), calls[0][1])], "恰好发给绑定的那台设备"
+    message = calls[0][1]
+    assert message["type"] == "tts_text"
+    assert "氨氯地平" in message["text"], "话术要带药名（来自 drug_snapshot）"
+    assert "response_id" not in message and "epoch" not in message, (
+        "主动触达不属于任何回复流，不带 response_id/epoch（契约 §4.1 可选字段）"
+    )
+
+    attempts = await medication_service.list_attempts(session, reminder_id)
+    assert attempts[0]["receipt"] == "voice_dispatched"
+
+
+async def test_reminder_without_device_records_no_bound_device(
+    session: AsyncSession, seeded: dict[str, Any], saver: AsyncPostgresSaver
+) -> None:
+    """没绑设备：触达如实记 no_bound_device（运维缺口），不抛错、不阻塞等待。"""
+    reminder_id = await _new_event(session, seeded)
+    calls: list[tuple[str, dict[str, Any]]] = []
+    graph = build_medication_graph(
+        session=session, checkpointer=saver, deliver_fn=_fake_deliver(calls, ok=True)
+    )
+
+    await start_medication_task(
+        graph,
+        reminder_id=reminder_id,
+        plan_id=seeded["plan_id"],
+        elder_id=seeded["elder_id"],
+        deadline="2026-11-09T08:15:00+00:00",
+    )
+
+    assert calls == [], "没绑设备就不该有任何下发"
+    event = await medication_service.get_event(session, reminder_id)
+    assert event is not None and event["status"] == "waiting_confirm", "触达失败不阻塞进入等待确认"
+
+
+async def test_all_devices_offline_still_completes_missed_flow(
+    session: AsyncSession, seeded: dict[str, Any], saver: AsyncPostgresSaver
+) -> None:
+    """设备全离线：每次触达记 device_offline，四次后照样 missed_unconfirmed + 建单。
+
+    这条是 E2 接线最要紧的保证：下发失败**不是**放弃治疗的理由——
+    四次触达的语义是「尝试了四次没联系上」，联系不上的记录本身就是证据。
+    """
+    await _bind_device(session, seeded)
+    reminder_id = await _new_event(session, seeded)
+    calls: list[tuple[str, dict[str, Any]]] = []
+    graph = build_medication_graph(
+        session=session, checkpointer=saver, deliver_fn=_fake_deliver(calls, ok=False)
+    )
+
+    await start_medication_task(
+        graph,
+        reminder_id=reminder_id,
+        plan_id=seeded["plan_id"],
+        elder_id=seeded["elder_id"],
+        deadline="2026-11-09T08:15:00+00:00",
+    )
+    # start = 触达 1；resume 4 次 = 触达 2/3/4 + 第 4 次 retry 判定用尽 → finalize
+    for _ in range(MAX_ATTEMPTS):
+        await resume_medication_task(graph, reminder_id=reminder_id, answer="no_response")
+
+    attempts = await medication_service.list_attempts(session, reminder_id)
+    assert [a["receipt"] for a in attempts] == ["device_offline"] * MAX_ATTEMPTS
+    assert len(calls) == MAX_ATTEMPTS, "四次触达每次都真实调用了下发"
+
+    event = await medication_service.get_event(session, reminder_id)
+    assert event is not None and event["terminal_state"] == "missed_unconfirmed"
+
+    from sqlalchemy import select
+
+    from app.models.medication import WorkOrder
+
+    orders = list(
+        (
+            await session.execute(select(WorkOrder).where(WorkOrder.elder_id == seeded["elder_id"]))
+        ).scalars()
+    )
+    assert len(orders) == 1, "设备全离线的漏服照样升级工单（人工兜底）"

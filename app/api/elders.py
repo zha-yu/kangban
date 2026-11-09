@@ -16,7 +16,7 @@ rollback/commit 语义不受影响；等 task-7 挂载统一错误处理器后�
 from __future__ import annotations
 
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 from datetime import date, datetime
 from typing import Annotated, Any, Literal
 
@@ -84,7 +84,10 @@ class ContractAPIRoute(APIRoute):
     捕获点在 `original_handler` 之外，因此 `get_session` 已经按异常路径完成 rollback。
     """
 
-    def get_route_handler(self) -> Callable[[Request], Awaitable[Response]]:
+    # 返回标注对齐 fastapi.routing.APIRoute 的父类签名（Coroutine 而非 Awaitable）：
+    # Coroutine 是 Awaitable 的子类型，父类声明返回 Coroutine 时子类返回 Awaitable 属于
+    # 违协变（mypy override）。实现没变，只收窄标注。
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
         original_handler = super().get_route_handler()
 
         async def contract_handler(request: Request) -> Response:

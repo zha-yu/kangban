@@ -249,7 +249,7 @@ class EdgeTTSProvider(TTSProvider):
     async def _synthesize_mp3(self, text: str) -> bytes:
         """只负责「文本 → mp3 字节」，转码在 `mp3_to_pcm()`。惰性 import 的理由见模块 docstring。"""
         try:
-            import edge_tts  # type: ignore[import-not-found]  # 可选依赖，未装时走 TTSUnavailable
+            import edge_tts  # 可选依赖：本环境已安装；未装时 import 失败走 TTSUnavailable
         except ImportError as exc:
             raise TTSUnavailable("edge-tts not installed") from exc
 
@@ -317,3 +317,15 @@ def build_tts(settings: Settings | None = None) -> TTSProvider:
     if kind not in {"", "mock"}:
         logger.warning("unknown TTS_PROVIDER=%r, fallback to mock", kind)
     return MockTTSProvider()
+
+
+# 显式导出（mypy no-implicit-reexport）：`from app.audio.tts import TTSProvider, ...` 的合法面
+__all__ = [
+    "CloudTTSProvider",
+    "EdgeTTSProvider",
+    "MockTTSProvider",
+    "TTSProvider",
+    "TTSUnavailable",
+    "build_tts",
+    "mp3_to_pcm",
+]
