@@ -212,7 +212,7 @@ export class RealtimeClient {
             this.cb.audioEl.pause();
             this.cb.onSubtitle("", "final");
             this.reportPlayback(); // C-6：打断也结算（实际已播时长，如实入档）
-            // Day 6：canceled 收口（带最后已确认 played 段；无已确认段则不发——J3 开放点②）
+            // Day 6：canceled 收口（segment_id 填最后已播完段，无则 -1——dev-C 口径转达件③）
             this.playbackQueue.interrupt();
           }
           this.degradeLevel = null; // 新一轮开口，降级提示级别复位
