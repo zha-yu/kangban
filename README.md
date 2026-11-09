@@ -166,15 +166,15 @@ pnpm --dir frontend preview     # 本地预览构建产物
 docker run -d --name silvermate-verify -v "$PWD":/w -w /w python:3.12-slim sleep infinity
 docker exec silvermate-verify pip install fastapi "uvicorn[standard]" pydantic-settings \
   sqlalchemy alembic "psycopg[binary]" pytest pytest-asyncio httpx ruff
-docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w python -m pytest -q'
+docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w python -m pytest -q -m "not slow"'
 docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:app --port 8000'
 ```
 
 需要连 PostgreSQL 跑迁移的完整版本见 [`AGENTS.md` §3.1](AGENTS.md)。
 
-> **当前进度（2026-11-06）**：Day 1–Day 3 已交付（`alembic/` 迁移、`app/` 后端骨架与鉴权/音频链路、`frontend/` pad 端；Day 3 验收 292 passed、接口覆盖率 85%，见 §7），Day 4 双端登录页与 3D 身份闭环在推进。
-> 已就绪：`docker-compose.yml`（基础依赖版）、`frontend/`、`app/`、`alembic/`、`tests/`。
-> 尚未就绪：`Dockerfile`、nginx 托管、`mcp-servers/`、`eval/` —— 随 Day 4–Day 10 落地；在此之前「全栈一键起」不可用，按上面两个终端分别启动。
+> **当前进度（2026-11-09）**：Day 1–Day 5 已交付；**Day 6「长者侧 Agent 完整闭环」在推进中**——A 线（历史账本 / 工具执行 / 用药子图 / 工单 / 天气 MCP 接入）已收口，验收 **931 passed、覆盖率 81.51%**，取证见 §7.4；B 线（状态中心与上下文记忆）与 C 线（Agent、统一出口、安全层）的代码已在 `develop`，联调与门禁随全队节奏收口。
+> 已就绪：`docker-compose.yml`（基础依赖版）、`frontend/`（pad / console / family 三端）、`app/`、`alembic/`（至 `0011`）、`tests/`、`mcp-servers/weather/`。
+> 尚未就绪：`Dockerfile`、nginx 托管、`eval/`（评测基线，随 Day 7 之后落地）——在此之前「全栈一键起」不可用，按上面两个终端分别启动。
 
 ---
 
@@ -303,7 +303,8 @@ CLI 幂等（手机号已存在则 `kept`）、只存 bcrypt 哈希、支持 `--
 | 项 | 标准 |
 | --- | --- |
 | 核心 Tool 与权限场景 | 用例覆盖 **100%** |
-| 接口测试覆盖率 | **≥ 70%** |
+| 接口测试覆盖率 | **≥ 70%**（当前 81.51%；统计口径 `--cov=app`，`fail_under=70` 已在 `pyproject.toml` 设死） |
+| 测试执行口径 | `pytest -q -m "not slow"`。**不带 `-m` 会因外网 edge-tts 用例失败**，属环境依赖而非代码问题，见 §7.4 |
 | 三道隔离闸门 | 会话隔离 / 记忆隔离（强制 `WHERE elder_id`）/ 工具授权，**100% 覆盖** |
 | 提示注入测试集 | ≥10 条，**100% 拦截**；日志脱敏 grep 零命中 |
 | 评测门禁 | `eval_gate.py` 作为 pre-push 钩子，固定集不达标阻断提交，bad case 回流 `eval/fixtures` |
@@ -392,6 +393,50 @@ Day 3 调试中发现并修复的 4 个坑（详见会话，均已写进代码�
 ---
 
 
+
+### 7.4 Day 6 · A 线（历史 / 工具 / 用药 / 工单）验收记录（2026-11-09）
+
+**测试执行口径（重要，先看这条）**
+
+```bash
+uv run pytest -q -m "not slow" --cov=app --cov-report=term
+```
+
+必须带 `-m "not slow"`。`tests/test_audio_tts.py::test_edge_live_synthesis_over_network`
+是真实 edge-tts 合成，**需要外网**；不带 `-m` 时它会因为本机无外网而失败，
+看起来像「代码坏了」，实际是环境依赖（该用例自身已标 `slow` 并在 docstring 写明）。
+
+| DoD 项 | 结论 | 取证 |
+| --- | --- | --- |
+| `pytest` 全绿 | ✅ | **931 passed, 4 skipped, 1 deselected**（`-m "not slow"`；deselected 即上面那条外网用例） |
+| 覆盖率 ≥70% | ✅ | **TOTAL 81.51%**（`source=app`、`branch=true`，`fail_under=70` 未触发） |
+| 迁移可回滚 | ✅ | `0007 → head`（25 表）→ `downgrade 0007`（15 表）→ 再 `upgrade head`（25 表），三次连续成功 |
+| ORM 与迁移零漂移 | ✅ | `alembic check` 对本线三表与 `conversation_threads.last_event_seq` 零差异 |
+| `ruff check app tests` 干净 | ✅ | `All checks passed!` |
+| 本线 `ruff format --check` 干净 | ✅ | 本线 14 个文件 `already formatted`。**仓库全局仍有 13 个文件待格式化**，均属其它线的在研代码，未在本线批量重排（避免把无关 diff 混进提交） |
+| 看板 / 计划索引一致 | ✅ | `update_progress.py --check` 与 `--check-plans` 均 0 退出码 |
+
+**本线交付的模块与用例**
+
+| 模块 | 文件 | 用例 |
+| --- | --- | --- |
+| 历史账本（N01 / N04） | `app/models/conversation.py`、`app/services/history_service.py` | `tests/test_history_store.py` **15 条**（含并发 20 写 `seq` 恰为 1..20、N07 先写事件时 commit 只补投影、读函数可省略 `session`） |
+| 工具执行（N12 / N26） | `app/agents/tool_registry.py`、`app/services/tool_executor.py` | `tests/test_tool_executor.py` **20 条**（越权审计、四类失败、幂等三例、护栏预算、MCP 成功/超时/未授权/参数错/未接线） |
+| 用药子图（N10） | `app/graphs/checkpointer.py`、`app/graphs/medication_confirmation_graph.py`、`app/services/medication_service.py` | `tests/test_medication_graph.py` **5 条**（含重启恢复不重发、四次触达 → `missed_unconfirmed`、终态不覆盖、漏服建单） |
+| 工单（A12） | `app/services/work_order_service.py` | `tests/test_work_order_service.py` **15 条**（幂等、非法迁移、误报必带原因、红单必带处置时间） |
+| 身份注入（复核项） | `app/agents/companion.py` | `tests/test_companion_identity.py` **4 条**（generic 不崩、明确身份带人设、推断留痕） |
+
+**三条设计决定（评审请重点看）**
+
+- **`seq` 用行锁分配**（`SELECT … FOR UPDATE` 锁 `conversation_threads` 行后 +1）。禁止「先查 `max` 再 +1」——那是竞态，并发下必然重号，而 `UNIQUE(thread_id, seq)` 一旦报错，整轮对话就丢了。
+- **`read_turns` 按各轮 `turn_started` 的 `seq` 排序，不按 `started_at`**。`now()` 取的是**事务开始时间**，同一事务里建的两轮拿到完全相同的时间戳，按它排等于随机——上下文一错序，「刚才那个」就指到别处。
+- **`assistant_delivered_text` 只存已送达文本**。生成全文留在 `conversation_events.payload_json`。把没播的内容写进投影，模型会以为自己说过。
+
+**已知边界（不是缺陷，是明确留白）**
+
+- 用药触达下发仍是占位（`TODO(E2)`），等 dev-C 的 `deliver()` + ack 接线；当前只记录「卡片已渲染」这一条触达。
+- `work_orders` 有**两个建单入口**（本线的 `work_order_service` 与 dev-C 的 `safety_service`），登记技术债 **WD-1**；`work_orders` 缺 `source_type`/`source_id`，通用幂等靠「确定性单号」绕行，登记 **WD-2**。两条都随下一次改该表的迁移收敛。
+- 全仓暂无 `WorkOrderTransition` 的第二处写入路径：安全层建单后不写流转，看板的「流转条数」目前只对漏服单准。属 dev-C 的文件范围。
 
 ## 8. 已知限制与降级矩阵
 

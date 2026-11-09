@@ -1,4 +1,4 @@
-> 状态：已冻结　｜　版本：v1.2　｜　日期：2026-11-09
+> 状态：已冻结　｜　版本：v1.3　｜　日期：2026-11-09
 > 关联：docs/plans/day06/day-06-长者侧Agent闭环.md（§3.1 节点表、§9.1 落地结构）｜docs/team_tasks/day06/dev-a~dev-d 四张任务卡
 > 上游依据：PRD v2.9 §6.1 Day 6 行（验收）｜技术设计文档 v2.0 §3.4/§3.6/§8.3（实现）｜ER v0.5 §4.3.11–4.3.13（字段）
 > 变更记录见文末
@@ -147,6 +147,8 @@ async def read_events(*, thread_id, after_seq=0) -> list[EventView]
 - `EventView`：`seq / event_type / occurred_at / payload / turn_id / response_id / task_id`。
 - **单写口**：`conversation_turns.status` 终态只由 `finish_turn` 写；`commit_response` 的 `status` 只进事件 payload。否则迟到的 `completed` 会覆盖已发生的 `interrupted`。
 - `read_turns` 返回**对话先后正序**（最早在前），排序依据是各轮 `turn_started` 的 `seq`，**不是** `started_at`——`now()` 取事务开始时间，同事务两轮会撞同一时间戳，按它排等于随机；会话归属与 `elder_id` 不符时返回空而非抛错（读路径不该让整轮对话失败）。
+- **`session` 是可选参数**（v1.3 明确）：签名里不带 `session` 时自开一条只读会话。上下文层（`app/core/context.py`）就是 `read_turns(thread_id=..., elder_id=..., limit=...)` 这样调的；需要读到同一事务内尚未提交的历史时，才显式传入 `session`。`read_events` 同口径。
+- **`commit_response` 与响应层的关系**（v1.3 明确）：`response_completed` 事件按 §3 的时机由**响应层**（N07）在末段 `played` / 打断时写入；`commit_response` 发现该事件已存在时**只补投影、不重复写事件**。若事件由 `commit_response` 兜底写入（响应层未接线），它同时落 `generated_text` / `delivered_text` / `response_status`。
 
 
 ### 5.2 `StateSnapshot`（`app/services/state_service.py`）
@@ -246,5 +248,6 @@ body   { "elder_ids": ["uuid", ...] }     # 全量覆盖式替换
 | v1.0 | 2026-11-09 | 首版并冻结：五个标识、12 类事件、`tts_text` v2 与 `segment_ack`、`HistoryStore`/`StateSnapshot`/`ToolResult`/`MCPResult` 四组内部契约、a0 E20、三迁移落地结果、两条禁区（无第三方分类 API、不提前建路由表） |
 | v1.1 | 2026-11-09 | 主理人裁决（C-0-5/C-0-6）：N27 通知环节提前——新增 0011 迁移建 `notifications` 表 + `app/models/notifications.py` ORM（仅此一笔迁移/一张表解禁）；N27 命中写护工通知（`status=generated`，`dedupe_key` 部分唯一防重，落库即视为已通知）；mock-operations 与家属通知仍留 Day 8，范围不变 |
 | v1.2 | 2026-11-09 | J3 核对裁决（主理人确认，dev-D 提清单）：`canceled.segment_id` 无一完整播放段时取 `-1` 哨兵（服务端 `last_acked_segment` 初始同值）；canceled 类 ack 跳过校验④；`rejected_reason` 四枚举（unknown_response/stale_epoch/wrong_status/not_monotonic）；末段 played 触发与三层兜底口径。字段本身零增删，§4.2 增补充口径块；protocol.ts 注释同步由 dev-D 落 |
+| v1.3 | 2026-11-09 | **与 B/C 代码合流后的三处口径补正**（均属既有实现的接口对齐，非业务变更）：① `read_turns` / `read_events` 的 `session` 明确为**可选**——契约 §5.1 签名本来就没有它，`app/core/context.py` 按此调用，实现方不得强制要求；② 明确 `response_completed` 按 §3 由响应层先写，`commit_response` 在其已存在时**只补投影**、不重复写事件（否则 delivered 永远为空）；③ 明确投影写入只接受**不更短**的文本，同长可覆盖。 |
 | v1.2 | 2026-11-09 | **P1 裁决落地（方案 A）**：§4.2 新增 4.2.1「水位与截断」——`last_acked_segment` 语义定为「最后整段播完的段」、初始 `-1`；**只有 `played` 推进水位**，`playing` 只走 ①②③ 并打指标，`canceled` 不推进且其 `segment_id` 回显水位（无则 `-1`）；补 `delivered_text` 计算式与「④ 严格单调」这一依赖不变量。与 dev-C 在 S2 实现前确认的口径一致（C 侧称 v1.2），**零字段变更、不改四步校验** |
 | v1.1 | 2026-11-09 | 实现 `HistoryStore` 时发现两处**漏参**，按冻结规则升版（**仅加可选参数，向后兼容**）：① `append_event` 增 `call_id` / `trace_id`（0008 已建这两列，原签名无法写入 → 会成为死列，链路排查断线）；② `begin_turn` 增 `identity_source`（缺省取会话行上的值）。同时补齐 `TurnRef` / `EventView` 字段定义与两条单写口约束（`status` 只由 `finish_turn` 写；`read_turns` 时间正序、归属不符返回空）。**现有调用方零改动**：新参数均有默认值。 |

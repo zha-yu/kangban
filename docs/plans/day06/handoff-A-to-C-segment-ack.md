@@ -1,4 +1,4 @@
-> 状态：已完成（P1 已裁决，1 个开放点留 S4）　｜　版本：v1.3　｜　日期：2026-11-09
+> 状态：已完成（与 N07 实现已对齐，1 个开放点留 S4）　｜　版本：v1.4　｜　日期：2026-11-09
 > 关联：docs/team_tasks/day06/contracts.md（v1.1 §4.2 / §5.1）｜docs/plans/day06/dev-a-历史与工具执行计划.md（A05/A06）｜docs/plans/day06/day-06-长者侧Agent闭环.md（N07/N14）
 > 上游依据：PRD v2.9 FR-UI-04、AC-08｜技术设计文档 v2.0 §5.3/§8.3｜ER v0.5 §4.3.12
 > 交付方向：dev-A（历史层）→ dev-C（响应流 N07 + 统一出口 N14）
@@ -21,12 +21,12 @@
 | `response_started` | **dev-C** | 首段下发前，`append_event(event_type="response_started", response_id=...)` |
 | `response_segment_delivered` | **dev-C** | 收到该段 `status=played` 的 ack 后，一段一条 |
 | `response_interrupted` | **dev-C** | 打断生效（停声 + 清队列）之后 |
-| `response_completed` | **dev-A 的 `commit_response` 独占** | 一次回复结束时 |
+| `response_completed` | **响应层 N07 先写**（末段 played / 打断时）；未接线时由 `commit_response` 兜底 | 一次回复结束时 |
 
-> ⚠️ **C 不要自己写 `response_completed`**。`commit_response` 的幂等判定正是查
-> 「该 `(turn_id, response_id)` 是否已有 `response_completed` 事件」——C 先写一条，
-> 它就会判定为"已提交"直接返回，`assistant_delivered_text` 永远是 None，
-> 下一轮上下文里这一句就凭空消失。
+> ✅ **2026-11-09 更正（v1.4）**：N07 已按契约 §3 先写 `response_completed`，这是对的。
+> 冲突不在「谁写」，而在 `commit_response` 原先看到事件已存在就 `return` —— 那样投影
+> 永远为空，上下文里每句助手回复都会消失。**已改**：事件存在时只补投影、不重复写事件。
+> 双方都不必再改口径。
 
 ## 2. 调用时序
 
@@ -247,10 +247,23 @@ dev-D 已落地转达件③，只留一个开放点：**最后一段的「播完
 不要出现「前几段按水位、末段按 total」的混用——截断点一旦取决于实现顺序，
 同一个场景两次跑会得到不同的 `delivered_text`，历史就不可复算了。
 
+## 8.6 合流后实测（2026-11-09 19:20，B/C 代码已进 develop）
+
+把 develop 的 B/C 代码合进来后，A 侧实测出**三处真实缺陷**，均已修复：
+
+| # | 现象 | 根因 | 处置 |
+| --- | --- | --- | --- |
+| 1 | 上下文里一条历史都没有 | `app/core/context.py` 按契约 §5.1 调 `read_turns(thread_id=..., elder_id=...)`，而我的实现把 `session` 写成必填 → `TypeError`，且 B 只 catch `ImportError`，直接炸 | `read_turns` / `read_events` 的 `session` 改为**可选**（缺省自开只读会话），并补一条签名回归用例 |
+| 2 | 每句助手回复都从上下文消失 | 响应层先写 `response_completed`（契约 §3 的时机），`commit_response` 查到事件已存在就直接 `return`，投影永远是 `None` | 事件已存在时**只补投影**、不重复写事件；新增用例模拟「N07 先写、commit 后到」 |
+| 3 | 用药层还挂着 `sa.table()` 过渡 | B 的 `app/models/medication.py` 已合入（E1 偿清） | `medication_service` 切到 ORM，子图与调用方零改动（当初把映射关在一个文件里的收益） |
+
+另外确认**没有冲突**的两处：C 的 `ToolExecutor` 协议（`execute(tool_name, args, runtime, turn_id, idempotency_key)`）与我的实现签名一致；`state_service` 的 `last_acked_segment` 只由 `played` 推进，与契约 §4.2.1 的 v1.2 口径一致。
+
 ## 9. 变更记录
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.4 | 2026-11-09 | **与 N07 实现合流后更正事件归属**：`response_completed` 归响应层先写（契约 §3），`commit_response` 在其已存在时只补投影；新增 §8.6 记录合流实测的三处缺陷（`session` 必填、投影被幂等短路、`sa.table()` 过渡已偿清）与两处确认无冲突项 |
 | v1.3 | 2026-11-09 | dev-D 回执：转达件③已落地，仅留「末段轨结束」一个开放点（S4）。新增 §8.5：说明末段 `played` 丢失会让正常回复被记成「少说一句」；给出 completed 按 `total`、interrupted 按水位的分流规则与三个前提（completed 不得由超时推断、`total` 取服务端下发、`ended` 不可靠时用「时长+100ms」兜底）；并约束 A 侧不得混用两套拼装 |
 | v1.2 | 2026-11-09 | **P1 裁决（方案 A）**：新增 §8.3 记录 C 的三条理由与结论「水位只由 `played` 推进」；把「④ 严格单调是截断公式的前提」写成显式不变量与变更风险；新增 §8.4 给 dev-D 的一句话（无需改代码，只需守住 `played` 的上报时机）；本仓契约同步到 v1.2（§4.2.1） |
 | v1.1 | 2026-11-09 | 记录 C 的两点回复（逐段写 `played` 事件 + `canceled` 跳过 ④）；据此发现并写入**冲突 P1**（`playing` 也推进水位会让 `played` 被 ④ 拒、且打断时水位语义分叉），给出方案 A（水位只由 `played` 推进，推荐）与 B（加 `last_played_segment`），并把截断规则收敛成一行；§3 规则 2 改为「截断点取水位，ack 值仅做一致性校验」 |

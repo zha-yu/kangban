@@ -1,4 +1,4 @@
-> 状态：进行中（A02–A11、A13–A15 已交付；剩 A12 升级工单、A16 接 MCP、A17 收口）　｜　版本：v1.3　｜　日期：2026-11-09
+> 状态：已完成（A 线 21.0/21.0；遗留 `TODO(E2)` 与 WD-1/WD-2 已登记）　｜　版本：v1.11　｜　日期：2026-11-09
 > 关联：docs/team_tasks/day06/dev-a-历史事件与工具事实.md（任务卡）｜docs/plans/day06/day-06-长者侧Agent闭环.md（Day 6 主计划）｜docs/team_tasks/day06/contracts.md（冻结契约）
 > 上游依据：PRD v2.9 §6.1 Day 6 行、§4.5 用药、FR-DLG-10、AC-08/17/30/35（验收）｜技术设计文档 v2.0 §3.4/§3.6/§6/§7/§8.3（实现）｜ER v0.5 §4.3.11–4.3.13、§5（字段与约束）
 > 变更记录见文末
@@ -6,7 +6,7 @@
 # dev-A 执行计划 · 历史事件与工具事实
 
 > **角色**：dev-A（后端 · 历史与工具事实线）
-> **范围**：主计划 25 节点中的 7 个（N00 共担、N01、N04、N10、N12、N26、N23），合计 **21.0 人时**，已完成 **17.0**，**剩 4.0**（A12 1.0 / A16 1.5 / A17 1.5）。
+> **范围**：主计划 25 节点中的 7 个（N00 共担、N01、N04、N10、N12、N26、N23），合计 **21.0 人时**，已完成 **21.0**（A17 门禁收口后全部交付）。
 > **一句话职责**：让"发生过什么"可查可复算，并保证每次有副作用的调用只发生一次。
 
 ---
@@ -20,10 +20,10 @@
 | N00 | 契约中的"表与事件枚举"章节（与主理人共担） | 1.5 | ✅ 已完成（`contracts.md` v1.0 已冻结） |
 | N01 | 迁移 0008 + `models/conversation.py` 三个 Model | 3.5 | ✅ ORM 三类已建，`alembic check` 对三表零差异 |
 | N04 | `HistoryStore`（事件追加 + 轮次投影 + 幂等） | 4.5 | ✅ 六方法 + 12 条测试全绿（含并发 20 写无重号） |
-| N10 | `medication_confirmation_graph` + PG checkpointer | 5.0 | 🟡 A08–A11 已完成（checkpointer + 子图 + 四次触达 + 终态写一次，5 条测试全绿）；**A12 升级工单未做**，触达下发为占位（`TODO(E2)`） |
+| N10 | `medication_confirmation_graph` + PG checkpointer | 5.0 | ✅ A08–A11（checkpointer + 子图 + 四次触达 + 终态写一次）+ **A12 升级工单**（`work_order_service`，15 条用例）；触达下发仍为占位（`TODO(E2)`，等 C 的 `deliver()`） |
 | N12 | `ToolRegistry` + `ToolExecutor` | 3.5 | ✅ 白名单 + 四类失败 + 幂等 + 审计，13 条测试全绿 |
-| N26 | `ToolExecutor` 接 MCP + 缓存与降级话术 | 1.5 | ⬜ 未开始（等 E3 `app/mcp_client`） |
-| N23 | 门禁收口 | 1.5 | ⬜ 未开始 |
+| N26 | `ToolExecutor` 接 MCP + 缓存与降级话术 | 1.5 | ✅ 完成：`transport="mcp"` 分支、错误映射复用 `tool_error_class()`、降级话术齐；**缓存由 weather server 侧承担**（A 侧不叠第二层） |
+| N23 | 门禁收口 | 1.5 | ✅ 931 passed / cov 81.51% / 两个 check 0；README §7.4 已回填 |
 
 ### 0.2 明确不做（做了就是越界）
 
@@ -315,12 +315,187 @@ L1（0008，已释放）、L4（`models/conversation.py`）、L5（`models/__ini
 
 **新增一条 Windows 本地约束**：psycopg 3 的异步连接不支持 ProactorEventLoop，`checkpointer` 走 psycopg 异步池 → Windows 上跑用药用例必须换 Selector 策略。已写进 `tests/conftest.py` 顶部（生产是 Linux 容器，不受影响）。
 
+### 8.2 复核记录：`companion.py` generic 分支（dev-C 报，2026-11-09 19:30）
+
+C 报「N14 首次触达 generic 分支暴露隐性 `TypeError`，最小修复补 `elder_id=None`，需 dev-A 复核」。**复核结论：诊断正确，但只治了症状；同一处还有第二个更隐蔽的问题。**
+
+**① 崩溃是真的（已在合并后的代码上复现）**
+
+```python
+_build_turn_context(runtime=Identity(kind="device", device_id=...), user_text="你是谁")
+# → TypeError: DialogueIdentity.__init__() missing 1 required positional argument: 'elder_id'
+```
+
+原因：`app/agents/companion.py:219` 写的是 `DialogueIdentity(source="generic")`，而
+`app/core/context.py` 里 `elder_id: str | None` **没有默认值**——类型标注说"可空"，运行时却是必填。
+
+**② 根因在类型定义，不在调用点**
+
+C 的 `elder_id=None` 能让这一处不崩，但下一个 generic 调用点（N14 的 `turn_service`）还会再踩。
+建议给 `DialogueIdentity.elder_id` 加默认值：
+
+```python
+elder_id: str | None = None   # 语义不变：__post_init__ 仍拒绝 generic 携带非空 elder_id
+```
+
+`__post_init__` 已经保证了「generic 必须 None / device|voice|confirm 必须非空」，加默认值不会放松任何校验。
+该文件是 dev-B 的 L8 写锁范围，需 B 确认（或由 B 改），A 侧不改。
+
+**③ 更严重的一处：`if runtime.elder_id:` 把员工身份当成 generic**
+
+`Identity` 对 `staff` / `guardian` 强制要求 `elder_id` 为 None（`_must_be_absent`），所以：
+
+```python
+s = Identity(kind="staff", staff_id=..., role="care_worker")
+bool(s.elder_id)   # False
+```
+
+**每一位员工发起的对话都会静默走进 generic 分支**——没有人设、没有历史、没有记忆。
+它不报错，只是答得像个陌生机器；老人端用 `device` 身份不受影响，所以本日演示看不出来，
+但 N14 一接 console 侧就会「员工问它什么都答得很生硬」，且没有任何日志能定位。
+
+正确做法是按身份来源判定，而不是「有没有 elder_id」。**更彻底的做法是把 A1 的身份结论直接传进来**——
+`IdentityDecision` 已经带 `source`（`Literal["device","voice","confirm","generic"]`），
+`identity_decision_to_result()` 也已经把它转成 `DialogueIdentity(source=decision.source, elder_id=...)`。
+所以根本不需要在 companion 里推断。
+
+**关键区分（这个 bug 的根源就是两个概念被混用）**
+
+| | `runtime: Identity`（`app/core/runtime_context.py`） | `DialogueIdentity`（`app/core/context.py`） |
+| --- | --- | --- |
+| 是什么 | 本次连接的**凭证主体** | 本次会话的**身份结论** |
+| 取值 | `device` / `staff` / `guardian` / `staff_card` | `device` / `voice` / `confirm` / `generic` |
+| 用途 | 鉴权、`elder_id` 注入工具层 | 上下文组装、人设、历史与记忆开关 |
+| 谁产生 | `auth.py` 解令牌 | `identity_service` 判定后写 `conversation_threads.identity_source` |
+
+`runtime.kind="device"` **不等于** `source="generic"`——前者说"这台设备连上来了"，后者说
+"这次没认出来是谁"。用前者推后者，员工端必然错、generic 也必然错。
+
+**建议签名（N14 落地时照此接）**
+
+```python
+# app/agents/companion.py —— 上下文身份从参数进，不从 runtime 推
+def _build_turn_context(
+    *, identity: DialogueIdentity, user_text: str,
+    history: Sequence[DialogueTurn] = (), persona: PersonaContext | None = None,
+    now: datetime | None = None,
+) -> list[dict[str, str]]:
+    return build_dialogue_messages(
+        identity=identity, user_text=user_text, history=history,
+        persona=None if identity.is_generic else persona, now=now,
+    )
+
+# app/services/turn_service.py（N14）—— 拿 A1 的结论，原样往下传
+identity = result.identity          # identity_decision_to_result() 的产物，已含 source
+await companion.run(..., identity=identity, runtime=runtime)   # runtime 仍要给：工具层取 elder_id
+```
+
+`runtime` 不能删：工具层的 `elder_id` 只认它（闸门③）。两个参数各管一段，不要互相代替。
+
+**④ A 侧已按此落地（2026-11-09 19:45）**
+
+考虑到 C 正在改同一个文件，我先只做**最小可合并**的版本，避免大改撞车：
+
+| 改动 | 内容 |
+| --- | --- |
+| `_build_turn_context` | 增可选 `identity: DialogueIdentity \| None = None`；**传了就用**，不传才回退推断 |
+| 回退路径 | 保留原行为（`elder_id` 有值→device、无值→generic），但补 `DialogueIdentity(elder_id=None)` 修掉崩溃，并打 `companion_identity_inferred` 告警 |
+| `CompanionAgent.run` | 增可选 `identity` 并透传；`runtime` 保留（工具层要它） |
+| 测试 | 新增 `tests/test_companion_identity.py` 4 条：generic 不再崩、明确身份带人设、员工身份无身份时告警可见、`run` 真透传 |
+
+**冲突提示**：`companion.py` 是 C 的文件且他正在改同一处（补 `elder_id=None`）。若他的补丁先合入，
+git 会在同一 hunk 冲突——**保留带 `identity` 参数的这一版**，他的 `elder_id=None` 已被本版的
+回退路径覆盖（`DialogueIdentity(source=inferred, elder_id=runtime.elder_id)`，generic 时即为 None）。
+
+真正的调用方改动仍在 N14：`turn_service` 要 `identity = result.identity` 再传给 `run()`。
+本版只是让「传进来」这条路存在，不改 A1 的任何代码。
+
+**A 侧结论**：`read_turns(elder_id=None)` 已按契约返回空、不参与上下文，所以**历史层无需改动**；
+上面三条都在 `companion.py` / `context.py`，属 C 与 B 的范围。C 的最小修复可以先上，
+但 ② 与 ③ 建议同批处理——否则 generic 分支会从「崩溃」变成「静默降智」。
+
+### 8.3 A12 落地记录（2026-11-09 19:50）
+
+主理人裁决 **WD-1 走 B**：A 实现 `open_work_order` 只管 `work_orders`，与 dev-C 的
+`safety_service` 并存。**落地时发现设计稿的幂等方案在表结构上不成立**，改动如下。
+
+| 设计稿 | 实际 | 原因 |
+| --- | --- | --- |
+| 四元幂等键 `(elder_id, order_type, source_type, source_id)` | **确定性单号**（`sha256(dedupe_token)[:8]`） | 0010 的 `work_orders` 只有 `event_id`（FK→`risk_events`），没有 `source_*`；漏服来源是 `medication_events`，填不进 `event_id`；0011 已归 C（L11），本日不能加列 |
+| 请求 0011 加两条索引 | **一条都不需要** | 幂等改走已有的 `uq_work_orders_order_no` |
+
+**一处必须记下来的实现约束**：建单的 `INSERT` 包在 `SAVEPOINT` 里
+（`async with session.begin_nested()`）。子图顺序是「先 `set_terminal` 再建单」，
+若撞唯一键时用外层 `rollback()`，会把刚写的终态一起撤销——症状是
+「漏服事件停在 `calling`、工单却在库里」，两边对不上且不报错。
+
+**写入**：`app/services/work_order_service.py`（新，含 `open_work_order` /
+`open_missed_medication` / `transition` / `resolve_primary_care_staff`）、
+`app/graphs/medication_confirmation_graph.py`（`finalize` 接线，新增
+`_escalate_missed_medication`）。
+
+**测试**：`tests/test_work_order_service.py` 15 条全绿；`tests/test_medication_graph.py`
+的「无回应」用例补 6 条断言（一次漏服只建一张 / `missed_medication` / yellow / `new` /
+未分派 / 单号前缀）。
+
+**登记两条债**：WD-1（两套建单口并存，C 有否决权）、WD-2（`work_orders` 缺
+`source_type`/`source_id`，通用幂等靠确定性单号绕行）。
+
+**全量**：931 passed / 4 skipped / 1 failed（唯一失败仍是外网 Edge TTS）。
+
+### 8.4 A17 门禁收口记录（2026-11-09 20:00）
+
+**G-A4：通过。**
+
+```bash
+uv run pytest -q -m "not slow" --cov=app --cov-report=term
+# → 931 passed, 4 skipped, 1 deselected；TOTAL 81.51%
+uv run ruff check app/ tests/          # → All checks passed!
+uv run python scripts/update_progress.py --check        # → [ok] 全部日看板都是最新的
+uv run python scripts/update_progress.py --check-plans  # → day06 问题数 0
+```
+
+| DoD 项 | 结果 |
+| --- | --- |
+| `pytest` 全绿 | 931 passed / 4 skipped / **1 deselected** |
+| 覆盖率 ≥70% | **81.51%**（`source=app`、`branch=true`、`fail_under=70` 未触发） |
+| `ruff check` | 干净（`All checks passed!`） |
+| `ruff format --check`（本线文件） | 干净（14 个文件 already formatted）；全局另有 13 个文件待格式化，属其它线在研代码，**未替其重排** |
+| 看板 / 计划索引 | 两个 `--check*` 均 0 退出码 |
+
+**一处口径纠正（值得写下来）**：此前我一直用 `pytest -q` 跑全量，总看到
+`1 failed`——失败的是 `test_edge_live_synthesis_over_network`，它自身已标
+`@pytest.mark.slow`，docstring 也写明「`-m "not slow"` 下不跑」。也就是说
+**门禁口径本来就是 `-m "not slow"`，是我的跑法不对**，不是代码坏了。
+
+已在三处写清，避免下一个人重复困惑：README §7 表格「测试执行口径」行、§7.4 开头的
+命令块、§5.2 容器内那条 `pytest` 命令（补上 `-m "not slow"`）。
+
+**README 回填范围**（N23 只授权「有偏差就回填」，未新开文档）：
+
+1. 新增 §7.4 Day 6 · A 线验收记录（DoD 表 + 模块与用例表 + 三条设计决定 + 已知边界）；
+2. §7 通用表补「接口测试覆盖率」的实际值（81.51%）与「测试执行口径」行；
+3. §5.2 容器内 pytest 命令补 `-m "not slow"`；
+4. 修正过期的进度块（原写「Day 1–Day 3 已交付，Day 4 在推进；`mcp-servers/` 未就绪」，
+   实际已到 Day 6、`mcp-servers/weather/` 已就绪、迁移到 `0011`）。
+
+**A 线收官状态**：7 个主节点（N00/N01/N04/N10/N12/N26/N23）= 18 个执行节点全部 done，
+21.0/21.0 人时。三条明确留白（不是缺陷）：触达下发占位 `TODO(E2)`、WD-1（两套建单口）、
+WD-2（`work_orders` 缺通用幂等列）。
+
 ## 9. 变更记录
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-09 | 首版：dev-A 7 节点 / 21.0h 逐节点执行步骤、8 项交付物规格、7 条自检判据、三方对接清单、5 条风险；Q1（是否接 N11）、Q2（天气 key）列为待确认，按默认口径编写 |
 | v1.1 | 2026-11-09 | 按主理人要求补 **§6.4 联调提醒触发表**（7 个触发点：找谁 / 交出什么 / 拿回什么 / 未到位怎么办）与 **§6.5 交接话术模板**（我在哪、给你什么、要你什么） |
+| v1.9 | 2026-11-09 | 按「彻底解」落地最小可合并版：`_build_turn_context` / `CompanionAgent.run` 增可选 `identity`（传了就用，不传回退推断 + `companion_identity_inferred` 告警），同时修掉 generic 崩溃；新增 4 条用例；标注与 C 同文件改动的冲突处置口径 |
+| v1.8 | 2026-11-09 | 复核补充「彻底解」：`IdentityDecision.source` 已备四值、`identity_decision_to_result()` 已产出 `DialogueIdentity`，N14 直接把身份结论传进 `_build_turn_context(identity=...)` 即可，**不在 companion 里推断**；新增 `runtime`（凭证主体）与 `DialogueIdentity`（身份结论）的对照表——两者混用正是该 bug 的根源 |
+| v1.7 | 2026-11-09 | 复核 C 报的 `companion.py` generic 分支缺陷：确认 `DialogueIdentity(source="generic")` 必崩（缺 `elder_id` 参数），并指出两处更值得修的——根因是 `elder_id` 无默认值（应由 B 改 context.py），以及 `if runtime.elder_id` 会把**员工/家属**身份静默判成 generic（员工端无人设无历史）；A 侧 `read_turns(None)` 已正确返回空，历史层无需改动 |
+| v1.11 | 2026-11-09 | **A17 门禁收口，A 线收官**：G-A4 通过（931 passed / cov 81.51% / 两个 check 0）；纠正跑法口径——门禁应为 `-m "not slow"`，此前 `pytest -q` 的 `1 failed` 是外网 edge-tts 用例而非代码问题；README 回填 4 处（新增 §7.4、覆盖率达实际值、容器命令补 `-m`、修正过期进度块）。累计 21.0/21.0 |
+| v1.10 | 2026-11-09 | A12 落地（走 B）：新增 `work_order_service` 与子图 `finalize` 接线；幂等从「四元键 + 两条新索引」改为**确定性单号**（表无 `source_*` 列、0011 已归 C）；补 SAVEPOINT 约束说明；新增 15 条用例 + 子图 6 条断言；登记 WD-1/WD-2；累计 19.5h，剩 A17 |
+| v1.6 | 2026-11-09 | A16 落地：`ToolSpec.transport` + `ToolExecutor._run_mcp`；错误映射只走 `mcp_client.tool_error_class()`，成功透传 `cached`/`observed_at`；**不做第二层缓存**（weather server 已按 `weather_cache_ttl_seconds` 做 TTL + 过期兜底，两套 TTL 必然漂移）；累计 18.5h，剩 2.5h |
+| v1.5 | 2026-11-09 | **B/C 代码合流后的自查与修复**：E1 偿清（用药层切 ORM）；修 `read_turns`/`read_events` 的 `session` 必填（B 的上下文层按契约无 session 调用）、`commit_response` 被响应层先写事件短路（投影恒空）、并把 `response_completed` 归属更正为「响应层先写、commit 兜底」；E3 就绪，A16 解阻；契约同步 v1.3 |
 | v1.4 | 2026-11-09 | A12 前置设计完成：`a12-工单建单服务接口设计.md` v1.0（唯一建单口、四元幂等键、`order_no` 规则、状态机、请求 0011 两条索引）；A12 仍不写实现，等 C 确认「N27 也走该口」与急症类型映射 |
 | v1.3 | 2026-11-09 | 用药线落地：A07（`sa.table()` + `TODO(E1)`，主理人签字）、A08–A11（checkpointer 独立 schema/独立池、`interrupt` 恢复、四次触达、终态写一次），5 条测试全绿；累计 17.0h、剩 4.0h；新增 A12 未做的理由与 Windows 事件循环约束 |
 | v1.2 | 2026-11-09 | 开工执行：Q1 裁决「不接 N11」（本计划范围不变）；A02–A06 / A13–A15 完成，累计 13.0h、剩 8.0h；新增 **§7.5 执行记录**（产物、测试数字、两处设计缺陷修正、全量回归结论）；契约升 v1.1 |

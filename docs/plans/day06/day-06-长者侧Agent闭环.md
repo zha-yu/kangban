@@ -564,22 +564,25 @@ TD line 549 原字段全部保留（`chunk_id` / `elder_id` / `content` / `embed
 | **N04** HistoryStore（A 线 A03–A06） | `app/services/history_service.py`；`tests/test_history_store.py` | **12 passed**，含并发 20 写 `seq` 恰为 1..20 |
 | **N12** ToolRegistry + ToolExecutor（A 线 A13–A15） | `app/agents/tool_registry.py`、`app/services/tool_executor.py`；`tests/test_tool_executor.py` | **13 passed**（越权审计、四类失败、幂等三例、护栏预算） |
 | **N10** 用药子图（A 线 A07–A11） | `app/graphs/checkpointer.py`、`app/services/medication_service.py`、`app/graphs/medication_confirmation_graph.py`；`tests/test_medication_graph.py` | **5 passed**（正常确认 / 重启恢复不重发 / 四次触达进 `missed_unconfirmed` / 事件幂等 / 终态不覆盖）；A12 建单未做 |
+| **N10** 升级工单（A 线 A12） | `app/services/work_order_service.py`（新）、`app/graphs/medication_confirmation_graph.py`（`finalize` 接线）；`tests/test_work_order_service.py` | **15 passed** + 子图 6 条断言；幂等走确定性单号（表无 `source_*` 列），INSERT 包 SAVEPOINT 以免撤销终态 |
 
 **可逆性实测**：`0007 → head` 升级成功（表数 25 含 `alembic_version`）→ `downgrade 0007` 回退成功（15）→ `upgrade head` 再成功（25）。满足 G1 门禁的"三次连续成功"。
 
-### 11.2 G0 / G1 门禁结论
+### 11.2 门禁结论（G0 / G1 / A 线 G-A1~G-A4）
 
 | 门 | 结论 | 说明 |
 | --- | --- | --- |
 | **G0** | ✅ 通过 | D-1~D-5 全部有结论（D-4/D-5 于 11:26 裁决），`contracts.md` 已冻结，三份基线文档同批留痕 |
 | **G1** | ✅ 通过（迁移部分） | `upgrade → downgrade → upgrade` 三次成功；CHECK 名无双前缀；三张新表 `UNIQUE(thread_id, seq)` 等约束齐全。**未覆盖**：ER 逐列对照表（属 N01/N02 的 PR 描述件，待开工时补） |
-| **G-A2** | ✅ 通过 | `pytest tests/test_history_store.py -q` → 12/12；并发用例 `seq` 集合恰为 1..20 |
+| **G-A2** | ✅ 通过 | `pytest tests/test_history_store.py -q` → 15/15；并发用例 `seq` 集合恰为 1..20 |
+| **G-A3** | ✅ 通过 | 子图 `aget_state` 重启可读且不重发；四次触达 → `missed_unconfirmed`；终态写一次；A12 后补建单：一次漏服只建一张 `missed_medication` / yellow 单 |
+| **G-A4** | ✅ 通过（A 线收官） | `931 passed / 4 skipped / 1 deselected`（口径 `-m "not slow"`）、覆盖率 **81.51%**、`--check` 与 `--check-plans` 均 0 退出码 |
 
-### 11.3 未开始
+### 11.3 各线状态
 
 | 线 | 已交付 | 未开始 | 阻塞 |
 | --- | --- | --- | --- |
-| **A 历史与工具** | N01 ORM、N04、N12、N10 子图（**17.0h / 21.0h**） | A12 升级工单、N26 接 MCP、N23 收口 | A12 需与 C 的 `safety.py` 对齐同一个建单服务；N26 等 E3（C 的 `mcp_client`）；触达下发为占位（`TODO(E2)`） |
+| **A 历史与工具** | **N01 / N04 / N10 / N12 / N26 / N23 全部交付（21.0h / 21.0h，7 主节点 = 18 执行节点）** | **无** | 三条留白（非缺陷）：触达下发占位 `TODO(E2)`、WD-1（两套建单口）、WD-2（`work_orders` 缺通用幂等列） |
 | **B 状态与记忆** | — | N02 ORM、N05、N06、N08、N09 ORM、N19、N22 | 未开工 |
 | **C Agent 与出口** | — | N03、N07、N11、N13、N14、N20、N24、N25、N27 | 未开工 |
 | **D 前端与 a0 UI** | — | N03 前端侧、N16、N18 | 未开工 |
@@ -644,6 +647,53 @@ A 侧已加观测：completed 但 delivered 为空 → 日志告警 history_comp
               （历史层不替调用方猜内容，但会留痕，便于复盘时定位"末段 ack 丢了"）
 ```
 
+**⑤ 转 dev-C / dev-B —— `companion.py` generic 分支复核（A 已复核）**
+
+```
+【复核结论】C 的诊断正确，`DialogueIdentity(source="generic")` 必崩（缺 elder_id 参数），
+最小修复 elder_id=None 有效 —— 已在合并后的代码上复现并验证修复后上下文可正常构建。
+
+但这是治症状，还有两处更值得修：
+
+【给 B】根因在 app/core/context.py：
+        elder_id: str | None 没给默认值 —— 类型说可空、运行时必填。
+        建议改成 elder_id: str | None = None。
+        __post_init__ 仍拒绝「generic 带非空 elder_id」，校验一点没松。
+        该文件是 L8 锁，请 B 确认或由 B 改。
+
+【给 C】companion.py 的 `if runtime.elder_id:` 判定有问题：
+        Identity 对 staff/guardian 强制 elder_id=None（_must_be_absent），
+        所以每一位员工发起的对话都会静默走进 generic 分支 —— 无人设、无历史、无记忆。
+        它不报错，只是答得像陌生机器；老人端用 device 身份所以本日演示看不出。
+        N14 一接 console 侧就会暴露，且没有日志能定位。
+
+        彻底解（不需要推断）：A1 的 IdentityDecision 已带 source（device/voice/confirm/generic），
+        identity_decision_to_result() 也已产出 DialogueIdentity(source=decision.source, elder_id=...)。
+        所以直接把身份结论传进去：
+
+            # companion.py
+            def _build_turn_context(*, identity: DialogueIdentity, user_text, ...):
+                return build_dialogue_messages(identity=identity, ...)
+
+            # turn_service.py（N14）
+            identity = result.identity
+            await companion.run(..., identity=identity, runtime=runtime)
+
+        注意 runtime 不能删：工具层的 elder_id 只认它（闸门③）。
+        runtime=凭证主体(device/staff/guardian/staff_card)，DialogueIdentity=身份结论(device/voice/confirm/generic)，
+        两者混用正是这个 bug 的根源。
+
+【已落地】A 已按此改出最小可合并版（2026-11-09 19:45）：
+        _build_turn_context / CompanionAgent.run 增可选 identity；传了就用，不传回退推断
+        并打 companion_identity_inferred 告警；generic 崩溃同时修掉。
+        若你的 elder_id=None 补丁与本版冲突，**保留带 identity 的这一版**（回退路径已覆盖你的修复）。
+
+【给 C】顺手补一条 generic 用例（当前 tests/test_companion.py 没有覆盖这条分支，
+        所以全量 879 条全绿也没发现它）。
+
+A 侧不受影响：read_turns(elder_id=None) 按契约返回空，历史层无需改动。
+```
+
 ## 12. 变更记录
 
 | 版本 | 日期 | 说明 |
@@ -651,6 +701,9 @@ A 侧已加观测：completed 但 delivered 为空 → 日志告警 history_comp
 | v1.0 | 2026-11-09 | 首版：主理人裁决「Day 6 走讲义主线、含用药子图与工作流恢复、a0 并入、后端 3 + pad 1」；含三处冲突处置（C-1~C-3）、24 节点 DAG、6 道门禁、16 项交付物、14 条自检、5 项待裁决、4 条自裁、10 条风险；容量实测 S=41h / M=65.5h / L=74.5h，明确超单日容量并给出裁减顺序 |
 | v1.1 | 2026-11-09 | 主理人补充约束：分类层**不接入任何第三方商业 Jev API 或其他云端分类服务**，维持本地部署约束。改 C-3 口径、§0.3 新增第 6 条禁区、D-3 补三条硬约束（无商业 API / 不新增依赖 / 降级唯一路径为全量走 L2 并打 `route_layer=fallback`）、新增风险 R11；节点、人时、DAG 结构未变 |
 | v2.3 | 2026-11-09 | **AC-04 裁决落地（走 B）**：新增 C-5 口径与 **N27**（`app/router/safety.py` 最小一票否决，2.0h，dev-C），AC-04 留在 Day 6；同步改 §0.3 第 1 条（rules.py/system_one/decision_logs 仍顺延，safety.py 本日做）、C-1 落地动作、阶段表 S2、交付物 D17、自检 V16、风险 R13；分工 C 19.5→21.5、S/M/L = 50.5/68.5/73.0；safety 与天气 MCP 均不列入裁减 |
+| v3.10 | 2026-11-09 | **A 线收官（A17 通过）**：G-A4 实测 931 passed / 4 skipped / 1 deselected（口径 `-m "not slow"`）、覆盖率 **81.51%**、两个 `--check*` 均 0；§11.2 补 G-A3/G-A4 结论并修正 G-A2 的用例数（12→15）；§11.3 改为「各线状态」，A 线标为全部交付。README 回填 4 处（新增 §7.4 验收记录、覆盖率达实际值、容器 `pytest` 补 `-m`、修正过期进度块） |\n| v3.9 | 2026-11-09 | **A12 完成（WD-1 裁决走 B）**：新增 `app/services/work_order_service.py`（唯一建单口 `open_work_order` / `open_missed_medication` / `transition` / `resolve_primary_care_staff`），子图 `finalize` 在写终态后建漏服单；**幂等改用确定性单号**（`work_orders` 无 `source_type`/`source_id`，漏服填不进 `event_id`，0011 已归 C）；INSERT 包 SAVEPOINT 以避免撤销终态；与 C 的 `safety_service` 两套并存，登记 **WD-1 / WD-2**。A 线 19.5/21.0h，仅剩 A17；测试新增 15 条 + 6 条断言，全量 931 passed |\n| v3.8 | 2026-11-09 | 转达件⑤补「已落地」：A 已在 `companion.py` 落最小可合并版（可选 `identity` 参数 + 回退告警 + 修掉 generic 崩溃 + 4 条用例），并说明与 C 同文件补丁的冲突处置（保留带 `identity` 的版本）；N14 仍需 `identity = result.identity` 下传 |
+| v3.7 | 2026-11-09 | 转达件⑤补「彻底解」：A1 的 `IdentityDecision.source` 四值已备、`identity_decision_to_result()` 已产出 `DialogueIdentity`，N14 直接传身份结论即可，不必在 companion 推断；明确 `runtime`（凭证主体）与 `DialogueIdentity`（身份结论）的分工 |
+| v3.6 | 2026-11-09 | **复核 C 报的 companion generic 缺陷**：确认必崩且 C 的最小修复有效；另指出根因（`DialogueIdentity.elder_id` 无默认值，属 B 的 L8）与更严重的一处（`if runtime.elder_id` 把 staff/guardian 静默判成 generic）；§11.4 增转达件⑤。A 侧历史层无需改动 |
 | v3.5 | 2026-11-09 | dev-D 回执：转达件③已落地，仅留「末段轨结束」开放点（S4）。§11.4 增转达件④（completed 按 `total` / interrupted 按水位 + 三条前提）；交接件升 v1.3（§8.5）；A 侧补观测——`completed` 但 `delivered_text` 为空时打 `history_completed_without_delivered` 告警，并加 1 条用例（历史测试 12→13） |
 | v3.4 | 2026-11-09 | **P1 裁决收口**：dev-C 选方案 A（水位只由 `played` 推进，`playing`/`canceled` 均不推进），契约升 **v1.2** 新增 §4.2.1「水位与截断」（语义、`-1` 哨兵、截断公式、④ 严格单调这一依赖不变量）；交接件升 v1.2（C 的三条理由 + 不变量风险 + 给 dev-D 的一句话）；§11.4 增转达件③ |
 | v3.3 | 2026-11-09 | **两则转达落档**：① J3 联调**通过**（字段名/0 基 `segment_id`/三态 `status` 一致），dev-D 可进 S2 `playback-queue.ts`；② 主理人裁决 **0011 迁移归 dev-C**，新增写锁 L11，dev-A/B 本日不再新建迁移（避免双 head）；新增 §11.4 转达件（可直接粘贴给 dev-D 与 dev-A/B） |
