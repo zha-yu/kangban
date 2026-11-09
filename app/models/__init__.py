@@ -14,7 +14,12 @@
 
 from app.models.audit import AuditLog
 from app.models.base import NAMING_CONVENTION, Base
-from app.models.conversation import ConversationThread
+from app.models.conversation import (
+    ConversationEvent,
+    ConversationThread,
+    ConversationTurn,
+    ToolExecution,
+)
 from app.models.guardian import GuardianAccount
 from app.models.metrics import Metric
 from app.models.organization import Bed, Device, Elder, Persona, Room
@@ -27,7 +32,9 @@ __all__ = [
     "AuditLog",
     "Base",
     "Bed",
+    "ConversationEvent",
     "ConversationThread",
+    "ConversationTurn",
     "Device",
     "Elder",
     "ElderGuardian",
@@ -38,5 +45,6 @@ __all__ = [
     "Room",
     "StaffAccount",
     "StaffToken",
+    "ToolExecution",
     "Voiceprint",
 ]
