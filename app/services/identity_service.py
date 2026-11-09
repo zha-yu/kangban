@@ -208,7 +208,7 @@ async def verify_session_identity(
     elder_id = await resolve_device_elder(session, device_id)
 
     # 新会话首轮：先结束该设备所有未结束 thread，避免重连/重开后同设备出现多个
-    # 同时 active 的 conversation_threads（换人/退房同理，由 recheck 处理）。
+    # 同时 active 的 conversation_threads（会话内同一时刻仅一个）。
     await _close_active_thread(session, device_id=device_id)
 
     if elder_id is None:
@@ -276,8 +276,8 @@ async def verify_session_identity(
             )
 
     # 3. 无音频首轮（pad 刚上线、用户还没开口）→ 直接开 device 终态 thread
-    #    信任设备绑定，后续 utterance 有音频时靠 recheck 补声纹确认（命中同一人 → 升 voice；
-    #    低于阈值 → 转主动确认）。避免 pad 启动默认态不必要地多一次 identity_ask。
+    #    信任设备绑定，后续 utterance 直接沿用当前 thread（静默复检已按 TD v1.9
+    #    移除，会话内不再换人检测）。避免 pad 启动默认态不必要地多一次 identity_ask。
     logger.info(
         "无音频首轮，开 device thread（device=%s, elder=%s）", device_id, elder_id
     )
@@ -373,106 +373,6 @@ async def open_thread_as_generic_on_timeout(
         reason="elder_unbound",
         started_at=opened.row.started_at,
         session_seq=opened.session_seq,
-    )
-
-
-# -----------------------------------------------------------
-# 公开入口：静默复检（会话内后续 utterance）
-# -----------------------------------------------------------
-
-
-async def recheck_session_identity(
-    session: AsyncSession,
-    *,
-    device_id: uuid.UUID,
-    current_thread_id: str,
-    audio_bytes: bytes,
-) -> IdentityDecision | None:
-    """每 utterance 后复检一次（裁决 v2.3 静默复检）。
-
-    1v1 候选集下「换人」只有两种可判定结果：
-      - generic 会话命中绑定长者 → 升级 voice，结束旧 generic thread、开新 thread；
-      - 已识别会话低于阈值 → 无法确认是绑定长者，结束旧 thread 并返回
-        `confirm/low_confidence`，由 A2 发 identity_ask（FR-VPR-02/03）。
-    命中同一人 / generic 未命中 / vp 容器不可用 → 返回 None，不打断对话。
-    """
-    # 1. 找到当前 thread
-    current_thread = (
-        await session.execute(
-            select(ConversationThread).where(
-                ConversationThread.thread_id == current_thread_id,
-                ConversationThread.device_id == device_id,
-                ConversationThread.ended_at.is_(None),
-            )
-        )
-    ).scalar_one_or_none()
-    if current_thread is None:
-        logger.warning(
-            "recheck：当前 thread %s 不存在或已结束（device=%s）",
-            current_thread_id,
-            device_id,
-        )
-        return None
-
-    # 2. 比对新音频
-    elder_id = await resolve_device_elder(session, device_id)
-    if elder_id is None:
-        return None  # 未绑定设备：无可比对的候选
-
-    try:
-        match = await vs.cosine_compare_against_elder(session, elder_id, audio_bytes)
-    except vs.VoiceprintExtractUnavailable:
-        # 容器不可用不改变当前 thread；保留现有身份继续对话
-        logger.warning("recheck：vp 容器不可用，跳过静默复检")
-        return None
-
-    if match.matched:
-        # 命中同一人 → 不打断
-        if current_thread.elder_id is not None and str(match.elder_id) == str(
-            current_thread.elder_id
-        ):
-            return None
-
-        # generic → voice（或当前 thread 与候选不一致）：开新 voice thread
-        await _close_active_thread(session, device_id=device_id)
-        logger.info(
-            "recheck：命中绑定长者，切 voice thread（old_elder=%s → new_elder=%s）",
-            current_thread.elder_id,
-            match.elder_id,
-        )
-        new_opened = await _open_thread(
-            session,
-            device_id=device_id,
-            elder_id=match.elder_id,
-            identity_source="voice",
-            confidence=match.score,
-        )
-        return IdentityDecision(
-            source="voice",
-            elder_id=match.elder_id,
-            thread_id=new_opened.row.thread_id,
-            confidence=match.score,
-            started_at=new_opened.row.started_at,
-            session_seq=new_opened.session_seq,
-        )
-
-    # 未命中且当前是 generic：继续通用模式，不主动打断
-    if current_thread.elder_id is None:
-        return None
-
-    # 已识别长者说话人低于阈值：结束旧 thread，转主动确认（不再静默继续个人上下文）
-    await _close_active_thread(session, device_id=device_id)
-    logger.info(
-        "recheck：低置信，结束旧 thread 并转主动确认（score=%.4f < %.2f, elder=%s）",
-        match.score,
-        get_settings().voiceprint_similarity_threshold,
-        elder_id,
-    )
-    return IdentityDecision(
-        source="confirm",
-        elder_id=elder_id,
-        thread_id=None,
-        reason="low_confidence",
     )
 
 

@@ -239,6 +239,10 @@ function MainScreen({
         setIdentityAsk(null);
         if (msg.source === "generic") {
           pushSubtitle("这次没能确认您的身份，先陪您聊聊。", "notice");
+        } else {
+          // confirm/voice 定案：触发确认的那句已被身份流程消费，不会有回复，
+          // 明确提示长者再说一遍，否则状态停「在听」但没人知道要重新开口
+          pushSubtitle("身份确认好啦，请再讲一遍。", "notice");
         }
       },
       audioEl: audioRef.current,
