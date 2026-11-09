@@ -169,8 +169,11 @@ export interface TtsTextMsg {
   total?: number;
 }
 
-/** Day 6 新增（contracts.md v1.0 §4.2）：pad 分段送达确认上报（C→S）。
- *  status=playing 该段起播 / played 该段播完 / canceled 打断（带最后已确认 played 的段号）；
+/** Day 6 新增（contracts.md v1.2 §4.2）：pad 分段送达确认上报（C→S）。
+ *  status=playing 该段起播 / played 该段播完（唯一推进服务端水位 last_acked_segment 的信号，
+ *  初始 -1）/ canceled 打断——segment_id 填最后已确认 played 的段号，**无一完整播放段时
+ *  填 -1 哨兵**（v1.2 裁决，与服务端水位初始值同构；canceled 类 ack 只走服务端校验①②③，
+ *  跳过单调校验④）；
  *  at_ms 为客户端单调时钟（ms），只用于折算播放时长，不参与判定；
  *  上报走「尽力而为 + 1 次重发」，失败只打 client_diag，不阻塞播放。 */
 export interface SegmentAckMsg {

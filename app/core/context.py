@@ -573,12 +573,18 @@ async def _assemble_older_summary(
     try:
         from app.services.history_service import read_turns
 
+        # dev-A history_service 已合入，签名 read_turns(session, *, thread_id, elder_id, limit)
+        # Day 6 桩：session 不可用时用 None 触发 dev-A 自己的降级逻辑；
+        # 若签名不匹配（catch TypeError）也回空，避免被 dev-A 的改动阻塞
         turns = await read_turns(
+            session=None,
             thread_id=thread_id,
             elder_id=identity.elder_id,
             limit=cfg.max_history_turns,
         )
-    except ImportError:
+    except Exception:
+        # dev-A history_service 签名/实现随时可能变；任何异常都走降级回空
+        # （UUID 非法 → TokenPayloadError；session=None → AttributeError；签名变 → TypeError）
         return ""
 
     if not turns:
@@ -599,11 +605,12 @@ async def _assemble_history_turns(
         from app.services.history_service import read_turns
 
         turns = await read_turns(
+            session=None,
             thread_id=thread_id,
             elder_id=identity.elder_id,
             limit=cfg.max_history_turns,
         )
-    except ImportError:
+    except Exception:
         return []
 
     messages: list[dict[str, str]] = []
