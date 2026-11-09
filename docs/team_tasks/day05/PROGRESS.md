@@ -20,15 +20,15 @@
 | --- | --- |
 | `docs/plans/day05/a-后端观测与数据.md` | 🚧 进行中 |
 | `docs/plans/day05/a1-本地VRM与形象选择页.md` | 🔒 已冻结 |
-| `docs/plans/day05/d-DAG.md` | 🚧 进行中（G0–G-F 已执行，G-G 待 X4） |
+| `docs/plans/day05/d-DAG.md` | 📝 草稿 |
 | `docs/plans/day05/d-admin页走查记录.md` | ✅ 已完成（真实端点走查） |
 | `docs/plans/day05/d-prompt-双端前端.md` | 📝 草稿 |
-| `docs/plans/day05/d-双端前端推进计划.md` | 🚧 进行中（W0–W4 已执行，W5 待 X4） |
+| `docs/plans/day05/d-双端前端推进计划.md` | 📝 草稿 |
 | `docs/plans/day05/d-启动门槛核对.md` | 🚧 进行中 |
-| `docs/plans/day05/d-字段差异清单.md` | ✅ 已完成（N10 文档级双向对齐；N11 零代码改动） |
-| `docs/plans/day05/d-家属端切换层说明.md` | 🚧 进行中（本地逐端点自检完成；B-3 v1.1 已到，X3 冻结未排期） |
-| `docs/plans/day05/d-家属端契约差异表.md` | 🚧 进行中（本地逐端点自检完成；B-3 v1.1 已到，X3 冻结未排期） |
-| `docs/plans/day05/d-汇报清单.md` | 🚧 进行中（D-1/D-2/D-3 前端交付完成；契约回执与 M5.4 演示待外部） |
+| `docs/plans/day05/d-字段差异清单.md` | 🚧 进行中（A-4 v0.1 已到，待 N10 双向确认） |
+| `docs/plans/day05/d-家属端切换层说明.md` | 🚧 进行中（B-3 v1.1 已到，X3 冻结未排期） |
+| `docs/plans/day05/d-家属端契约差异表.md` | 🚧 进行中（B-3 v1.1 已到，X3 冻结未排期） |
+| `docs/plans/day05/d-汇报清单.md` | 🚧 进行中（D-1 走查通过；N8/N10/N11 阻塞） |
 | `docs/plans/day05/day-05-延迟基线与护栏.md` | 🚧 进行中 |
 | `docs/plans/day05/dev-b-护栏与降级.md` | 🔒 已冻结 |
 | `docs/plans/day05/dev-c-pad语音与3D.md` | 🚧 进行中 |
