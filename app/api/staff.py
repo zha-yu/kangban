@@ -61,7 +61,7 @@ async def list_staff(
     _admin: Annotated[Identity, Depends(require_roles("admin"))],
     role: str | None = None,
     status: str | None = None,
-) -> dict:
+) -> dict[str, object]:
     """列出所有员工（admin 权限）。
 
     契约 E12 Day 6 补缺口：原契约只冻结 POST/PATCH，Day 6 dev-D N18
@@ -149,7 +149,7 @@ async def reassign_elders(
             session,
             staff_id=staff_id,
             elder_ids=payload.elder_ids,
-            operator_id=admin.staff_id,
+            operator_id=uuid.UUID(admin.staff_id) if admin.staff_id else None,
         )
     except StaffNotFoundError as exc:
         return _error_response(404, "NOT_FOUND", exc.message)  # type: ignore[return-value]
