@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-labelledby="title">
+  <title id="title">康伴</title>
+  <!-- 底：冻结主色 P2 藤紫 #6B5B7B，圆角呼应 radius-card 令牌 -->
+  <rect width="64" height="64" rx="18" fill="#6B5B7B" />
+  <!-- 一个圆点（长者）与一道托住它的臂弯（陪伴）。16px 下两者留 2px 空隙，不粘连成笑脸 -->
+  <circle cx="32" cy="20" r="7.5" fill="#FFFFFF" />
+  <!-- 与 favicon.ico 共用同一半圆参数：bbox 18,25 到 46,53 的下半，两份资产几何一致 -->
+  <path d="M18 39A14 14 0 0 0 46 39" fill="none" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round" />
+</svg>

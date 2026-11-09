@@ -131,6 +131,9 @@ __all__ = [
     "OfferMsg",
     "PingMsg",
     "PongMsg",
+    "SegmentAckHandler",
+    "SegmentAckMsg",
+    "SegmentAckStatus",
     "TtsTextMsg",
     "apply_generic_identity",
     "apply_voice_identity",
@@ -139,6 +142,7 @@ __all__ = [
     "set_dialogue_final_handler",
     "set_identity_confirm_handler",
     "set_identity_timeout_handler",
+    "set_segment_ack_handler",
 ]
 
 
@@ -205,11 +209,19 @@ class TtsTextMsg(TypedDict):
     """S→C，大字幕渲染数字人回复（打断时前端立即停播）。
 
     `degraded` 为 C6 的向后兼容扩展字段：True = LLM 降级模板话术，缺省 False。
+    v2（day06/contracts.md §4.1）追加五字段，全部可选、老字段顺序与语义不变：
+    老客户端忽略新字段仍按整段一播处理；`epoch` 客户端**原样回传**，不得自增；
+    分段由服务端切（`。！？；` 优先，单段 ≤40 字，长句按逗号补切），前端不二次切分。
     """
 
     type: Literal["tts_text"]
     text: str
     degraded: NotRequired[bool]
+    response_id: NotRequired[str]  # 可选：缺失时旧客户端按整段一播处理
+    epoch: NotRequired[int]  # 可选：客户端原样回传，不得自增
+    segment_id: NotRequired[int]  # 可选：0 基
+    index: NotRequired[int]  # 可选：0 基，与 segment_id 同值（保留两字段便于未来乱序）
+    total: NotRequired[int]  # 可选：本回复总段数
 
 
 class ErrorMsg(TypedDict):  # S→C，服务端降级/异常通知
@@ -456,6 +468,80 @@ async def dispatch_asr_event(
             },
         )
     return delivered
+
+
+# ------------------------------------------------------------------ Day 6 N07 契约追加
+# C→S segment_ack（day06/contracts.md §4.2 原样拷贝，含 v1.2 补充口径）。
+# 分层：字段形状校验在本层，四步契约校验在 app/services/response_service.py
+# （经 set_segment_ack_handler 由装配层注册；本层不 import 该服务）。
+
+
+SegmentAckStatus = Literal["playing", "played", "canceled"]
+
+
+class SegmentAckMsg(TypedDict):  # C→S，分片播放回执
+    """打断时上报 canceled，并带上一个成功播放段的 segment_id（无一完整播放段为 -1）。"""
+
+    type: Literal["segment_ack"]
+    response_id: str
+    epoch: int  # 客户端原样回传 tts_text 里的 epoch，不得自增
+    segment_id: int  # 0 基；canceled 无一完整播放段时为 -1 哨兵
+    status: SegmentAckStatus
+    at_ms: NotRequired[int]  # 客户端单调时钟（ms），只用于折算播放时长，不参与判定
+
+
+SegmentAckHandler = Callable[[ConnectionContext, Mapping[str, Any]], Awaitable[None]]
+_segment_ack_handler: SegmentAckHandler | None = None
+
+# 契约三值白名单：形状校验用；四步校验（含 canceled 跳过④）在 response_service
+_SEGMENT_ACK_STATUSES = frozenset({"playing", "played", "canceled"})
+
+
+def set_segment_ack_handler(handler: SegmentAckHandler | None) -> None:
+    """注册 segment_ack 的服务端处理回调；传 None 注销（测试/关闭用）。"""
+    global _segment_ack_handler
+    _segment_ack_handler = handler
+
+
+async def _handle_segment_ack(conn: ConnectionContext, message: Mapping[str, Any]) -> None:
+    """C→S segment_ack 分支：形状校验 → 交注册回调做契约四步校验。
+
+    形状非法照 identity_confirm 同款处理（warn + error，不关连接）；回调缺失只
+    warn 不回执（ack 是尽力而为的上报，不允许因服务端未装配而打断客户端）。
+    """
+    response_id = message.get("response_id")
+    epoch = message.get("epoch")
+    segment_id = message.get("segment_id")
+    status = message.get("status")
+    at_ms = message.get("at_ms")
+    if (
+        not isinstance(response_id, str)
+        or isinstance(epoch, bool)
+        or not isinstance(epoch, int)
+        or isinstance(segment_id, bool)
+        or not isinstance(segment_id, int)
+        or not isinstance(status, str)
+        or status not in _SEGMENT_ACK_STATUSES
+        or (at_ms is not None and (isinstance(at_ms, bool) or not isinstance(at_ms, int)))
+    ):
+        logger.warning(
+            "ws_bad_message",
+            extra=_log_extra(conn, reason="segment_ack_invalid"),
+        )
+        await _send_error(conn, "internal")
+        return
+
+    handler = _segment_ack_handler
+    if handler is None:
+        logger.warning("ws_no_segment_ack_handler", extra=_log_extra(conn))
+        return
+    try:
+        await handler(conn, message)
+    except Exception as exc:
+        logger.error(
+            "segment_ack_handler_failed",
+            extra=_log_extra(conn, error_type=type(exc).__name__),
+        )
 
 
 # ------------------------------------------------------------------ 内部实现
@@ -970,6 +1056,9 @@ async def _read_loop(conn: ConnectionContext) -> None:
             continue
         if msg_type == "client_diag":
             await _handle_client_diag(conn, message)
+            continue
+        if msg_type == "segment_ack":
+            await _handle_segment_ack(conn, message)
             continue
         if msg_type == "auth":
             # 裁决②：连接内重复 auth 按非法凭证处理（防连接内换 token 旁路）

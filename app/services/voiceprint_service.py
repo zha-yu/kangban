@@ -39,6 +39,7 @@ SampleIndex = Literal[1, 2, 3]
 # 自定义异常（REST 层将映射为 HTTP 状态码）
 # ============================================================
 
+
 class VoiceprintError(Exception):
     """声纹服务通用异常基类。REST 层映射为 4xx/5xx。"""
 
@@ -58,6 +59,7 @@ class VoiceprintInvalidAudio(VoiceprintError):
 # ============================================================
 # Fernet 加解密
 # ============================================================
+
 
 def _get_fernet() -> Fernet:
     settings = get_settings()
@@ -82,15 +84,14 @@ def decrypt_embedding(ciphertext: bytes) -> np.ndarray:
     arr = np.frombuffer(raw, dtype=np.float32)
     expected = settings.voiceprint_embedding_dimension
     if arr.shape[0] != expected:
-        raise VoiceprintError(
-            f"解密后 embedding 维度 {arr.shape[0]} ≠ 预期 {expected}"
-        )
+        raise VoiceprintError(f"解密后 embedding 维度 {arr.shape[0]} ≠ 预期 {expected}")
     return arr
 
 
 # ============================================================
 # 推理容器 HTTP 客户端
 # ============================================================
+
 
 async def extract_embedding_from_container(audio_bytes: bytes) -> np.ndarray:
     """调推理容器 POST /extract，返回归一化 float32 数组。
@@ -120,9 +121,7 @@ async def extract_embedding_from_container(audio_bytes: bytes) -> np.ndarray:
     if resp.status_code >= 500:
         # 5xx（502/503/504）都属于服务端临时错误 → 503 降级
         detail = resp.text[:200] if resp.content else "推理容器暂不可用"
-        raise VoiceprintExtractUnavailable(
-            f"推理容器返回 {resp.status_code}: {detail}"
-        )
+        raise VoiceprintExtractUnavailable(f"推理容器返回 {resp.status_code}: {detail}")
     if resp.status_code >= 400:
         # 4xx 客户端错误（格式、参数）→ 422 validation_error
         detail = resp.text[:200]
@@ -137,9 +136,7 @@ async def extract_embedding_from_container(audio_bytes: bytes) -> np.ndarray:
 
     expected = settings.voiceprint_embedding_dimension
     if len(emb_list) != expected:
-        raise VoiceprintExtractUnavailable(
-            f"推理容器返回维度 {len(emb_list)} ≠ 预期 {expected}"
-        )
+        raise VoiceprintExtractUnavailable(f"推理容器返回维度 {len(emb_list)} ≠ 预期 {expected}")
 
     arr = np.asarray(emb_list, dtype=np.float32)
     norm = np.linalg.norm(arr)
@@ -151,6 +148,7 @@ async def extract_embedding_from_container(audio_bytes: bytes) -> np.ndarray:
 # ============================================================
 # 注册 · 状态 · 删除
 # ============================================================
+
 
 @dataclass
 class VoiceprintStatus:
@@ -191,12 +189,14 @@ async def register_sample(
 
     # 2. 查询当前版本的已注册样本
     existing = (
-        (await session.execute(
-            select(Voiceprint).where(
-                Voiceprint.elder_id == elder_id,
-                Voiceprint.status == "active",
+        (
+            await session.execute(
+                select(Voiceprint).where(
+                    Voiceprint.elder_id == elder_id,
+                    Voiceprint.status == "active",
+                )
             )
-        ))
+        )
         .scalars()
         .all()
     )
@@ -205,15 +205,14 @@ async def register_sample(
     # 3. INSERT（唯一约束冲突 → 409）
     # 先检查是否已有同 (elder_id, version, sample_index)
     dup = (
-        (await session.execute(
+        await session.execute(
             select(Voiceprint).where(
                 Voiceprint.elder_id == elder_id,
                 Voiceprint.version == version,
                 Voiceprint.sample_index == sample_index,
             )
-        ))
-        .scalar_one_or_none()
-    )
+        )
+    ).scalar_one_or_none()
     if dup is not None:
         raise VoiceprintDuplicateSample(
             f"elder={elder_id}, version={version}, sample_index={sample_index} 已存在"
@@ -231,7 +230,9 @@ async def register_sample(
 
     # 4. 检查三段是否齐了
     existing.append(row)
-    current_samples = {r.sample_index for r in existing if r.status == "active" and r.version == version}
+    current_samples = {
+        r.sample_index for r in existing if r.status == "active" and r.version == version
+    }
     if current_samples == {1, 2, 3}:
         # 三段齐了 → 不做额外操作（Voiceprint 默认 status=active）
         logger.info("elder=%s 声纹注册完成（version=%d）", elder_id, version)
@@ -245,12 +246,14 @@ async def get_status(
     elder_id: uuid.UUID,
 ) -> VoiceprintStatus:
     rows = (
-        (await session.execute(
-            select(Voiceprint).where(
-                Voiceprint.elder_id == elder_id,
-                Voiceprint.status == "active",
+        (
+            await session.execute(
+                select(Voiceprint).where(
+                    Voiceprint.elder_id == elder_id,
+                    Voiceprint.status == "active",
+                )
             )
-        ))
+        )
         .scalars()
         .all()
     )
@@ -267,18 +270,18 @@ async def delete_all_for_elder(
     actor 由调用方（REST 层）传入，格式 "device:<uuid>" / "admin:<uuid>" 等，
     用于结构化审计日志（Day 4 只写日志，Day 9 回填 audit_logs 表）。
     """
-    result = await session.execute(
-        delete(Voiceprint).where(Voiceprint.elder_id == elder_id)
-    )
+    result = await session.execute(delete(Voiceprint).where(Voiceprint.elder_id == elder_id))
     await session.commit()
     count = result.rowcount or 0
     logger.info(
         "voiceprint delete",
-        trace_id=get_trace_id() or "-",
-        audit_action="voiceprint_delete",
-        actor=actor,
-        target=f"elder:{elder_id}",
-        result=f"deleted:{count}",
+        extra={
+            "trace_id": get_trace_id() or "-",
+            "audit_action": "voiceprint_delete",
+            "actor": actor,
+            "target": f"elder:{elder_id}",
+            "result": f"deleted:{count}",
+        },
     )
     return count
 
@@ -286,6 +289,7 @@ async def delete_all_for_elder(
 # ============================================================
 # 进程内 cosine 比对（供 identity_service 调用）
 # ============================================================
+
 
 @dataclass
 class CosineMatch:
@@ -312,12 +316,14 @@ async def cosine_compare_against_elder(
 
     # 取该长者全部 active 样本
     rows = (
-        (await session.execute(
-            select(Voiceprint).where(
-                Voiceprint.elder_id == elder_id,
-                Voiceprint.status == "active",
+        (
+            await session.execute(
+                select(Voiceprint).where(
+                    Voiceprint.elder_id == elder_id,
+                    Voiceprint.status == "active",
+                )
             )
-        ))
+        )
         .scalars()
         .all()
     )

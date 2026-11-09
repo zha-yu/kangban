@@ -22,6 +22,7 @@ from app.models.conversation import (
 )
 from app.models.guardian import GuardianAccount
 from app.models.metrics import Metric
+from app.models.notifications import Notification
 from app.models.organization import Bed, Device, Elder, Persona, Room
 from app.models.relation import ElderGuardian, ElderStaffAssignment
 from app.models.staff import StaffAccount, StaffToken
@@ -41,6 +42,7 @@ __all__ = [
     "ElderStaffAssignment",
     "GuardianAccount",
     "Metric",
+    "Notification",
     "Persona",
     "Room",
     "StaffAccount",
