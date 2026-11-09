@@ -1,10 +1,10 @@
 # 康伴（SilverMate）数据模型设计
 
-> **版本**：v0.4（草案 · 裁决 B1–B6 已定 + AC 逐条取证已跑通，尚未冻结）
+> **版本**：v0.5（草案 · 裁决 B1–B6 + D-1/D-2 已定 + AC 逐条取证已跑通，尚未冻结）
 > **状态**：第 2 步（建模）与第 3 步（取证演练）已完成；评审通过后升 v1.0 冻结，作为 Alembic 迁移的唯一依据。
 > **事实来源**：表结构 = `docs/康伴3D数字人_技术设计文档.md` §3（下称 **TD**）；业务规则/状态机/幂等/枚举/边界 = `docs/康伴3D数字人_PRD.md`（下称 **PRD**）。
 > **不引用大纲**：大纲只提供迭代流程，不提供数据事实（`AGENTS.md`「前置 · 文档角色与事实来源」铁律 1）。
-> **建表口径**：**27 张表 = A 身份组织 7 + B 关系绑定 3 + C 业务数据 10 + D 内容通知日志 7**（Day 5 追加 `metrics`，裁决 B6）；迁移批次 5+5+2+1+1+9+3+1 亦合计 27。
+> **建表口径**：**30 张表 = A 身份组织 7 + B 关系绑定 3 + C 业务数据 13 + D 内容通知日志 7**（Day 5 追加 `metrics`，裁决 B6；Day 6 追加三张事件表，裁决 D-1）；迁移批次 5+5+2+1+**10**+**2**+3+1 = 29，加随路由顺延的 `decision_logs` 1 张，合计 30。
 
 **阅读约定**
 
@@ -262,7 +262,7 @@ erDiagram
 | scope | text | 否 | 受限操作范围（`workorder:handle` / `health:staff_form`） |
 | expires_at | timestamptz | 否 | 短时效，到期自动 401 |
 
-### 4.3 C 组 · 业务数据（10 张）
+### 4.3 C 组 · 业务数据（13 张）
 
 #### 4.3.1 `voiceprints` 声纹表
 
@@ -410,22 +410,86 @@ erDiagram
 | identity_source | text | 否 | `device` / `voice` / `confirm` / `generic` |
 | identity_confidence | numeric(4,3) | 是 | 声纹置信度（阈值调优数据源；`generic` 为 NULL） |
 
-#### 4.3.10 `memory_chunks` 记忆表 🔒
+#### 4.3.10 `memory_chunks` 记忆表 🔒（2026-11-09 裁决 D-2：结构化字段一次建全）
 
 | 字段 | 类型 | 空 | 说明 |
 | --- | --- | --- | --- |
 | chunk_id | uuid PK | 否 | 记忆条目编号 |
 | elder_id | uuid FK→elders | 否 | 所属长者——**所有查询强制 `WHERE elder_id=:runtime.elder_id`**（闸门②） |
-| content | text | 否 | 记忆文本（仅明确表达的信息入库） |
+| content | text | 否 | 自然语言事实（人读；仅明确表达的信息入库） |
 | embedding | vector(1536) | 是 | 语义向量（对齐常见 embedding 模型）；可空以支持仅关键词条目 |
 | category | text | 否 | 默认 `private`（本版无 shared，字段预留） |
 | importance | numeric(3,2) | 否 | 重要性分（默认 1.0；90 天衰减、每周归并） |
-| status | text | 否 | `active` / `superseded` / `deleted`（相似度 >0.9 且语义矛盾 → 旧条目标 `superseded`；`deleted`=已删但向量物理残留，召回只取 `active`，硬删由定期任务处理） |
+| status | text | 否 | ⚠️ **五值**：`active` / `superseded` / `deleted` / `disputed` / `pending_review`（原三值 + 冲突中间态，裁决 D-2） |
 | source_thread_id | text | 是 | 萃取来源会话 |
 | created_at | timestamptz | 否 | 创建时间 |
 | last_accessed | timestamptz | 是 | 最后召回时间（冷热分层依据） |
+| subject | text | 否 | ⚠️ 结构化主体，固定为 `elder_id` 字符串（冲突检索键） |
+| predicate | text | 否 | ⚠️ 结构化谓词，小写下划线枚举（如 `preferred_opera_genre`） |
+| object_value | text | 否 | ⚠️ 结构化客体值（如「越剧」） |
+| polarity | text | 否 | ⚠️ `positive` / `negative` / `neutral` |
+| confidence | numeric(3,2) | 否 | ⚠️ 置信度；**行为推断分值上限 0.70，须低于明确陈述**（讲义 §8.3 口径） |
+| sensitivity | text | 否 | ⚠️ `private` / `health` / `family`，决定可见范围 |
+| source_type | text | 否 | ⚠️ `elder_explicit` / `staff_note` / `inferred` |
+| source_turn_ids | jsonb | 否 | ⚠️ 来源轮次数组，**空数组不得入库** |
+| valid_from | timestamptz | 否 | ⚠️ 生效时间 |
+| valid_to | timestamptz | 是 | ⚠️ 失效时间；召回条件含 `valid_to IS NULL OR valid_to > now()` |
+| supersedes_id | uuid | 是 | ⚠️ 指向被替代条目（自引用，不建 FK） |
+| conflicts_with_id | uuid | 是 | ⚠️ 指向冲突条目（自引用，不建 FK） |
+| updated_at | timestamptz | 否 | ⚠️ 状态迁移时间 |
 
-### 4.4 D 组 · 内容、通知与日志（7 张）
+> `content` 与 `subject+predicate+object_value` **同时写**：前者给人看，后者给冲突检测用。
+
+#### 4.3.11 `conversation_events` 会话事件表（**第 28 张**，2026-11-09 裁决 D-1）
+
+| 字段 | 类型 | 空 | 说明 |
+| --- | --- | --- | --- |
+| event_id | uuid PK | 否 | 事件编号 |
+| thread_id | text FK→conversation_threads | 否 | 所属会话（闸门①落点） |
+| seq | bigint | 否 | 会话内递增业务顺序号；`UNIQUE(thread_id, seq)`；**行锁分配**，不用 id/时间戳 |
+| event_type | text | 否 | 12 值 CHECK：`turn_started` / `asr_final_committed` / `response_started` / `response_segment_delivered` / `response_interrupted` / `response_completed` / `tool_started` / `tool_succeeded` / `tool_failed` / `task_waiting` / `task_resumed` / `turn_completed` |
+| occurred_at | timestamptz | 否 | 事件发生时间（UTC） |
+| payload_json | jsonb | 否 | 事件载荷，默认 `{}` |
+| call_id | text | 是 | 一次建连标识 |
+| turn_id | text | 是 | 一轮对话标识 |
+| response_id | text | 是 | 一次回复标识（多段共用） |
+| task_id | text | 是 | 一个业务任务标识 |
+| trace_id | text | 是 | 串 OTel / 日志 |
+| ref_event_id | uuid | 是 | 更正/替代类事件指向旧事件，**不覆盖旧行** |
+
+> 只追加：更正走新事件 + `ref_event_id`。**无 UPDATE / DELETE 路径**。
+
+#### 4.3.12 `conversation_turns` 轮次投影表（**第 29 张**）
+
+| 字段 | 类型 | 空 | 说明 |
+| --- | --- | --- | --- |
+| turn_id | text PK | 否 | 轮次编号（服务端生成） |
+| thread_id | text FK→conversation_threads | 否 | 所属会话 |
+| elder_id | uuid FK→elders | 是 | 说话人；`generic` 模式为 NULL |
+| call_id | text | 是 | 建连标识 |
+| user_text | text | 否 | **只存 ASR final**，partial 不入库 |
+| assistant_delivered_text | text | 是 | **只存已送达文本**；生成全文在 `conversation_events.payload_json` |
+| status | text | 否 | `open` / `completed` / `interrupted` / `failed` |
+| started_at | timestamptz | 否 | 开始时间 |
+| ended_at | timestamptz | 是 | 结束时间 |
+
+#### 4.3.13 `tool_executions` 工具执行表（**第 30 张**）
+
+| 字段 | 类型 | 空 | 说明 |
+| --- | --- | --- | --- |
+| execution_id | uuid PK | 否 | 执行编号 |
+| turn_id | text FK→conversation_turns | 是 | 归属轮次 |
+| task_id | text | 是 | 归属业务任务 |
+| tool_name | text | 否 | 工具名（须在白名单内） |
+| idempotency_key | text | 否 | 幂等键，`UNIQUE`；同键同参返回上次结果 |
+| request_json | jsonb | 否 | 入参（落库前脱敏） |
+| result_json | jsonb | 是 | 结果（落库前脱敏） |
+| status | text | 否 | `running` / `succeeded` / `failed` / `denied` |
+| error_class | text | 是 | `bad_args` / `not_found` / `transient` / `forbidden`（四类失败） |
+| started_at | timestamptz | 否 | 开始时间 |
+| finished_at | timestamptz | 是 | 结束时间 |
+
+### 4.4 D 组 · 内容、通知与日志（7 张）### 4.4 D 组 · 内容、通知与日志（7 张）
 
 #### 4.4.1 `media_library` 媒体库表
 
@@ -554,6 +618,8 @@ erDiagram
 | 部分唯一 `(dedupe_key) WHERE dedupe_key IS NOT NULL` ⚠️ | notifications | **P1 补充**：「同一日报+版本只发一次」的物理保证 |
 | 唯一 `(elder_id, version, sample_index)` ⚠️ | voiceprints | **P1 补充**（C1 落地后） |
 | PK `token_hash` | staff_tokens | 令牌主键即哈希 |
+| **唯一 `(thread_id, seq)`** 🔒 | conversation_events | 事件顺序号的物理保证（裁决 D-1）；靠 `SELECT … FOR UPDATE` 分配 |
+| **唯一 `(idempotency_key)`** 🔒 | tool_executions | 副作用幂等（同键同参返回上次结果） |
 
 ### 5.2 查询索引
 
@@ -572,6 +638,10 @@ erDiagram
 | `(elder_id, status)` ⚠️ | voiceprints | **P2 补充**：取 active 声纹 |
 | `(trace_id)` ⚠️ | metrics | **B6 补充**（Day 5）：按 trace_id 串一次对话各分段 |
 | `(stage, created_at)` ⚠️ | metrics | **B6 补充**（Day 5）：P50/P95 按段复算（stage 过滤 + 时间窗） |
+| `(thread_id, started_at DESC)` ⚠️ | conversation_turns | **D-1 补充**（Day 6）：取最近 N 轮上下文 |
+| `(turn_id)`、`(response_id)` ⚠️ | conversation_events | **D-1 补充**：按轮/按回复回放（顺序靠 `UNIQUE(thread_id, seq)`） |
+| `(turn_id)`、`(tool_name, started_at DESC)` ⚠️ | tool_executions | **D-1 补充**：按轮排查 + 按工具统计四类失败 |
+| `(elder_id, subject, predicate)` ⚠️ | memory_chunks | **D-2 补充**：冲突检索键，先精确定位再判关系，不靠相似度扫全表 |
 
 > 向量索引：`voiceprints.embedding` / `memory_chunks.embedding` 在万行级走**精确检索**，暂不建 ivfflat/HNSW，避免过早优化。
 
@@ -591,7 +661,10 @@ erDiagram
 | risk_events | `severity IN ('red','yellow')`；`status IN ('open','escalated','closed')` |
 | notifications | `channel IN ('inapp','webpush')`；`status IN (...)`；`target_type IN ('guardian','staff')` |
 | daily_reports | `status IN ('normal','away_notice')` |
-| memory_chunks | `status IN ('active','superseded','deleted')`；`category = 'private'` |
+| memory_chunks | ⚠️ `status IN ('active','superseded','deleted','disputed','pending_review')`（五值，裁决 D-2）；`category = 'private'`；`polarity IN ('positive','negative','neutral')`；`sensitivity IN ('private','health','family')`；`source_type IN ('elder_explicit','staff_note','inferred')` |
+| conversation_events | `event_type` 12 值（见 §4.3.11） |
+| conversation_turns | `status IN ('open','completed','interrupted','failed')` |
+| tool_executions | `status IN ('running','succeeded','failed','denied')`；`error_class IS NULL OR error_class IN ('bad_args','not_found','transient','forbidden')` |
 | elders / staff_accounts / guardian_accounts / devices | 各 `status` 枚举（见 §4 各表） |
 | 其余枚举 | `rooms.status`、`beds.status`、`medication_plans.status`、`voiceprints.status`、`health_records.review_status` / `severity`、`decision_logs.route_layer`、`conversation_threads.identity_source`、`media_library.type`、`medication_events.failure_reason` / `triggered_by`、`medication_attempts.receipt` / `tts_result`、`audit_logs.actor_type` 等，逐列建 CHECK |
 
@@ -616,11 +689,12 @@ erDiagram
 | Day 2 | 5 | staff_accounts, guardian_accounts, elder_staff_assignments, elder_guardians, staff_tokens | 三类凭证 + 员工/监护人绑定 |
 | Day 4 | 2 | voiceprints（**此时才加 `embedding`**，B2）, conversation_threads | 声纹闭环 + 会话隔离 |
 | Day 5 | 1 | metrics | 延迟基线分段耗时（B6，2026-11-07 裁决 D2） |
-| Day 6 | 1 | decision_logs | 三级路由评测数据源 |
-| Day 7 | 9 | memory_chunks, medication_plans, medication_events, medication_attempts, risk_events, work_orders, work_order_transitions, media_library, media_history | 记忆治理 + 用药子图 + 工单流转 + 点播 |
+| Day 6 | **10** | conversation_events, conversation_turns, tool_executions（**D-1 新增，第 28–30 张**）, memory_chunks（**D-2 一次建全**）, medication_plans, medication_events, medication_attempts, risk_events, work_orders, work_order_transitions | 长者侧 Agent 完整闭环 + 记忆骨架 + 用药子图（记忆与用药六表由 Day 7 提前） |
+| Day 7 | 2 | media_library, media_history | 娱乐点播 |
+| 路由日（未定） | 1 | decision_logs | 三级路由评测数据源——**随三级路由顺延**，不再固定 Day 6 |
 | Day 8 | 3 | health_records, daily_reports, notifications | 健康决策图 HITL + 家属端 |
 | Day 9 | 1 | audit_logs | 权限闸门与审计 |
-| **合计** | **27** | — | — |
+| **合计** | **30** | — | — |
 
 > 规则：**主迁移一经合入不再改，后续只加新迁移**；`alembic revision --autogenerate` 后必须人工逐行读 diff 再 `upgrade`。
 
@@ -739,3 +813,4 @@ erDiagram
 | v0.2 | 2026-11-04 | ① 新增 **§7 AC 逐条取证矩阵**（42 条，38 库内可证 / 4 非数据面）；② 取证回补 5 条（D1–D5，摘要入 §1.4）：`failure_reason` 增 `rtc_failed`、拒服工单定格 `follow_up`、撤销窗与解析失败计数走服务层、天气耗时归 OTel；③ §9 待办状态更新（TD/PRD 以修订记录落地，Day 1 迁移实测通过） |
 | v0.3 | 2026-11-04 | 裁决记录**反向下游**：TD 正文已按本文 §1 回改（TD 附 C **v1.6**，不再只加记录）——24→26 张、C 组 9→10、`voiceprints.sample_index`、`embedding` Day 1–3 不建、`work_orders.type` 增 `follow_up`、`decision_logs.trace_id`、P1/P2 的索引与唯一约束、`health_records.source` 四值 CHECK、监护人上限改服务层、枚举一律 CHECK、设备解绑不留流水、Web Push 归 P1；同步关闭 TD 附 B 的「22 张表/`medication_attempts` 是否合并」待确认项。§9 待办 1 更新为「两轮已落地」 |
 | v0.4 | 2026-11-07 | **B6**：Day 5 追加第 27 张表 `metrics`（分段耗时打点，AC-42/PRD §5.3 数据底座）——§4.4.7 表定义、§5.2 两条查询索引、§6 批次表增 Day 5 行（5+5+2+1+1+9+3+1 = 27）。依据：2026-11-07 主理人裁决 D2（docs/plans/day05/day-05-延迟基线与护栏.md S1 自裁留痕）；TD v1.8 修订记录同批。不触碰已合入迁移 0001–0005，走新迁移 0006 |
+| v0.5 | 2026-11-09 | 裁决 **D-1 / D-2**（依据 PRD v2.9、TD v2.0 同日修订）：① 新增第 28–30 张表 `conversation_events`（§4.3.11）/ `conversation_turns`（§4.3.12）/ `tool_executions`（§4.3.13），均为只追加表；② `memory_chunks`（§4.3.10）按结构化字段一次建全——新增 13 列、`status` 由三值扩为五值（+`disputed`/`pending_review`）；③ §5.1 补 2 条唯一约束、§5.3 补 4 类 CHECK、§6 批次改 Day 6 十张 / Day 7 两张 / `decision_logs` 随路由顺延，合计 27→30；④ 头部建表口径同步。C 组 10→13 张。 |

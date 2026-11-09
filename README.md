@@ -426,8 +426,8 @@ Day 3 调试中发现并修复的 4 个坑（详见会话，均已写进代码�
 | --- | --- |
 | [`AGENTS.md`](AGENTS.md) | **AI 协作规则**：技术栈、目录约定、常用命令、禁区、高风险文件清单、模型路由表、硬性数值 |
 | [`docs/康伴3D数字人_PRD.md`](docs/康伴3D数字人_PRD.md) | 需求与验收基线（**v2.6**，§7 修订记录含 26 表 / source 四值 / `follow_up` / `rtc_failed` 的口径变更） |
-| [`docs/康伴3D数字人_技术设计文档.md`](docs/康伴3D数字人_技术设计文档.md) | 架构、26 张表、Agent 闭环、子图设计（**v1.5**，附 C 修订记录） |
-| [`docs/ER_数据模型设计.md`](docs/ER_数据模型设计.md) | **数据模型唯一实现口径**（v0.2）：26 张表逐字段、约束与索引、迁移分批、42 条 AC 取证矩阵 |
+| [`docs/康伴3D数字人_技术设计文档.md`](docs/康伴3D数字人_技术设计文档.md) | 架构、30 张表、Agent 闭环、子图设计（**v2.0**，附修订记录） |
+| [`docs/ER_数据模型设计.md`](docs/ER_数据模型设计.md) | **数据模型唯一实现口径**（v0.5）：30 张表逐字段、约束与索引、迁移分批、42 条 AC 取证矩阵 |
 | [`docs/工作流选型说明.md`](docs/工作流选型说明.md) | Workflow vs Agent 判定：四问决策法、9 类能力形态映射、两个子图的分支条件 |
 | [`docs/prompts/seed-prompt.md`](docs/prompts/seed-prompt.md) | 种子提示词模板（六要素 + 两个实例） |
 | [`docs/康伴3D数字人_大纲.md`](docs/康伴3D数字人_大纲.md) | 十天迭代流程（Day 1–Day 10）：课时划分与每日产出物。**仅作节奏参考，不作为需求与技术事实依据**（见 `AGENTS.md` 前置节） |
@@ -442,9 +442,10 @@ Day 3 调试中发现并修复的 4 个坑（详见会话，均已写进代码�
 | --- | --- | --- |
 | 药单修改权限 | 大纲 §7.2：护工可改 | **PRD §4.5：医生增改停查，护工与管理员只读** |
 | Checkpointer 后端 | 大纲 Day7：SQLite | **PostgreSQL 独立 schema `langgraph`** |
-| 表数量与表名 | 大纲 11 张（`workorders`/`conversations`） | **技术文档 26 张（`work_orders`/`conversation_threads`）** |
+| 表数量与表名 | 大纲 11 张（`workorders`/`conversations`） | **30 张（技术文档 26 张 + `metrics` + Day 6 三张事件表 `conversation_events`/`conversation_turns`/`tool_executions`）** |
 | 老电影点播 | 大纲列为功能验收 | **PRD 降为 P2** |
 | 通知渠道 | 旧稿含微信 / 邮件 | **仅站内 `inapp` + Web Push** |
 | 前端 UI 库 | 技术文档 §1.4 概括为 Tailwind | **pad 用 Tailwind，console/family 用 MUI** |
 | Day 5 metrics 表 | 大纲 5.2 口径含「metrics 表」 | **技术文档 §3.6 原批次无此表（26 张）；2026-11-07 主理人裁决 D2 自裁追加第 27 张表 `metrics`（分段耗时打点），走新迁移 0006** |
 | 口型同步实现 | 大纲 5.1 口径为音素级 viseme | **PRD FR-3D-01：TTS 音频能量近似驱动口型开合即可（day-05 计划裁决 D1 维持现状，不升级 viseme）** |
+| Day 6 主题 | 大纲 §十 / PRD 旧口径：三级路由（规则层 + Laya + MCP） | **现行：长者侧 Agent 完整闭环（历史/状态/上下文/送达/记忆骨架/用药子图 + 天气 MCP + AC-04 安全一票否决）；三级路由、`rules.py`、Laya、`decision_logs` 顺延至路由日**（2026-11-09 裁决，PRD v2.9 / TD v2.0） |
