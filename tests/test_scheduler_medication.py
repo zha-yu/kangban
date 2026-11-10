@@ -20,7 +20,6 @@ import datetime
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
-from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -29,31 +28,29 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.graphs.medication_confirmation_graph import (
-    MAX_ATTEMPTS,
     build_medication_graph,
     graph_config,
     resume_medication_task,
     start_medication_task,
 )
 from app.models.medication import (
-    MedicationAttempt,
     MedicationEvent,
     MedicationPlan,
     WorkOrder,
 )
 from app.models.organization import Device, Elder, Room
 from app.models.staff import StaffAccount
-from app.scheduler.medication_jobs import SchedulerRuntime, _ATTEMPT_INTERVAL_MINUTES
+from app.scheduler.medication_jobs import SchedulerRuntime
 from app.services import medication_service
 from app.services.medication_due_service import list_due_plans
-
 
 # ------------------------------------------------------------------ fixture 复用
 
 
 def _test_psycopg_dsn() -> str:
-    from app.core.config import get_settings
     from sqlalchemy import make_url
+
+    from app.core.config import get_settings
 
     settings = get_settings()
     raw = settings.database_url_test

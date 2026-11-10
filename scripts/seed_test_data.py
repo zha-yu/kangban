@@ -22,16 +22,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
-import uuid
-from datetime import date, datetime, UTC
+from datetime import date
 
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import session_factory
 from app.core.security import hash_password, sha256_hex
-from app.models import Elder, StaffAccount, GuardianAccount, ElderStaffAssignment, ElderGuardian
-from app.models.organization import Room, Bed, Device
+from app.db import session_factory
+from app.models import Elder, ElderGuardian, ElderStaffAssignment, GuardianAccount, StaffAccount
+from app.models.organization import Bed, Device, Room
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("seed")
