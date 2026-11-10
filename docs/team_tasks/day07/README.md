@@ -128,6 +128,25 @@
 | 重复调用 | 同 `turn_id` 重放、同工具短连 3 次、同幂等键重复 | 不重复副作用；熔断生效；重复回执无操作 |
 | 权限 | 注入 `elder_id`、非授权工具、跨长者资源 | 参数身份丢弃并审计；`forbidden` 拒绝；资源不可跨长者访问 |
 
+### 1.5 MCP 在本日计划中的位置
+
+> 结论：**MCP 已经在计划里，但不是“本日新建 MCP”**。实际 Day 6 已交付 `app/mcp_client/` 与 `mcp-servers/weather/`；本日只把既有 MCP 能力接进三级路由和统一 Tool Executor。
+
+| 位置 | 计划体现 | 说明 |
+| --- | --- | --- |
+| 路由直连 | `weather → get_weather` | Router 判定 `action=tool` 后，调用 `ToolExecutor.execute()`；`ToolExecutor` 再走既有 `MCPClient`，Router 不直连 MCP |
+| Agent 侧 | `CompanionAgent` 的 `get_weather` 工具 | Agent 与路由直连共用同一个 `ToolExecutor` → `MCPClient` 入口，避免两套权限/审计/超时逻辑 |
+| 失败语义 | MCP 超时、上游失败、schema 非法 | 统一映射为 `transient` / `upstream_error` / `bad_response`，退避 ≤2 后降级话术；不阻塞整轮 |
+| 可观测 | `decision_logs` + `audit_logs` / `metrics` | `decision_logs` 记路由层与意图；MCP 调用耗时/失败分类走既有审计与指标，不改表 |
+| 验收 | 工具超时 + 真机天气 | 至少 1 条 MCP 超时/失败用例；G5 真机天气一例可查 `decision_logs` 与工具执行留痕 |
+
+**本日 MCP 边界**：
+
+1. 不新建 MCP server；不把 `mock-operations` 提前进 Day 7（按既有口径仍留 Day 8）。
+2. Router、Agent 都不得绕过 `ToolExecutor` 直连 MCP。
+3. 不为 MCP 新增 docker-compose 服务；完整 7 服务仍按技术设计文档留 Day 10。
+4. 若天气 MCP 上游不可用，只做降级话术和留痕，不得用模型常识编造天气。
+
 ---
 
 ## 2. 项目整体工作流 DAG（执行视角）

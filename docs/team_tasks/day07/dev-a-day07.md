@@ -225,6 +225,7 @@ uv run python scripts/eval_router.py --fixtures eval/fixtures/day7_intents.jsonl
 - System One：置信 ≥0.85 走 `system_one`；<0.85 首次 `clarify`、第二次 `agent`；域外走 `clarify`/`agent`；sidecar 失败走 `fallback`。
 - **G1 二次安全**：分类器 `is_sensitive=true` → 走既有安全升级口，不调用 Agent、不执行工具；重复触发按 `turn_id/thread_id` 幂等，不重复建红色事件。
 - **统一工具入口**：路由直连与 Agent 工具调用都经 `ToolExecutor.execute()`；`grep` Router 内无第二套权限判断/HTTP/MCP 直连。
+- **MCP 直连用例**：`weather → get_weather` 的调用链必须是 `Router → ToolExecutor → MCPClient`；Router 内不 import `mcp_client`、不直连 HTTP/MCP；MCP 超时/上游失败走统一 `transient`/降级话术并留痕。
 - **多意图**：简单顺序多意图按序执行且每个子动作过 G1/G2；动态组合进 Agent；含敏感子句时整轮升级。
 - **边界六类**：否定表达、多意图、工具超时、打断、重复调用、权限越权各有用例（打断/重复可与 B1/C3 用例复用，但断言必须存在）。
 - `decision_logs`：每轮恰好 1 行；`trace_id` 与请求一致；`input_text` 无手机号/身份证明文；`model_version` 为 `chinese-jev:*`；不改表、不加列，G1/G2 摘要走现有 `audit_logs`/metrics/结构化日志。
