@@ -26,7 +26,8 @@
 const WINDOW_SIZE = 256;
 /** Day 7 D1 关 P1-4：threshold 常量化。0.38 为先设值（裁决 J-D1，2026-11-10）；
  *  同日主理人真机复测后调整为 0.45（取代 J-D1 的 0.38——0.38 灵敏度过高易误触发，
- *  0.60 偏保守漏收音）。20 句近/远场样本标定仍登记为遗留项待真人复测。 */
+ *  0.60 偏保守漏收音）。2026-11-10 主理人终审：跳过大样本近/远场标定，0.45 定稿
+ *  （依据：D1-1/D1-2 真机 60 轮实测全部正常检出、无误触发报告，见联调记录）。 */
 const VAD_THRESHOLD = 0.45;
 /** Day 7 D1 心跳遥测：120s 零 speechstart 上报一次，便于现场收音复测 */
 const NO_SPEECH_HEARTBEAT_MS = 120_000;
@@ -105,7 +106,7 @@ function createDetector() {
     sileroVad: { model: "" },
     tenVad: {
       model: "ten-vad.onnx",
-      threshold: VAD_THRESHOLD, // Day 7 J-D1 裁决 0.38（先设值，标定待真人复测，见文件头）
+      threshold: VAD_THRESHOLD, // Day 7 D1：0.45 定稿（2026-11-10 主理人裁决，见文件头）
       minSilenceDuration: 0.8,
       minSpeechDuration: 0.25,
       maxSpeechDuration: 30,
