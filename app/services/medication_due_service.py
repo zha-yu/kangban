@@ -112,8 +112,11 @@ async def list_due_plans(
             )
             continue
 
-        # get_next_fire_time(rounded - 1s) 看下次是否就是 rounded
-        next_fire = trigger.get_next_fire_time(rounded - datetime.timedelta(seconds=1))
+        # get_next_fire_time(previous_fire, now) 看下次是否就是 rounded
+        # apscheduler 3.11+ 要求 now 参数（3.10 只有 previous_fire）
+        next_fire = trigger.get_next_fire_time(
+            rounded - datetime.timedelta(seconds=1), now=rounded
+        )
         if next_fire is None or next_fire.replace(second=0, microsecond=0) != rounded:
             continue
 

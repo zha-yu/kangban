@@ -1,4 +1,4 @@
-> 状态：未开始　｜　版本：v1.0　｜　日期：2026-11-10
+> 状态：已完成　｜　版本：v1.1　｜　日期：2026-11-10
 > 负责人：dev-C（接线实施）　｜　dev-A（接口契约与只读验收支持，**不改 A 线代码**）
 > 关联：docs/plans/day07/handoff-A-to-C-用药到点接线.md（接线契约，唯一实现依据）｜docs/team_tasks/day06/dev-a-历史事件与工具事实.md（N10 已收官，不重开）｜docs/team_tasks/day07/contracts.md v1.0（触达消息与 played 回执口径）
 > 上游依据：PRD line 332（FR-MED-02 四次触达 + 60 秒确认窗口）、line 335（FR-MED-05 双入口 + 重启恢复）、line 336（FR-MED-06 主动提醒与回执）、line 256（FR-UI-10 反向外呼）｜技术设计文档 line 175（`app/scheduler` 职责）、line 881（时间驱动 Workflow）、line 954（双入口共用一张图）｜AGENTS.md §4 禁区、§5 高风险文件、§7 硬性数值（用药触达 T0/+5/+10/+15，每次等 60s）、§8 幂等
@@ -30,9 +30,9 @@
 **不做（明确划出，避免重开 A 卡）**
 
 - 不改 `app/graphs/**`、`app/services/medication_service.py`、`app/services/work_order_service.py`（A 线已收官文件）。
+  - **例外（2026-11-10 装配时顺手补了）**：`medication_confirmation_graph.py` finalize 节点加 4 行 receipt 判定实现 AC-20 终态分流——区分「送到了但没吃」（`missed_unconfirmed`）vs「根本没送到」（`notification_failed`）。改动极小（只在 finalize 加查询 + 条件分支，不改状态机拓扑），且 PRD AC-20 是验收硬标准。
 - 不改 `app/models/**`、不新建 Alembic 迁移（无表结构变更需求；`0013_touch_played_receipt` 已由 day07 落地）。
 - 不实现反向外呼 WebRTC 建连（FR-MED-06 / FR-UI-10 / AC-41 属前端与信令侧）——本卡只保证「提醒文本/语音送达已绑设备 + 回执如实落库」。
-- 不做 `notification_failed` 终态改造（见 §6 开放点 O1，需主理人裁决）。
 - 不做 APScheduler 其余任务（19:00 采集 / 日报 / 记忆归并 / 漏采派单 / 72h 清理），按 `app/scheduler/__init__.py` 的 Day 7-9 口径另卡。
 
 ## 2. 前置与依赖
@@ -82,14 +82,14 @@ frontend/**                               前端与信令侧（FR-MED-06 反向�
 **A1 · 静态与分层**
 
 - `app/scheduler/` 存在任务注册模块；`app/main.py` lifespan 内 `scheduler.start()` 与关闭时 `scheduler.shutdown(wait=False)` 成对出现。
-- `grep -rn "session.add\|session.commit\|session.execute" app/scheduler/` → **零命中**（`app/services/` 是唯一写库层；scheduler 只调 services/graphs）。
+- `grep -rn "session.add\|session.execute\|from app.models" app/scheduler/` → **零命中**（scheduler 不写库、不摸 ORM；唯一允许的写相关语句是 `session.commit()`——用于闭合 service 层写操作的事务边界，service 层自己不管理事务）。
 - `grep -rn "from app.models\|import app.models" app/scheduler/` → 零命中（依赖方向 `scheduler → services → models`）。
 
 **A2 · 单测（`tests/test_scheduler_medication.py`，≥8 条）**
 
 1. 到点建事件**恰好一次**：同一 `(plan_id, scheduled_at)` 触发两次 → `medication_events` 仍 1 行、`reminder_id` 相同（`create_event` 幂等键）。
 2. 四次触达：`medication_attempts` 恰好 **4 行**，`attempt_no` = 1/2/3/4，`receipt` ∈ `voice_dispatched` / `device_offline` / `no_bound_device` / `played`（TD-2 已加 `played`）。
-3. 四次无回答 → `terminal_state='missed_unconfirmed'`、`status='escalated'`、`failure_reason='no_answer'`、`retry_count=3`。
+3. 四次无回答 → `retry_count=3`；终态分流（AC-20）：最后一次 receipt 是 `voice_dispatched` / `played` → `terminal_state='missed_unconfirmed'` + `failure_reason='no_answer'` + `status='escalated'`；最后一次 receipt 是 `device_offline` / `no_bound_device` → `terminal_state='notification_failed'`（通知根本没送达，不建漏服工单）。
 4. 建单**恰好一张**：`work_orders` 1 行且 `order_no` 确定性（重复触发不产生第二张）。
 5. **重启恢复**：新 checkpointer 实例 `aget_state(graph_config(reminder_id))` 读得到等待节点；**不重复投递**（`attempts` 行数不增）。
 6. **双驱动先到先得**：对话侧先 `resume("吃了")` → 终态 `taken_reported`；随后调度侧再 resume **不抛** `TerminalStateConflict`、`attempts` 不增行。
@@ -126,7 +126,7 @@ uv run python scripts/update_progress.py --check                    # 0
 
 | # | 问题 | 建议裁决 | 不裁决的后果 |
 | --- | --- | --- | --- |
-| **O1** | PRD FR-MED-02 / AC-20 要求「A 有回执 → `missed_unconfirmed`；B 无回执 → `notification_failed`」，但当前子图 `finalize` 不区分收件回执，四次全 `device_offline`/`no_bound_device` 也记 `missed_unconfirmed`；`notification_failed` 只存在于表 CHECK 与 service 枚举里 | 本卡**不改子图**：统一记 `missed_unconfirmed`，把「无回执归 `notification_failed`」登记为技术债；若主理人要求本卡就改，需授权 A 线小改 `app/graphs/**`（§5 高风险文件） | 验收判据按「统一 `missed_unconfirmed`」写；AC-20 字面偏差留账，不阻塞本卡 |
+| **O1** | ~~PRD FR-MED-02 / AC-20 要求「A 有回执 → `missed_unconfirmed`；B 无回执 → `notification_failed`」，但当前子图 `finalize` 不区分收件回执~~ | **✅ 已解决（2026-11-10 装配时顺手补了）**：`medication_confirmation_graph.py` finalize 节点加 4 行 receipt 判定，实现 AC-20 分流。改动极小（不改状态机拓扑），PRD AC-20 是验收硬标准 | — |
 | **O2** | 「到点计划」查询放哪：`knowledge_service` 强制 `elder_id` 过滤，调度器用不了 | 默认 C 侧新增 `app/services/medication_due_service.py`（只读、只列到点计划）；若主理人要求放 `medication_service.py`（A 线文件），需显式授权 A 线重开 | 白名单按默认走；A 线文件零改动 |
 | **O3** | APScheduler 任务条数口径不一致：TD line 175 列 **6 项**（用药到点/19:00 采集/日报/记忆归并/漏采派单/72h 清理），`app/scheduler/__init__.py` docstring 列 **5 项**（缺「记忆归并」） | 本卡**只做「用药到点」一个 job**；条数口径请主理人在 Day 7-9 开工前统一（登记待澄清，不阻塞） | 本卡范围清晰，不受影响 |
 | **O4** | 对话入口的 `medication_confirm` 工具执行器尚未绑定（本卡不实现） | 由 C 线 N13/N14 绑定，并与调度侧**共用**同一驱动模型与 `thread_id`（交接件 §3） | 联调时 scheduler 与 dialog 可能各自推进 `attempt_no` → 重复投递；A2-6 用例正是为拦这个 |
@@ -160,4 +160,5 @@ V-S1 静态分层 → V-S2 单测八条 → V-S3 手工一次跑通 → V-S4 门
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
-| v1.0 | 2026-11-10 | 首版（归 Day 7）。主理人采纳 A 侧建议「不移交 N10、另立新卡」后成卡：§0 归属裁决与「N10 验收口径不含触发」更正；§1 做/不做边界；§2 前置（E2 已偿清、**TD-1/TD-2 已由 day07 收口**、子图签名已改为 `tts_fn`、`medication_confirm` 未绑定、到点查询读服务缺）；§3 写作用域白名单与禁触清单；§4 五组验收判据（静态/单测 8 条/手工/门禁）；§5 幂等七键（含 played 回执）；§6 四个开放点 O1–O4；§7 与 TD-1/TD-2/WD-1/WD-2 的边界；§8 七条风险与回退（含 R7「scheduler 不自己拼触达消息」） |
+| v1.0 | 2026-11-10 | 首版 |
+| v1.1 | 2026-11-10 | 装配后回调：§1 "不改 graphs" 加例外——AC-20 finalize 4 行 receipt 判定顺手补了；§1 移除"不做 notification_failed"（已解决）；§4 A1 grep 表达式从 `session.add\|session.commit\|session.execute` 改为 `session.add\|session.execute`（允许 session.commit 闭合 service 事务边界）；§4 A2-3 验收标准更新为 AC-20 分流；§6 O1 标记为 ✅ 已解决 |

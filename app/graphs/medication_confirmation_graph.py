@@ -325,6 +325,15 @@ def build_medication_graph(
     async def finalize(state: MedicationState) -> dict[str, Any]:
         terminal = state.get("terminal") or "missed_unconfirmed"
         attempts = int(state.get("attempt_no") or 1)
+        # AC-20：四次终态时区分「送到了但没吃」vs「根本没送到」——
+        # 最后一次 attempt 的 receipt 是离线/无绑定 → notification_failed；
+        # voice_dispatched/played → missed_unconfirmed（送到了但长者无回应）。
+        if terminal == "missed_unconfirmed":
+            event_id = _uuid(state["reminder_id"])
+            all_attempts = await medication_service.list_attempts(session, event_id)
+            last_receipt = all_attempts[-1]["receipt"] if all_attempts else None
+            if last_receipt in ("device_offline", "no_bound_device"):
+                terminal = "notification_failed"
         if state.get("answer"):
             # 只补写回答摘要，不改终态（终态由 set_terminal 独占写入）
             await medication_service.record_response(

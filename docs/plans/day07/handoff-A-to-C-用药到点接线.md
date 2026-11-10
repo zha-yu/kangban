@@ -122,9 +122,9 @@ APScheduler 到点（cron 命中，Asia/Shanghai）
 | 1 | T0 | 1 | → 轮次 2 |
 | 2 | T0 + 5 分钟 | 2 | → 轮次 3 |
 | 3 | T0 + 10 分钟 | 3 | → 轮次 4 |
-| 4 | T0 + 15 分钟 | 4 | → 终态 `missed_unconfirmed`（`retry_count=3`）+ 升级工单 |
+| 4 | T0 + 15 分钟 | 4 | → 终态 + 升级工单 |
 
-- 窗口长度 **60 秒**；窗口内长者回答 → 该轮即命中，走 `taken_reported` / `refused`。
+- **"每次 60 秒确认窗口"是下限语义**（AGENTS §7）——触达后不是立即就判"无回答"，至少给长者 60 秒反应时间。实际窗口时长由固定 5 分钟间隔自然保证（远大于 60 秒下限），scheduler 每分钟 tick 一次计算下次时点。长者在 T0+5min±30s 的 tick 窗口内回答都能被正确处理。
 - 回答归一由 A 线 `_normalize` 负责：命中 `吃了/吃过了/taken…` → `taken_reported`；`没吃/不吃/refused…` → `refused`；其余（含空答）→ 按未确认重试。**C 侧不要自己再写一套词表**。
 - `MAX_ATTEMPTS = 4`（A 线常量）。C 侧调度器**不要**再叠一层自己的重试上限，否则会出现「9 次触达」这类越界。
 
@@ -134,8 +134,10 @@ APScheduler 到点（cron 命中，Asia/Shanghai）
 | --- | --- | --- | --- |
 | `taken_reported` | 窗口内答「吃了」 | `confirmed` | —（`confirm_channel='voice'`） |
 | `refused` | 窗口内答「没吃」 | `escalated` | — |
-| `missed_unconfirmed` | 四次窗口皆无回答 | `escalated` | `no_answer` |
-| `notification_failed` | **当前子图不产出**（见 §6 O1） | — | — |
+| `missed_unconfirmed` | 四次窗口皆无回答、**最后一次 receipt ∈ voice_dispatched / played**（送到了但没回应） | `escalated` | `no_answer` |
+| `notification_failed` | 四次窗口皆无回答、**最后一次 receipt ∈ device_offline / no_bound_device**（根本没送达） | `escalated` | `no_answer` |
+
+> **AC-20 分流已在 finalize 节点实现**（2026-11-10 装配时顺手补了，改动极小）。`notification_failed` 与 `missed_unconfirmed` 的唯一区别是——前者不建漏服工单（通知没送到不是长者的责任），后者建一张（送到了但长者没回应）。
 
 - 触达回执白名单（迁移 0013 后七值）：`card_rendered` / `tts_finished` / `none` / `voice_dispatched` / `device_offline` / `no_bound_device` / **`played`**。
 - `played` 语义（day07 contracts §3）：只允许从 `voice_dispatched` 升级；`device_offline` / `no_bound_device` **不可**被回执「洗白」；**played 不参与重试与终态判定**。
@@ -201,7 +203,7 @@ resume 之前：
 
 | # | 问题 | 建议 | 影响 |
 | --- | --- | --- | --- |
-| **O1** | PRD FR-MED-02 / AC-20 要求「无回执 → `notification_failed`」，子图 `finalize` 不区分收件回执 | 本卡不改子图：统一 `missed_unconfirmed`，登记技术债；若要本卡就改 → 需授权 A 线改 `app/graphs/**`（§5 高风险文件） | 验收按统一 `missed_unconfirmed` 写 |
+| **O1** | ~~PRD FR-MED-02 / AC-20 要求「无回执 → `notification_failed`」，子图 `finalize` 不区分收件回执~~ | **✅ 已解决（2026-11-10 装配时顺手补了）**：子图 finalize 节点加 receipt 判定实现 AC-20 分流 | — |
 | **O2** | 到点查询放哪 | 默认 C 侧新文件 `app/services/medication_due_service.py` | A 线文件零改动 |
 | **O3** | APScheduler 任务条数 5 vs 6 | 本卡只做用药到点；主理人统一口径 | 不阻塞 |
 | **O4** | `medication_confirm` 未绑定；与调度侧共用驱动模型 | C 线 N13/N14 绑定，与调度侧共用 `thread_id` + `attempt_no` 序列 | 不共用 → 重复投递 |
@@ -210,7 +212,7 @@ resume 之前：
 
 ```bash
 # 静态：scheduler 层不写库、不碰 models
-grep -rn "session.add\|session.commit\|session.execute" app/scheduler/        # 期望 0
+grep -rn "session.add\|session.execute" app/scheduler/                        # 期望 0（scheduler 不拼 ORM；允许 session.commit——闭合 service 层事务边界）
 grep -rn "app.models" app/scheduler/                                          # 期望 0
 
 # 依赖与循环
@@ -237,4 +239,5 @@ SELECT order_no, status FROM work_orders ORDER BY created_at DESC LIMIT 1;
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
-| v1.0 | 2026-11-10 | 首版（归 Day 7）。主理人采纳「不移交 N10、另立新卡」后成文：§1 现状基线（子图零生产调用点实测 + **TD-1/TD-2 已由 day07 收口** + **§1.1 子图工厂签名已改为 `tts_fn`**）；§2 调用面（A 线公开入口逐个签名 + 驱动链 + 「scheduler 不拼触达消息」+ 四时点/60 秒窗口 + 终态四值 + played 白名单七值 + 双入口同图）；§3 双驱动先到先得与重启恢复两条硬规矩；§4 C 侧要新写的三块；§5 幂等红线八条；§6 开放点 O1–O4；§7 自检清单与 SQL 核对 |
+| v1.0 | 2026-11-10 | 首版 |
+| v1.1 | 2026-11-10 | 装配后回调：§2.3 澄清「60 秒窗口」是下限语义（实际由 5 分钟间隔自然保证）；§2.4 终态表更新——notification_failed 已在 finalize 节点实现 AC-20 分流；§6 O1 标记为 ✅ 已解决；§7 自检清单 grep 表达式从 `session.add\|session.commit\|session.execute` 改为 `session.add\|session.execute`（允许 session.commit 闭合 service 事务边界） |
