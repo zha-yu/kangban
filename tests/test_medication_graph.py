@@ -39,7 +39,7 @@ from app.graphs.medication_confirmation_graph import (
     resume_medication_task,
     start_medication_task,
 )
-from app.models.medication import MedicationAttempt
+from app.models.medication import MedicationAttempt, MedicationEvent
 from app.models.organization import Device, Elder, Room
 from app.models.staff import StaffAccount
 from app.services import medication_service
@@ -209,14 +209,16 @@ async def test_restart_recovers_without_resending(
 async def test_no_answer_retries_then_missed(
     session: AsyncSession, seeded: dict[str, Any], saver: AsyncPostgresSaver
 ) -> None:
-    """送到了但长者始终无回应：四次触达（receipt=voice_dispatched）→ missed_unconfirmed。
+    """A 类：消息送达了（回执 voice_dispatched）但四次都没人回答 → missed_unconfirmed。
 
-    必须绑设备 + 投递成功——不绑设备会落 no_bound_device，AC-20 会把终态判成
-    notification_failed（「根本没送到」），与本测场景（「送到了没吃」）不符。
+    与「设备全离线」那条构成 AC-20 的两侧：这里必须绑设备且下发成功——
+    不绑设备会落 no_bound_device，AC-20 会把终态判成 notification_failed
+    （「根本没送到」），与本测场景（「送到了没吃」）不符；终态按回执集合分流
+    （`_split_missed_by_receipt`）。
     """
     await _bind_device(session, seeded)
-    reminder_id = await _new_event(session, seeded)
     calls: list[tuple[str, dict[str, Any]]] = []
+    reminder_id = await _new_event(session, seeded)
     graph = build_medication_graph(
         session=session, checkpointer=saver, deliver_fn=_fake_deliver(calls, ok=True)
     )
@@ -386,16 +388,17 @@ async def test_reminder_without_device_records_no_bound_device(
     assert event is not None and event["status"] == "waiting_confirm", "触达失败不阻塞进入等待确认"
 
 
-async def test_all_devices_offline_still_completes_missed_flow(
+async def test_all_devices_offline_yields_notification_failed(
     session: AsyncSession, seeded: dict[str, Any], saver: AsyncPostgresSaver
 ) -> None:
-    """设备全离线：每次触达记 device_offline，四次后 notification_failed + 建单。
+    """设备全离线：每次触达记 device_offline，四次后是 notification_failed（AC-20）而不是漏服。
 
-    AC-20：终态区分「送到了没吃」（missed_unconfirmed）与「根本没送到」
-    （notification_failed），本测是后者。但建单口径两种终态一致（2026-11-10
-    主理人裁决）——没送到更需要护工补送/代确认，不能因为通知失败就没人管。
-    下发失败**不是**放弃治疗的理由：四次触达的语义是「尝试了四次没联系上」，
-    联系不上的记录本身就是证据。
+    这条是 E2 接线最要紧的保证：下发失败**不是**放弃治疗的理由——
+    四次触达的语义是「尝试了四次没联系上」，联系不上的记录本身就是证据。
+    但归因必须分清（PRD FR-MED-02 / AC-20）：
+    提醒 A 有回执、无人应答 → `missed_unconfirmed`；提醒 B 四次回执全 `device_offline`
+    → `notification_failed`（通知没送到，不是老人漏服）。建单口径两种终态一致
+    （2026-11-10 主理人裁决）——没送到更需要护工补送/代确认，不能没人管。
     """
     await _bind_device(session, seeded)
     reminder_id = await _new_event(session, seeded)
@@ -423,6 +426,17 @@ async def test_all_devices_offline_still_completes_missed_flow(
 
     event = await medication_service.get_event(session, reminder_id)
     assert event is not None and event["terminal_state"] == "notification_failed"
+
+    from sqlalchemy import select
+
+    reason = (
+        await session.execute(
+            select(MedicationEvent.failure_reason).where(
+                MedicationEvent.reminder_id == reminder_id
+            )
+        )
+    ).scalar_one()
+    assert reason == "offline", "归因写 offline（failure_reason 白名单内，无新增值/无迁移）"
 
     from sqlalchemy import select
 

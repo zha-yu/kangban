@@ -124,7 +124,9 @@ APScheduler 到点（cron 命中，Asia/Shanghai）
 | 3 | T0 + 10 分钟 | 3 | → 轮次 4 |
 | 4 | T0 + 15 分钟 | 4 | → 终态 + 升级工单 |
 
-- **"每次 60 秒确认窗口"是下限语义**（AGENTS §7）——触达后不是立即就判"无回答"，至少给长者 60 秒反应时间。实际窗口时长由固定 5 分钟间隔自然保证（远大于 60 秒下限），scheduler 每分钟 tick 一次计算下次时点。长者在 T0+5min±30s 的 tick 窗口内回答都能被正确处理。
+- 窗口长度 **60 秒**；窗口内长者回答 → 该轮即命中，走 `taken_reported` / `refused`。
+- **60 秒是「下限」不是「定点」**：语义为「至少给满 60 秒才算本轮无回答」，由调度 tick 驱动推进，
+  不要求秒级对齐到 T0+60.000s；实现上不要 sleep 精确 60s，也不要早于 60s 判无回答。
 - 回答归一由 A 线 `_normalize` 负责：命中 `吃了/吃过了/taken…` → `taken_reported`；`没吃/不吃/refused…` → `refused`；其余（含空答）→ 按未确认重试。**C 侧不要自己再写一套词表**。
 - `MAX_ATTEMPTS = 4`（A 线常量）。C 侧调度器**不要**再叠一层自己的重试上限，否则会出现「9 次触达」这类越界。
 
@@ -134,10 +136,14 @@ APScheduler 到点（cron 命中，Asia/Shanghai）
 | --- | --- | --- | --- |
 | `taken_reported` | 窗口内答「吃了」 | `confirmed` | —（`confirm_channel='voice'`） |
 | `refused` | 窗口内答「没吃」 | `escalated` | — |
-| `missed_unconfirmed` | 四次窗口皆无回答、**最后一次 receipt ∈ voice_dispatched / played**（送到了但没回应） | `escalated` | `no_answer` |
-| `notification_failed` | 四次窗口皆无回答、**最后一次 receipt ∈ device_offline / no_bound_device**（根本没送达） | `escalated` | `no_answer` |
+| `missed_unconfirmed` | 四次窗口皆无回答，**且至少一条回执说明消息出过门** | `escalated` | `no_answer` |
+| `notification_failed` | 四次窗口皆无回答，**且四次回执全为 `device_offline` / `no_bound_device`** | `escalated` | `offline` |
 
-> **AC-20 分流已在 finalize 节点实现**（2026-11-10 装配时顺手补了，改动极小）。`notification_failed` 与 `missed_unconfirmed` 的唯一区别是——前者不建漏服工单（通知没送到不是长者的责任），后者建一张（送到了但长者没回应）。
+> **2026-11-10 更新（AC-20 已实现，A 线小改 `finalize`，未重开 N10 卡）**：`finalize` 在写终态前查
+> `list_attempts` 的回执集合，全落在 `{device_offline, no_bound_device}` 才改判 `notification_failed` +
+> `failure_reason='offline'`（白名单内，**无迁移**）；两种终态都建工单（PRD FR-MED-02 要求 A、B 各生成
+> 唯一事件与工单）。因此：**设备离线 / 未绑设备的"四次无回答"用例，断言必须改成 `notification_failed`**；
+> 只有"绑了设备且下发成功、但没人回答"才是 `missed_unconfirmed`。
 
 - 触达回执白名单（迁移 0013 后七值）：`card_rendered` / `tts_finished` / `none` / `voice_dispatched` / `device_offline` / `no_bound_device` / **`played`**。
 - `played` 语义（day07 contracts §3）：只允许从 `voice_dispatched` 升级；`device_offline` / `no_bound_device` **不可**被回执「洗白」；**played 不参与重试与终态判定**。

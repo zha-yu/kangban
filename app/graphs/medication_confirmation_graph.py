@@ -123,6 +123,37 @@ def _normalize(answer: Any) -> str:
     return str(answer).strip().lower()
 
 
+#: 「消息没出去」的回执白名单（迁移 0013 后 receipt 共七值）：四次全落在这里才判通知失败。
+UNDELIVERED_RECEIPTS = frozenset({"device_offline", "no_bound_device"})
+
+
+async def _split_missed_by_receipt(
+    session: Any, reminder_id: Any, default_reason: str | None
+) -> tuple[str, str | None]:
+    """AC-20：把「四次无回答」拆成 `missed_unconfirmed` 与 `notification_failed`。
+
+    判据只看**回执**，不看有没有人回答（后者已经是终态本身）：
+
+    - 四次回执全部落在 `UNDELIVERED_RECEIPTS` → `notification_failed` + `failure_reason=offline`；
+    - 只要有一条说明消息出过门（`card_rendered` / `tts_finished` / `voice_dispatched` / `played`）
+      → 仍是 `missed_unconfirmed`（人没确认，而不是没通知到）。
+
+    查不到回执（异常或空）时**保守按 `missed_unconfirmed`**：不能因为一次查询失败就把
+    「没通知到」这种更重的结论写进库——那是给家属看的归因，不能猜。
+    """
+    try:
+        rows = await medication_service.list_attempts(session, _uuid(str(reminder_id)))
+    except Exception:  # 终态判定不因查询失败升级成更重的结论
+        logger.warning(
+            "medication_receipt_lookup_failed reminder_id=%s", reminder_id, exc_info=True
+        )
+        return "missed_unconfirmed", default_reason
+    receipts = {str(row.get("receipt") or "none") for row in rows}
+    if receipts and receipts <= UNDELIVERED_RECEIPTS:
+        return "notification_failed", "offline"
+    return "missed_unconfirmed", default_reason
+
+
 async def _escalate_missed_medication(session: Any, state: MedicationState) -> None:
     """漏服 → 升级工单（A12）。
 
@@ -362,15 +393,6 @@ def build_medication_graph(
     async def finalize(state: MedicationState) -> dict[str, Any]:
         terminal = state.get("terminal") or "missed_unconfirmed"
         attempts = int(state.get("attempt_no") or 1)
-        # AC-20：四次终态时区分「送到了但没吃」vs「根本没送到」——
-        # 最后一次 attempt 的 receipt 是离线/无绑定 → notification_failed；
-        # voice_dispatched/played → missed_unconfirmed（送到了但长者无回应）。
-        if terminal == "missed_unconfirmed":
-            event_id = _uuid(state["reminder_id"])
-            all_attempts = await medication_service.list_attempts(session, event_id)
-            last_receipt = all_attempts[-1]["receipt"] if all_attempts else None
-            if last_receipt in ("device_offline", "no_bound_device"):
-                terminal = "notification_failed"
         if state.get("answer"):
             # 只补写回答摘要，不改终态（终态由 set_terminal 独占写入）
             await medication_service.record_response(
@@ -379,17 +401,28 @@ def build_medication_graph(
                 attempt_no=attempts,
                 response=str(state["answer"]),
             )
+        failure_reason = None if terminal in ("taken_reported", "refused") else "no_answer"
+        if terminal == "missed_unconfirmed":
+            # AC-20 的**唯一分流口**（2026-11-10 合并 dev-C WIP 时收敛）：
+            # 此前 finalize 里有两处重叠——旧的看「最后一条 receipt」改 terminal 不改
+            # failure_reason，新的 `_split_missed_by_receipt` 因此永远不触发，归因恒
+            # `no_answer`。现在只留按回执集合判定的这一处：四次全没出过门 →
+            # notification_failed + offline；任一条出过门 → missed_unconfirmed；
+            # 查询失败保守不升级结论（见 split docstring）。
+            terminal, failure_reason = await _split_missed_by_receipt(
+                session, state["reminder_id"], failure_reason
+            )
         await medication_service.set_terminal(
             session,
             event_id=_uuid(state["reminder_id"]),
             terminal_state=terminal,
-            failure_reason=None if terminal in ("taken_reported", "refused") else "no_answer",
+            failure_reason=failure_reason,
             retry_count=max(0, attempts - 1),
             confirm_channel="voice" if terminal == "taken_reported" else None,
         )
         # 终态写完才建单（顺序不可交换）：见文件头 A12 段的说明。
-        # notification_failed（根本没送到）同样建单——2026-11-10 主理人裁决，
-        # 没送到更需要护工补送/代确认，不能因为「通知失败」就没人管。
+        # notification_failed（根本没送到）同样建单——2026-11-10 主理人裁决：
+        # 没送到更需要护工补送/代确认，不能因为「通知失败」就没人管（FR-MED-02/AC-20）。
         if terminal in ("missed_unconfirmed", "notification_failed"):
             await _escalate_missed_medication(session, state)
         return {}
