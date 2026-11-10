@@ -12,14 +12,28 @@
 
 from __future__ import annotations
 
+import warnings
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 仓库根：app/core/config.py -> app/core -> app -> 根
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ENV_FILE = _REPO_ROOT / ".env"
+
+#: 旧变量（LAYA_*）弃用告警的进程级去重集合。放模块层而不是 Settings 上，
+#: 避免每实例重复刷屏；同时保证 A1 验收要求的"有且仅有一次"。
+_WARNED_LEGACY: set[str] = set()
+
+
+def _warn_once(message: str) -> None:
+    if message in _WARNED_LEGACY:
+        return
+    _WARNED_LEGACY.add(message)
+    warnings.warn(message, DeprecationWarning, stacklevel=3)
 
 
 class Settings(BaseSettings):
@@ -87,13 +101,39 @@ class Settings(BaseSettings):
     llm_max_retries: int = 2
     llm_temperature: float = 0.6
 
-    # ---------------------------- System One · Laya ----------------------------
-    laya_enabled: bool = True
-    laya_base_url: str = "http://localhost:7001"
-    laya_api_key: str = ""
-    laya_timeout_ms: int = 200
-    laya_confidence_threshold: float = 0.85
-    laya_fallback_to_llm: bool = True
+    # ---------------------------- System One · Laya 本地推理（Day 7 A1） ----------------------------
+    # 口径来源：docs/plans/day07/dev-a-三级路由与决策日志.md §5.2.0（实测证据）
+    #   laya-multilingual（322M/F16/615MB/apache-2.0），推理入口是仓库自带 rl_agent_api.RLAgent。
+    # 端口 7001 不变（sidecar 仍在该端口），避免 nginx / 防火墙 / 前端配置连带改动。
+    system_one_enabled: bool = True
+    system_one_provider: str = "laya"  # laya | mock；生产禁 mock（启动时校验）
+    system_one_base_url: str = "http://127.0.0.1:7001"
+    system_one_api_key: str = ""  # 空 → sidecar 请求不带 Authorization
+    system_one_timeout_ms: int = 200  # PRD §5.3 固定意图路由 ≤200ms，不得为"跑通"调大
+    system_one_confidence_threshold: float = 0.85  # 低于此值只澄清一次（PRD FR-DLG-03）
+    system_one_fallback_to_agent: bool = True  # 失败/低置信下沉 Agent，不调第二个分类器
+    system_one_model_id: str = "laya-multilingual"
+    system_one_model_path: str = ""  # 空 → sidecar /health 报 model_missing（必须显式）
+    system_one_model_version: str = "laya:multilingual:dev"  # 写入 decision_logs.model_version
+    system_one_device: str = "cpu"  # TD §1.4 口径：CPU 推理
+    # CPU 实测（16 逻辑核 / torch 2.14.0+cpu）：单问 167ms、两问 285ms、四问 668ms。
+    # 并发 >1 会让单请求互相拖慢，直接顶破 200ms 预算 → 默认 1，需要吞吐时按机型再评估。
+    system_one_max_concurrency: int = 1
+    system_one_warmup: bool = True
+    # 快路径只问 intent（实测 p95 167ms 达标）；is_sensitive 走 shadow，不阻塞路由，
+    # 急症仍由 G0 规则硬兜底（2026-11-10 主理人裁决，见计划 §10-10）。
+    system_one_fast_question: str = "intent"
+    system_one_shadow_question: str = "is_sensitive"
+    system_one_shadow_timeout_ms: int = 400
+
+    # ---- 以下 6 个 laya_* 为 Day 6 及以前的旧字段，仅做兼容映射（新代码禁止再读） ----
+    # 下个版本删除；删除时同步 .env.example 与 README 配置表。
+    laya_enabled: bool | None = None
+    laya_base_url: str | None = None
+    laya_api_key: str | None = None
+    laya_timeout_ms: int | None = None
+    laya_confidence_threshold: float | None = None
+    laya_fallback_to_llm: bool | None = None
 
     # ---------------------------- 语音识别 ASR ----------------------------
     asr_provider: str = ""
@@ -204,6 +244,47 @@ class Settings(BaseSettings):
     voiceprint_fernet_key: str = (
         "ZGV2LXZvaWNlcHJpbnQtZmVybmV0LWtleS1sb2NhbDE="
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_laya(cls, data: Any) -> Any:
+        """把 Day 6 及以前的 `LAYA_*` 映射到 `system_one_*`，每个旧变量只告警一次。
+
+        pydantic-settings 会先把 `.env` 与环境变量合并成 dict 再交给 before-validator，
+        所以这里既能接住 `.env`，也能接住 `Settings(LAYA_BASE_URL=...)` 这类显式入参。
+        新旧同时给时**新值优先**，并把"旧变量被忽略"写进告警——不做静默二选一。
+        """
+        if not isinstance(data, dict):
+            return data
+        legacy = {
+            "laya_enabled": "system_one_enabled",
+            "laya_base_url": "system_one_base_url",
+            "laya_api_key": "system_one_api_key",
+            "laya_timeout_ms": "system_one_timeout_ms",
+            "laya_confidence_threshold": "system_one_confidence_threshold",
+            "laya_fallback_to_llm": "system_one_fallback_to_agent",
+        }
+        for old, new in legacy.items():
+            if old not in data:
+                continue
+            value = data[old]
+            if value is None:
+                # 字段默认值是 None，代表"没配过"，不当成用户显式设置
+                data.pop(old, None)
+                continue
+            if data.get(new) is not None:
+                _warn_once(f"{old.upper()} 已弃用且被 {new.upper()} 覆盖（新值优先，旧变量忽略）")
+                continue
+            data[new] = value
+            _warn_once(f"{old.upper()} 已弃用，请改用 {new.upper()}")
+        return data
+
+    @model_validator(mode="after")
+    def _reject_mock_in_production(self) -> Settings:
+        """生产环境禁用 MockBackend：契约测试可以 mock，交付环境不行。"""
+        if self.is_production and self.system_one_provider.strip().lower() == "mock":
+            raise ValueError("system_one_provider=mock 仅限测试；生产必须接本地真实权重")
+        return self
 
     @property
     def cors_origins(self) -> list[str]:

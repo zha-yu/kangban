@@ -22,8 +22,13 @@
 | --- | --- |
 | `docs/plans/day07/d-推进计划-pad可靠性改绑联调.md` | 🚧 进行中 |
 | `docs/plans/day07/d-联调记录.md` | 🚧 进行中 |
+| `docs/plans/day07/dev-a-prompt-三级路由.md` | 📝 草稿 |
+| `docs/plans/day07/dev-a-三级路由与决策日志.md` | 📝 草稿 |
 | `docs/plans/day07/dev-c-day07-执行计划.md` | 📝 草稿 |
 | `docs/plans/day07/handoff-A-to-C-用药到点接线.md` | ✅ 已完成 |
+| `docs/plans/day07/handoff-A-to-C-调度测试修红.md` | ❔ 待 dev-C 处理 |
+
+> 另有 2 个无 `> 状态：` 行的方案/草稿文件，未列入上表。
 
 ## 契约冻结：**已冻结**
 
