@@ -231,3 +231,30 @@ A3 侧已做的是**不让 G1 绕过四类边界**：分类器说敏感后，先
 
 副作用（正向）：`chat`/`other` 低置信时连 `was_clarified` 查询都不发（少一次 DB 往返），
 也不占用「只澄清一次」的额度——之后同一 thread 若出现动作型低置信，该澄清时照样澄清。
+
+### 6.8 合并上游后的迁移编号变更：`0014` → `0016`（**升级必读**）
+
+2026-11-10 把 `develop` 合进 A 线时发现撞号：dev-B 已先合入
+`0014_metrics_response_segment` 与 `0015_elders_updated_at`，而 `decision_logs` 当时也占
+`0014` —— 两笔 `0014` 会让 alembic 出现**双 head**，`alembic upgrade head` 直接报
+multiple heads。已改名为 **`0016_decision_logs`**，`down_revision` 指向 `0015_elders_updated_at`。
+表结构、三索引、两条 CHECK 全部未变，只是链挂到队尾。
+
+**已经跑过旧 `0014_decision_logs` 的本地库**（A 的机器、CI 缓存库）会踩另一个坑：
+`alembic_version` 里存的是已不存在的 revision，`upgrade head` 报
+`Can't locate revision identified by '0014_decision_logs'`。两种修法：
+
+```sql
+-- 表已经建好（最常见）：直接把版本指到新编号
+UPDATE alembic_version SET version_num = '0016_decision_logs';
+```
+
+```bash
+# 或重建库（数据可丢时最干净）：空库已实测 0011→0016 全链通过
+dropdb silvermate_test && createdb silvermate_test
+DATABASE_URL=postgresql+asyncpg://... uv run alembic upgrade head
+```
+
+`tests/test_decision_logs.py` 的断言也一并从「写死 `0014`」改成**结构性检查**
+（单 head + `decision_logs` 在 head 链上）：写死编号会在每次有人加迁移时假红一次，
+而真正要防的是「双 head」和「迁移被跳过」这两个事故。
