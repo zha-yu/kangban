@@ -3,7 +3,7 @@
 > ⚠️ **本文件由 `scripts/update_progress.py` 自动生成，不要手改**——改任务卡首部的 `> 状态：` 行，再跑一次脚本（或直接提交，pre-commit 钩子会自动刷新）。
 > 刻意不写生成时间与提交哈希：那两样每次提交都会变，会让看板变成噪音。提交历史看 `git log`。
 
-## 总览：**2 / 8** 张任务卡已收口
+## 总览：**2 / 7** 张任务卡已收口
 
 | # | 任务卡 | 状态 | 文件 |
 | --- | --- | --- | --- |
@@ -13,8 +13,7 @@
 | 4 | Task dev-B · 状态中心与上下文记忆（Day 6） | ⬜ 未开始 | `docs/team_tasks/day06/dev-b-状态中心与上下文记忆.md` |
 | 5 | dev-b-讲义状态图 | ❔ 未标注 | `docs/team_tasks/day06/dev-b-讲义状态图.md` |
 | 6 | Task dev-C · Agent 与统一出口（Day 6） | ⬜ 未开始 | `docs/team_tasks/day06/dev-c-Agent与统一出口.md` |
-| 7 | Task dev-C2 · 用药到点触发接线（APScheduler → 用药确认子图） | ⬜ 未开始 | `docs/team_tasks/day06/dev-c2-用药到点触发接线.md` |
-| 8 | Task dev-D · pad 送达确认与 console 改绑（Day 6） | ⬜ 未开始 | `docs/team_tasks/day06/dev-d-pad送达确认与改绑UI.md` |
+| 7 | Task dev-D · pad 送达确认与 console 改绑（Day 6） | ⬜ 未开始 | `docs/team_tasks/day06/dev-d-pad送达确认与改绑UI.md` |
 
 ## 计划件状态
 
@@ -31,7 +30,6 @@
 | `docs/plans/day06/dev-b-状态中心与上下文记忆.md` | 📝 草稿 |
 | `docs/plans/day06/dev-c-Agent与统一出口.md` | 📝 草稿 |
 | `docs/plans/day06/handoff-A-to-C-segment-ack.md` | ✅ 已完成（与 N07 实现已对齐，1 个开放点留 S4） |
-| `docs/plans/day06/handoff-A-to-C-用药到点接线.md` | ✅ 已完成 |
 
 ## 契约冻结：**已冻结**
 
