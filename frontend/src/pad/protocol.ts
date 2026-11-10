@@ -95,6 +95,17 @@ export interface IdentityResultMsg {
   elder_id: string | null;
 }
 
+/** Day 7 新增（day07/contracts.md §2）：触达语音播完回执（C→S）。
+ *  只在触达音频**自然播完**后上报；打断 / 播放失败 / 离线不回（宁缺勿假）。
+ *  三字段均为服务端 tts_text 触达字段原样回传，客户端不得自造；
+ *  与回复流 segment_ack 互不替代：触达消息不进 PlaybackQueue。 */
+export interface TouchPlayedMsg {
+  type: "touch_played";
+  touch_id: string;
+  event_id: string;
+  attempt_no: number;
+}
+
 export type ClientSignal =
   | AuthMsg
   | OfferMsg
@@ -104,7 +115,8 @@ export type ClientSignal =
   | AsrEndMsg
   | ClientDiagMsg
   | IdentityConfirmMsg
-  | SegmentAckMsg;
+  | SegmentAckMsg
+  | TouchPlayedMsg;
 
 /* ---- S→C 服务端下发 ---- */
 
@@ -152,7 +164,18 @@ export interface AsrFinalMsg {
  *  服务端 A3 收到 asr_start 停写轨清缓冲——前端不等服务端）。
  *  Day 6 契约扩展（contracts.md v1.0 §4.1，向后兼容）：新字段全部可选，缺失时
  *  按整段一播处理（旧服务端/回滚路径不报错）；epoch 为客户端原样回传值，前端不得自增；
- *  分段由服务端切分，前端不二次切分；segment_id 与 index 均 0 基且同值。 */
+ *  分段由服务端切分，前端不二次切分；segment_id 与 index 均 0 基且同值。
+ *  Day 7 TD-1 扩展（day07/contracts.md §1）：触达四字段全部可选、仅触达消息携带，
+ *  回复流消息不出现；audio 缺省 = 纯字幕降级（与 Day 6 形状一致）。 */
+/** Day 7 TD-1 触达音频载荷（仅触达消息携带；对话回复流不带） */
+export interface TouchAudioPayload {
+  format: "pcm_s16le";
+  /** 恒 16000（C1 口径） */
+  sample_rate: number;
+  /** s16le / 单声道 PCM 整段的 base64 */
+  data_b64: string;
+}
+
 export interface TtsTextMsg {
   type: "tts_text";
   text: string;
@@ -167,6 +190,14 @@ export interface TtsTextMsg {
   index?: number;
   /** 本回复总段数 */
   total?: number;
+  /** Day 7 TD-1 触达：触达唯一 message_id，touch_played 回带 */
+  touch_id?: string;
+  /** Day 7 TD-1 触达：用药事件 uuid 字符串，回传用 */
+  touch_event_id?: string;
+  /** Day 7 TD-1 触达：第几次触达（1=T0 … 4=T+15），回传用 */
+  touch_attempt_no?: number;
+  /** Day 7 TD-1 触达：合成成功才携带；缺省 = 纯字幕降级 */
+  audio?: TouchAudioPayload;
 }
 
 /** Day 6 新增（contracts.md v1.2 §4.2）：pad 分段送达确认上报（C→S）。
