@@ -1,4 +1,4 @@
-> 状态：已完成（G-A4 通过 + E2 触达接线收尾，含 0012 迁移）　｜　版本：v1.9　｜　日期：2026-11-09
+> 状态：已完成（G-A4 通过 + E2 接线 + 收口复查修复）　｜　版本：v1.10　｜　日期：2026-11-09
 > 关联：docs/plans/day06/dev-a-历史与工具执行计划.md（本 DAG 的计划件）｜docs/team_tasks/day06/dev-a-历史事件与工具事实.md（任务卡）｜docs/plans/day06/d-DAG.md（Day 6 全队 DAG）
 > 上游依据：技术设计文档 v2.0 §3.4/§3.6/§7/§8.3｜ER v0.5 §4.3.11–4.3.13｜contracts.md v1.0 §5
 > 变更记录见文末
@@ -189,6 +189,7 @@ A00 ✅ ── A01 ✅ ── A02 ── A03 ── A04 ── A05 ── A06 �
 | --- | --- | --- |
 | v1.0 | 2026-11-09 | 首版：18 个执行节点（合计 21.0h，已完成 4.0h）、16 条内部边 + 3 个外部等待点、4 道门禁、4 条回退；明确「单线程 + 外部阻塞」的真实风险结构 |
 | v1.1 | 2026-11-09 | 开工执行：A02–A06、A13–A15 标记完成（累计 13.0h，剩 8.0h）；G-A2 通过。执行中修正两处设计缺陷：`read_turns` 改按 `turn_started.seq` 排序（`now()` 同事务撞同一时间戳）、`finish_turn` 对 generic 轮次补 `turn_completed` 事件（原实现会让通用模式永远不闭合） |
+| v1.10 | 2026-11-09 | **收口复查（主理人要求）**：修三处真问题——① 图重放重复投递（`remind` 改「先查后发」，新增 `get_attempt`；变异验证有效）；② `ToolExecutor` 把外键违反伪装成 transient（改插入前校验轮次存在 → `bad_args`）；③ 补「吞 CHECK 违反」与「同键幂等」两条回归用例。另把「下发语音提醒」改为「字幕通道」（WS 语音仍是 `NullTtsQueue` 桩，登记 TD-1），主动触达 played 闭环登记 TD-2。全量 **975 passed** |
 | v1.9 | 2026-11-09 | **E2 触达接线 + 0012 迁移（主理人 21:16 裁决授权，L11 唯一一次破例）**：① 修 mypy `history_service.py:544`（`_as_turn_status` 显式比较链收窄，不用 cast）；② `remind` 接信令层 `deliver()`（tts_text 不带 response_id/epoch，pad 零改动），回执三态 `voice_dispatched/device_offline/no_bound_device`；③ 发现并修复 `record_attempt` 把 CHECK 违反当幂等吞掉的缺陷；④ **0012**：receipt 白名单 3→6 值（ORM 同步），`upgrade→downgrade→upgrade` 可逆实测；⑤ 新增 3 条 E2 用例（在线/未绑设备/全离线），全量 **971 passed**。两处踩坑：迁移名超 version_num 的 VARCHAR(32)（36 字符→改 27）、CHECK 的 drop/create 必须传短名（naming_convention 二次展开，0007 同款坑） |
 | v1.8 | 2026-11-09 | **A17 完成，A 线收口**：门禁实测 931 passed / 4 skipped / 1 deselected（口径 `-m "not slow"`，排除需外网的 edge-tts 用例）、覆盖率 **81.51%**（阈值 70%）、`--check` 与 `--check-plans` 均 0；README 新增 §7.4 A 线验收记录并修正过期的进度块与容器 pytest 命令。18 个执行节点全部 done，累计 21.0h |
 | v1.7 | 2026-11-09 | **A12 完成**（主理人裁决走 B）：新增 `app/services/work_order_service.py`（`open_work_order`/`open_missed_medication`/`transition`/`resolve_primary_care_staff`），子图 `finalize` 在写终态后建漏服单；幂等改用**确定性单号**（表无 `source_*` 列、0011 已归 C），INSERT 包 SAVEPOINT 以免撤销终态；登记 WD-1（两套建单口并存）与 WD-2（缺通用幂等列）。累计 19.5h，剩 A17 |

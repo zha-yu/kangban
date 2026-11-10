@@ -193,7 +193,9 @@ async def record_attempt(
         logger.info("medication_attempt_duplicate event_id=%s attempt_no=%s", event_id, attempt_no)
 
 
-async def mark_attempt_played(session: AsyncSession, *, event_id: uuid.UUID, attempt_no: int) -> bool:
+async def mark_attempt_played(
+    session: AsyncSession, *, event_id: uuid.UUID, attempt_no: int
+) -> bool:
     """触达语音「真被听到」的幂等落库（TD-2，receipt 白名单加值 `played`，迁移 0013）。
 
     只允许从投递态 `voice_dispatched` **升级**：`device_offline` / `no_bound_device`
@@ -215,6 +217,30 @@ async def mark_attempt_played(session: AsyncSession, *, event_id: uuid.UUID, att
         .values(receipt="played")
     )
     return bool(result.rowcount)  # type: ignore[attr-defined]
+
+
+async def get_attempt(
+    session: AsyncSession, *, event_id: uuid.UUID, attempt_no: int
+) -> dict[str, Any] | None:
+    """查某一次触达是否**已经发生过**（重放判定用）。
+
+    为什么需要它：图恢复会重放 `remind` 节点，而 `record_attempt` 的幂等只挡住
+    **记录**、挡不住**投递**——不先问就会给长者再播一遍同一次提醒。
+    返回 None 表示这次触达还没发生过（正常首触达）；返回 dict 表示是重放。
+    """
+    row = (
+        (
+            await session.execute(
+                select(MedicationAttempt.attempt_no, MedicationAttempt.receipt).where(
+                    MedicationAttempt.event_id == event_id,
+                    MedicationAttempt.attempt_no == attempt_no,
+                )
+            )
+        )
+        .mappings()
+        .first()
+    )
+    return dict(row) if row is not None else None
 
 
 async def record_response(
@@ -381,6 +407,7 @@ __all__ = [
     "MedicationEventNotFound",
     "TerminalStateConflict",
     "create_event",
+    "get_attempt",
     "get_drug_name",
     "get_event",
     "list_attempts",

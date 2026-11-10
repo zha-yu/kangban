@@ -39,6 +39,11 @@ START → remind → wait_confirm ─┬─ 说了"吃了"   → mark_taken  ┐
 `medication_service.mark_attempt_played` 把 `receipt` 从 `voice_dispatched` 幂等升级为
 `played`（留痕闭环，**不参与**重试与终态判定）。
 
+**重放防护已接（2026-11-10，develop 侧 N10 增量合入）**：`remind` 投递前先
+`get_attempt` 问这次触达是否已发生过——图恢复会重放本节点，`record_attempt` 的幂等
+只挡**记录**、挡不住**投递**，不先查就会给长者再播一遍同一次提醒；已有记录 → 跳过
+投递只推进状态（同一 reminder 按 thread 串行，「先查后发」无竞态）。
+
 **A12 已接（2026-11-09）**：`finalize` 在写完结态后，对 `missed_unconfirmed` 建漏服工单
 （`work_order_service.open_missed_medication`）。**先写终态、再建单**——终态是事实，
 建单是派单动作；建单失败时事实仍成立，重跑 `finalize` 可凭终态补建（两侧都幂等）。
@@ -164,7 +169,8 @@ async def _deliver_reminder(
 
     回执三态（如实记录，不做美化和重试——重试是 scheduler 的职责）：
 
-    - `voice_dispatched`：至少一台绑定设备把消息收进了发送队列；
+    - `voice_dispatched`：至少一台绑定设备把消息收进了发送队列（**文本已投递**，
+      不代表已出声——WS 侧 TTS 仍是 `NullTtsQueue` 桩）；
     - `device_offline`：有绑定设备但全部离线/未鉴权；
     - `no_bound_device`：根本没绑设备——运维缺口，同样不算本轮失败。
 
@@ -177,7 +183,6 @@ async def _deliver_reminder(
         if drug_name
         else "到吃药时间了，请确认您的药是否已经服用。"
     )
-
     device_ids = await medication_service.list_bound_device_ids(session, elder_id=elder_id)
     if not device_ids:
         logger.warning(
@@ -254,23 +259,38 @@ def build_medication_graph(
         event_id = _uuid(state["reminder_id"])
         attempt_no = int(state.get("attempt_no") or 1)
 
-        # E2 触达：先下发、再记回执、再进等待。顺序不可换——record_attempt 对
-        # (event_id, attempt_no) 幂等，重放安全；下发失败也要记（触达尝试是事实）。
-        receipt, tts_result = await _deliver_reminder(
-            session,
-            _deliver,
-            _synthesize,
-            elder_id=_uuid(state["elder_id"]),
-            reminder_id=event_id,
-            attempt_no=attempt_no,
+        # E2 触达：**先问这次触达是否已经发生过**（重放防护）。
+        # 图恢复会重放本节点；`record_attempt` 的幂等只挡记录、挡不住投递——
+        # 不先查就会给长者再播一遍同一次提醒。已有记录 → 跳过投递，只推进状态。
+        # （同一 reminder 不会并发执行：图按 thread 串行，故「先查后发」无竞态。）
+        already = await medication_service.get_attempt(
+            session, event_id=event_id, attempt_no=attempt_no
         )
-        await medication_service.record_attempt(
-            session,
-            event_id=event_id,
-            attempt_no=attempt_no,
-            receipt=receipt,
-            tts_result=tts_result,
-        )
+        if already is not None:
+            logger.info(
+                "medication_reminder_skipped_replay reminder_id=%s attempt_no=%s receipt=%s",
+                state["reminder_id"],
+                attempt_no,
+                already.get("receipt"),
+            )
+        else:
+            # TD-1 触达：先合成、再下发、再记回执。顺序不可换——record_attempt 对
+            # (event_id, attempt_no) 幂等，重放安全；下发失败也要记（触达尝试是事实）。
+            receipt, tts_result = await _deliver_reminder(
+                session,
+                _deliver,
+                _synthesize,
+                elder_id=_uuid(state["elder_id"]),
+                reminder_id=event_id,
+                attempt_no=attempt_no,
+            )
+            await medication_service.record_attempt(
+                session,
+                event_id=event_id,
+                attempt_no=attempt_no,
+                receipt=receipt,
+                tts_result=tts_result,
+            )
         await medication_service.set_waiting_confirm(
             session, event_id=event_id, graph_thread_id=state.get("graph_thread_id")
         )

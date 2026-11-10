@@ -26,6 +26,7 @@ import pytest
 import pytest_asyncio
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from sqlalchemy import make_url, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
@@ -163,8 +164,12 @@ async def test_taken_path_sets_terminal(
 async def test_restart_recovers_without_resending(
     session: AsyncSession, seeded: dict[str, Any], saver: AsyncPostgresSaver
 ) -> None:
+    await _bind_device(session, seeded)  # 不绑设备就没有投递，断言投递次数会失真
     reminder_id = await _new_event(session, seeded)
-    graph = build_medication_graph(session=session, checkpointer=saver)
+    calls: list[tuple[str, dict[str, Any]]] = []
+    graph = build_medication_graph(
+        session=session, checkpointer=saver, deliver_fn=_fake_deliver(calls, ok=True)
+    )
     await start_medication_task(
         graph,
         reminder_id=reminder_id,
@@ -172,9 +177,12 @@ async def test_restart_recovers_without_resending(
         elder_id=seeded["elder_id"],
         deadline="2026-11-09T08:15:00+00:00",
     )
+    assert len(calls) == 1, "首触达投递一次"
 
     # 模拟进程重启：新建图实例，状态只在 checkpointer 里
-    revived = build_medication_graph(session=session, checkpointer=saver)
+    revived = build_medication_graph(
+        session=session, checkpointer=saver, deliver_fn=_fake_deliver(calls, ok=True)
+    )
     snapshot = await revived.aget_state(graph_config(reminder_id))
     assert snapshot.values["reminder_id"] == str(reminder_id)
     assert snapshot.values["attempt_no"] == 1
@@ -183,6 +191,10 @@ async def test_restart_recovers_without_resending(
 
     attempts = await medication_service.list_attempts(session, reminder_id)
     assert len(attempts) == 1, "恢复后不得把已发过的触达再发一次"
+    assert len(calls) == 1, (
+        "恢复后不得**再投递**一次——长者会听到同一句提醒两遍。"
+        "（record_attempt 的幂等只挡记录，挡不住投递，所以要单独断言投递次数。）"
+    )
     event = await medication_service.get_event(session, reminder_id)
     assert event is not None and event["terminal_state"] == "taken_reported"
 
@@ -503,9 +515,10 @@ async def test_mark_attempt_played_upgrades_dispatched_row(
     assert await medication_service.mark_attempt_played(
         session, event_id=reminder_id, attempt_no=1
     ), "首条回执应发生升级"
-    assert await medication_service.mark_attempt_played(
-        session, event_id=reminder_id, attempt_no=1
-    ) is False, "重复回执幂等无操作"
+    assert (
+        await medication_service.mark_attempt_played(session, event_id=reminder_id, attempt_no=1)
+        is False
+    ), "重复回执幂等无操作"
 
     attempts = await medication_service.list_attempts(session, reminder_id)
     assert len(attempts) == 1 and attempts[0]["receipt"] == "played"
@@ -529,3 +542,82 @@ async def test_mark_attempt_played_ignores_offline_and_missing(
 
     attempts = await medication_service.list_attempts(session, reminder_id)
     assert attempts[0]["receipt"] == "device_offline"
+
+
+# ------------------------------------------------------------------ 9. develop 侧合入：record_attempt 语义与重放防护
+
+
+async def test_record_attempt_does_not_swallow_check_violation(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    """CHECK 违反必须炸响，**不能**被当成幂等静默吞掉。
+
+    修复前的 `record_attempt` 用 `except IntegrityError` 一把兜住所有完整性错误，
+    于是「回执值不在白名单」这种数据违规会**静默消失**：触达记录没写进去，
+    日志还挂着误导性的 `medication_attempt_duplicate`。排查时只能先去对时间戳，
+    才发现那条记录根本没插进去。
+
+    这条用例锁住修正后的语义：非法值要么写成功，要么明确抛错，没有第三种结局。
+    """
+    reminder_id = await _new_event(session, seeded)
+
+    with pytest.raises(IntegrityError):
+        await medication_service.record_attempt(
+            session, event_id=reminder_id, attempt_no=1, receipt="bogus_receipt"
+        )
+
+    attempts = await medication_service.list_attempts(session, reminder_id)
+    assert attempts == [], "非法回执不得留下任何记录（更不得被当成幂等重放）"
+
+
+async def test_record_attempt_is_idempotent_on_same_key(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    """同 (event_id, attempt_no) 重复写仍是幂等无操作——这是幂等该有的样子。"""
+    reminder_id = await _new_event(session, seeded)
+
+    await medication_service.record_attempt(
+        session, event_id=reminder_id, attempt_no=1, receipt="voice_dispatched"
+    )
+    await medication_service.record_attempt(
+        session, event_id=reminder_id, attempt_no=1, receipt="voice_dispatched"
+    )
+
+    attempts = await medication_service.list_attempts(session, reminder_id)
+    assert len(attempts) == 1, "重复写不得多出一条触达记录"
+    assert attempts[0]["receipt"] == "voice_dispatched"
+
+
+async def test_reminder_skips_delivery_when_attempt_already_recorded(
+    session: AsyncSession, seeded: dict[str, Any], saver: AsyncPostgresSaver
+) -> None:
+    """已有同 (event_id, attempt_no) 记录 → **跳过投递**，只推进状态。
+
+    真实场景：`remind` 已执行、但 checkpoint 还没持久化时进程崩溃，重启后该节点被重放。
+    `record_attempt` 的幂等只挡**记录**、挡不住**投递**——不先问就会给长者再播一遍
+    同一次提醒。这条用例锁住「先查后发」：已有记录 → 一次都不投递。
+    """
+    await _bind_device(session, seeded)  # 必须绑设备：否则走 no_bound_device，投递函数不会被调用
+    reminder_id = await _new_event(session, seeded)
+    # 预置该次触达记录（模拟「remind 跑过了、图状态还没存下来」）
+    await medication_service.record_attempt(
+        session, event_id=reminder_id, attempt_no=1, receipt="voice_dispatched"
+    )
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+    graph = build_medication_graph(
+        session=session, checkpointer=saver, deliver_fn=_fake_deliver(calls, ok=True)
+    )
+    await start_medication_task(
+        graph,
+        reminder_id=reminder_id,
+        plan_id=seeded["plan_id"],
+        elder_id=seeded["elder_id"],
+        deadline="2026-11-09T08:15:00+00:00",
+    )
+
+    assert calls == [], "已有触达记录 → 不得再投递（长者会听到两遍）"
+    attempts = await medication_service.list_attempts(session, reminder_id)
+    assert len(attempts) == 1, "记录仍只有一条（幂等）"
+    event = await medication_service.get_event(session, reminder_id)
+    assert event is not None and event["status"] == "waiting_confirm", "状态仍要推进到等待确认"

@@ -1,4 +1,4 @@
-> 状态：已冻结　｜　版本：v1.4　｜　日期：2026-11-09
+> 状态：已冻结　｜　版本：v1.7　｜　日期：2026-11-09
 > 关联：docs/plans/day06/day-06-长者侧Agent闭环.md（§3.1 节点表、§9.1 落地结构）｜docs/team_tasks/day06/dev-a~dev-d 四张任务卡
 > 上游依据：PRD v2.9 §6.1 Day 6 行（验收）｜技术设计文档 v2.0 §3.4/§3.6/§8.3（实现）｜ER v0.5 §4.3.11–4.3.13（字段）
 > 变更记录见文末
@@ -81,6 +81,17 @@
 
 - 老字段（`type`/`text`/`degraded`）**顺序与语义不变**；新字段全部可选。
 - 分段由**服务端**切（`。！？；` 优先，单段 ≤40 字，长句按逗号补切），前端不再二次切分。
+
+> **主动触达（用药提醒，E2）不带可选字段**：`{"type":"tts_text","text":"...","degraded":false}`
+> ——它不属于任何回复流，客户端按整段一播。前端对这类消息**无需**上报 `segment_ack`
+> （`isSegmentedTts` 为 false → 不进播放队列、不上报 ack；带了也会被 §4.2 的四步校验拒掉）。
+> 「是否真被听到」的 played 闭环待后续给主动触达分配独立 response 标识时再启用（TD-2）。
+>
+> ⚠️ **`tts_text` 是文本通道**：它只驱动字幕与状态切换，**不携带音频**。声音来自
+> WebRTC 远端音轨或 HTTP 的 `/api/audio/utterance`；WS 侧 TTS 队列目前是
+> `NullTtsQueue` 桩，因此**主动触达与 WS 回复当前都只有字幕、没有声音**（TD-1，
+> 全队一致，非本线缺口）。触达回执三态 `voice_dispatched` / `device_offline` /
+> `no_bound_device` 已入 `medication_attempts.receipt` 白名单（0012）。
 
 ### 4.2 C→S `segment_ack`
 
@@ -248,7 +259,8 @@ body   { "elder_ids": ["uuid", ...] }     # 全量覆盖式替换
 | v1.0 | 2026-11-09 | 首版并冻结：五个标识、12 类事件、`tts_text` v2 与 `segment_ack`、`HistoryStore`/`StateSnapshot`/`ToolResult`/`MCPResult` 四组内部契约、a0 E20、三迁移落地结果、两条禁区（无第三方分类 API、不提前建路由表） |
 | v1.1 | 2026-11-09 | 主理人裁决（C-0-5/C-0-6）：N27 通知环节提前——新增 0011 迁移建 `notifications` 表 + `app/models/notifications.py` ORM（仅此一笔迁移/一张表解禁）；N27 命中写护工通知（`status=generated`，`dedupe_key` 部分唯一防重，落库即视为已通知）；mock-operations 与家属通知仍留 Day 8，范围不变 |
 | v1.2 | 2026-11-09 | J3 核对裁决（主理人确认，dev-D 提清单）：`canceled.segment_id` 无一完整播放段时取 `-1` 哨兵（服务端 `last_acked_segment` 初始同值）；canceled 类 ack 跳过校验④；`rejected_reason` 四枚举（unknown_response/stale_epoch/wrong_status/not_monotonic）；末段 played 触发与三层兜底口径。字段本身零增删，§4.2 增补充口径块；protocol.ts 注释同步由 dev-D 落 |
-| v1.4 | 2026-11-09 | **§4.1 补主动触达口径**（E2 接线落地，2026-11-09 21:16 主理人裁决授权 0012 后）：用药提醒走 `tts_text` 但**不带** response_id/epoch/segment（不属于回复流，客户端整段一播、无需上报 ack）；触达回执三态 `voice_dispatched`/`device_offline`/`no_bound_device` 已入 `medication_attempts.receipt` 白名单（0012） |
-| v1.3 | 2026-11-09 | **与 B/C 代码合流后的三处口径补正**（均属既有实现的接口对齐，非业务变更）：① `read_turns` / `read_events` 的 `session` 明确为**可选**——契约 §5.1 签名本来就没有它，`app/core/context.py` 按此调用，实现方不得强制要求；② 明确 `response_completed` 按 §3 由响应层先写，`commit_response` 在其已存在时**只补投影**、不重复写事件（否则 delivered 永远为空）；③ 明确投影写入只接受**不更短**的文本，同长可覆盖。 |
-| v1.2 | 2026-11-09 | **P1 裁决落地（方案 A）**：§4.2 新增 4.2.1「水位与截断」——`last_acked_segment` 语义定为「最后整段播完的段」、初始 `-1`；**只有 `played` 推进水位**，`playing` 只走 ①②③ 并打指标，`canceled` 不推进且其 `segment_id` 回显水位（无则 `-1`）；补 `delivered_text` 计算式与「④ 严格单调」这一依赖不变量。与 dev-C 在 S2 实现前确认的口径一致（C 侧称 v1.2），**零字段变更、不改四步校验** |
-| v1.1 | 2026-11-09 | 实现 `HistoryStore` 时发现两处**漏参**，按冻结规则升版（**仅加可选参数，向后兼容**）：① `append_event` 增 `call_id` / `trace_id`（0008 已建这两列，原签名无法写入 → 会成为死列，链路排查断线）；② `begin_turn` 增 `identity_source`（缺省取会话行上的值）。同时补齐 `TurnRef` / `EventView` 字段定义与两条单写口约束（`status` 只由 `finish_turn` 写；`read_turns` 时间正序、归属不符返回空）。**现有调用方零改动**：新参数均有默认值。 |
+| v1.3 | 2026-11-09 | 实现 `HistoryStore` 时发现两处**漏参**，按冻结规则升版（**仅加可选参数，向后兼容**）：① `append_event` 增 `call_id` / `trace_id`（0008 已建这两列，原签名无法写入 → 会成为死列，链路排查断线）；② `begin_turn` 增 `identity_source`（缺省取会话行上的值）。同时补齐 `TurnRef` / `EventView` 字段定义与两条单写口约束（`status` 只由 `finish_turn` 写；`read_turns` 时间正序、归属不符返回空）。**现有调用方零改动**：新参数均有默认值。 |
+| v1.4 | 2026-11-09 | **P1 裁决落地（方案 A）**：§4.2 新增 4.2.1「水位与截断」——`last_acked_segment` 语义定为「最后整段播完的段」、初始 `-1`；**只有 `played` 推进水位**，`playing` 只走 ①②③ 并打指标，`canceled` 不推进且其 `segment_id` 回显水位（无则 `-1`）；补 `delivered_text` 计算式与「④ 严格单调」这一依赖不变量。与 dev-C 在 S2 实现前确认的口径一致（C 侧称 v1.2），**零字段变更、不改四步校验** |
+| v1.5 | 2026-11-09 | **与 B/C 代码合流后的三处口径补正**（均属既有实现的接口对齐，非业务变更）：① `read_turns` / `read_events` 的 `session` 明确为**可选**——契约 §5.1 签名本来就没有它，`app/core/context.py` 按此调用，实现方不得强制要求；② 明确 `response_completed` 按 §3 由响应层先写，`commit_response` 在其已存在时**只补投影**、不重复写事件（否则 delivered 永远为空）；③ 明确投影写入只接受**不更短**的文本，同长可覆盖。 |
+| v1.6 | 2026-11-09 | **§4.1 补主动触达口径**（E2 接线落地，2026-11-09 21:16 主理人裁决授权 0012 后）：用药提醒走 `tts_text` 但**不带** response_id/epoch/segment（不属于回复流，客户端整段一播、无需上报 ack）；触达回执三态 `voice_dispatched`/`device_offline`/`no_bound_device` 已入 `medication_attempts.receipt` 白名单（0012） |
+| v1.7 | 2026-11-09 | **收口复查**（主理人要求「再检查一遍」）：① §4.1 补「`tts_text` 是文本通道、不携带音频」——主动触达与 WS 回复当前**只有字幕没有声音**（TD-1，dev-C 的 N07 范围）；② 明确主动触达前端**不上报 ack**（`isSegmentedTts` 为 false）、played 闭环待独立 response 标识（TD-2）；③ **变更记录重号修复**：此前 dev-A 与 dev-C 各自追加过 v1.1 / v1.2，版本号撞车，本次把我的四条统一重编为 v1.3（漏参）/ v1.4（P1 裁决）/ v1.5（合流补正）/ v1.6（E2 触达），**dev-C 的 v1.1 / v1.2 保持不动**（其编号已被多处引用，改号会连带不一致），全表按版本升序排列——内容一字未改，只改号与顺序 |
