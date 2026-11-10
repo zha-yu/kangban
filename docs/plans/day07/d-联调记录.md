@@ -131,5 +131,39 @@ sidecar 7001 未起（A2）、需真实语音输入、`decision_logs` 降级行�
 | 2 | 到点药单无触达（scheduler 无任务注册） | — | dev-C（C2 调度接线） | 催办；药单已备好，C2 就绪后复跑 L2→L3 |
 | 3 | §6 L3 手册 SQL 列名勘误（created_at→sent_at） | — | 本计划 | 以本记录 L3 为准，主理人决定是否修订计划 |
 | 4 | 触达/路由步骤的真机语音项 | — | 联调环境 | R4 口径登记补测，与 D1 待补清单合并 |
+| 5 | B1 终态 SQL 验收（`completed\|t`、`response_completed` 恰 1 条）待新轮次流量 | — | dev-B（委托 D 联调） | 见文末「B1 · 回合终态 SQL 验收」节，含复跑 SQL 与库内基线 |
 
 前端本卡（dev-D）范围内：L1–L6 未发现前端缺陷，无待修项。G5 门禁证据链现状：L1 SQL/服务证据齐；L2 阻塞证据（表结构 + 空表 + 源码实证）齐；L3–L5 待依赖就绪后复跑补齐。
+
+---
+
+## B1 · 回合终态 SQL 验收（dev-B 委托登记，2026-11-10）
+
+> 登记人：dev-B（AI 协作）。B1 代码与测试层已收口（B1/B2/B3 验收用例全绿、J2 契约闭环），但任务卡 `dev-b-day07.md` §2.5 的 SQL 真机验收依赖真实轮次流量，委托 D 联调一并补证。
+
+### 当前库内基线（2026-11-10 查证，postgres healthy）
+
+| 事实 | 数据 | 含义 |
+| --- | --- | --- |
+| 轮次状态分布 | 37 轮全部 `open`，0 条 completed/interrupted | 修复后代码（P2-10 payload 写全 + A 删第 5 步双写）**尚未产生任何真机轮次** |
+| 最后事件时间 | `2026-11-09 14:59:25 UTC` | 库内全部为修复前历史数据 |
+| `response_completed` 分布 | 67 条：30 轮各 2 条 + 7 轮各 1 条 | **历史双写实证**（第 5 步全 payload 条 + 响应层 total_segments 条并存），即 P2-10 补丁所修问题在真实数据中存在过 |
+| payload 完整性 | 37/37 轮至少 1 条含 `generated_text` | 旧全 payload 路径曾兜住 generated_text，与 handoff-B-to-A §2 基线描述一致 |
+
+### 待联调补验（真机/模拟流量产生后，复跑口径）
+
+1. 真实一轮播完后（任务卡 §2.5 原口径）：
+
+```sql
+SELECT status, assistant_delivered_text IS NOT NULL AS has_delivered
+FROM conversation_turns ORDER BY started_at DESC LIMIT 1;
+-- 期望：completed | t
+
+SELECT count(*) FROM conversation_events
+WHERE turn_id = :turn_id AND event_type = 'response_completed';
+-- 期望：1
+```
+
+2. 修复后新轮次去重核对：`SELECT turn_id, count(*) FROM conversation_events WHERE event_type='response_completed' AND occurred_at > now() - interval '1 hour' GROUP BY turn_id;` → 每轮恰 1 条，且 payload 含 `generated_text` / `delivered_text` / `response_status="completed"`。
+3. 打断一轮：`status=interrupted`、`assistant_delivered_text` = 已播前缀、无多余 `response_completed`。
+4. 环境就绪说明：postgres 已于 2026-11-10 由 dev-B 起（`docker compose up -d postgres`，healthy），联调可直接复用。
