@@ -1,0 +1,242 @@
+{
+  "model_dir": "D:/models/laya/multilingual",
+  "code": "rl_agent_api.RLAgent（仓库自带，未使用 pip laya）",
+  "questions_asked": [
+    "intent"
+  ],
+  "threads": 8,
+  "load_seconds": 36.0,
+  "samples": 20,
+  "correct": 17,
+  "accuracy": 0.85,
+  "pass_15_of_20": true,
+  "latency_ms": {
+    "p50": 160.9,
+    "p95": 167.4,
+    "max": 170.1,
+    "mean": 160.2
+  },
+  "p95_within_200ms": true,
+  "rows": [
+    {
+      "id": "g01",
+      "text": "今天心里有点闷，想找个人说说话",
+      "gold": "chat",
+      "pred_key": "闲聊陪伴",
+      "pred": "chat",
+      "confidence": 0.418,
+      "max_prob": 0.5448,
+      "p_sensitive": null,
+      "ms": 167.4
+    },
+    {
+      "id": "g02",
+      "text": "我孙子周末要来看我，我挺高兴的",
+      "gold": "chat",
+      "pred_key": "闲聊陪伴",
+      "pred": "chat",
+      "confidence": 0.7601,
+      "max_prob": 0.8789,
+      "p_sensitive": null,
+      "ms": 164.6
+    },
+    {
+      "id": "g03",
+      "text": "你给我讲个笑话吧，闲着也是闲着",
+      "gold": "chat",
+      "pred_key": "闲聊陪伴",
+      "pred": "chat",
+      "confidence": 0.8893,
+      "max_prob": 0.9605,
+      "p_sensitive": null,
+      "ms": 170.1
+    },
+    {
+      "id": "g04",
+      "text": "我早上那个降压药吃了没有啊",
+      "gold": "medication",
+      "pred_key": "用药确认",
+      "pred": "medication",
+      "confidence": 0.9962,
+      "max_prob": 0.9992,
+      "p_sensitive": null,
+      "ms": 162.2
+    },
+    {
+      "id": "g05",
+      "text": "我的降压药还剩几颗",
+      "gold": "medication",
+      "pred_key": "用药确认",
+      "pred": "medication",
+      "confidence": 0.2665,
+      "max_prob": 0.3255,
+      "p_sensitive": null,
+      "ms": 160.9
+    },
+    {
+      "id": "g06",
+      "text": "我吃过药了，不用再提醒我",
+      "gold": "medication",
+      "pred_key": "用药确认",
+      "pred": "medication",
+      "confidence": 0.8913,
+      "max_prob": 0.9636,
+      "p_sensitive": null,
+      "ms": 162.9
+    },
+    {
+      "id": "g07",
+      "text": "放一段越剧给我听听",
+      "gold": "opera",
+      "pred_key": "戏曲点播",
+      "pred": "opera",
+      "confidence": 0.556,
+      "max_prob": 0.5385,
+      "p_sensitive": null,
+      "ms": 163.2
+    },
+    {
+      "id": "g08",
+      "text": "换一段，这段不好听",
+      "gold": "opera",
+      "pred_key": "闲聊陪伴",
+      "pred": "chat",
+      "confidence": 0.3124,
+      "max_prob": 0.448,
+      "p_sensitive": null,
+      "ms": 161.4
+    },
+    {
+      "id": "g09",
+      "text": "声音小一点，太吵了",
+      "gold": "opera",
+      "pred_key": "其他",
+      "pred": "other",
+      "confidence": 0.3522,
+      "max_prob": 0.4977,
+      "p_sensitive": null,
+      "ms": 154.1
+    },
+    {
+      "id": "g10",
+      "text": "有没有老电影可以看看",
+      "gold": "movie",
+      "pred_key": "电影点播",
+      "pred": "movie",
+      "confidence": 0.9987,
+      "max_prob": 0.9998,
+      "p_sensitive": null,
+      "ms": 156.4
+    },
+    {
+      "id": "g11",
+      "text": "放个打仗的片子吧",
+      "gold": "movie",
+      "pred_key": "电影点播",
+      "pred": "movie",
+      "confidence": 0.9921,
+      "max_prob": 0.9982,
+      "p_sensitive": null,
+      "ms": 157.0
+    },
+    {
+      "id": "g12",
+      "text": "今天天气怎么样",
+      "gold": "weather",
+      "pred_key": "天气查询",
+      "pred": "weather",
+      "confidence": 0.9899,
+      "max_prob": 0.9976,
+      "p_sensitive": null,
+      "ms": 160.2
+    },
+    {
+      "id": "g13",
+      "text": "明天出门要不要带伞",
+      "gold": "weather",
+      "pred_key": "天气查询",
+      "pred": "weather",
+      "confidence": 0.6404,
+      "max_prob": 0.8215,
+      "p_sensitive": null,
+      "ms": 158.4
+    },
+    {
+      "id": "g14",
+      "text": "外面冷不冷，我该穿几件",
+      "gold": "weather",
+      "pred_key": "天气查询",
+      "pred": "weather",
+      "confidence": 0.4431,
+      "max_prob": 0.6785,
+      "p_sensitive": null,
+      "ms": 157.6
+    },
+    {
+      "id": "g15",
+      "text": "帮我记一下今天的血压",
+      "gold": "health_checkup",
+      "pred_key": "健康采集",
+      "pred": "health_checkup",
+      "confidence": 0.9413,
+      "max_prob": 0.9829,
+      "p_sensitive": null,
+      "ms": 153.6
+    },
+    {
+      "id": "g16",
+      "text": "我今天血糖是多少来着",
+      "gold": "health_checkup",
+      "pred_key": "健康采集",
+      "pred": "health_checkup",
+      "confidence": 0.8559,
+      "max_prob": 0.9491,
+      "p_sensitive": null,
+      "ms": 163.5
+    },
+    {
+      "id": "g17",
+      "text": "是不是该量体温了",
+      "gold": "health_checkup",
+      "pred_key": "健康采集",
+      "pred": "health_checkup",
+      "confidence": 0.4609,
+      "max_prob": 0.7163,
+      "p_sensitive": null,
+      "ms": 157.4
+    },
+    {
+      "id": "g18",
+      "text": "帮我叫一下护工过来",
+      "gold": "other",
+      "pred_key": "其他",
+      "pred": "other",
+      "confidence": 1.0,
+      "max_prob": 1.0,
+      "p_sensitive": null,
+      "ms": 161.6
+    },
+    {
+      "id": "g19",
+      "text": "我想给女儿打个电话",
+      "gold": "other",
+      "pred_key": "其他",
+      "pred": "other",
+      "confidence": 0.5653,
+      "max_prob": 0.5379,
+      "p_sensitive": null,
+      "ms": 157.9
+    },
+    {
+      "id": "g20",
+      "text": "今天几号了",
+      "gold": "other",
+      "pred_key": "天气查询",
+      "pred": "weather",
+      "confidence": 0.4744,
+      "max_prob": 0.6937,
+      "p_sensitive": null,
+      "ms": 154.2
+    }
+  ]
+}

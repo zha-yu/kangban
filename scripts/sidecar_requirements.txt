@@ -1,0 +1,32 @@
+# A2 sidecar 环境依赖（conda env `jev` 实测版本，2026-11-10）
+#
+# 用途：换一台干净机器复测 A2 延迟时，用它重建 sidecar 环境。
+# **不要装进主 .venv**——主服务全程不得出现 torch（见 AGENTS / 技术设计 §依赖隔离）。
+#
+#   conda create -n jev python=3.12 -y
+#   conda activate jev
+#   pip install -r scripts/sidecar_requirements.txt --index-url https://download.pytorch.org/whl/cpu
+#
+# 说明：
+# - torch 走 CPU 轮子（本机实测 2.14.0+cpu）；装 CUDA 版会拉 2GB+ 且本项目只用 CPU。
+# - transformers 5.x 是模型仓库 `rl_agent_api.py` 的要求，降版本会因 API 变更加载失败。
+# - fastapi/uvicorn/pydantic-settings/httpx 是 sidecar 服务层；主服务 .venv 里已有同版本区间，
+#   但 sidecar 必须能在本环境独立启动（不能借主 .venv 的包，否则 PYTHONPATH 会串）。
+# - bcrypt / pyjwt 不是 sidecar 要的，是 `app.core.config` 导入链（鉴权配置）带出来的；
+#   若启动时报 ModuleNotFoundError 就是缺这两个。
+
+torch==2.14.0
+transformers==5.17.0
+tokenizers==0.23.3
+safetensors==0.8.0
+numpy==2.5.4
+
+fastapi==0.162.2
+uvicorn==0.54.0
+starlette==1.10.0
+pydantic==2.14.3
+pydantic-settings==2.16.2
+httpx==0.28.1
+
+bcrypt
+pyjwt
