@@ -55,6 +55,7 @@ from app.core.trace import TraceIdMiddleware
 from app.db import session_factory
 from app.mcp_client import MCPClient
 from app.router.safety import SafetyDecision
+from app.scheduler.medication_jobs import install_scheduler  # Day 7 C2：用药到点调度接线
 from app.services import identity_service, medication_service, voiceprint_service
 from app.services.auth_service import (
     AuthConflictError,
@@ -576,10 +577,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.dialogue_orchestrator = orchestrator
     app.state.turn_service = turn_service  # Day 6 S3 对齐：N14 统一出口真身（检视/联调用）
 
+    # Day 7 C2：用药到点调度接线——install_scheduler 构造 SchedulerRuntime 并存到
+    # app.state.medication_scheduler；FastAPI 0.110+ 的 lifespan 与旧式 @app.on_event
+    # 互斥，所以 start/stop 必须手动管理（不在装饰器里）。
+    medication_scheduler = install_scheduler(
+        app,
+        session_factory=session_factory,
+        timezone_name=settings.scheduler_timezone,
+    )
+    await medication_scheduler.start()
+
     logger.info("application starting", extra={"app_env": settings.app_env})
     try:
         yield
     finally:
+        await medication_scheduler.stop()
         signaling.set_dialogue_final_handler(None)
         signaling.set_identity_confirm_handler(None)
         signaling.set_identity_timeout_handler(None)

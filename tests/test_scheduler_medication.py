@@ -98,13 +98,19 @@ async def saver(_test_db_bootstrap: bool) -> AsyncIterator[AsyncPostgresSaver]:
 async def seeded(session: AsyncSession) -> dict[str, Any]:
     """一位长者 + 一位医生 + 一间房 + 一条绑定设备 + 一条 active 药单。"""
     elder = Elder(name="张桂芬", status="active")
-    room = Room(room_number="101", room_type="single")
+    room = Room(room_no="101")
     doctor = StaffAccount(name="王医生", role="doctor", password_hash="x" * 32)
     session.add_all([elder, room, doctor])
     await session.flush()
 
     device_id = uuid.uuid4()
-    device = Device(device_id=device_id, elder_id=elder.elder_id, status="active")
+    device = Device(
+        device_id=device_id,
+        room_id=room.room_id,
+        elder_id=elder.elder_id,
+        token_hash="x" * 32,
+        status="online",
+    )
     session.add(device)
 
     plan_id = uuid.uuid4()
@@ -211,7 +217,11 @@ async def test_A2_2_four_attempts_and_finalize(session, seeded, saver):
     await session.flush()
 
     # build + start → wait_confirm
-    graph = build_medication_graph(session=session, checkpointer=saver)
+    # 注入恒 True deliver：模拟设备在线收得到（voice_dispatched），
+    # 这样 AC-20 分流后终态仍为 missed_unconfirmed 而非 notification_failed。
+    graph = build_medication_graph(
+        session=session, checkpointer=saver, deliver_fn=lambda *_a, **_k: True,
+    )
     await start_medication_task(
         graph,
         reminder_id=rid,
@@ -257,7 +267,7 @@ async def test_A2_3_finalize_state(session, seeded, saver):
     )
     await session.flush()
 
-    graph = build_medication_graph(session=session, checkpointer=saver)
+    graph = build_medication_graph(session=session, checkpointer=saver, deliver_fn=lambda *_a, **_k: True)
     await start_medication_task(
         graph, reminder_id=rid, plan_id=plan_id, elder_id=elder_id,
         deadline=(now + datetime.timedelta(minutes=15)).isoformat(),
@@ -285,7 +295,7 @@ async def test_A2_4_one_work_order(session, seeded, saver):
     )
     await session.flush()
 
-    graph = build_medication_graph(session=session, checkpointer=saver)
+    graph = build_medication_graph(session=session, checkpointer=saver, deliver_fn=lambda *_a, **_k: True)
     await start_medication_task(
         graph, reminder_id=rid, plan_id=plan_id, elder_id=elder_id,
         deadline=(now + datetime.timedelta(minutes=15)).isoformat(),
@@ -323,7 +333,7 @@ async def test_A2_5_restart_recovery(session, seeded, saver):
     await session.flush()
 
     # 第一次：start → attempt_no 1 已发（remind）→ wait_confirm
-    graph1 = build_medication_graph(session=session, checkpointer=saver)
+    graph1 = build_medication_graph(session=session, checkpointer=saver, deliver_fn=lambda *_a, **_k: True)
     await start_medication_task(
         graph1, reminder_id=rid, plan_id=plan_id, elder_id=elder_id,
         deadline=(now + datetime.timedelta(minutes=15)).isoformat(),
@@ -334,7 +344,7 @@ async def test_A2_5_restart_recovery(session, seeded, saver):
     assert len(attempts_before) == 1
 
     # 模拟重启：新建 graph 实例 → get_state 能读回等待位置
-    graph2 = build_medication_graph(session=session, checkpointer=saver)
+    graph2 = build_medication_graph(session=session, checkpointer=saver, deliver_fn=lambda *_a, **_k: True)
     state = await graph2.aget_state(graph_config(rid))
     assert state is not None
     assert state.values.get("attempt_no") == 1
@@ -359,7 +369,7 @@ async def test_A2_6_dual_driver_first_arrives_wins(session, seeded, saver):
     )
     await session.flush()
 
-    graph = build_medication_graph(session=session, checkpointer=saver)
+    graph = build_medication_graph(session=session, checkpointer=saver, deliver_fn=lambda *_a, **_k: True)
     await start_medication_task(
         graph, reminder_id=rid, plan_id=plan_id, elder_id=elder_id,
         deadline=(now + datetime.timedelta(minutes=15)).isoformat(),
@@ -397,7 +407,7 @@ async def test_A2_7_answer_before_deadline_stops_resume(session, seeded, saver):
     )
     await session.flush()
 
-    graph = build_medication_graph(session=session, checkpointer=saver)
+    graph = build_medication_graph(session=session, checkpointer=saver, deliver_fn=lambda *_a, **_k: True)
     await start_medication_task(
         graph, reminder_id=rid, plan_id=plan_id, elder_id=elder_id,
         deadline=(now + datetime.timedelta(minutes=15)).isoformat(),
