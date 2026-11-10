@@ -109,6 +109,14 @@ class Elder(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
+    # E20 乐观并发 CAS 基准（0015）：reassign_elders 成功时由服务层显式推进；
+    # 故意不用 ORM onupdate——CAS 只应在改绑成功时移动，其他长者行写入不产生误报。
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+        comment="乐观并发 CAS 基准（E20 改绑成功时由服务层显式推进）",
+    )
 
 
 class Bed(Base):

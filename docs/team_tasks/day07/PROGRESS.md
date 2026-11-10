@@ -8,7 +8,7 @@
 | # | 任务卡 | 状态 | 文件 |
 | --- | --- | --- | --- |
 | 1 | Task dev-A · Day 7 · Chinese-Jev 三级路由与决策日志 | ⬜ 未开始 | `docs/team_tasks/day07/dev-a-day07.md` |
-| 2 | Task dev-B · Day 7 · 回合终态、上下文与状态收口 | 🚧 进行中 | `docs/team_tasks/day07/dev-b-day07.md` |
+| 2 | Task dev-B · Day 7 · 回合终态、上下文与状态收口 | ✅ 已完成 | `docs/team_tasks/day07/dev-b-day07.md` |
 | 3 | Task dev-C · Day 7 · 用药工具、到点调度与 Agent 边界 | ⬜ 未开始 | `docs/team_tasks/day07/dev-c-day07.md` |
 | 4 | TD-2 · 主动触达 played 闭环 | ✅ 已完成 | `docs/team_tasks/day07/dev-c-触达played闭环.md` |
 | 5 | TD-1 · 触达语音接线（WS） | ✅ 已完成 | `docs/team_tasks/day07/dev-c-触达语音接线.md` |
@@ -27,6 +27,7 @@
 | `docs/plans/day07/handoff-A-to-C-用药到点接线.md` | ✅ 已完成 |
 | `docs/plans/day07/handoff-B-to-A-终态结算patch需求.md` | ✅ 已完成 |
 | `docs/plans/day07/handoff-B-to-D-打断契约与终态口径.md` | ✅ 已完成 |
+| `docs/plans/day07/handoff-B-to-D2-E20错误码契约.md` | ✅ 已完成 |
 
 ## 契约冻结：**已冻结**
 

@@ -32,7 +32,7 @@ class Metric(Base):
     __table_args__ = (
         CheckConstraint(
             "stage IN ('wakeup', 'connection', 'asr', 'route', "
-            "'llm_first_token', 'tts_first_packet', 'playback')",
+            "'llm_first_token', 'tts_first_packet', 'playback', 'response_segment')",
             name="stage",
         ),
         CheckConstraint("duration_ms >= 0", name="duration_ms"),
@@ -57,7 +57,7 @@ class Metric(Base):
     stage: Mapped[str] = mapped_column(
         Text(),
         nullable=False,
-        comment="wakeup/connection/asr/route/llm_first_token/tts_first_packet/playback",
+        comment="wakeup/connection/asr/route/llm_first_token/tts_first_packet/playback/response_segment",
     )
     duration_ms: Mapped[int] = mapped_column(
         Integer(), nullable=False, comment="该段耗时（毫秒，≥0）"

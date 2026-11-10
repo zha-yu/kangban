@@ -433,7 +433,13 @@ async def test_ack_playing_then_played_completes_delivery() -> None:
         "response_completed",
     ]
     completed = h.sink.events[-1][1]
-    assert completed == {"total_segments": 2}
+    # P2-10（B1）：payload 写入时即写全（唯一写口 + 事件只追加不回填）
+    assert completed == {
+        "total_segments": 2,
+        "generated_text": "第一段话。第二段话。",
+        "delivered_text": "第一段话。第二段话。",
+        "response_status": "completed",
+    }
     # 末段 played 后回复已结束：再来的 ack 走③ wrong_status
     assert not await h.service.ack(
         device_id="dev-1", response_id=rid, epoch=epoch, segment_id=1, status="playing"
@@ -843,6 +849,17 @@ async def test_played_last_segment_finishes_turn() -> None:
     assert len(h.store.finishes(turn_id="turn-1", status="completed")) == 1
     # response_completed 每轮恰好 1 条
     assert _event_names(h).count("response_completed") == 1
+    # P2-10（B1）：事件 payload 在写入时就写全——唯一写口 + 事件只追加不回填，
+    # 事后 commit_response 只补投影（handoff-B-to-A §2），generated_text 缺了就永久缺。
+    completed_payloads = [p for t, p, _ in h.sink.events if t == "response_completed"]
+    assert completed_payloads == [
+        {
+            "total_segments": 2,
+            "generated_text": "第一段话。第二段话。",
+            "delivered_text": "第一段话。第二段话。",
+            "response_status": "completed",
+        }
+    ]
 
 
 async def test_interrupted_turn_truncates_delivered_text() -> None:
