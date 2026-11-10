@@ -11,6 +11,10 @@
  * 403/409/404/422 处置走主计划 K2 方案 B：本模块内解析状态码并抛页面级文案，
  * `console/api.ts` 零改动（不新增 forbidden kind，不回归登录页错误分支）。
  * 错误文案用用户语言，不回显 trace_id、detail 原文或内部实现细节。
+ *
+ * Day 7（D2，P2-26）：401 不再透传登录页「手机号或密码不正确」——管理页收到 401
+ * 意味着登录态过期（authedFetch 内 refresh 已失败），统一「登录已过期，请重新登录」；
+ * 400/422 解析响应体 detail 提示具体原因，不再统一「请刷新页面」。
  */
 
 import { ApiError, NETWORK_ERROR_TEXT, apiGetWithStatus, apiPost, apiPut } from "./api";
@@ -79,11 +83,31 @@ export class AdminApiError extends Error {
   }
 }
 
+/** 401 文案（P2-26）：登录态过期（refresh 已失败），引导重新登录，不提示「密码不正确」 */
+const SESSION_EXPIRED_TEXT = "登录已过期，请重新登录";
+
+/** 400/422 响应体 detail 解析（FastAPI 风格）：字符串直接用；pydantic 数组取首条 msg。
+ *  解析失败（非 JSON / 空）返回 null，回落到通用文案。 */
+async function detailOf(res: Response): Promise<string | null> {
+  try {
+    const body = (await res.json()) as { detail?: unknown };
+    if (typeof body?.detail === "string" && body.detail.trim()) return body.detail.trim();
+    if (Array.isArray(body?.detail) && body.detail.length > 0) {
+      const first = body.detail[0] as { msg?: unknown };
+      if (typeof first?.msg === "string" && first.msg.trim()) return first.msg.trim();
+    }
+  } catch {
+    // 响应体非 JSON 或已读，忽略走通用文案
+  }
+  return null;
+}
+
 /** 409/403 文案随业务场景不同，由调用方给出（缺省用通用文案）；其余状态码统一文案 */
 function messageForStatus(
   status: number,
   conflictText: string,
   forbiddenText = "当前账号无权执行该操作",
+  detail: string | null = null,
 ): { kind: AdminApiErrorKind; message: string } {
   switch (status) {
     case 403:
@@ -93,9 +117,12 @@ function messageForStatus(
     case 404:
       return { kind: "not_found", message: "目标不存在，请刷新列表后重试" };
     case 422:
-      return { kind: "validation", message: "提交内容不符合要求，请按提示检查后重试" };
+      return {
+        kind: "validation",
+        message: detail ? `提交内容不符合要求：${detail}` : "提交内容不符合要求，请按提示检查后重试",
+      };
     case 400:
-      return { kind: "bad_request", message: "请求格式有误，请刷新页面后重试" };
+      return { kind: "bad_request", message: detail ? `请求有误：${detail}` : "请求格式有误，请检查后重试" };
     default:
       return { kind: "network", message: "服务暂时不可用，请稍后重试" };
   }
@@ -112,12 +139,21 @@ async function adminSend<T>(
     res = await doSend();
   } catch (err) {
     if (err instanceof ApiError) {
-      throw new AdminApiError(err.kind === "invalid" ? "invalid" : "network", err.message);
+      // P2-26：401（refresh 已失败）引导重新登录，不透传登录页「手机号或密码不正确」
+      throw new AdminApiError(
+        err.kind === "invalid" ? "invalid" : "network",
+        err.kind === "invalid" ? SESSION_EXPIRED_TEXT : err.message,
+      );
     }
     throw new AdminApiError("network", NETWORK_ERROR_TEXT);
   }
   if (!res.ok) {
-    const mapped = messageForStatus(res.status, conflictText, forbiddenText);
+    // apiPost/apiPut 已在 401 抛 ApiError，这里兜底防御；400/422 解析 detail 提示具体原因
+    if (res.status === 401) {
+      throw new AdminApiError("invalid", SESSION_EXPIRED_TEXT);
+    }
+    const detail = res.status === 400 || res.status === 422 ? await detailOf(res) : null;
+    const mapped = messageForStatus(res.status, conflictText, forbiddenText, detail);
     throw new AdminApiError(mapped.kind, mapped.message);
   }
   return (await res.json()) as T;
@@ -181,7 +217,11 @@ export async function listStaff(): Promise<StaffListItem[]> {
     res = await apiGetWithStatus<{ items: StaffListItem[] }>("/api/staff");
   } catch (err) {
     if (err instanceof ApiError) {
-      throw new AdminApiError(err.kind === "invalid" ? "invalid" : "network", err.message);
+      // P2-26：401（refresh 已失败）引导重新登录，不透传登录页「手机号或密码不正确」
+      throw new AdminApiError(
+        err.kind === "invalid" ? "invalid" : "network",
+        err.kind === "invalid" ? SESSION_EXPIRED_TEXT : err.message,
+      );
     }
     throw new AdminApiError("network", NETWORK_ERROR_TEXT);
   }

@@ -8,22 +8,35 @@
  *
  * 消息协议（见 docs/plans/day04/f1-vad-worker隔离.md §2.2）：
  *   main→worker: init / feed{pcm,transfer} / reset / free
- *   worker→main: ready / init_error{message} / speech_start / speech_end
+ *   worker→main: ready / init_error{message} / speech_start / speech_end /
+ *                runtime_error{message}（Day 7 D1 新增，协议只增不改）
  * 任何失败路径只 postMessage init_error，由主线程 vad.ts 转 VadUnavailableError
  * → realtime.ts 既有服务端 webrtcvad 兜底接管，主链路不断。
+ * Day 7 D1（S1.3）：运行期 feedWindow 异常不再永久砖死（P1-5，经 runtime_error 上报）；
+ * handleReset 说话态先补 speech_end（P3-37）；120s 零 speechstart 心跳遥测
+ * （vad_no_speech_120s，任务卡 §2.2.3）。
  *
- * 参数口径与原 vad.ts 一致（adhoc-20261105 §4.2）：
- * threshold 0.6 / silence 0.8s / minSpeech 0.25s / maxSpeech 30s / window 256 / 16k。
+ * 参数口径与原 vad.ts 一致（adhoc-20261105 §4.2，threshold 见下）：
+ * threshold 0.38（Day 7 J-D1 裁决）/ silence 0.8s / minSpeech 0.25s / maxSpeech 30s /
+ * window 256 / 16k。
  */
 
 "use strict";
 
 const WINDOW_SIZE = 256;
+/** Day 7 D1 关 P1-4（主理人裁决 J-D1，2026-11-10）：threshold 0.6→0.38 放宽收音
+ *  灵敏度。0.38 为先设值，20 句近/远场样本标定登记为遗留项待真人复测。 */
+const VAD_THRESHOLD = 0.38;
+/** Day 7 D1 心跳遥测：120s 零 speechstart 上报一次，便于现场收音复测 */
+const NO_SPEECH_HEARTBEAT_MS = 120_000;
 
 let detector = null;
 let pending = new Float32Array(WINDOW_SIZE);
 let used = 0;
 let active = false;
+/** 最近一次 speech_start 时刻与心跳是否已发（120s 零 speechstart 遥测锚点） */
+let lastSpeechStartAt = Date.now();
+let noSpeechHeartbeatFired = false;
 
 self.onmessage = (e) => {
   const msg = e.data || {};
@@ -46,6 +59,11 @@ self.onmessage = (e) => {
 
 function initError(message) {
   self.postMessage({ type: "init_error", message: String(message) });
+}
+
+/** Day 7 D1：运行期错误/遥测上行（协议新增类型；主线程 vad.ts 转发上层触发服务端兜底） */
+function runtimeError(message) {
+  self.postMessage({ type: "runtime_error", message: String(message) });
 }
 
 function init() {
@@ -86,7 +104,7 @@ function createDetector() {
     sileroVad: { model: "" },
     tenVad: {
       model: "ten-vad.onnx",
-      threshold: 0.6, // adhoc-20261106：0.5→0.6 收窄触发面，只认近场清晰人声，减少远处他人语音误切段
+      threshold: VAD_THRESHOLD, // Day 7 J-D1 裁决 0.38（先设值，标定待真人复测，见文件头）
       minSilenceDuration: 0.8,
       minSpeechDuration: 0.25,
       maxSpeechDuration: 30,
@@ -108,11 +126,29 @@ function handleFeed(pcm) {
   for (let i = 0; i < pcm.length; i++) {
     pending[used++] = pcm[i] / 32768;
     if (used === WINDOW_SIZE) {
-      feedWindow(pending);
+      // Day 7 D1 关 P1-5：喂窗前先重置缓冲——单次 acceptWaveform 异常不永久砖死
+      //（否则 used 卡 256、后续帧全部丢失），异常经 runtime_error 上报主线程，
+      // 上层 sendDiag("vad") 触发服务端 webrtcvad 兜底
+      const windowSamples = pending;
       pending = new Float32Array(WINDOW_SIZE);
       used = 0;
+      try {
+        feedWindow(windowSamples);
+      } catch (err) {
+        runtimeError(`acceptWaveform 失败: ${err}`);
+      }
+      checkNoSpeechHeartbeat();
     }
   }
+}
+
+/** Day 7 D1 心跳遥测：非说话态下距上次 speech_start 超 120s → 上报一次（只报一次，
+ *  下一次 speech_start 后重新计时），便于现场收音复测（任务卡 §2.2.3） */
+function checkNoSpeechHeartbeat() {
+  if (noSpeechHeartbeatFired || active) return;
+  if (Date.now() - lastSpeechStartAt < NO_SPEECH_HEARTBEAT_MS) return;
+  noSpeechHeartbeatFired = true;
+  runtimeError("vad_no_speech_120s");
 }
 
 function feedWindow(samples) {
@@ -126,14 +162,25 @@ function feedWindow(samples) {
   const isActive = detector.isDetected();
   if (isActive !== active) {
     active = isActive;
+    if (isActive) {
+      lastSpeechStartAt = Date.now(); // 心跳锚点重置
+      noSpeechHeartbeatFired = false; // 下一次零语音 120s 再报
+    }
     self.postMessage({ type: isActive ? "speech_start" : "speech_end" });
   }
 }
 
 function handleReset() {
+  // Day 7 D1 关 P3-37：说话态先补发 speech_end 清悬挂边沿再复位，
+  // 防主线程「正在想」状态在 reset 后永不收口
+  if (active) {
+    active = false;
+    self.postMessage({ type: "speech_end" });
+  }
+  lastSpeechStartAt = Date.now();
+  noSpeechHeartbeatFired = false;
   // 新一轮会话前的状态复位（原 vad.ts reset 语义）
   if (detector && typeof detector.reset === "function") detector.reset();
-  active = false;
   pending = new Float32Array(WINDOW_SIZE);
   used = 0;
 }

@@ -26,13 +26,36 @@
  *  字段零增删），故按段文本长度估算时长起兜底计时器（350ms/字 + 1.5s 底数，宁晚勿早：
  *  早报会让麦克风在音频播完前放开引发回声抢话），到点仍未被新段/打断/轨结束收口时
  *  结算末段 played 并复位响应。dev-C 给出真实时长口径后可替换估算系数。
+ *
+ * Day 7 D1 可靠性修复（docs/plans/day07/d-推进计划-pad可靠性改绑联调.md S1.1）：
+ *  ① isSegmentedTts 增加 epoch 类型校验（P3-36）：epoch 缺失/非法不进分段路径，
+ *    不污染 maxEpoch；② 暴露 isStale() 供调用方在 unmute/play/置 speaking **之前**
+ *    做淘汰判定（P2-22，被淘汰段不播不 ack 不改 ttsPlaying）；③ total 缺失按单段
+ *    收口（P2-24）：totalSegments = total ?? segment_id+1，起 tail 兜底并发
+ *    total_missing_single_segment 诊断；④ flushCanceled/markTrackEnded 内
+ *    cancelRetry()，防打断/收口后旧 playing ack 乱序补发（P3-36）；⑤ playing ack
+ *    延后到实际起播（P3-39）：段到达只记 pending，调用方在音频真正起播后调
+ *    notifyPlaybackStarted() 补发（J3：playing 只作首段开播延迟指标，不推水位）；
+ *  ⑥ tail 兜底结算时打 tail_fallback_estimated 诊断，估算口径不静默。
  */
 
 import type { SegmentAckMsg, TtsTextMsg } from "../protocol";
 
-/** 段消息判定：response_id 与 segment_id 任一缺失 → 整段一播（旧服务端/回滚路径） */
-export function isSegmentedTts(msg: TtsTextMsg): boolean {
-  return msg.response_id !== undefined && msg.segment_id !== undefined;
+/** 分段 tts_text 的收窄类型：三字段齐备且类型合法 */
+export type SegmentedTtsTextMsg = TtsTextMsg & {
+  response_id: string;
+  segment_id: number;
+  epoch: number;
+};
+
+/** 段消息判定（Day 7 D1 关 P3-36）：response_id / segment_id / epoch 任一缺失或
+ *  类型非法 → 整段一播（旧服务端/回滚路径）；epoch 非法不进分段路径、不污染 maxEpoch */
+export function isSegmentedTts(msg: TtsTextMsg): msg is SegmentedTtsTextMsg {
+  return (
+    typeof msg.response_id === "string" &&
+    typeof msg.segment_id === "number" &&
+    typeof msg.epoch === "number"
+  );
 }
 
 export interface PlaybackQueueDeps {
@@ -70,17 +93,21 @@ export class PlaybackQueue {
   private pendingAck: SegmentAckMsg | null = null;
   /** 末段兜底计时器（轨 ended 不可靠时的结算兜底，见文件头 J3 说明） */
   private tailTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 待补发的 playing ack 段号（P3-39：段到达不立即发，实际起播后由
+   *  notifyPlaybackStarted() 补发；至多保留最新一条——中间段的 playing 仅作
+   *  兼容指标，被新段覆盖可接受，played 才是唯一推水位的信号） */
+  private pendingPlayingSegment: number | null = null;
 
   constructor(private deps: PlaybackQueueDeps) {}
 
   /**
-   * 收到一条分段 tts_text：结算上一段 played、本段上报 playing。
+   * 收到一条分段 tts_text：结算上一段 played、本段记 pending playing
+   * （实际起播后由 notifyPlaybackStarted() 补发，P3-39）。
    * 返回 false 表示该段因旧 epoch 被丢弃（调用方无需再处理字幕以外的逻辑，字幕照常渲染）。
    */
   handleSegment(msg: TtsTextMsg): boolean {
     if (!isSegmentedTts(msg)) return false;
-    const epoch = msg.epoch as number;
-    const segmentId = msg.segment_id as number;
+    const { epoch, segment_id: segmentId } = msg;
 
     // 旧 epoch：直接丢弃，不播不 ack（字幕由调用方决定是否渲染）
     if (this.maxEpoch !== null && epoch < this.maxEpoch) {
@@ -96,11 +123,17 @@ export class PlaybackQueue {
     }
 
     if (!this.active) {
+      // Day 7 D1 关 P2-24：total 缺失按单段收口（total = segment_id+1），
+      // 起本段兜底计时并打诊断——不再出现「末段判定恒跳过、无兜底」的悬挂态
+      const totalFallback = msg.total === undefined;
+      if (totalFallback) {
+        this.deps.sendDiag(false, `total_missing_single_segment segment=${segmentId}`);
+      }
       this.active = {
-        responseId: msg.response_id as string,
+        responseId: msg.response_id,
         epoch,
         playingSegment: segmentId,
-        totalSegments: msg.total ?? null,
+        totalSegments: msg.total ?? segmentId + 1,
         lastConfirmedPlayed: null,
       };
     } else {
@@ -109,7 +142,9 @@ export class PlaybackQueue {
       this.active.playingSegment = segmentId;
       if (msg.total !== undefined) this.active.totalSegments = msg.total;
     }
-    this.sendAckFor(segmentId, "playing");
+    // Day 7 D1 关 P3-39：段到达不立即发 playing（早于实际起播），只记 pending，
+    // 调用方在音频真正起播后调 notifyPlaybackStarted() 补发
+    this.pendingPlayingSegment = segmentId;
     // 末段（total 已知且本段是最后一段）：起兜底计时，轨 ended 不触发也能收口
     if (this.active.totalSegments !== null && segmentId >= this.active.totalSegments - 1) {
       this.scheduleTailFallback(msg.text.length);
@@ -118,11 +153,40 @@ export class PlaybackQueue {
   }
 
   /**
+   * Day 7 D1 关 P2-22：淘汰判定（纯查询，无副作用）。
+   * 调用方须在 unmute / play() / 置 speaking **之前**调用——被淘汰段
+   * （旧 epoch）不播、不 ack、不改 ttsPlaying。
+   */
+  isStale(msg: TtsTextMsg): boolean {
+    if (!isSegmentedTts(msg)) return false;
+    return this.maxEpoch !== null && msg.epoch < this.maxEpoch;
+  }
+
+  /** 当前活跃 response_id（Day 7 D1：打断上行 interrupt 消息取值来源；无活跃回复为 null） */
+  get activeResponseId(): string | null {
+    return this.active?.responseId ?? null;
+  }
+
+  /**
+   * Day 7 D1 关 P3-39：调用方在音频实际起播（play() 成功 / playing 事件）后调用，
+   * 补发 pending 的 playing ack。无 pending / 无活跃响应时为 no-op。
+   */
+  notifyPlaybackStarted(): void {
+    const segmentId = this.pendingPlayingSegment;
+    this.pendingPlayingSegment = null;
+    if (segmentId === null || !this.active) return;
+    this.sendAckFor(segmentId, "playing");
+  }
+
+  /**
    * 轨结束（audioEl ended）：末段结算为 played 并复位响应状态。
    * 无活跃响应（整段模式或已收口）时为 no-op。
    */
   markTrackEnded(): void {
     this.cancelTail();
+    // Day 7 D1 关 P3-36：收口即作废重发与 pending playing，防旧 ack 乱序补发
+    this.cancelRetry();
+    this.pendingPlayingSegment = null;
     if (!this.active) return;
     this.settlePlayed(this.active.playingSegment);
     this.active = null;
@@ -143,17 +207,20 @@ export class PlaybackQueue {
     this.cancelTail();
     this.active = null;
     this.maxEpoch = null;
+    this.pendingPlayingSegment = null;
     this.cancelRetry();
   }
 
   /**
    * 末段兜底计时（J3：轨 ended 在 WebRTC 单轨连续流上不可靠，v1.2 允许计时兜底）。
-   * 到点时若响应未被新段/打断/轨结束收口，按轨结束同路径结算。
+   * 到点时若响应未被新段/打断/轨结束收口，按轨结束同路径结算；
+   * Day 7 D1 修复⑥：结算前打 tail_fallback_estimated 诊断，估算口径不静默。
    */
   private scheduleTailFallback(textLength: number): void {
     this.cancelTail();
     this.tailTimer = setTimeout(() => {
       this.tailTimer = null;
+      this.deps.sendDiag(false, "tail_fallback_estimated");
       this.markTrackEnded();
     }, TAIL_FALLBACK_BASE_MS + textLength * TAIL_FALLBACK_MS_PER_CHAR);
   }
@@ -176,6 +243,9 @@ export class PlaybackQueue {
   private flushCanceled(): void {
     if (!this.active) return;
     this.cancelTail(); // 打断收口优先于兜底计时
+    // Day 7 D1 关 P3-36：打断后旧 playing ack 不再补发（含重发计时器），防乱序
+    this.cancelRetry();
+    this.pendingPlayingSegment = null;
     const { responseId, epoch, lastConfirmedPlayed } = this.active;
     this.active = null;
     this.deliverAck({
