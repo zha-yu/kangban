@@ -33,9 +33,9 @@ curl -s http://127.0.0.1:7101/mcp -H 'Content-Type: application/json' -d \
 
 | 变量 | 说明 |
 | --- | --- |
-| `WEATHER_API_PROVIDER` | 上游供应商标识（未冻结，仅记录用） |
-| `WEATHER_API_BASE_URL` | 上游 current-weather 端点（OpenWeather 兼容查询串形态，见下方假设） |
-| `WEATHER_API_KEY` | 上游 key；**为空时 get_weather 一律明确失败，不编造天气** |
+| `WEATHER_API_PROVIDER` | 上游供应商标识（`amap`，2026-11-10 落实） |
+| `WEATHER_API_BASE_URL` | 高德 REST **根地址**（`https://restapi.amap.com`），fetch 内拼 `/v3/geocode/geo` 与 `/v3/weather/weatherInfo` |
+| `WEATHER_API_KEY` | 高德「Web服务」Key（https://lbs.amap.com → 应用管理 → 创建应用 → 添加 Key）；**为空时 get_weather 一律明确失败，不编造天气** |
 | `WEATHER_CACHE_TTL_SECONDS` | 进程内缓存 TTL（契约 §5.4，默认 600） |
 
 key 一律经 Pydantic Settings（`app/core/config.py`）读取，禁止写死。
@@ -56,9 +56,12 @@ key 一律经 Pydantic Settings（`app/core/config.py`）读取，禁止写死�
 
 ## 假设与边界
 
-- **假设（自裁，TD 未定义 provider）**：上游按 OpenWeatherMap 兼容 current-weather
-  形态解析（`weather[0].description` / `main.temp` / `dt`）；换真实供应商只需替换
-  `weather_core.httpx_fetch` 或注入自定义 fetch，核心逻辑零改动。
+- **上游供应商（2026-11-10 落实）**：高德开放平台 REST API——OpenWeatherMap 大陆
+  网络直连不可达（实测 TCP 挂死），Open-Meteo 境外延迟贴近 4s 超时线，均弃用；
+  高德国内直连实测 ~0.4s。默认 fetch 走两步：`/v3/geocode/geo`（城市名 → adcode，
+  解析不出 → `bad_request` 回传模型重试）→ `/v3/weather/weatherInfo`（adcode →
+  实况）；两步共享 4s 总超时。换供应商只需替换 `weather_core.httpx_fetch` 或注入
+  自定义 fetch，核心逻辑零改动。
 - 除天气上游 API 外**无任何外网访问**（AGENTS §4.5）。
 - 缓存为进程内 TTL 缓存（重启即清空），不是长期记忆存储。
 

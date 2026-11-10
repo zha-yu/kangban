@@ -20,19 +20,32 @@ if str(_WEATHER_DIR) not in sys.path:
 
 from weather_core import (  # noqa: E402  （sys.path 引导后才能 import）
     MAX_CITY_LENGTH,
+    WeatherCityUnknown,
     WeatherFetchError,
     WeatherFetchTimeout,
     WeatherService,
 )
 
 # ---------------------------------------------------------------------------
-# 夹具：假 fetch（OpenWeatherMap 兼容形态，见 weather_core 假设）与假时钟
+# 夹具：假 fetch（高德实况形态，见 weather_core 假设）与假时钟
 # ---------------------------------------------------------------------------
 
 UPSTREAM_PAYLOAD: dict[str, Any] = {
-    "weather": [{"description": "小雨"}],
-    "main": {"temp": 18.4},
-    "dt": 1762684800,  # 2025-11-09T12:00:00Z 附近的固定观测时间
+    "status": "1",
+    "info": "OK",
+    "infocode": "10000",
+    "lives": [
+        {
+            "province": "浙江省",
+            "city": "杭州市",
+            "weather": "小雨",
+            "temperature": "18.4",
+            "humidity": "72",
+            "winddirection": "东",
+            "windpower": "≤3",
+            "reporttime": "2025-11-09 20:00:00",  # 北京时间 → UTC 2025-11-09T12:00:00+00:00
+        }
+    ],
 }
 
 FetchFn = Callable[[str, str, str], Awaitable[dict[str, Any]]]
@@ -156,6 +169,20 @@ async def test_upstream_error_fails_when_no_cache() -> None:
     result = await svc.fetch_city("杭州")
     assert result["ok"] is False
     assert result["error"] == "upstream_unavailable"
+
+
+async def test_city_unknown_maps_to_bad_request() -> None:
+    """geocoding 解析不出城市 → bad_request（回传模型重试），不当临时故障。"""
+    fetch, _ = make_fetch(error=WeatherCityUnknown("city not resolvable: 不存在的城"))
+    svc = WeatherService(
+        api_key="k", base_url="https://w.example", cache_ttl_seconds=600, fetch=fetch
+    )
+
+    result = await svc.fetch_city("不存在的城")
+    assert result["ok"] is False
+    assert result["error"] == "bad_request"
+    assert "城市名" in result["message"]
+    assert "不存在的城" not in result["message"]  # 异常细节不外泄
 
 
 async def test_upstream_timeout_falls_back_to_stale_cache() -> None:

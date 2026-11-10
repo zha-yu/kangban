@@ -20,9 +20,9 @@
 
 需要的 `.env` 配置（全部已有占位，不新增配置项）：
 
-    WEATHER_API_PROVIDER=...        # 上游供应商标识（未冻结，仅记录用）
-    WEATHER_API_BASE_URL=...        # 上游 current-weather 端点
-    WEATHER_API_KEY=...             # 上游 key；为空时 get_weather 一律明确失败
+    WEATHER_API_PROVIDER=amap       # 上游供应商标识（高德，2026-11-10 落实）
+    WEATHER_API_BASE_URL=...        # 高德 REST 根地址（如 https://restapi.amap.com）
+    WEATHER_API_KEY=...             # 高德 Web服务 key；为空时 get_weather 一律明确失败
     WEATHER_CACHE_TTL_SECONDS=600   # 进程内缓存 TTL（契约 §5.4 默认 600s）
 
 脚本以文件方式运行（目录名含连字符不能作包名），因此先做 sys.path 引导：
