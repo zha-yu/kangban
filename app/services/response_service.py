@@ -230,7 +230,9 @@ class HistorySettlementPort(Protocol):
         status: str,
     ) -> None: ...
 
-    async def finish_turn(self, *, turn_id: str, status: Literal["completed", "interrupted", "failed"]) -> None: ...
+    async def finish_turn(
+        self, *, turn_id: str, status: Literal["completed", "interrupted", "failed"]
+    ) -> None: ...
 
 
 class EpochPersistence(Protocol):
@@ -624,8 +626,19 @@ class ResponseService:
             if segment_id == state.total - 1:
                 state.status = PHASE_ENDED
                 state.delivery_status = "delivered"
+                # P2-10（B1）：response_completed 的 payload 在写入时就写全——本服务是
+                # 该事件的唯一写口，事件只追加不回填，事后 commit_response 只补投影
+                # 补不了 payload（见 handoff-B-to-A §2）。generated_text 供审计，
+                # delivered_text=已播前缀，response_status 为终态语义。
                 await self._safe_append_event(
-                    state, EVENT_RESPONSE_COMPLETED, {"total_segments": state.total}
+                    state,
+                    EVENT_RESPONSE_COMPLETED,
+                    {
+                        "total_segments": state.total,
+                        "generated_text": "".join(state.segments),
+                        "delivered_text": state.delivered_text,
+                        "response_status": "completed",
+                    },
                 )
                 logger.info(
                     "response_completed",
