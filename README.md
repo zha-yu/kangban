@@ -494,3 +494,5 @@ uv run pytest -q -m "not slow" --cov=app --cov-report=term
 | Day 5 metrics 表 | 大纲 5.2 口径含「metrics 表」 | **技术文档 §3.6 原批次无此表（26 张）；2026-11-07 主理人裁决 D2 自裁追加第 27 张表 `metrics`（分段耗时打点），走新迁移 0006** |
 | 口型同步实现 | 大纲 5.1 口径为音素级 viseme | **PRD FR-3D-01：TTS 音频能量近似驱动口型开合即可（day-05 计划裁决 D1 维持现状，不升级 viseme）** |
 | Day 6 主题 | 大纲 §十 / PRD 旧口径：三级路由（规则层 + Laya + MCP） | **现行：长者侧 Agent 完整闭环（历史/状态/上下文/送达/记忆骨架/用药子图 + 天气 MCP + AC-04 安全一票否决）；三级路由、`rules.py`、Laya、`decision_logs` 顺延至路由日**（2026-11-09 裁决，PRD v2.9 / TD v2.0） |
+| Day 8 声纹调优归属 | 大纲 8.4 + PRD §4 FR-VPR-04 表行（「Day 8.4 产出报告」）：声纹调优在 Day 8 | **现行：主理人 2026-11-10 晚改裁决 D-1——声纹调优（FR-VPR-04）纳入 Day 8 以 P1（H13）承载，产能不足仍可顺延 Day 9**；PRD §6.1 Day 9 行与 TD §8.4.3 的「归 Day 9」表述待同步修订（见 docs/plans/day08/day-08 计划 §0 / §10） |
+| Day 8 护工看板渲染形态 | 大纲 8.2：最简 HTML+JS 服务端渲染，不引前端框架 | **PRD §2.1：console 统一 React + 原生 CSS（tokens.css 唯一真源，MUI 已于 2026-11-06 移除），在现有工程内真实对接，不另起服务端渲染**（2026-11-10 主理人裁决 D-3） |
