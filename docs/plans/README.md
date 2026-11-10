@@ -16,7 +16,7 @@
 
 | 文件 | 一句话场景 | 状态 | 最后更新 |
 | --- | --- | --- | --- |
-| [adhoc-20261109-汇报材料收口.md](./adhoc-20261109-汇报材料收口.md) | Day 6 汇报稿、通信流程图与源码注释对齐：澄清回复音频的 WebRTC 写轨路径、用药主动语音尽力出口、文本投递回执语义与当前工作区状态 | 已冻结 | 2026-11-09 |
+| [adhoc-20261109-汇报材料收口.md](./adhoc-20261109-汇报材料收口.md) | Day 6 汇报稿、通信流程图与源码注释对齐：澄清回复音频的 WebRTC 写轨路径、用药主动语音尽力出口、文本投递回执语义与当前工作区状态 | 已废弃（文件已删除） | 2026-11-09 |
 | [adhoc-20261108-房间床位管理.md](./adhoc-20261108-房间床位管理.md) | 管理端房间/床位管理实施计划（v1.6 已完成）：E18 只读 → E20–E29 十个管理端点 + `org_service` 唯一写库层 + `aggregate_room_status` 聚合 + `audit_logs` 提前落地（0007）+ console 管理页；含落地差异 6 条（FR-ADM-11 编号、`check_roles` 403 口径、端点 10 个、计数前端派生、走查数据、跳过 downgrade） | 已完成 | 2026-11-09 |
 | [adhoc-20261109-房间床位交付存档.md](./adhoc-20261109-房间床位交付存档.md) | 房间/床位功能的交付断点存档（原 `task_checkpoint.md`）：项目目标与技术选型、硬性决策 D1–D10、Git 现状与提交边界、接口 E20–E29 全量定义、业务规则 14 条、已知坑 13 条、验证记录与账号环境；供跨会话恢复与复盘 | 已完成（归档） | 2026-11-09 |
 | [adhoc-20261110-day6全面审查.md](./adhoc-20261110-day6全面审查.md) | Day 6 全面代码审查（只读）：PR #54–57 + 工作区 diff×3 三通道深审合并为 P1×6 + P2×18 + P3×14，每条含文件:行号与证据；D1 根因精确化（finish_turn 零调用）、D3 收敛为双候选（VAD threshold=0.6 / feedWindow 砖死）+ 零遥测盲区；新发现 StateUnavailable 生产不可达、E20 并发无行锁、context.py None+=str 整轮崩、预算双重失真；未提交 diff 结论：质量良好可提交 | 已冻结 | 2026-11-10 |
@@ -32,6 +32,10 @@
 | [day07/d-联调记录.md](./day07/d-联调记录.md) | Day 7 dev-D 验证证据链：D2 造数验证 8 项全过（150 压测长者 / 分页 101+ 可见 / 差集 added+removed / 409 拦截 / 5 次刷新一致 / createStaff 即现 / 401）；D1/D3 待回填 | 进行中 | 2026-11-10 |
 | [day07/dev-c-day07-执行计划.md](./day07/dev-c-day07-执行计划.md) | Day 7 dev-C 完整执行计划 v1.0：C1 用药确认工具绑定（1.0d）+ C2 用药到点调度接线（1.0d）+ C3 Agent/安全边界收口（0.75d），总 2.75 人日；11 项交付物（scheduler 新文件 + companion/tool_executor/safety 改写 + 测试扩展）+ 8 道门禁 + 7 条风险预案；硬约束：不碰 graphs/medication_service/main.py/models/alembic | 草稿 | 2026-11-10 |
 | [day07/handoff-A-to-C-用药到点接线.md](./day07/handoff-A-to-C-用药到点接线.md) | A→C 接线契约（Day 7）：`APScheduler` 到点 → `medication_confirmation_graph` 驱动链（A 线公开入口逐个签名、**子图工厂签名现为 `tts_fn`**、驱动链与四时点 T0/+5/+10/+15 × 60 秒窗口、终态四值、played 白名单七值、双入口同图、「scheduler 不拼触达消息」）、双驱动先到先得与重启恢复两条硬规矩、幂等红线八条、开放点 O1–O4、自检清单与 SQL 核对；对应新卡 `docs/team_tasks/day07/dev-c2-用药到点触发接线.md` | 已完成 | 2026-11-10 |
+| [day07/dev-b-day07-工作推进计划.md](./day07/dev-b-day07-工作推进计划.md) | dev-B Day 7 执行计划（3.0 人日）：B1 回合终态与打断闭环（`_settle_turn` 结算收口至响应层，末段 played / interrupt / canceled 三路结算）+ B2 上下文 NULL/预算与状态降级 + 记忆生产接线 + B3 metrics 白名单与 E20 并发口径；含 §4 交接矩阵（J2/J3 节点）与逐步确认制 | 待主理人确认 | 2026-11-10 |
+| [day07/handoff-B-to-A-终态结算patch需求.md](./day07/handoff-B-to-A-终态结算patch需求.md) | B1→A3 交接件（J2）：`turn_service` 第 5 步删非 generic `commit_response` 双写 + `TurnContext` 补 `user_text` 的 patch 需求清单；登记「双写被幂等兜住、事件恰好 1 条但 payload `response_status` 停在 playing」的现状基线与 A 侧验收命令 | 已完成 | 2026-11-10 |
+| [day07/handoff-B-to-D-打断契约与终态口径.md](./day07/handoff-B-to-D-打断契约与终态口径.md) | B1→D1 交接件（J3）：C→S `interrupt` 契约与终态口径**验收基线**（五步顺序、字段以 day07 README §5.4 冻结口径为准、canceled 水位截断、B1 服务端实现与 1043 回归绿证据），D1 直接按本文联调 | 已完成 | 2026-11-10 |
+| [day07/handoff-B-to-D2-E20错误码契约.md](./day07/handoff-B-to-D2-E20错误码契约.md) | B3→D2 交接件：E20 改绑错误码契约与并发口径（401/400/409/422 文案与差集提交、迁移 0014 metrics CHECK / 0015 elders.updated_at 授权留痕），服务端 Step 6 已收口回归绿 | 已完成 | 2026-11-10 |
 | [day06/a12-工单建单服务接口设计.md](./day06/a12-工单建单服务接口设计.md) | A12 与 N27 共用的**唯一建单口**设计（只定签名不落实现）：`open_work_order` / `transition`、四元幂等键与查重顺序、`order_no` 规则、`severity` 快照语义、状态机与 `false_alarm` 硬规则、两调用方参数映射、请求 0011 的两条索引、7 条验收判据 | 已实现（走 B；WD-1/WD-2 已登记） | 2026-11-09 |
 | [day06/dev-a-DAG.md](./day06/dev-a-DAG.md) | dev-A 独立执行 DAG：18 个执行节点（A00–A17，合计 21.0h）、三条支线（历史 10h / 用药 5h / 工具 5h）+ 收口、16 条内部边 + 3 个外部等待点（B 的 ORM、C 的触达出口、C 的 mcp_client）、4 道门禁、4 条回退、机器可读 JSON | 已完成 | 2026-11-09 |
 | [day06/dev-a-prompt-历史与工具.md](./day06/dev-a-prompt-历史与工具.md) | dev-A 交接提示词：目标、6 项必读清单与读后三问、白名单/禁触清单、10 条硬约束、A02–A17 逐节点指令（改哪些文件/做什么/验收命令）、5 条停止条件、节点级与交接级报告模板 | 草稿 | 2026-11-09 |

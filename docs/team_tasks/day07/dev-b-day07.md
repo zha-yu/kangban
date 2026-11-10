@@ -1,6 +1,6 @@
 # Task dev-B · Day 7 · 回合终态、上下文与状态收口
 
-> 状态：进行中　｜　版本：v1.0　｜　日期：2026-11-10
+> 状态：已完成　｜　版本：v1.1　｜　日期：2026-11-10
 > 负责人：dev-B　｜　总人日：3.0（B1 1.25 + B2 1.25 + B3 0.5）
 > 关联：`docs/team_tasks/day07/README.md`（总表）｜`docs/plans/adhoc-20261110-day6全面审查.md`（问题源）
 > 上游依据：PRD FR-DLG-01/03/05/06｜技术设计文档 §3.4/§6/§8.3｜`docs/team_tasks/day06/contracts.md` §4.2/§5
@@ -221,16 +221,33 @@ SELECT count(*) FROM metrics WHERE stage='response_segment' AND created_at > now
 
 ---
 
-## 5. 完成记录模板
+## 5. 完成记录（2026-11-10 回写）
 
 ```text
 任务：B1/B2/B3
-状态：已完成 / 阻塞
+状态：已完成
 证据：
-- 代码：<commit>
-- 命令：<pytest 输出 / SQL 结果>
-- 数据：<turn_id / trace_id / 并发结果>
-- 未完成：<无 / 具体项 + 原因 + 下一步>
+- 代码：57b20b0（B1/B2 收口：终态结算、上下文/状态/记忆、signaling interrupt 分支、
+  history limit/幂等）+ ac8a3ef（B3 收口：E20 行锁+CAS、metrics 白名单、API 边界、
+  alembic 0014/0015）+ Step 7 收口提交（main.py:318 Port Literal 收窄、本完成记录）
+- 命令：uv run pytest -q → 1057 passed（含 B1 6 用例、B2 7 用例、B3 22 例全绿）；
+  uv run ruff check app → All checks passed；uv run mypy app → 18 errors，
+  其中 15 个为 57b20b0 基线既有、3+1 个为 6b0a24d merge 带入他人文件
+  （tool_impls.py / bind_tools.py / test_scheduler_medication.py），
+  dev-B 写锁范围内已清零（main.py:318 HistorySettlementPort status 收窄为
+  Literal["completed","interrupted","failed"]，参数逆变修复）
+- 数据：B1 SQL 抽查——最新轮 status=completed、assistant_delivered_text 非 NULL、
+  response_completed 每轮恰 1 条；打断按水位截断；E20 并发摘同长者 1 成功 1 409
+  且 audit_logs 有 reassign_elders_rejected 行；记忆提取真实端口已接
+  （main.py _MemoryExtractionAdapter → memory_service.extract_after_turn，
+  终态结算后 create_task 后台执行，generic 由 elder_id 闸门拦截）
+- 未完成：
+  - P2-9 多 worker epoch 归属、P2-11 断连完整重放 → 登记 Day 9；
+  - 记忆冲突治理/遗忘 → 登记 Day 8；
+  - 6b0a24d merge 带入 tool_impls.py:215 按 `recall_for_turn(session, ..., category=...)`
+    旧签名调用，与 Step 3 冻结签名 `recall_for_turn(*, elder_id, query, limit=5)` 不符
+    → 需 C1 对齐（交接件：memory_service.py docstring C1 契约）；
+  - test_scheduler_medication.py 8 errors（Room(room_number=) vs room_no）→ dev-C 侧。
 ```
 
 ## 6. 变更记录
@@ -238,3 +255,4 @@ SELECT count(*) FROM metrics WHERE stage='response_segment' AND created_at > now
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-10 | 首版：B1 终态/打断、B2 上下文/状态/记忆、B3 metrics/E20/API；覆盖审查 P1-1/2/3、P2-7~21、P3-27~35 |
+| v1.1 | 2026-11-10 | B1/B2/B3 全部完成，回写 §5 完成记录与证据；未关闭项登记 Day 8/9 与 C 线 |
