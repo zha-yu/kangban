@@ -26,6 +26,7 @@ __pycache__/
 *.so
 .venv/
 venv/
+.venv_sidecar/
 .venv.bak/
 build/
 dist/
