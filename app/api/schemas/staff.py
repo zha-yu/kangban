@@ -8,6 +8,7 @@ owner=建号接口（adhoc-20261106）· 依据 docs/plans/adhoc-20261106-员工
 
 from __future__ import annotations
 
+import datetime
 import uuid
 from typing import Literal
 
@@ -18,6 +19,9 @@ StaffStatus = Literal["active", "disabled"]
 
 _PHONE_PATTERN = r"^1\d{10}$"
 
+#: `elder_ids` 上限（P3-34）：超出 422，防一次性提交把改绑变成全库重排
+MAX_ELDER_IDS = 200
+
 
 class StaffCreateRequest(BaseModel):
     """建员工账号（E12）。`elder_ids` 为空表示暂不分配长者。"""
@@ -27,7 +31,9 @@ class StaffCreateRequest(BaseModel):
     phone: str = Field(pattern=_PHONE_PATTERN, description="11 位手机号，全局唯一（跨员工与家属）")
     password: str = Field(min_length=8, max_length=128, description="口令明文，服务端只存哈希")
     elder_ids: list[uuid.UUID] = Field(
-        default_factory=list, description="要绑定的长者；admin 不接受该项"
+        default_factory=list,
+        max_length=MAX_ELDER_IDS,
+        description="要绑定的长者；admin 不接受该项",
     )
 
 
@@ -95,10 +101,21 @@ class StaffListItemResponse(BaseModel):
 
 
 class ElderReassignRequest(BaseModel):
-    """全量替换式改绑（E20）。空数组表示清空全部绑定。"""
+    """全量替换式改绑（E20）。空数组表示清空全部绑定。
+
+    `expected_updated_at`（可选，P2-20 乐观并发）：客户端加载页面时看到的
+    `elders.updated_at` 基准（ISO 8601）。不传 → 只走服务端行锁；
+    传了 → 涉改动长者任一行 `updated_at` 晚于该值时返回 409 STALE_WRITE，
+    防止 stale 全量覆盖冲掉他人变更。
+    """
 
     elder_ids: list[uuid.UUID] = Field(
-        default_factory=list, description="要绑定的长者列表（全量覆盖）"
+        default_factory=list,
+        max_length=MAX_ELDER_IDS,
+        description="要绑定的长者列表（全量覆盖，至多 200）",
+    )
+    expected_updated_at: datetime.datetime | None = Field(
+        default=None, description="乐观并发基准（可选）：页面加载时长者的 updated_at"
     )
 
 
@@ -111,6 +128,7 @@ class ElderReassignResponse(BaseModel):
 
 
 __all__ = [
+    "MAX_ELDER_IDS",
     "ElderReassignRequest",
     "ElderReassignResponse",
     "GuardianBindRequest",

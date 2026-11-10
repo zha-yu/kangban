@@ -27,6 +27,7 @@
 | `docs/plans/day07/handoff-A-to-C-用药到点接线.md` | ✅ 已完成 |
 | `docs/plans/day07/handoff-B-to-A-终态结算patch需求.md` | ✅ 已完成 |
 | `docs/plans/day07/handoff-B-to-D-打断契约与终态口径.md` | ✅ 已完成 |
+| `docs/plans/day07/handoff-B-to-D2-E20错误码契约.md` | ✅ 已完成 |
 
 ## 契约冻结：**已冻结**
 
