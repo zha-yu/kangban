@@ -109,6 +109,17 @@ class LLMService:
             error_type: str | None = None
             status_code: int | None = None
             transient = False
+            started = asyncio.get_running_loop().time()
+            logger.info(
+                "llm_request_started",
+                extra={
+                    "trace_id": get_trace_id() or "-",
+                    "provider": self._settings.llm_provider,
+                    "attempt": attempt,
+                    "message_count": len(payload["messages"]),
+                    "prompt_chars": sum(len(m.get("content", "")) for m in payload["messages"]),
+                },
+            )
             try:
                 response = await client.post(
                     url,
@@ -132,6 +143,19 @@ class LLMService:
                 else:
                     parsed = _parse_content(response)
                     if parsed is not None:
+                        logger.info(
+                            "llm_request_completed",
+                            extra={
+                                "trace_id": get_trace_id() or "-",
+                                "provider": self._settings.llm_provider,
+                                "attempt": attempt,
+                                "status_code": status_code,
+                                "elapsed_ms": round(
+                                    (asyncio.get_running_loop().time() - started) * 1000, 1
+                                ),
+                                "reply_chars": len(parsed),
+                            },
+                        )
                         return LLMReply(text=parsed, degraded=False)
                     error_type = "invalid_response"
 
@@ -144,6 +168,9 @@ class LLMService:
                     "total_attempts": total_attempts,
                     "error_type": error_type,
                     "status_code": status_code,
+                    "elapsed_ms": round(
+                        (asyncio.get_running_loop().time() - started) * 1000, 1
+                    ),
                 },
             )
             if not transient or attempt >= total_attempts:

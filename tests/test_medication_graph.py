@@ -310,12 +310,17 @@ async def _bind_device(session: AsyncSession, seeded: dict[str, Any]) -> Device:
 async def test_reminder_dispatches_to_bound_device(
     session: AsyncSession, seeded: dict[str, Any], saver: AsyncPostgresSaver
 ) -> None:
-    """设备在线：触达 = voice_dispatched，消息是 tts_text 且带药名（pad 零改动）。"""
+    """设备在线：触达 = voice_dispatched，字幕 + 语音（TD-1 内嵌 audio）发给同一台设备。"""
     device = await _bind_device(session, seeded)
     reminder_id = await _new_event(session, seeded)
     calls: list[tuple[str, dict[str, Any]]] = []
+    tts_calls: list[str] = []
+
     graph = build_medication_graph(
-        session=session, checkpointer=saver, deliver_fn=_fake_deliver(calls, ok=True)
+        session=session,
+        checkpointer=saver,
+        deliver_fn=_fake_deliver(calls, ok=True),
+        tts_fn=_fake_tts(tts_calls, b"\x01\x00" * 160),
     )
 
     await start_medication_task(
@@ -333,6 +338,7 @@ async def test_reminder_dispatches_to_bound_device(
     assert "response_id" not in message and "epoch" not in message, (
         "主动触达不属于任何回复流，不带 response_id/epoch（契约 §4.1 可选字段）"
     )
+    assert tts_calls == [message["text"]], "语音合成的就是下发的那句字幕文本"
 
     attempts = await medication_service.list_attempts(session, reminder_id)
     assert attempts[0]["receipt"] == "voice_dispatched"

@@ -311,6 +311,7 @@ def build_tts(settings: Settings | None = None) -> TTSProvider:
         return EdgeTTSProvider(
             voice=config.tts_voice_id or EDGE_DEFAULT_VOICE,
             speed=config.tts_speed,
+            ffmpeg_bin=config.tts_ffmpeg_bin or FFMPEG_BIN,
         )
     if kind == "cloud":
         return CloudTTSProvider(voice=config.tts_voice_id, timeout_ms=config.tts_timeout_ms)

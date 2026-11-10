@@ -1,4 +1,4 @@
-> 状态：进行中（N00 与 S1 数据底座已执行，其余节点待开工）　｜　版本：v3.0　｜　日期：2026-11-09
+> 状态：进行中（N00 与 S1 数据底座已执行，其余节点待开工）　｜　版本：v3.11　｜　日期：2026-11-10
 > 关联：docs/team_tasks/day06/dev-a-历史事件与工具事实.md｜dev-b-状态中心与上下文记忆.md｜dev-c-Agent与统一出口.md｜dev-d-pad送达确认与改绑UI.md
 > 上游依据：PRD line 124（§2.3 三级路由）、line 266-275（FR-DLG-01~10）、line 484-516（AC-03/04/17/30/35）、line 573-574（§6.1 Day6/Day7 验收口径）、line 593（§7 完成定义）｜技术设计文档 line 549（memory_chunks）、line 619（decision_logs）、line 690-701（§3.6 迁移批次）、line 822-869（§6 Agent Loop 与护栏）、line 873-962（§7 子图）、line 1046-1064（§8.3 Day6/Day7 实现口径）
 > 变更记录见文末
@@ -694,6 +694,42 @@ A 侧已加观测：completed 但 delivered 为空 → 日志告警 history_comp
 A 侧不受影响：read_turns(elder_id=None) 按契约返回空，历史层无需改动。
 ```
 
+**⑥ 转 dev-C —— scheduler 接线归属：N10 不移交，另立新卡（2026-11-10 主理人裁决）**
+
+```
+【背景】dev-C 问「scheduler 接线该谁做」。实测结论：
+        app/scheduler/__init__.py 只有 3 行占位注释（自标 Day 7-9），无 jobs.py、无 add_job；
+        build_medication_graph 在 app/** 内零生产调用点（只有定义 + __all__ + tests 8 处）。
+        即：子图本体与回执闭环已就绪，**触达链路缺的是「到点驱动」这一段**。
+
+【裁决】N10 **不移交、不重开**；另立独立卡给 dev-C（卡归 **Day 7**，本条裁决在 Day 7 落地）：
+        任务卡  docs/team_tasks/day07/dev-c2-用药到点触发接线.md
+        交接件  docs/plans/day07/handoff-A-to-C-用药到点接线.md（A→C 接线契约，实现依据）
+        归属    dev-C（接线实施）；dev-A 只出接口契约与只读验收支持，**不改 A 线代码**
+        验收    静态分层 + 单测 8 条 + 手工一次跑通 + 门禁四命令（卡内 §4，判据不与 N10 混用）
+
+【更正一处口径】原提议「按 N10 验收标准（触发→落库→重试≤3→终态→重启恢复）实施」不准确：
+        N10 卡内验收是「子图双入口 + get_state 可读 + 重启恢复 + 同键不重复建单 + 重试≤3 进终态」，
+        **「到点触发」从来不在 N10 卡内**。新卡验收单列，「触发」是新增项而非 N10 复验。
+
+【给你的三条硬约束】
+        1) 写作用域：新增 app/scheduler/medication_jobs.py、app/services/medication_due_service.py、
+           tests/test_scheduler_medication.py；只改 app/main.py 的 lifespan 启停。
+           **禁触** app/graphs/**、app/services/medication_service.py、app/services/work_order_service.py
+           （A 线已收官）、app/models/** 与 alembic/**（无表结构变更）。
+        2) 幂等红线：提醒键 (plan_id, scheduled_at)、触达键 (event_id, attempt_no)、建单走确定性 order_no；
+           图恢复会重放 remind → **先查后发**（get_attempt）；终态只写一次。
+        3) 双驱动先到先得：resume 前必查 aget_state（已有终态或 attempt_no 不符 → 跳过），
+           否则调度侧与对话侧会各推一次 attempt_no，重复播给长者。
+
+【开工前两件事】① **子图工厂签名已变**：现为 build_medication_graph(*, session, checkpointer,
+           deliver_fn=None, tts_fn=None)，第四个参数是 tts_fn(text)->bytes（合成出口），**不是** speak_fn；
+           两个参数都缺省走真实实现，**接线方一个都不用传**——照抄旧签名会直接 TypeError。
+        ② 开放点 O1（AC-20 要求「无回执 → notification_failed」，子图当前统一记 missed_unconfirmed）
+           需主理人裁决：默认不改子图、登记技术债。
+        （另：TD-1 触达语音与 TD-2 played 闭环已由 day07 两张 dev-C 卡收口，commit 6c32846。）
+```
+
 ## 12. 变更记录
 
 | 版本 | 日期 | 说明 |
@@ -701,6 +737,7 @@ A 侧不受影响：read_turns(elder_id=None) 按契约返回空，历史层无�
 | v1.0 | 2026-11-09 | 首版：主理人裁决「Day 6 走讲义主线、含用药子图与工作流恢复、a0 并入、后端 3 + pad 1」；含三处冲突处置（C-1~C-3）、24 节点 DAG、6 道门禁、16 项交付物、14 条自检、5 项待裁决、4 条自裁、10 条风险；容量实测 S=41h / M=65.5h / L=74.5h，明确超单日容量并给出裁减顺序 |
 | v1.1 | 2026-11-09 | 主理人补充约束：分类层**不接入任何第三方商业 Jev API 或其他云端分类服务**，维持本地部署约束。改 C-3 口径、§0.3 新增第 6 条禁区、D-3 补三条硬约束（无商业 API / 不新增依赖 / 降级唯一路径为全量走 L2 并打 `route_layer=fallback`）、新增风险 R11；节点、人时、DAG 结构未变 |
 | v2.3 | 2026-11-09 | **AC-04 裁决落地（走 B）**：新增 C-5 口径与 **N27**（`app/router/safety.py` 最小一票否决，2.0h，dev-C），AC-04 留在 Day 6；同步改 §0.3 第 1 条（rules.py/system_one/decision_logs 仍顺延，safety.py 本日做）、C-1 落地动作、阶段表 S2、交付物 D17、自检 V16、风险 R13；分工 C 19.5→21.5、S/M/L = 50.5/68.5/73.0；safety 与天气 MCP 均不列入裁减 |
+| v3.11 | 2026-11-10 | **scheduler 接线归属裁决（主理人采纳 A 侧建议「不移交 N10、另立新卡」）**：实测 `app/scheduler/` 仅占位注释、`build_medication_graph` 零生产调用点 → §11.4 增转达件⑥；**N10 不移交、不重开**，另立 `docs/team_tasks/day07/dev-c2-用药到点触发接线.md`（归 dev-C，A 只出契约不改代码）+ `docs/plans/day07/handoff-A-to-C-用药到点接线.md`（接线契约）；更正「按 N10 验收标准实施」的口径——**「到点触发」不在 N10 卡内**，新卡验收单列。**节点表 / DAG / 人时结构未变**（25 节点不变，新增的是独立卡，不占主计划节点号） |
 | v3.10 | 2026-11-09 | **A 线收官（A17 通过）**：G-A4 实测 931 passed / 4 skipped / 1 deselected（口径 `-m "not slow"`）、覆盖率 **81.51%**、两个 `--check*` 均 0；§11.2 补 G-A3/G-A4 结论并修正 G-A2 的用例数（12→15）；§11.3 改为「各线状态」，A 线标为全部交付。README 回填 4 处（新增 §7.4 验收记录、覆盖率达实际值、容器 `pytest` 补 `-m`、修正过期进度块） |\n| v3.9 | 2026-11-09 | **A12 完成（WD-1 裁决走 B）**：新增 `app/services/work_order_service.py`（唯一建单口 `open_work_order` / `open_missed_medication` / `transition` / `resolve_primary_care_staff`），子图 `finalize` 在写终态后建漏服单；**幂等改用确定性单号**（`work_orders` 无 `source_type`/`source_id`，漏服填不进 `event_id`，0011 已归 C）；INSERT 包 SAVEPOINT 以避免撤销终态；与 C 的 `safety_service` 两套并存，登记 **WD-1 / WD-2**。A 线 19.5/21.0h，仅剩 A17；测试新增 15 条 + 6 条断言，全量 931 passed |\n| v3.8 | 2026-11-09 | 转达件⑤补「已落地」：A 已在 `companion.py` 落最小可合并版（可选 `identity` 参数 + 回退告警 + 修掉 generic 崩溃 + 4 条用例），并说明与 C 同文件补丁的冲突处置（保留带 `identity` 的版本）；N14 仍需 `identity = result.identity` 下传 |
 | v3.7 | 2026-11-09 | 转达件⑤补「彻底解」：A1 的 `IdentityDecision.source` 四值已备、`identity_decision_to_result()` 已产出 `DialogueIdentity`，N14 直接传身份结论即可，不必在 companion 推断；明确 `runtime`（凭证主体）与 `DialogueIdentity`（身份结论）的分工 |
 | v3.6 | 2026-11-09 | **复核 C 报的 companion generic 缺陷**：确认必崩且 C 的最小修复有效；另指出根因（`DialogueIdentity.elder_id` 无默认值，属 B 的 L8）与更严重的一处（`if runtime.elder_id` 把 staff/guardian 静默判成 generic）；§11.4 增转达件⑤。A 侧历史层无需改动 |
