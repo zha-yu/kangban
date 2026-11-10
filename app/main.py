@@ -29,6 +29,7 @@ from app import __version__
 from app.agents.companion import DEFAULT_TOOLS, CompanionAgent
 from app.agents.guardrails import Guardrails
 from app.agents.session_coordinator import SessionCoordinator
+from app.agents.tool_registry import default_registry
 from app.api import ROUTERS
 from app.api.elders import _is_request_format_error
 from app.api.schemas.auth import ErrorResponse
@@ -54,6 +55,7 @@ from app.core.security import TokenExpiredError
 from app.core.trace import TraceIdMiddleware
 from app.db import session_factory
 from app.mcp_client import MCPClient
+from app.router.decision import Router
 from app.router.safety import SafetyDecision
 from app.services import identity_service, medication_service, voiceprint_service
 from app.services.auth_service import (
@@ -81,6 +83,7 @@ from app.services.turn_service import (
     HistoryEventSink,
     TurnService,
 )
+from app.system_one.client import SystemOneClient
 
 
 class _SessionToolExecutor:
@@ -93,6 +96,9 @@ class _SessionToolExecutor:
       执行器侧再判一次会把同一份预算双计；
     - ToolExecutor 不抛业务异常，仅编程错误上抛 → 原样透传，会话内已 flush
       的行随 rollback 丢弃。
+    - `registry`（Day 7 A3）：**必须传装配层那一个实例**。`default_registry()`
+      每次返回新对象，`bind_dev_c_tools()` 绑的是传入的那个实例——不传就会
+      「工具看着绑了、执行时却是未绑定」，用药确认直接掉进 not_found。
     """
 
     def __init__(
@@ -100,10 +106,13 @@ class _SessionToolExecutor:
         factory: Callable[[], AbstractAsyncContextManager[AsyncSession]],
         *,
         mcp_client: Any | None = None,
+        registry: Any | None = None,
     ) -> None:
         self._factory = factory
         #: N26 最后一环：MCP 工具客户端（weather），透传给每次调用的 ToolExecutor
         self._mcp = mcp_client
+        #: Day 7：装配层唯一的工具注册表（已 bind 过 C1 执行器）
+        self._registry = registry
 
     async def execute(
         self,
@@ -116,7 +125,9 @@ class _SessionToolExecutor:
     ) -> ToolResult:
         async with self._factory() as session:
             try:
-                result = await ToolExecutor(session, mcp_client=self._mcp).execute(
+                result = await ToolExecutor(
+                    session, registry=self._registry, mcp_client=self._mcp
+                ).execute(
                     tool_name=tool_name,
                     args=args,
                     runtime=runtime,
@@ -250,6 +261,146 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await session.commit()
         return True
 
+    # ================== Day 7 A3：三级路由 + 决策日志 + 调度/工具装配 ==================
+    # 本段是**唯一装配点**：C1/C2 只给函数，A3 在前端装配（main.py 由 A3 独占写锁）。
+
+    # ---- D2 工具注册表：一次构造，后续复用（`default_registry()` 每次返回新实例，
+    #      bind 到临时对象上等于没绑，见 `_SessionToolExecutor` docstring） ----
+    tool_registry = default_registry()
+    mcp_client = MCPClient(settings)
+    session_tool_executor = _SessionToolExecutor(
+        session_factory, registry=tool_registry, mcp_client=mcp_client
+    )
+
+    # ---- D2/D3：checkpointer（与调度侧同一 DSN + 同一 schema）+ 绑定 C1 执行器 ----
+    # app_env=test 时跳过：单元测试没有 PG，装配期连库会让「无库也能跑」的用例集体失败。
+    checkpointer_cm = None
+    if settings.app_env.lower() != "test":
+        try:
+            from app.graphs.checkpointer import medication_checkpointer
+
+            checkpointer_cm = medication_checkpointer(
+                dsn=settings.langgraph_checkpoint_database_url,
+                schema=settings.langgraph_checkpoint_schema,
+            )
+            checkpointer = await checkpointer_cm.__aenter__()
+            from app.agents.bind_tools import bind_dev_c_tools
+
+            bind_dev_c_tools(
+                tool_registry, session_factory=session_factory, checkpointer=checkpointer
+            )
+        except Exception as exc:
+            # 工具绑定/checkpointer 不可用不阻塞对话：用药确认由 Agent 的 not_found 话术兜住
+            logger.error(
+                "dev_c_tools_bind_failed",
+                extra={"error_type": type(exc).__name__, "detail": str(exc)[:200]},
+            )
+            checkpointer_cm = None
+
+    # ---- D1 调度装配（C2 交付，五参数）：install_scheduler 用 @app.on_event 注册启动钩子，
+    #      而本应用有自定义 lifespan（Starlette 在自定义 lifespan 下**不会**执行 on_event
+    #      钩子），所以这里在装配后把新增的钩子取出来，在 lifespan 内显式驱动一次。 ----
+    scheduler_startup: list[Any] = []
+    scheduler_shutdown: list[Any] = []
+    if settings.app_env.lower() != "test":
+        try:
+            from app.scheduler.medication_jobs import install_scheduler
+
+            _start_before = len(app.router.on_startup)
+            _stop_before = len(app.router.on_shutdown)
+            install_scheduler(
+                app,
+                session_factory=session_factory,
+                checkpointer_dsn=settings.langgraph_checkpoint_database_url,
+                checkpointer_schema=settings.langgraph_checkpoint_schema,
+                timezone_name=settings.scheduler_timezone,
+            )
+            scheduler_startup = list(app.router.on_startup[_start_before:])
+            scheduler_shutdown = list(app.router.on_shutdown[_stop_before:])
+            for _handler in scheduler_startup:
+                await _handler()
+            logger.info("medication_scheduler_installed handlers=%d", len(scheduler_startup))
+        except Exception as exc:
+            logger.error(
+                "medication_scheduler_install_failed",
+                extra={"error_type": type(exc).__name__, "detail": str(exc)[:200]},
+            )
+            scheduler_startup, scheduler_shutdown = [], []
+
+    # ---- G1 升级口：分类器只给「疑似敏感」，不给急症类别 ----
+    # `escalate_safety_event()` 要求 category ∈ {chest_pain, breathing, fall, stroke, self_harm}
+    # 才能建红色事件+工单（见 safety_service._ORDER_TYPE_BY_CATEGORY）。分类器给不出这个分类，
+    # 在 Router 里编一个就等于伪造病历 → 本口只落 audit_logs + 告警日志，不建红色事件。
+    # 待办（已登记）：要真正建单，需 C 线给出「疑似急症」的类别口径（J4/J6 联调项）。
+    async def _escalate_system_one_signal(
+        *,
+        elder_id: str | None,
+        thread_id: str,
+        probability: float | None,
+        reason: str,
+    ) -> bool:
+        logger.warning(
+            "system_one_sensitive_signal",
+            extra={
+                "trace_id": get_trace_id() or "-",
+                "thread_id": thread_id,
+                "elder_id": elder_id,
+                "probability": probability,
+                "reason": reason,
+            },
+        )
+        if elder_id is None:
+            return False
+        try:
+            from app.services.audit_log_service import record_audit
+
+            async with session_factory() as session:
+                await record_audit(
+                    session,
+                    actor_type="system",
+                    actor_id=None,
+                    action="system_one_sensitive_signal",
+                    resource_type="conversation_thread",
+                    resource_id=None,
+                    detail={
+                        "thread_id": thread_id,
+                        "sensitive_probability": probability,
+                        "reason": reason,
+                        "model_version": settings.system_one_model_version,
+                    },
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.error(
+                "system_one_signal_audit_failed",
+                extra={"thread_id": thread_id, "error_type": type(exc).__name__},
+            )
+            return False
+        return True
+
+    async def _was_clarified(thread_id: str) -> bool:
+        """同 thread_id 上一轮是否已澄清（低置信且未升级 → 是）。失败按「未澄清」保守处理。"""
+        from app.services.decision_log_service import was_clarified as _wc
+
+        async with session_factory() as session:
+            return await _wc(
+                session,
+                thread_id,
+                confidence_threshold=settings.system_one_confidence_threshold,
+            )
+
+    # ---- L2 客户端 + Router（规则 → System One → Agent） ----
+    system_one_client = SystemOneClient(settings)
+    router = Router(
+        system_one=system_one_client,
+        escalate=_escalate_system_one_signal,
+        was_clarified=_was_clarified,
+        # 直连工具与 Agent 共用**同一个**执行器实例（G2：同一工具不得有两套实现）
+        tool_executor_factory=lambda: session_tool_executor,
+        confidence_threshold=settings.system_one_confidence_threshold,
+        enabled=settings.system_one_enabled,
+    )
+
     # ---------- Day 6 S3 对齐：N14 统一出口真身装配（N05 真状态中心 + N06 真构建器） ----------
     # N05：真 StateCenter（Redis 存储 + Lua CAS；构造不持锁，Redis 不可用时读写自动
     # 降级进程内存——闲聊可用性优先）→ SessionCoordinator 按 thread 串行化提交 →
@@ -266,12 +417,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         llm=llm_service,
         # AGENTS §7 硬性数值：单轮 ≤8 次工具调用；同一 Tool 1 分钟内第 3 次熔断
         guardrails=Guardrails(max_tool_calls=8, repeat_window_s=60, repeat_threshold=3),
-        tool_executor=_SessionToolExecutor(
-            session_factory,
-            # N26 收口：weather MCP 客户端进执行器（懒连接，server 未起时按
-            # mcp_client 四分类降级「查不到」，不阻塞启动）
-            mcp_client=MCPClient(settings),
-        ),
+        # N26 收口：weather MCP 客户端进执行器（懒连接，server 未起时按
+        # mcp_client 四分类降级「查不到」，不阻塞启动）
+        tool_executor=session_tool_executor,
         # N26 装配收口：把工具清单注册进 ReAct 协议（缺省 () 时模型根本不知道
         # 有 get_weather 可用，天气问题只能靠常识编答 → 实时天气不可用）
         tools=DEFAULT_TOOLS,
@@ -291,6 +439,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             coordinator=coordinator, state_center=state_center
         ),
         context_builder=ContextBuilder(),
+        # Day 7 A3：三级路由 + 决策日志版本位（rule 行会再拼 ruleset:r1）
+        router=router,
+        model_version=settings.system_one_model_version,
+        confidence_threshold=settings.system_one_confidence_threshold,
     )
 
     orchestrator = DialogueOrchestrator(
@@ -576,6 +728,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.dialogue_orchestrator = orchestrator
     app.state.turn_service = turn_service  # Day 6 S3 对齐：N14 统一出口真身（检视/联调用）
 
+    # ---- System One 预热：只确认 sidecar 可达；不可达只打日志（路由走 fallback，不阻塞启动） ----
+    if settings.system_one_warmup and settings.system_one_enabled:
+        warm = await system_one_client.decide_fast("今天天气怎么样", trace_id=get_trace_id())
+        logger.info(
+            "system_one_warmup",
+            extra={"degraded": warm.degraded, "intent": warm.intent, "provider": "sidecar"},
+        )
+
     logger.info("application starting", extra={"app_env": settings.app_env})
     try:
         yield
@@ -585,6 +745,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         signaling.set_identity_timeout_handler(None)
         signaling.set_segment_ack_handler(None)
         signaling.set_touch_played_handler(None)
+        # Day 7 A3：调度器停机（与启动成对；shutdown 失败只记日志）
+        for _handler in reversed(scheduler_shutdown):
+            try:
+                await _handler()
+            except Exception as exc:
+                logger.warning(
+                    "medication_scheduler_shutdown_failed",
+                    extra={"error_type": type(exc).__name__},
+                )
+        if checkpointer_cm is not None:
+            try:
+                await checkpointer_cm.__aexit__(None, None, None)
+            except Exception as exc:
+                logger.warning(
+                    "checkpointer_close_failed", extra={"error_type": type(exc).__name__}
+                )
+        await system_one_client.aclose()
         # Day 5：metrics 批量缓冲冲刷（裁决 B6/D2）——先停 worker 再 drain，避免丢批
         await get_metrics_recorder().stop()
         await llm_service.aclose()

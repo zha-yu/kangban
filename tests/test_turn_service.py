@@ -610,11 +610,13 @@ async def test_event_flow_ordered_and_monotonic(
     assert handle.response_id == outcome.response_id  # 第 5 步与第 7 步同一枚 response_id
 
     # DB 事件流水：顺序即契约
+    # P2-10（dev-B J2 patch，2026-11-10）：`response_completed` 的唯一写口改到响应层
+    # 终态结算（末段 played / interrupt 时按同一 response_id 写）。统一出口第 5 步只发号，
+    # 不再写库——否则谁先写谁定 `response_status`，打断后终态就永远是 `playing`。
     events = await _read_events(turn_db, seeded["thread_id"])
     assert [e.event_type for e in events] == [
         "turn_started",
         "asr_final_committed",
-        "response_completed",
     ]
     seqs = [e.seq for e in events]
     assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)  # seq 单调且无重号

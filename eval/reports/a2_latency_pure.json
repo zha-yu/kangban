@@ -1,0 +1,23 @@
+{
+  "env": {
+    "platform": "Windows-11-10.0.26300-SP0",
+    "python": "3.12.16",
+    "cpu_logical": 16,
+    "base_url": "http://127.0.0.1:7001",
+    "client_timeout_ms": 200,
+    "shadow_timeout_ms": 400,
+    "model_version": "laya:multilingual:dev",
+    "provider": "laya"
+  },
+  "results": [
+    {
+      "ok": false,
+      "mode": "pure",
+      "load_ms": 36676.1,
+      "samples": 10,
+      "p50_ms": 183.0,
+      "p95_ms": 340.5,
+      "max_ms": 340.5
+    }
+  ]
+}
