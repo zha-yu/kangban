@@ -17,6 +17,9 @@ interface MedicationCardProps {
   onExit: () => void;
   onRendered?: () => void;
   onSubtitle?: (text: string) => void;
+  /** Day 7 L6#8：按钮确认上行（「已服用」→「吃过了」/「这次不吃」→「不吃」，
+   *  均为后端用药确认词表内口语，经 user_text 按 ASR FINAL 同路进编排）。 */
+  onAnswer?: (text: string) => void;
 }
 
 function Info({ label, value }: { label: string; value: string }) {
@@ -33,6 +36,7 @@ export function MedicationCard({
   onExit,
   onRendered,
   onSubtitle,
+  onAnswer,
 }: MedicationCardProps) {
   const [state, setState] = useState<MedState>("pending");
   const [remaining, setRemaining] = useState(data.windowSeconds);
@@ -68,11 +72,13 @@ export function MedicationCard({
   function handleTaken() {
     setState("taken");
     setUndoLeft(10);
+    onAnswer?.("吃过了"); // 词表内口语（_TAKEN_WORDS），经 user_text 进编排
     onSubtitle?.("好的，已记下您说吃过药了");
   }
 
   function handleRefused() {
     setState("refused");
+    onAnswer?.("不吃"); // 词表内口语（_REFUSED_WORDS）
     onSubtitle?.("好的，这次先不吃，我会告诉护工");
   }
 

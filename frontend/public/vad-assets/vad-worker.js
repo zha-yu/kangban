@@ -24,9 +24,10 @@
 "use strict";
 
 const WINDOW_SIZE = 256;
-/** Day 7 D1 关 P1-4（主理人裁决 J-D1，2026-11-10）：threshold 0.6→0.38 放宽收音
- *  灵敏度。0.38 为先设值，20 句近/远场样本标定登记为遗留项待真人复测。 */
-const VAD_THRESHOLD = 0.38;
+/** Day 7 D1 关 P1-4：threshold 常量化。0.38 为先设值（裁决 J-D1，2026-11-10）；
+ *  同日主理人真机复测后调整为 0.45（取代 J-D1 的 0.38——0.38 灵敏度过高易误触发，
+ *  0.60 偏保守漏收音）。20 句近/远场样本标定仍登记为遗留项待真人复测。 */
+const VAD_THRESHOLD = 0.45;
 /** Day 7 D1 心跳遥测：120s 零 speechstart 上报一次，便于现场收音复测 */
 const NO_SPEECH_HEARTBEAT_MS = 120_000;
 

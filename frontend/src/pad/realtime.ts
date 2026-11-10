@@ -27,6 +27,7 @@ import type {
   IdentityResultMsg,
   InterruptMsg,
   ServerSignal,
+  TaskCommandMsg,
   TtsTextMsg,
 } from "./protocol";
 import { nextDegradeLevel, type DegradeLevel } from "./degrade";
@@ -49,6 +50,8 @@ export interface RealtimeCallbacks {
   onIdentityAsk: (msg: IdentityAskMsg) => void;
   /** C5：身份定案（voice/confirm/generic）；generic 时 elder_id 为 null */
   onIdentityResult: (msg: IdentityResultMsg) => void;
+  /** Day 7 L6#9：主动触达任务卡片命令 → 上层 emitPadTask 打开面板 */
+  onTaskCommand: (msg: TaskCommandMsg) => void;
   /** TTS 下行播放元素（登录点击后已有用户手势，autoplay 可用） */
   audioEl: HTMLAudioElement;
 }
@@ -130,6 +133,13 @@ export class RealtimeClient {
         ? { type: "client_diag", stage, ok, error }
         : { type: "client_diag", stage, ok, error, duration_ms: durationMs };
     this.socket?.send(msg);
+  }
+
+  /** Day 7 L6#8：文本上行（任务卡片确认按钮/输入框降级）。
+   *  服务端按 ASR FINAL 同路编排；会话未就绪时静默丢弃（按钮是尽力而为上行）。 */
+  sendUserText(text: string): void {
+    if (!this.socketReady) return;
+    this.socket?.send({ type: "user_text", text });
   }
 
   async stop(): Promise<void> {
@@ -233,6 +243,10 @@ export class RealtimeClient {
         // 状态从「正在想」拉回「在听」，由上层提示长者再讲一遍
         this.cb.onStatus("listening");
         this.cb.onIdentityResult(msg);
+        break;
+      case "task_command":
+        // Day 7 L6#9：主动触达卡片命令 → 上层任务总线（幂等由 App 按 taskId 处理）
+        this.cb.onTaskCommand(msg);
         break;
     }
   }

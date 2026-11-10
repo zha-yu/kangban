@@ -107,13 +107,16 @@
 - 根因实证：**`app/scheduler/` 仅有空 `__init__.py`，无任何任务注册（C2 未实现）**；`medication_attempts` 0 行（触达链路未启动）。
 - 顺带观察：pad 在线期间字幕出现「我这会儿听不太清，请稍后再说一遍。」——对话降级话术链路活着（环境音触发 speech→asr 识别失败路径），触达与回复并发的观察因触达缺失无法进行。
 
-### L3 · played 闭环 —— 阻塞（依赖 L2 触达）
+### L3 · played 闭环 —— PASS（2026-11-10 11:18 复跑）
 
-依赖 C2 产生触达，无法执行。复跑口径（C2 就绪后）：
+L6#6 修复（`graph_session.commit()`，主理人授权「图运行后调用处提交」）提交并重启后端后复跑：
 
-- 触达音频自然播完后核对：`SELECT attempt_no, receipt, tts_result FROM medication_attempts ORDER BY sent_at DESC LIMIT 4;`
-- **勘误**：§6 L3 手册原 SQL 写 `ORDER BY created_at DESC`，实际表列名为 `sent_at`（`medication_attempts` 无 created_at 列），以本行 SQL 为准。
-- 边界三验口径不变：播完前打断/关页不产生 played；重连回放幂等；无 audio 降级触达只出字幕不回执。
+- 调度链路每分钟真实建事件，状态从恒 `calling` 推进到 `waiting_confirm`；resume 链按 T0/+5/+10/+15 分钟四时点打出 attempt 1–4（SQL 实证：11:00/11:05/11:10 事件分别于 11:15:00–04 打出 4/3/2 次触达，间隔合规）。
+- `medication_attempts` 真实落库，修复前 0 行 → 复跑后逐分钟递增；离线期 receipt=`device_offline`，未被回执洗白。
+- **TD-2 核心证据（11:18:01）**：pad 上线后触达音频自然播完 → `touch_played` → `receipt` 由 `voice_dispatched` 升级为 **`played`**，`tts_result=ok`：
+  `SELECT a.attempt_no, a.receipt, a.tts_result, a.sent_at, e.scheduled_at FROM medication_attempts a JOIN medication_events e ON e.reminder_id=a.event_id ORDER BY a.sent_at DESC;`
+- **边界三验 PASS（11:18–11:20，基线差集法）**：①被打断/关页的 5 条触达保持 `voice_dispatched` 不升级（`played` 计数 48→49 严格 +1，仅对应自然播完）；②3 条自然播完各升级一次；③`played` 按 `(event_id, attempt_no)` 零重复组，重复回执幂等无报错。**TD-2 收口**。
+- 勘误保留：§6 L3 手册原 SQL 写 `ORDER BY created_at DESC`，实际列名为 `sent_at`，以本记录为准。
 
 ### L4 · TTS 降级与并发 —— 阻塞（依赖 L2 触达 + 真机语音）
 
@@ -128,8 +131,10 @@ sidecar 7001 未起（A2）、需真实语音输入、`decision_logs` 降级行�
 | # | 现象 | trace_id | 归属 | 处置 |
 | --- | --- | --- | --- | --- |
 | 1 | sidecar 7001 未响应 | — | dev-A（A2 System One） | 催办；L1 已跳过登记 |
-| 2 | 到点药单无触达（scheduler 无任务注册） | — | dev-C（C2 调度接线） | 催办；药单已备好，C2 就绪后复跑 L2→L3 |
+| 2 | 到点药单无触达（scheduler 无任务注册） | — | dev-C（C2 调度接线） | 催办；药单已备好，C2 就绪后复跑 L2→L3；**更新（15:15）**：medication_jobs.py 已交付（install_scheduler 待装配），复跑待装配完成 |
 | 3 | §6 L3 手册 SQL 列名勘误（created_at→sent_at） | — | 本计划 | 以本记录 L3 为准，主理人决定是否修订计划 |
 | 4 | 触达/路由步骤的真机语音项 | — | 联调环境 | R4 口径登记补测，与 D1 待补清单合并 |
+| 5 | 真机补测时 pad 页面卡「正在听」+ Network sherpa wasm GET 连发几十次（每次 ~0.1kB/200） | — | 联调环境（dev 扰动，非前端缺陷） | 根因：dev-C 写码期间 `uvicorn --reload` 反复重启后端 → pad WS 重连风暴 → 每次 auth_ok 重跑 setupSession 重新编译 12MB VAD wasm → CPU 卡死。前端 teardown 已 `vad.free()`（realtime.ts L396），无 worker 泄漏；干净环境 agent 实测 VAD ready 正常（console：`WASM does not support multi-threading. Changing num_threads from 2 to 1`）、各资源仅 1 次请求。处置：关卡死 tab 重开即可；**韧性改进候选（P3，登记不阻塞）**：重连风暴下 setupSession 的 VAD load 去抖/复用已编译实例 |
+| 6 | **TD-1 落库闭环断裂（P1 缺陷）**：C2 合入后调度链路真实跑通（tick→create_event→build_graph→start，pad 上线后 ~30s 收到触达卡片+字幕+TTS「到吃药时间了，请确认联调测试-到点触达片是否已经服用。」），但 `medication_attempts` **0 行**、`medication_events.status` 恒 `calling` 不推进 | scheduler tick 触发链 | dev-C（图/调度会话管理裁决） | 根因：commit 链断裂——`medication_service.record_attempt` 只 `begin_nested+flush` 不 commit（调用方提交规范）；图节点（remind 等）全文无 commit；`medication_jobs.py` 铁律「scheduler 绝不写库」连 `graph_session` 的 commit 也不做，`async with` 退出即 rollback。投递/TTS 是内存动作已发生但触达记录丢失。连锁：① `get_attempt` 恒 None → 重放防护失效，服务重启后图恢复会**重复播报**；② 事件状态不推进 → `+5/+10/+15` resume 链失效；③ L3 played 回执、TD-2 无法验证。修复方向需裁决（图运行后由调用处提交事务 vs 节点内 service 写后提交），本卡不越权改后端，登记待修；复跑 L3/TD-2 待修复后进行。**更新（当日晚）**：主理人授权按「图运行后调用处提交」修复——`medication_jobs.py` 在 start/resume 后各加一次 `graph_session.commit()`（会话管理豁免，铁律 grep 口径同步调整）；附带裁决 L6#9 卡片双发、AC-20 建单口径扩到 `notification_failed`（两种终态都建漏服单）；`tests/test_medication_graph.py` 两个失败用例已按 AC-20/卡片口径修正，**15 passed** + ruff 全绿；复跑 L3/TD-2 待提交并重启后端后进行 |
 
 前端本卡（dev-D）范围内：L1–L6 未发现前端缺陷，无待修项。G5 门禁证据链现状：L1 SQL/服务证据齐；L2 阻塞证据（表结构 + 空表 + 源码实证）齐；L3–L5 待依赖就绪后复跑补齐。
