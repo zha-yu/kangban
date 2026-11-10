@@ -80,11 +80,13 @@
 
 以下需真实语音/真机环境，浏览器自动化无法覆盖：
 
-1. 真实语音 20 轮全链路（ASR→TTS WS 分段→pad 上报 ack）：模拟回归已覆盖前端 ack 逻辑，语音输入侧待真机。
-2. 打断实测：开口后 ≤200ms 静音 + WS 抓包确认 `interrupt` 上行帧（前端半边已实现，字段按 §5.4 草案，A1 契约冻结后校对）。
-3. 重连 3 次 `devicechange` listener 不累积（DevTools `getEventListeners` 核验）。
-4. VAD 注入 `acceptWaveform` 异常 → 下一帧仍产出 speech 事件 + `vad_runtime_error` diag（DevTools 断点改写验证）。
+1. ~~重连 3 次 `devicechange` listener 不累积~~ —— **已完成（2026-11-10 补测，无语音项）**：harness 同源 iframe 内 patch `EventTarget.prototype` 计数，驱动 pad 3 轮「登录→呼叫小伴→退出登录」，实得 adds=6 / removes=6 / 泄漏净值=0（每轮会话内 dev StrictMode 双注册 2 次，退出即全部解绑），**三轮不累积，P2-23 修复生效**。
+2. ~~VAD 注入 `acceptWaveform` 异常 → 自愈 + `vad_runtime_error` diag~~ —— **已完成（worker 级，无语音项）**：注入版 worker（同源静态文件，Blob URL 因 emscripten 相对路径 importScripts 不可用）两轮注入异常均各上报 1 条 `runtime_error`（管道未砖死，第二次注入仍能触达 `feedWindow`）；解除注入后无残余异常。白噪声合成音频触发 speech_start=是，说话态 reset 补发 speech_end=是（**P3-37 生效**）。应用内 `onRuntimeError → sendDiag("vad")` 胶水层为代码走查覆盖，WS 抓包级证据并入第 3 项。
+3. 真实语音 20 轮全链路（ASR→TTS WS 分段→pad 上报 ack）：模拟回归已覆盖前端 ack 逻辑，语音输入侧待真机。
+4. 打断实测：开口后 ≤200ms 静音 + WS 抓包确认 `interrupt` 上行帧（前端半边已实现，字段按 §5.4 草案，A1 契约冻结后校对）。
 5. threshold 0.38 收音效果 20 句近/远场标定（J-D1 遗留，真人复测）。
+
+> 补测方法留档：harness 为 dev-only 临时页（`frontend/dev/reconnect-harness.html` + `frontend/public/vad-assets/vad-worker-harness.js`），验证后已删除，不在仓库留痕。
 
 ---
 
