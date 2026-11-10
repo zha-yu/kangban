@@ -51,6 +51,7 @@ from app.core.context import (
 )
 from app.core.metrics import Stopwatch, record_stage
 from app.core.runtime_context import Identity
+from app.router.medical_refusal import MEDICAL_REFUSAL_TEXT, medical_refusal_check
 from app.router.safety import SEVERITY_RED, SafetyDecision, safety_check
 from app.services.llm_service import LLMService
 
@@ -584,6 +585,24 @@ class DialogueOrchestrator:
                         device_id=device_id,
                         turn_id=turn_id,
                         trace_id=trace_id,
+                    )
+
+                # ---------- L0.5 医疗拒答拦截（Day 7 C3；safety_check 之后、Agent 之前） ----------
+                # 不属于急症红色，但命中医疗诊断/药理/通用建议关键词 → 固定话术短路，不进 Agent
+                refusal = medical_refusal_check(final_text)
+                if refusal.is_refused:
+                    logger.info(
+                        "medical_refusal_hit reason=%s keyword=%s trace_id=%s thread_id=%s",
+                        refusal.reason,
+                        refusal.matched_keyword,
+                        trace_id,
+                        thread_id,
+                    )
+                    return DialogueReply(
+                        text=MEDICAL_REFUSAL_TEXT,
+                        degraded=False,
+                        escalated_to_agent=False,
+                        response_id=None,
                     )
 
                 persona: PersonaContext | None = None

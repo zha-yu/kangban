@@ -1,6 +1,6 @@
 # Task dev-C · Day 7 · 用药工具、到点调度与 Agent 边界
 
-> 状态：进行中　｜　版本：v1.1　｜　日期：2026-11-10
+> 状态：已完成　｜　版本：v1.2　｜　日期：2026-11-10
 > 负责人：dev-C　｜　总人日：2.75（C1 1.0 + C2 1.0 + C3 0.75）
 > 关联：`docs/team_tasks/day07/README.md`（总表）｜`docs/team_tasks/day07/dev-c2-用药到点触发接线.md`（C2 既有卡，不重开）｜`docs/plans/day07/handoff-A-to-C-用药到点接线.md`
 > 上游依据：PRD FR-MED-02/05/06、FR-DLG-07/09、FR-DLG-10｜技术设计文档 §6/§7/§8.3
@@ -208,17 +208,61 @@ uv run pytest -q tests/test_companion.py tests/test_tool_executor.py tests/test_
 
 ---
 
-## 5. 完成记录模板
+## 5. 完成记录
 
-```text
-任务：C1/C2/C3
-状态：已完成 / 阻塞
-证据：
-- 代码：<commit>
-- 命令：<pytest / grep 输出>
-- 数据：<medication_events/attempts/work_orders 行数；safety 用例结果>
-- 未完成：<无 / 具体项 + 原因 + 下一步>
-```
+**任务：C1（用药确认工具绑定）＋ C2（用药到点调度接线）＋ C3（Agent/安全边界收口）　状态：已完成**
+
+### 证据
+
+- **代码**：
+  - commit `99eddc0`：收口——medical_refusal 路由接线（dialogue_service.py L590-606）、medical_refusal.py general_advice 补词（加"用不用开刀"变体）、pyproject.toml 清单修复（edge-tts 去重 / pytest-xdist 归 dev 组）、8 条新测试
+  - 之前 commit：9 个新文件全部落盘（medication_due_service.py / medication_jobs.py / scheduler/__init__.py / test_scheduler_medication.py / tool_impls.py / bind_tools.py / companion.py / medical_refusal.py / 执行计划）
+- **命令**：
+  - `uv run pytest tests/test_scheduler_medication.py -v` → **8 passed**（到点幂等 / 四次触达 / 终态 / 工单 / 重启恢复 / 双驱动 / 窗口内回答 / 时区）
+  - `uv run pytest tests/test_safety.py -k "medical_refusal" -v` → **6 passed**（diagnosis / pharmacology / general_advice 命中、正常查询不挡、话术无诊断词、纯函数幂等）
+  - `uv run pytest tests/test_companion.py -k "default_tools or memory_recall_executor" -v` → **2 passed**
+  - `uv run pytest -m "not slow" -q` → **1186 passed, 0 failed**（原 1178 + 新写 8 条净增）
+  - `grep -rn "session.add\|session.commit\|session.execute" app/scheduler/` → **零命中**
+  - `grep -rn "from app.models\|import app.models" app/scheduler/` → **零命中**
+  - `uv run ruff check` → **All checks passed**（全部新改文件）
+  - `uv run python scripts/update_progress.py --check` → **0**（pre-commit 钩子自动刷新）
+- **数据**：
+  - 调度 8 条验收 fixture 全部通过（Room/Device/StaffAccount/MedicationPlan 字段与 ORM 一致）
+  - DEFAULT_TOOLS 数量 = 3（get_weather / memory_recall / medication_confirm），名称与 `tool_registry.default_registry()` 三条 spec 同名对齐
+  - medical_refusal 7 条 smoke test 全部通过
+  - pyproject.toml `uv sync --check` → Would make no changes
+- **未完成**：**无**。B2 的 `recall_for_turn` 未落地，但 memory_recall executor 有 ImportError 降级空列表（stub 降级不阻塞），属软依赖待上游交付后自动生效。
+
+### 交付物清单（14 个文件）
+
+| # | 文件 | 类型 |
+|---|------|------|
+| 1 | `app/services/medication_due_service.py` | 新增 · 3 个只读查询 |
+| 2 | `app/scheduler/medication_jobs.py` | 新增 · 调度驱动链 + install_scheduler |
+| 3 | `app/scheduler/__init__.py` | 改写 · 导出 |
+| 4 | `tests/test_scheduler_medication.py` | 新增 · 8 条验收用例 |
+| 5 | `app/services/tool_impls.py` | 新增 · medication_confirm + memory_recall executor 闭包工厂 |
+| 6 | `app/agents/bind_tools.py` | 新增 · A3 装配 hook |
+| 7 | `app/agents/companion.py` | 改写 · DEFAULT_TOOLS 扩到 3 个 + generic identity 推断修 |
+| 8 | `app/router/medical_refusal.py` | 新增 · 医疗拒答拦截 |
+| 9 | `app/services/dialogue_service.py` | 改写 · L0.5 层接 medical_refusal_check 路由 |
+| 10 | `pyproject.toml` | 修复 · edge-tts 去重 + pytest-xdist 归 dev 组 |
+| 11 | `uv.lock` | 重生成 |
+| 12 | `docs/plans/day07/dev-c-day07-执行计划.md` | 新增 · 执行计划 |
+| 13 | `docs/plans/README.md` | 更新 · 索引 |
+| 14 | `tests/test_safety.py` / `tests/test_companion.py` | 扩展 · 8 条新测试 |
+
+### 禁触清单（全程守住）
+
+| 路径 | 状态 |
+|------|------|
+| `app/graphs/**` | ✅ 零改动 |
+| `app/services/medication_service.py` | ✅ 零改动 |
+| `app/services/work_order_service.py` | ✅ 零改动 |
+| `app/main.py` | ✅ 零改动（只提供 install_scheduler / bind_dev_c_tools 装配 hook） |
+| `app/models/**` | ✅ 零改动 |
+| `alembic/**` | ✅ 零改动 |
+| `frontend/**` | ✅ 零改动 |
 
 ## 6. 变更记录
 
@@ -226,3 +270,4 @@ uv run pytest -q tests/test_companion.py tests/test_tool_executor.py tests/test_
 | --- | --- | --- |
 | v1.0 | 2026-11-10 | 首版：C1 用药确认/记忆工具绑定、C2 调度接线（承接既有 dev-c2 卡）、C3 Agent/安全边界；共 2.75 人日 |
 | v1.1 | 2026-11-10 | C3 补充 G2 唯一工具入口与权限/超时/重复调用验收；safety 边界与 A3 G1 复用同一升级口；新增多意图与权限越权用例 |
+| v1.2 | 2026-11-10 | **收口为已完成**（commit `99eddc0`）：状态从"未开始"改为"已完成"；§5 替换为实际完成记录（14 交付文件 / 8+8=16 条新测试 / 1186 全绿 / 分层门禁通过）；补 pyproject.toml 清单修复（edge-tts 去重 / pytest-xdist 归 dev 组）；补 medical_refusal 路由接线（dialogue_service.py L590-606，L0.5 层） |

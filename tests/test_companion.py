@@ -401,3 +401,48 @@ async def test_plain_text_reply_without_tools() -> None:
     assert llm.calls[0][-1]["role"] == "user"
     assert llm.calls[0][-1]["content"] == "陪我聊聊天"
     assert any("get_weather" in message["content"] for message in llm.calls[0])
+
+
+def test_default_tools_has_three_entries() -> None:
+    """Day 7 C1：DEFAULT_TOOLS 从 1 个扩到 3 个——与 tool_registry.default_registry() 三条 spec 同名对齐。
+
+    companion.py 的 ToolSpec 只有 name + description（给 LLM 看 ReAct prompt）；
+    tool_registry 那套有完整 schema + executor（给执行器用）。两边**同名**，不同步。
+    """
+    from app.agents.companion import DEFAULT_TOOLS
+    from app.agents.tool_registry import default_registry
+
+    # 数量：weather + memory_recall + medication_confirm
+    assert len(DEFAULT_TOOLS) == 3, f"DEFAULT_TOOLS count={len(DEFAULT_TOOLS)}, expect 3"
+
+    # 名称：三条工具都在
+    default_names = {t.name for t in DEFAULT_TOOLS}
+    assert default_names == {"get_weather", "memory_recall", "medication_confirm"}, default_names
+
+    # 与 tool_registry.default_registry() 的 spec 同名对齐
+    registry_names = set(default_registry().names)
+    assert default_names == registry_names, (
+        f"companion DEFAULT_TOOLS names mismatch registry: {default_names} vs {registry_names}"
+    )
+
+
+def test_memory_recall_executor_factory_returns_callable() -> None:
+    """Day 7 C1：make_memory_recall_executor 工厂返回值是 callable。
+
+    实际调用需要正确的 async_sessionmaker 实例（且 B2 recall_for_turn 没合进来）——
+    那个路径已被 tool_impls.py 里的 ImportError 降级覆盖（代码审查可见）。
+    本测试只验证工厂构造不崩、返回 callable。
+    """
+    from contextlib import asynccontextmanager
+
+    from app.services.tool_impls import make_memory_recall_executor
+
+    class _FakeSession:
+        pass
+
+    @asynccontextmanager
+    async def _session_factory():
+        yield _FakeSession()
+
+    fn = make_memory_recall_executor(session_factory=_session_factory)
+    assert callable(fn), "factory should return a callable executor"
