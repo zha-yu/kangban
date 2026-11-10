@@ -134,7 +134,41 @@ sidecar 7001 未起（A2）、需真实语音输入、`decision_logs` 降级行�
 | 2 | 到点药单无触达（scheduler 无任务注册） | — | dev-C（C2 调度接线） | 催办；药单已备好，C2 就绪后复跑 L2→L3；**更新（15:15）**：medication_jobs.py 已交付（install_scheduler 待装配），复跑待装配完成 |
 | 3 | §6 L3 手册 SQL 列名勘误（created_at→sent_at） | — | 本计划 | 以本记录 L3 为准，主理人决定是否修订计划 |
 | 4 | 触达/路由步骤的真机语音项 | — | 联调环境 | R4 口径登记补测，与 D1 待补清单合并 |
-| 5 | 真机补测时 pad 页面卡「正在听」+ Network sherpa wasm GET 连发几十次（每次 ~0.1kB/200） | — | 联调环境（dev 扰动，非前端缺陷） | 根因：dev-C 写码期间 `uvicorn --reload` 反复重启后端 → pad WS 重连风暴 → 每次 auth_ok 重跑 setupSession 重新编译 12MB VAD wasm → CPU 卡死。前端 teardown 已 `vad.free()`（realtime.ts L396），无 worker 泄漏；干净环境 agent 实测 VAD ready 正常（console：`WASM does not support multi-threading. Changing num_threads from 2 to 1`）、各资源仅 1 次请求。处置：关卡死 tab 重开即可；**韧性改进候选（P3，登记不阻塞）**：重连风暴下 setupSession 的 VAD load 去抖/复用已编译实例 |
-| 6 | **TD-1 落库闭环断裂（P1 缺陷）**：C2 合入后调度链路真实跑通（tick→create_event→build_graph→start，pad 上线后 ~30s 收到触达卡片+字幕+TTS「到吃药时间了，请确认联调测试-到点触达片是否已经服用。」），但 `medication_attempts` **0 行**、`medication_events.status` 恒 `calling` 不推进 | scheduler tick 触发链 | dev-C（图/调度会话管理裁决） | 根因：commit 链断裂——`medication_service.record_attempt` 只 `begin_nested+flush` 不 commit（调用方提交规范）；图节点（remind 等）全文无 commit；`medication_jobs.py` 铁律「scheduler 绝不写库」连 `graph_session` 的 commit 也不做，`async with` 退出即 rollback。投递/TTS 是内存动作已发生但触达记录丢失。连锁：① `get_attempt` 恒 None → 重放防护失效，服务重启后图恢复会**重复播报**；② 事件状态不推进 → `+5/+10/+15` resume 链失效；③ L3 played 回执、TD-2 无法验证。修复方向需裁决（图运行后由调用处提交事务 vs 节点内 service 写后提交），本卡不越权改后端，登记待修；复跑 L3/TD-2 待修复后进行。**更新（当日晚）**：主理人授权按「图运行后调用处提交」修复——`medication_jobs.py` 在 start/resume 后各加一次 `graph_session.commit()`（会话管理豁免，铁律 grep 口径同步调整）；附带裁决 L6#9 卡片双发、AC-20 建单口径扩到 `notification_failed`（两种终态都建漏服单）；`tests/test_medication_graph.py` 两个失败用例已按 AC-20/卡片口径修正，**15 passed** + ruff 全绿；复跑 L3/TD-2 待提交并重启后端后进行 |
+| 5 | B1 终态 SQL 验收（`completed\|t`、`response_completed` 恰 1 条）待新轮次流量 | — | dev-B（委托 D 联调） | 见文末「B1 · 回合终态 SQL 验收」节，含复跑 SQL 与库内基线 |
+| 6 | 真机补测时 pad 页面卡「正在听」+ Network sherpa wasm GET 连发几十次（每次 ~0.1kB/200） | — | 联调环境（dev 扰动，非前端缺陷） | 根因：dev-C 写码期间 `uvicorn --reload` 反复重启后端 → pad WS 重连风暴 → 每次 auth_ok 重跑 setupSession 重新编译 12MB VAD wasm → CPU 卡死。前端 teardown 已 `vad.free()`（realtime.ts L396），无 worker 泄漏；干净环境 agent 实测 VAD ready 正常（console：`WASM does not support multi-threading. Changing num_threads from 2 to 1`）、各资源仅 1 次请求。处置：关卡死 tab 重开即可；**韧性改进候选（P3，登记不阻塞）**：重连风暴下 setupSession 的 VAD load 去抖/复用已编译实例 |
+| 7 | **TD-1 落库闭环断裂（P1 缺陷）**：C2 合入后调度链路真实跑通（tick→create_event→build_graph→start，pad 上线后 ~30s 收到触达卡片+字幕+TTS「到吃药时间了，请确认联调测试-到点触达片是否已经服用。」），但 `medication_attempts` **0 行**、`medication_events.status` 恒 `calling` 不推进 | scheduler tick 触发链 | dev-C（图/调度会话管理裁决） | 根因：commit 链断裂——`medication_service.record_attempt` 只 `begin_nested+flush` 不 commit（调用方提交规范）；图节点（remind 等）全文无 commit；`medication_jobs.py` 铁律「scheduler 绝不写库」连 `graph_session` 的 commit 也不做，`async with` 退出即 rollback。投递/TTS 是内存动作已发生但触达记录丢失。连锁：① `get_attempt` 恒 None → 重放防护失效，服务重启后图恢复会**重复播报**；② 事件状态不推进 → `+5/+10/+15` resume 链失效；③ L3 played 回执、TD-2 无法验证。修复方向需裁决（图运行后由调用处提交事务 vs 节点内 service 写后提交），本卡不越权改后端，登记待修；复跑 L3/TD-2 待修复后进行。**更新（当日晚）**：主理人授权按「图运行后调用处提交」修复——`medication_jobs.py` 在 start/resume 后各加一次 `graph_session.commit()`（会话管理豁免，铁律 grep 口径同步调整）；附带裁决 L6#9 卡片双发、AC-20 建单口径扩到 `notification_failed`（两种终态都建漏服单）；`tests/test_medication_graph.py` 两个失败用例已按 AC-20/卡片口径修正，**15 passed** + ruff 全绿；复跑 L3/TD-2 待提交并重启后端后进行 |
 
 前端本卡（dev-D）范围内：L1–L6 未发现前端缺陷，无待修项。G5 门禁证据链现状：L1 SQL/服务证据齐；L2 阻塞证据（表结构 + 空表 + 源码实证）齐；L3–L5 待依赖就绪后复跑补齐。
+
+---
+
+## B1 · 回合终态 SQL 验收（dev-B 委托登记，2026-11-10）
+
+> 登记人：dev-B（AI 协作）。B1 代码与测试层已收口（B1/B2/B3 验收用例全绿、J2 契约闭环），但任务卡 `dev-b-day07.md` §2.5 的 SQL 真机验收依赖真实轮次流量，委托 D 联调一并补证。
+
+### 当前库内基线（2026-11-10 查证，postgres healthy）
+
+| 事实 | 数据 | 含义 |
+| --- | --- | --- |
+| 轮次状态分布 | 37 轮全部 `open`，0 条 completed/interrupted | 修复后代码（P2-10 payload 写全 + A 删第 5 步双写）**尚未产生任何真机轮次** |
+| 最后事件时间 | `2026-11-09 14:59:25 UTC` | 库内全部为修复前历史数据 |
+| `response_completed` 分布 | 67 条：30 轮各 2 条 + 7 轮各 1 条 | **历史双写实证**（第 5 步全 payload 条 + 响应层 total_segments 条并存），即 P2-10 补丁所修问题在真实数据中存在过 |
+| payload 完整性 | 37/37 轮至少 1 条含 `generated_text` | 旧全 payload 路径曾兜住 generated_text，与 handoff-B-to-A §2 基线描述一致 |
+
+### 待联调补验（真机/模拟流量产生后，复跑口径）
+
+1. 真实一轮播完后（任务卡 §2.5 原口径）：
+
+```sql
+SELECT status, assistant_delivered_text IS NOT NULL AS has_delivered
+FROM conversation_turns ORDER BY started_at DESC LIMIT 1;
+-- 期望：completed | t
+
+SELECT count(*) FROM conversation_events
+WHERE turn_id = :turn_id AND event_type = 'response_completed';
+-- 期望：1
+```
+
+2. 修复后新轮次去重核对：`SELECT turn_id, count(*) FROM conversation_events WHERE event_type='response_completed' AND occurred_at > now() - interval '1 hour' GROUP BY turn_id;` → 每轮恰 1 条，且 payload 含 `generated_text` / `delivered_text` / `response_status="completed"`。
+3. 打断一轮：`status=interrupted`、`assistant_delivered_text` = 已播前缀、无多余 `response_completed`。
+4. 环境就绪说明：postgres 已于 2026-11-10 由 dev-B 起（`docker compose up -d postgres`，healthy），联调可直接复用。
