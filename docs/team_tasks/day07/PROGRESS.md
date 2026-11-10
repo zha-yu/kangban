@@ -3,7 +3,7 @@
 > ⚠️ **本文件由 `scripts/update_progress.py` 自动生成，不要手改**——改任务卡首部的 `> 状态：` 行，再跑一次脚本（或直接提交，pre-commit 钩子会自动刷新）。
 > 刻意不写生成时间与提交哈希：那两样每次提交都会变，会让看板变成噪音。提交历史看 `git log`。
 
-## 总览：**4 / 8** 张任务卡已收口
+## 总览：**5 / 8** 张任务卡已收口
 
 | # | 任务卡 | 状态 | 文件 |
 | --- | --- | --- | --- |
@@ -14,7 +14,7 @@
 | 5 | TD-1 · 触达语音接线（WS） | ✅ 已完成 | `docs/team_tasks/day07/dev-c-触达语音接线.md` |
 | 6 | Task dev-C2 · 用药到点触发接线（APScheduler → 用药确认子图） | ✅ 已完成 | `docs/team_tasks/day07/dev-c2-用药到点触发接线.md` |
 | 7 | Task dev-D · Day 7 · pad 可靠性、console 改绑与联调收口 | 🚧 进行中 | `docs/team_tasks/day07/dev-d-day07.md` |
-| 8 | Day 7 · dev-D · 触达真机联调（TD-1/TD-2 收口验收） | ⬜ 未开始 | `docs/team_tasks/day07/dev-d-触达真机联调.md` |
+| 8 | Day 7 · dev-D · 触达真机联调（TD-1/TD-2 收口验收） | ✅ 已完成 | `docs/team_tasks/day07/dev-d-触达真机联调.md` |
 
 ## 计划件状态
 
