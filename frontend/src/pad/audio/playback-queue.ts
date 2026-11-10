@@ -21,9 +21,11 @@
  *
  * J3 末段 played（contracts v1.2 §4.2 补充口径，2026-11-09 主理人确认）：
  *  以客户端 played ack 为准，response_completed 只由末段 played 触发。轨 ended 不可靠
- *  时 v1.2 允许「该段合成音频时长 + at_ms 计时」兜底，但 tts_text v2 字段零增删、
- *  客户端无时长来源——计时兜底待 dev-C 明确时长口径后再落；当前以 onended 为主触发，
- *  服务端另有「下一代 epoch / response_interrupted / WS 45s 判死」三层隐式关闭兜底。
+ *  时 v1.2 允许「该段合成音频时长 + at_ms 计时」兜底——实测（2026-11-09 S4 试跑）
+ *  WebRTC 单轨连续流上 audioEl ended 永不触发，客户端无真实时长来源（tts_text v2
+ *  字段零增删），故按段文本长度估算时长起兜底计时器（350ms/字 + 1.5s 底数，宁晚勿早：
+ *  早报会让麦克风在音频播完前放开引发回声抢话），到点仍未被新段/打断/轨结束收口时
+ *  结算末段 played 并复位响应。dev-C 给出真实时长口径后可替换估算系数。
  */
 
 import type { SegmentAckMsg, TtsTextMsg } from "../protocol";
@@ -38,9 +40,14 @@ export interface PlaybackQueueDeps {
   sendAck: (msg: SegmentAckMsg) => boolean;
   /** 客户端诊断上行（ack 发送失败等，仅日志） */
   sendDiag: (ok: boolean, error: string) => void;
+  /** 响应收口（末段 played 结算/轨结束）回调：调用方据此复位播放态与状态条 */
+  onResponseSettled?: () => void;
 }
 
 const ACK_RETRY_DELAY_MS = 500;
+/** 末段兜底计时：350ms/字 + 1.5s 底数（估算宁晚勿早，见文件头 J3 说明） */
+const TAIL_FALLBACK_MS_PER_CHAR = 350;
+const TAIL_FALLBACK_BASE_MS = 1500;
 
 /** 响应内已结算/待结算状态（一次回复 = 一个 response_id + 多段） */
 interface ActiveResponse {
@@ -61,6 +68,8 @@ export class PlaybackQueue {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   /** 重发等待中的 ack（每时刻至多一条：ack 按段单调，失败重发期间新 ack 不产生——新段未到） */
   private pendingAck: SegmentAckMsg | null = null;
+  /** 末段兜底计时器（轨 ended 不可靠时的结算兜底，见文件头 J3 说明） */
+  private tailTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private deps: PlaybackQueueDeps) {}
 
@@ -79,6 +88,7 @@ export class PlaybackQueue {
       return false;
     }
     this.maxEpoch = epoch;
+    this.cancelTail(); // 新段到达：旧兜底计时一律作废，按最新状态重估
 
     // 同/新代次内出现另一条 response：旧回复视为被替代，按打断收口
     if (this.active && this.active.responseId !== msg.response_id) {
@@ -100,6 +110,10 @@ export class PlaybackQueue {
       if (msg.total !== undefined) this.active.totalSegments = msg.total;
     }
     this.sendAckFor(segmentId, "playing");
+    // 末段（total 已知且本段是最后一段）：起兜底计时，轨 ended 不触发也能收口
+    if (this.active.totalSegments !== null && segmentId >= this.active.totalSegments - 1) {
+      this.scheduleTailFallback(msg.text.length);
+    }
     return true;
   }
 
@@ -108,9 +122,11 @@ export class PlaybackQueue {
    * 无活跃响应（整段模式或已收口）时为 no-op。
    */
   markTrackEnded(): void {
+    this.cancelTail();
     if (!this.active) return;
     this.settlePlayed(this.active.playingSegment);
     this.active = null;
+    this.deps.onResponseSettled?.();
   }
 
   /**
@@ -124,9 +140,29 @@ export class PlaybackQueue {
 
   /** 会话拆线等场景：清空全部状态，不发任何 ack */
   reset(): void {
+    this.cancelTail();
     this.active = null;
     this.maxEpoch = null;
     this.cancelRetry();
+  }
+
+  /**
+   * 末段兜底计时（J3：轨 ended 在 WebRTC 单轨连续流上不可靠，v1.2 允许计时兜底）。
+   * 到点时若响应未被新段/打断/轨结束收口，按轨结束同路径结算。
+   */
+  private scheduleTailFallback(textLength: number): void {
+    this.cancelTail();
+    this.tailTimer = setTimeout(() => {
+      this.tailTimer = null;
+      this.markTrackEnded();
+    }, TAIL_FALLBACK_BASE_MS + textLength * TAIL_FALLBACK_MS_PER_CHAR);
+  }
+
+  private cancelTail(): void {
+    if (this.tailTimer !== null) {
+      clearTimeout(this.tailTimer);
+      this.tailTimer = null;
+    }
   }
 
   /** 上报 played（幂等：已确认过的段不再重复上报） */
@@ -139,6 +175,7 @@ export class PlaybackQueue {
 
   private flushCanceled(): void {
     if (!this.active) return;
+    this.cancelTail(); // 打断收口优先于兜底计时
     const { responseId, epoch, lastConfirmedPlayed } = this.active;
     this.active = null;
     this.deliverAck({

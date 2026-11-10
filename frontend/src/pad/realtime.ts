@@ -64,6 +64,15 @@ export class RealtimeClient {
       return true;
     },
     sendDiag: (ok, error) => this.sendDiag("playback", ok, error),
+    // Day 6：末段兜底结算收口回调——轨 ended 不触发时由队列计时器结算 played，
+    // 此处同步复位播放态与状态条（与 onended 路径行为一致，幂等）
+    onResponseSettled: () => {
+      if (this.ttsPlaying) {
+        this.ttsPlaying = false;
+        this.reportPlayback(); // C-6：末段播完结算（无计时起点时内部静默跳过）
+        this.cb.onStatus("listening"); // 播放收口 → 回到在听，麦克风保持捕获
+      }
+    },
   });
 
   constructor(private cb: RealtimeCallbacks) {}

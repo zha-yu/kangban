@@ -55,6 +55,7 @@ from app.core.context import (
     build_dialogue_messages,
     get_trace_id,
 )
+from app.core.metrics import Stopwatch, record_stage
 from app.core.runtime_context import Identity
 from app.services.llm_service import LLMReply
 
@@ -381,8 +382,21 @@ class CompanionAgent:
         if self._tools:
             messages.insert(len(messages) - 1, _tool_protocol_message(self._tools))
 
+        # Day 6 补回 llm_first_token 打点：原在 dialogue_service.respond 内，
+        # N14 后对话走 CompanionAgent 直连 LLM 绕过了该点（S4 试跑实测 0 行）。
+        # 口径同自裁 Z1：非流式首 token ≈ 整段返回时刻；只记每轮首次调用
+        # （端到端延迟关心首包，工具轮的后续调用属编排成本，不重复计）。
+        llm_sw = Stopwatch()
+        first_llm_call = True
         while True:
             reply = await self._llm.chat(messages)
+            if first_llm_call:
+                first_llm_call = False
+                record_stage(
+                    "llm_first_token",
+                    llm_sw.elapsed_ms(),
+                    source="non_stream",
+                )
             if reply.degraded:
                 return AgentTurnResult(text=reply.text, degraded=True)
 
