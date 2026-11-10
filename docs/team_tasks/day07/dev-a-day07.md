@@ -1,6 +1,6 @@
 # Task dev-A · Day 7 · Chinese-Jev 三级路由与决策日志
 
-> 状态：未开始　｜　版本：v1.0　｜　日期：2026-11-10
+> 状态：已完成　｜　版本：v1.1　｜　日期：2026-11-10
 > 负责人：dev-A　｜　总人日：3.0（A1 0.5 + A2 1.5 + A3 1.0）
 > 关联：`docs/team_tasks/day07/README.md`（总表）｜`docs/team_tasks/day07/contracts-system-one.md`（A1 产出）｜`docs/plans/adhoc-20261110-day6全面审查.md`（收口依据）
 > 上游依据：PRD FR-DLG-02/03/06/07/09｜技术设计文档 §1.4、§3.4、§3.6、§8.3
@@ -239,21 +239,29 @@ uv run python scripts/eval_router.py --fixtures eval/fixtures/day7_intents.jsonl
 
 ---
 
-## 5. 完成记录模板
+## 5. 完成记录（2026-11-10 收口，代码已并入 develop `7565b6a`）
 
 ```text
 任务：A1/A2/A3
-状态：已完成 / 阻塞
+状态：已完成（2 项指标如实标红并已裁决处理）
 证据：
-- 代码：<commit>
-- 命令：<命令 + 关键输出>
-- 数据：<decision_logs 样例 / trace_id>
-- 未完成：<无 / 具体项 + 原因 + 下一步>
+- 代码：A1+形态门禁 1e75cd9｜A2+A3 80fd7a7｜195ms 预算与代理/定时器两缺陷 688387d｜
+        迁移撞号改名 0605aa3（0014→0016）
+- 命令：pytest -m "not slow" → 1178 passed / 0 failed（develop 全量）；
+        ruff check app tests scripts → 全过；alembic heads → 单 head 0016_decision_logs
+- 数据：/health 200 model_loaded=true；sidecar 纯前向 p50 161/p95 167ms（空闲机）；
+        110 条评测：普通 40/50、敏感 20/20、四层 rule36/system_one74/agent0/fallback0、
+        澄清率 28%→8%（方案 B）；decision_logs 真实写入样例见 tests/test_decision_logs.py
+- 未完成：①A2 延迟终判待干净机器复测（本机 IDE 占 99% CPU，清单 docs/plans/day07/
+        a2-延迟复测清单.md，degrade 档本机已 PASS）；②普通意图 40/50<90%，主理人已裁决
+        方案 B（分意图澄清）并将 90% 口径改为「阈值只约束动作型意图」
 ```
+
 
 ## 6. 变更记录
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-10 | 首版：A1 配置与契约、A2 Chinese-Jev sidecar/client、A3 规则/路由/decision_logs；共 3.0 人日 |
+| v1.1 | 2026-11-10 | **收口**：A1/A2/A3 全部落地并入 develop（7565b6a）；含 195ms 预算裁决落地、代理/定时器两缺陷修复、迁移 0014→0016 改名；遗留两项（干净机器复测延迟、意图准确率口径）均已有主理人裁决与去处 |
 | v1.1 | 2026-11-10 | 补充设计要求：G1 分类器信号触发的安全复核复用同一安全升级口；Router 与 Agent 统一走 `ToolExecutor`；契约与验收补 `multi_intent/sub_intents`、否定表达、多意图、工具超时、重复调用、权限越权 |
