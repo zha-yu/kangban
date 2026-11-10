@@ -7,16 +7,21 @@
  * 编译/推理随之移出主线程（建连期不抢主线程，利好 AC-42 ≤1.5s）。
  * 回落：init_error / 脚本错误 / 30s 超时均抛 VadUnavailableError，
  * 上层（realtime.ts）捕获后走服务端 webrtcvad 兜底（字幕连续），主链路不断。
- * 参数与事件口径不变：adhoc-20261105 §4.2（threshold 0.5 / silence 0.8s / minSpeech 0.25s /
- * maxSpeech 30s / window 256 / 16k）。
+ * Day 7 D1（S1.3，关 P1-6）：运行期新增 runtime_error 遥测通道（worker 协议只增
+ * 不改）——acceptWaveform 异常、120s 零语音心跳、运行期 worker.onerror 一律经
+ * onRuntimeError 回调转发上层 sendDiag("vad")，不再只 console.warn；
+ * ready 后的 init_error 路径不变（仍抛 VadUnavailableError → 上层上报）。
+ * 参数与事件口径不变：adhoc-20261105 §4.2（threshold 0.38 见 worker 文件头 J-D1
+ * 裁决 / silence 0.8s / minSpeech 0.25s / maxSpeech 30s / window 256 / 16k）。
  */
 
-/** Worker→主线程消息（vad-worker.js 协议，见计划 §2.2） */
+/** Worker→主线程消息（vad-worker.js 协议，见计划 §2.2；Day 7 D1 增 runtime_error） */
 type VadWorkerOutMsg =
   | { type: "ready" }
   | { type: "init_error"; message: string }
   | { type: "speech_start" }
-  | { type: "speech_end" };
+  | { type: "speech_end" }
+  | { type: "runtime_error"; message: string };
 
 /** 主线程→Worker 消息 */
 type VadWorkerInMsg =
@@ -37,6 +42,9 @@ export class VadUnavailableError extends Error {
 export interface TenVadCallbacks {
   onSpeechStart: () => void;
   onSpeechEnd: () => void;
+  /** Day 7 D1 关 P1-6：运行期错误/遥测（acceptWaveform 异常、vad_no_speech_120s
+   *  心跳、运行期 worker.onerror）转发上层；上层据此 sendDiag("vad") 触发服务端兜底 */
+  onRuntimeError?: (message: string) => void;
 }
 
 export class TenVad {
@@ -102,7 +110,7 @@ export class TenVad {
     });
   }
 
-  /** 就绪后接管消息：仅处理 speech 事件；运行期错误只留痕，由上层降级链路兜底 */
+  /** 就绪后接管消息：speech 事件 + 运行期错误遥测转发（Day 7 D1 关 P1-6） */
   private attach(worker: Worker): void {
     worker.onmessage = (e: MessageEvent<VadWorkerOutMsg>) => {
       const msg = e.data;
@@ -112,10 +120,15 @@ export class TenVad {
       } else if (msg.type === "speech_end") {
         this.active = false;
         this.callbacks.onSpeechEnd();
+      } else if (msg.type === "runtime_error") {
+        // Day 7 D1 关 P1-6：运行期异常/心跳遥测转发上层（触发服务端 webrtcvad 兜底），
+        // 不再只 console.warn
+        this.callbacks.onRuntimeError?.(msg.message);
       }
     };
     worker.onerror = (e) => {
-      console.warn("[vad] worker 运行期错误:", e.message || "unknown");
+      // Day 7 D1 关 P1-6：运行期脚本错误同样转发上层，不再只 console.warn
+      this.callbacks.onRuntimeError?.(`VAD Worker 脚本错误: ${e.message || "unknown"}`);
     };
   }
 

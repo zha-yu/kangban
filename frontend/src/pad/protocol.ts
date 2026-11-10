@@ -106,6 +106,16 @@ export interface TouchPlayedMsg {
   attempt_no: number;
 }
 
+/** Day 7 新增（day07/README §5.4 草案先行，**待 A1 契约冻结后逐字段校对**）：打断上行（C→S）。
+ *  前端 speechstart 本地停播后立即发送，不等回执（A2 裁决：打断不等服务端）；
+ *  response_id 取当前活跃回复（PlaybackQueue.activeResponseId），无活跃回复不发送；
+ *  旧 epoch 的回调一律丢弃。不加第二套路由消息。 */
+export interface InterruptMsg {
+  type: "interrupt";
+  response_id: string;
+  reason: "barge_in";
+}
+
 export type ClientSignal =
   | AuthMsg
   | OfferMsg
@@ -116,7 +126,8 @@ export type ClientSignal =
   | ClientDiagMsg
   | IdentityConfirmMsg
   | SegmentAckMsg
-  | TouchPlayedMsg;
+  | TouchPlayedMsg
+  | InterruptMsg;
 
 /* ---- S→C 服务端下发 ---- */
 
