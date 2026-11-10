@@ -11,10 +11,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
-from typing import Any, Literal
+from typing import Any, Final, Literal
 from uuid import UUID
 
 import redis.asyncio as redis_asyncio
@@ -39,6 +40,7 @@ from app.audio.tts import TTSUnavailable, build_tts
 from app.audio.webrtc import (  # Day 3 T3：A3 媒体层接线
     enqueue_tts_for_device,
     install_signaling_handler,
+    playback_queue_depth_for,
 )
 from app.core.auth import (
     CredentialExpiredError,
@@ -91,6 +93,8 @@ from app.services.turn_service import (
     TurnService,
 )
 from app.system_one.client import SystemOneClient
+
+logger = logging.getLogger("app.main")  # 模块级：分节奏 sink 等装配层辅助函数用
 
 
 class _SessionToolExecutor:
@@ -172,6 +176,64 @@ class _MemoryExtractionAdapter:
             user_text=user_text,
             assistant_text=assistant_text,
         )
+
+
+# ------------------------------------------------ 分节奏下发（segment audio sink）
+
+#: 分节奏入轨：等下行队列排空（剩 <2 帧 ≈ 40ms）再入轨下一段。
+#: 段音频开始流送才发对应 tts_text（contracts §4 前端「下一段到达即结算」依赖此序），
+#: 且队列深度恒 ≤ 单段帧数，远离 750 帧(15s)上限——整段合成 46.7s 故事 = 2337 帧
+#: 会被整段拒绝并拆会话（真机踩坑 2026-11-10）。
+_TTS_DRAIN_DEPTH_FRAMES: Final = 2
+#: 等排空兜底上限：单段 ≤40 字 ≈ ≤12s，远小于此值；超时直接入轨（宁可顶队列也不空转）
+_TTS_DRAIN_TIMEOUT_S: Final = 45.0
+
+
+def _make_segment_audio_sink(device_id: str, turn_id: str) -> Callable[[str], Awaitable[bool]]:
+    """单段音频出口：合成该段 → 等上一段排空 → 整段入轨（ResponseService 分节奏下发用）。
+
+    返回 False = 本段无音频（TTS 不可用 / 会话已关 / 排空兜底超时后入轨仍失败），
+    调用方仍下发该段文字——字幕先行契约不变。CancelledError 必须向上传播
+    （打断第④步取消节奏任务，P3-27）。
+    """
+
+    async def sink(segment_text: str) -> bool:
+        try:
+            pcm = await build_tts().synthesize(segment_text)
+        except TTSUnavailable as exc:
+            logger.warning(
+                "segment_tts_unavailable",
+                extra={"device_id": device_id, "turn_id": turn_id, "reason": str(exc)},
+            )
+            return False
+        except Exception as exc:
+            logger.error(
+                "segment_tts_failed",
+                extra={
+                    "device_id": device_id,
+                    "turn_id": turn_id,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return False
+        depth = playback_queue_depth_for(device_id)
+        if depth is None:  # 会话已关：不再喂轨
+            return False
+        deadline = time.monotonic() + _TTS_DRAIN_TIMEOUT_S
+        while depth > _TTS_DRAIN_DEPTH_FRAMES:  # 上一段还没播完：等排空再入轨
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "segment_tts_drain_timeout",
+                    extra={"device_id": device_id, "turn_id": turn_id, "depth": depth},
+                )
+                break
+            await asyncio.sleep(0.1)
+            depth = playback_queue_depth_for(device_id)
+            if depth is None:
+                return False
+        return await enqueue_tts_for_device(device_id, turn_id, pcm)
+
+    return sink
 
 
 @asynccontextmanager
@@ -500,6 +562,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     turn_id=turn_id,
                     text=text,
                     audio_bytes=audio_bytes,
+                    # 分节奏下发：段文字随段音频开始流送逐段到达（N14 统一出口生效，
+                    # 见 ResponseService.start 的 pacing 任务；整段路径不消费此参数）
+                    audio_sink=_make_segment_audio_sink(device_id, turn_id),
                 )
             finally:
                 # ★ try/finally 强制清理
@@ -547,7 +612,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             return
 
         if reply is not None:
-            # ---------- Day 5 B-2：TTS 并行 watchdog（方案2：先合成再下发） ----------
+            if reply.response_id is not None:
+                # N14 分节奏流式：段文字随段音频开始流送，由 ResponseService.start
+                # 内部 pacing 任务逐段下发（audio_sink 已随 handle_asr_final 注入）。
+                # 此处不再整段合成/整段入轨——226 字故事合成 46.7s = 2337 帧，
+                # 超 750 帧(15s)下行队列上限会被整段拒绝并拆会话（真机踩坑
+                # 2026-11-10：字幕全出、无故事语音、只剩拆轨噪声）；
+                # tts_slow watchdog 语义同样不适用：文字随段节奏到达，没有
+                # 「文字尚未下发」的等待窗口。
+                logger.info(
+                    "dialogue_reply_via_paced_stream",
+                    extra={
+                        "trace_id": trace_id,
+                        "device_id": device_id,
+                        "turn_id": turn_id,
+                        "response_id": reply.response_id,
+                    },
+                )
+                return
+
+            # ---------- Day 5 B-2：TTS 并行 watchdog（整段路径保留：legacy respond 出口） ----------
             # ★ 顺序反转：watchdog + synthesize → 成功后才 deliver tts_text
             # watchdog 只在"文字还没下发"期间允许发 slow notice（用户还在等，合理）；
             # 合成完成后文字立即下发，watchdog cancel，不会再触发 slow 提示
@@ -560,10 +644,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 from app.audio.signaling import _ERROR_TALKBACK
 
                 await asyncio.sleep(_settings.degrade_tts_slow_ms / 1000)
-                # N14 分支：文字已随 tts_text v2 分段先行到达（第 7 步），
-                # 「文字尚未下发」前提不成立 → slow notice 语义不适用
-                if reply.response_id is not None:
-                    return
                 # 此时文字尚未下发 → 用户还在等待回复 → slow notice 语义成立
                 if not _tts_state["slow_degraded"]:
                     _tts_state["slow_degraded"] = True
@@ -612,42 +692,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                         await _tts_watchdog
 
             # ★ 合成（无论成败）完成后再下发文字（顺序反转的核心）
-            # N14 统一出口分支（response_id 非 None）：第 7 步 ResponseService.start
-            # 已按 tts_text v2 分段下发，此处不再整段重发（防双发/重复播放）；
-            # TTS 音频仍走 Day 5 整段合成入队，文字分段与音频互不影响。
-            if reply.response_id is not None:
-                logger.info(
-                    "dialogue_reply_already_streamed",
-                    extra={
-                        "trace_id": trace_id,
-                        "device_id": device_id,
-                        "turn_id": turn_id,
-                        "response_id": reply.response_id,
-                    },
+            # 走到这里必为 legacy respond 出口（response_id=None）；N14 统一出口
+            # 已在上方提前 return（分节奏下发，不再整段合成/入轨）。
+            delivered = signaling.deliver(
+                device_id,
+                {"type": "tts_text", "text": reply.text, "degraded": reply.degraded},
+            )
+            logger.info(
+                "dialogue_reply_delivered",
+                extra={
+                    "trace_id": trace_id,
+                    "device_id": device_id,
+                    "turn_id": turn_id,
+                    "degraded": reply.degraded,
+                    "delivered": delivered,
+                    "text_len": len(reply.text),
+                },
+            )
+            if not delivered:
+                # WS 已断：正文都没送到，不再 enqueue 音频
+                logger.warning(
+                    "dialogue_text_not_delivered",
+                    extra={"trace_id": trace_id, "device_id": device_id, "turn_id": turn_id},
                 )
-            else:
-                delivered = signaling.deliver(
-                    device_id,
-                    {"type": "tts_text", "text": reply.text, "degraded": reply.degraded},
-                )
-                logger.info(
-                    "dialogue_reply_delivered",
-                    extra={
-                        "trace_id": trace_id,
-                        "device_id": device_id,
-                        "turn_id": turn_id,
-                        "degraded": reply.degraded,
-                        "delivered": delivered,
-                        "text_len": len(reply.text),
-                    },
-                )
-                if not delivered:
-                    # WS 已断：正文都没送到，不再 enqueue 音频
-                    logger.warning(
-                        "dialogue_text_not_delivered",
-                        extra={"trace_id": trace_id, "device_id": device_id, "turn_id": turn_id},
-                    )
-                    return
+                return
 
             # 只有合成成功时才 enqueue 音频
             if synthesize_ok and pcm is not None:

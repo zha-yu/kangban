@@ -675,8 +675,13 @@ class TurnService:
         *,
         call_id: str | None = None,
         turn_id: str,
+        audio_sink: Callable[[str], Awaitable[bool]] | None = None,
     ) -> ResponseHandle:
-        """七步顺序执行（模块 docstring）；返回值只做下发句柄，生成事实面见 `outcome_of`。"""
+        """七步顺序执行（模块 docstring）；返回值只做下发句柄，生成事实面见 `outcome_of`。
+
+        `audio_sink` 透传给第 7 步 ResponseService.start：注入时走分节奏下发
+        （段音频开始流送才发对应 tts_text），None 保持一次性全量下发（测试/旧路径）。
+        """
         text = (asr_final or "").strip()
         if not text:
             # ASR 空文本前置拦截：orchestrator 已拦（Day 4），此处兜底防脏数据越界
@@ -848,7 +853,9 @@ class TurnService:
 
         # ---- 第 7 步：最后下发（事务窗口之外；response_id 与第 5 步同一枚，事实与下发对账一致） ----
         # 下发失败不回滚已闭合的事实（只追加口径）；客户端侧由 ws_dead / 重连兜底。
-        handle = await self._response_stream.start(context, result, response_id=response_id)
+        handle = await self._response_stream.start(
+            context, result, response_id=response_id, audio_sink=audio_sink
+        )
 
         outcome = TurnOutcome(
             turn_id=turn_id,
