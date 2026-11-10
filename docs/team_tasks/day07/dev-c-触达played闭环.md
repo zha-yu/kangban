@@ -1,4 +1,4 @@
-> 状态：进行中　｜　版本：v1.1　｜　日期：2026-11-09
+> 状态：已完成　｜　版本：v1.3　｜　日期：2026-11-10
 > 负责人：dev-C（后端 · 回执落库）＋ dev-D（pad 端 · 播完回执）
 > 关联：docs/team_tasks/day07/dev-c-触达语音接线.md（TD-1 先行，本卡复用其 message_id）
 > 上游依据：PRD §4.5（用药触达）、FR-MED-05｜技术设计文档 §6（medication_confirmation_graph、medication_attempts 触达留痕）
@@ -71,3 +71,4 @@ tests/test_medication_graph.py / test_signaling.py   改
 | v1.0 | 2026-11-09 | 初稿：从 Day 6 交接账（微信口径 TD-2）立卡 |
 | v1.1 | 2026-11-09 | dev-C 实施完成（裁决点按「新增 played」自裁留痕，见 contracts.md v1.0 §3，待主理人复核）：signaling.py 加 touch_played 分支（与 segment_ack 同层、形状校验同款）；medication_service.mark_attempt_played 幂等 UPDATE（仅从 voice_dispatched 升级，宁缺勿假）；models CHECK 加值 + 迁移 0013（up/down/up 实测可回滚）；main.py 装配回调（独立短事务，死锁教训口径）；pad 最小前端（onended 回 touch_played，打断/失败/拆线不回）。pytest 985 全绿、mypy 基线不变。**余项（dev-D）**：真机联调验收（播完出 played 痕迹）。分支测试落在 test_response_service.py（test_signaling.py 未建） |
 | v1.2 | 2026-11-09 | 应主理人要求新建 tests/test_signaling.py，branch 分发测试已迁入该文件，验收命令与本卡 §3 完全对齐 |
+| v1.3 | 2026-11-10 | 主理人裁决方案 A：真机联调验收（播完出 played 痕迹）移交独立卡 dev-d-触达真机联调.md；`played` 自裁留痕待复核事项随收口一并交主理人终裁；本卡随代码合入（6c32846）收口为已完成 |

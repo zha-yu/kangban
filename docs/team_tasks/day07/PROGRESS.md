@@ -3,12 +3,13 @@
 > ⚠️ **本文件由 `scripts/update_progress.py` 自动生成，不要手改**——改任务卡首部的 `> 状态：` 行，再跑一次脚本（或直接提交，pre-commit 钩子会自动刷新）。
 > 刻意不写生成时间与提交哈希：那两样每次提交都会变，会让看板变成噪音。提交历史看 `git log`。
 
-## 总览：**0 / 2** 张任务卡已收口
+## 总览：**2 / 3** 张任务卡已收口
 
 | # | 任务卡 | 状态 | 文件 |
 | --- | --- | --- | --- |
-| 1 | TD-2 · 主动触达 played 闭环 | 🚧 进行中 | `docs/team_tasks/day07/dev-c-触达played闭环.md` |
-| 2 | TD-1 · 触达语音接线（WS） | 🚧 进行中 | `docs/team_tasks/day07/dev-c-触达语音接线.md` |
+| 1 | TD-2 · 主动触达 played 闭环 | ✅ 已完成 | `docs/team_tasks/day07/dev-c-触达played闭环.md` |
+| 2 | TD-1 · 触达语音接线（WS） | ✅ 已完成 | `docs/team_tasks/day07/dev-c-触达语音接线.md` |
+| 3 | Day 7 · dev-D · 触达真机联调（TD-1/TD-2 收口验收） | ⬜ 未开始 | `docs/team_tasks/day07/dev-d-触达真机联调.md` |
 
 ## 计划件状态
 

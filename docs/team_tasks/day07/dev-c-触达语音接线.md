@@ -1,4 +1,4 @@
-> 状态：进行中　｜　版本：v1.1　｜　日期：2026-11-09
+> 状态：已完成　｜　版本：v1.3　｜　日期：2026-11-10
 > 负责人：dev-C（后端 · 合成与下发）＋ dev-D（pad 端 · 播放）
 > 关联：docs/team_tasks/day07/dev-c-触达played闭环.md（本卡先行，TD-2 复用本卡的消息 id）
 > 上游依据：PRD §4.5（用药触达 T0/+5/+10/+15，每次等 60s）、FR-MED-05（语音触达）｜技术设计文档 §6（业务子图 medication_confirmation_graph）
@@ -64,3 +64,4 @@ tests/test_medication_graph.py 等对应测试        改
 | v1.0 | 2026-11-09 | 初稿：从 Day 6 交接账（微信口径 TD-1）立卡 |
 | v1.1 | 2026-11-09 | dev-C 实施完成：契约冻结（contracts.md v1.0 §1）；signaling.py 扩 `tts_text` 触达四字段 + `synthesize_touch_audio`；graph `_deliver_reminder` 注入 `tts_fn`（可测试）并落 `tts_result`；pad 最小前端（touch-audio.ts 独立播放轨 + 字幕照旧）。pytest 985 全绿、mypy 基线不变、前端 tsc 通过。**余项（dev-D）**：真机联调验收第 1 条（在线出声/字幕同步）。分支测试落在 test_response_service.py（test_signaling.py 未建，segment_ack 同层测试本就在该文件） |
 | v1.2 | 2026-11-09 | 应主理人要求新建 tests/test_signaling.py：signaling 层契约形状 + segment_ack/touch_played 分支分发测试（原散落 test_response_service.py 的段落）整体迁入，验收命令与本卡 §3 完全对齐 |
+| v1.3 | 2026-11-10 | 主理人裁决方案 A：真机联调验收第 1 条（在线出声/字幕同步）移交独立卡 dev-d-触达真机联调.md，本卡随代码合入（6c32846）收口为已完成 |
