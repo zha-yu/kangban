@@ -35,6 +35,7 @@ identity 三点位同款先例）；被拒绝的 ack 走 `response_ack_rejected`
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -78,8 +79,13 @@ EVENT_RESPONSE_STARTED: Final[str] = "response_started"
 EVENT_SEGMENT_DELIVERED: Final[str] = "response_segment_delivered"
 EVENT_RESPONSE_INTERRUPTED: Final[str] = "response_interrupted"
 EVENT_RESPONSE_COMPLETED: Final[str] = "response_completed"
+#: 下发窗口期断连补偿（P2-11 本日范围）：单段重试 1 次仍失败时追加
+EVENT_RESPONSE_DELIVERY_FAILED: Final[str] = "response_delivery_failed"
 
 METRIC_STAGE_RESPONSE_SEGMENT: Final[str] = "response_segment"
+
+#: epoch/水位回写 TTL（P2-9，handoff §2：2 小时）
+_PERSIST_TTL_SECONDS: Final[int] = 7200
 
 
 def split_segments(text: str) -> tuple[str, ...]:
@@ -148,6 +154,8 @@ class TurnContext:
     # N06 记忆召回产物：本长者 status='active' 且在有效期的偏好事实（自然语言）。
     # 召回失败 / generic 一律空元组——本轮不加载记忆，绝不臆造（PRD 口径）。
     memory_notes: tuple[str, ...] = ()
+    # 本轮用户原文（B2 记忆提取需要；N14 装配时可填，缺省空串不破坏既有构造点）
+    user_text: str = ""
 
 
 class EventSink(Protocol):
@@ -181,6 +189,77 @@ class NullTtsQueue:
 
     def stop(self, response_id: str) -> None:
         return None
+
+
+class RedisEpochPersistence:
+    """`EpochPersistence` 的 Redis 实现（装配用）：直连 get/set，TTL 透传。
+
+    与 `state_service.StateCenter` 同款纪律——连接故障不在适配层吞：调用侧
+    （`_persist_*` / `_restore_epoch`）已把持久化当尽力而为（失败 warning）。
+    """
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    async def get(self, key: str) -> str | None:
+        data = await self._client.get(key)
+        if data is None:
+            return None
+        return data.decode("utf-8") if isinstance(data, bytes) else data
+
+    async def set(self, key: str, value: str, *, ex: int | None = None) -> None:
+        await self._client.set(key, value, ex=ex)
+
+
+class HistorySettlementPort(Protocol):
+    """B1 回合终态结算端口（Day 7 P1-1/P1-3）：与 `history_service` 语义同构。
+
+    - `commit_response`：只写已送达投影（`delivered_text`），不改轮次状态；
+    - `finish_turn`：轮次终态唯一写口（幂等不覆盖）。
+    装配层由 `HistoryStore` 适配（持 session_factory）；未注入时结算跳过并
+    告警一次（显式暴露装配缺口，不静默——否则 P1-1 复发）。
+    """
+
+    async def commit_response(
+        self,
+        *,
+        turn_id: str,
+        response_id: str,
+        generated_text: str,
+        delivered_text: str | None,
+        status: str,
+    ) -> None: ...
+
+    async def finish_turn(self, *, turn_id: str, status: str) -> None: ...
+
+
+class EpochPersistence(Protocol):
+    """epoch/水位回写端口（P2-9）：最小 KV 面，TTL 由调用方透传。
+
+    键口径：`session:{thread_id}:epoch`（会话代）与 `response:{response_id}`
+    （水位最小字段 JSON）；实现侧为 Redis 时 get/set 需容忍连接故障——
+    本服务侧已把持久化视为尽力而为（失败 warning，不阻塞主链路）。
+    """
+
+    async def get(self, key: str) -> str | None: ...
+
+    async def set(self, key: str, value: str, *, ex: int | None = None) -> None: ...
+
+
+class MemoryExtractionLike(Protocol):
+    """记忆提取端口（B1↔B2 边界，裁决 O-B2）：与 `memory_service.MemoryExtractionPort`
+    同构。B1 只依赖此结构面，Step 7 总收口把真实 `extract_after_turn` 换入。
+    """
+
+    async def extract_after_turn(
+        self,
+        *,
+        elder_id: str | None,
+        thread_id: str,
+        turn_id: str,
+        user_text: str,
+        assistant_text: str,
+    ) -> int: ...
 
 
 # ------------------------------------------------------------------ 句柄与内部状态
@@ -218,6 +297,7 @@ class _ResponseState:
     thread_id: str
     turn_id: str
     elder_id: str | None
+    user_text: str
     degraded: bool
     segments: tuple[str, ...]
     total: int
@@ -247,10 +327,18 @@ class ResponseService:
         deliver: Callable[[str, Mapping[str, object]], bool],
         events: EventSink,
         tts_queue: TtsQueue | None = None,
+        history_store: HistorySettlementPort | None = None,
+        persistence: EpochPersistence | None = None,
+        memory_port: MemoryExtractionLike | None = None,
     ) -> None:
         self._deliver = deliver
         self._events = events
         self._tts_queue: TtsQueue = tts_queue if tts_queue is not None else NullTtsQueue()
+        self._history = history_store
+        self._persistence = persistence
+        self._memory = memory_port
+        self._settlement_warned = False
+        self._memory_tasks: set[asyncio.Task[None]] = set()  # create_task 持引用防 GC
         self._responses: dict[str, _ResponseState] = {}
         self._epochs: dict[str, int] = {}  # thread_id → 当前会话 epoch（桩期进程内持有）
 
@@ -292,8 +380,12 @@ class ResponseService:
 
         stopwatch = Stopwatch()
         response_id = response_id if response_id is not None else uuid.uuid4().hex
+        # P2-9：进程重启后从 Redis 恢复会话 epoch（单进程范围；多 worker 登记 Day 9），
+        # 否则重启后 epoch 归 0，携带旧代 epoch 的 ack 会被 stale_epoch 全拒。
+        await self._restore_epoch(turn.thread_id)
         self._epochs[turn.thread_id] = self.session_epoch(turn.thread_id) + 1
         epoch = self._epochs[turn.thread_id]
+        await self._persist_epoch(turn.thread_id)
         segments = split_segments(text)
         state = _ResponseState(
             response_id=response_id,
@@ -302,6 +394,7 @@ class ResponseService:
             thread_id=turn.thread_id,
             turn_id=turn.turn_id,
             elder_id=turn.elder_id,
+            user_text=turn.user_text,
             degraded=bool(result.degraded),
             segments=segments,
             total=len(segments),
@@ -324,6 +417,7 @@ class ResponseService:
             EVENT_RESPONSE_STARTED,
             {"response_id": response_id, "degraded": state.degraded},
         )
+        await self._persist_response(state)
 
         total = len(segments)
         for index, segment in enumerate(segments):
@@ -338,11 +432,20 @@ class ResponseService:
                 "total": total,
             }
             delivered = self._deliver(turn.device_id, message)
+            if not delivered:
+                # P2-11（本日范围）：单段下发失败重试 1 次；仍失败写补偿事件。
+                # 完整重放（断连后逐段补发）登记 Day 9。
+                delivered = self._deliver(turn.device_id, message)
             state.delivered_at[index] = time.monotonic()
             if not delivered:
-                logger.warning(
-                    "response_segment_deliver_failed",
+                logger.error(
+                    "response_delivery_failed",
                     extra=self._log_extra(state, segment_id=index, response_id=response_id),
+                )
+                await self._safe_append_event(
+                    state,
+                    EVENT_RESPONSE_DELIVERY_FAILED,
+                    {"segment_id": index, "response_id": response_id},
                 )
             # 每段下发一条 response_segment 指标（复用 record_stage，elapsed=start 起累计）
             record_stage(
@@ -370,12 +473,30 @@ class ResponseService:
             )
             return False
         at_ms = message.get("at_ms")
+        epoch = message.get("epoch")
+        segment_id = message.get("segment_id")
+        status = message.get("status")
+        # P3-30：公开入口不做下标取键——形状不合法显式拒绝，KeyError 不得穿透
+        if (
+            not isinstance(epoch, int)
+            or not isinstance(segment_id, int)
+            or not isinstance(status, str)
+        ):
+            logger.warning(
+                "response_ack_malformed",
+                extra={
+                    "trace_id": get_trace_id() or "-",
+                    "device_id": device_id,
+                    "response_id": response_id,
+                },
+            )
+            return False
         return await self.ack(
             device_id=device_id,
             response_id=response_id,
-            epoch=message["epoch"],
-            segment_id=message["segment_id"],
-            status=message["status"],
+            epoch=epoch,
+            segment_id=segment_id,
+            status=status,
             at_ms=int(at_ms) if isinstance(at_ms, (int, float)) else None,
         )
 
@@ -424,16 +545,48 @@ class ResponseService:
             return reject("wrong_status")
 
         if status == ACK_CANCELED:
-            # 跳过规则④：陈述性上报，不受单调性约束；不改任何判定状态
+            # P2-7（Day 7 改写）：canceled 是终态上报——置 interrupted、按水位截断、
+            # 写事件并结算，不再只是陈述性上报。跳过规则④（不受单调性约束）。
+            water_mark = state.last_played_segment
+            if segment_id != water_mark:
+                # P2-8：客户端段号与水位不一致 → 告警并以水位为准（不按客户端截断）
+                logger.warning(
+                    "response_ack_canceled_watermark_mismatch",
+                    extra=self._log_extra(
+                        state,
+                        client_segment_id=segment_id,
+                        watermark=water_mark,
+                    ),
+                )
+            state.status = PHASE_ENDED
+            state.delivery_status = "interrupted"
+            state.delivered_text = (
+                "".join(state.segments[: water_mark + 1]) if water_mark >= 0 else ""
+            )
             logger.info(
                 "response_ack_canceled",
                 extra=self._log_extra(state, response_id=response_id, ack_segment_id=segment_id),
             )
-            record_stage(
-                METRIC_STAGE_RESPONSE_SEGMENT,
-                self._ack_elapsed_ms(state, segment_id),
-                elder_id=state.elder_id,
-                source="server",
+            if water_mark >= 0:
+                # P2-8：打点按水位段计时；-1 哨兵（无一完整播放段）无耗时可测，不打点
+                record_stage(
+                    METRIC_STAGE_RESPONSE_SEGMENT,
+                    self._ack_elapsed_ms(state, water_mark),
+                    elder_id=state.elder_id,
+                    source="server",
+                )
+            await self._safe_append_event(
+                state,
+                EVENT_RESPONSE_INTERRUPTED,
+                {
+                    "response_id": state.response_id,
+                    "last_played_segment": water_mark,
+                    "reason": "canceled",
+                },
+            )
+            await self._persist_response(state)
+            await self._settle_turn(
+                state, status="interrupted", delivered_text=state.delivered_text
             )
             return True
 
@@ -458,6 +611,7 @@ class ResponseService:
             # delivered_text 只收录客户端确认完整播放的连续前缀；`playing` 是进度信号，
             # 不能让上下文把尚未播完的片段当成用户已听到的事实。
             state.delivered_text = "".join(state.segments[: segment_id + 1])
+            await self._persist_response(state)
             await self._safe_append_event(
                 state,
                 EVENT_SEGMENT_DELIVERED,
@@ -479,25 +633,37 @@ class ResponseService:
                         state, response_id=response_id, total_segments=state.total
                     ),
                 )
+                # P1-1：回合终态结算——投影（delivered_text）+ finish_turn("completed")。
+                # 响应层是 response_completed 的唯一写口；turn_service 统一出口的第二
+                # 写口由 A3 侧删除（P2-10，本侧 commit_response 防御只补投影）。
+                await self._settle_turn(
+                    state, status="completed", delivered_text=state.delivered_text
+                )
         return True
 
     # -------------------------------------------------- interrupt：五步顺序（不可交换）
 
-    async def interrupt(self, response_id: str) -> ResponseHandle | None:
+    async def interrupt(
+        self, response_id: str, *, device_id: str | None = None
+    ) -> ResponseHandle | None:
         """打断一次进行中的回复；五步顺序固定：①收到 → ②停队列 → ③epoch+1 →
         ④取消任务 → ⑤追加事件 + delivery_status=interrupted。
+
+        归属校验（§5.4）：传入 `device_id` 时 response 必须属于该设备连接，
+        否则按 unknown_response 处理（no-op、不落库、不 bump epoch）；N14 内部
+        调用可不传（None = 不做归属校验）。
 
         幂等口径：response 不存在或已结束（delivered/interrupted）为 no-op，
         不重复 bump epoch、不重复写事件。工具副作用不随回复取消：
         已写事件与 played 事实一律保留（只追加，不回滚）。
         """
         state = self._responses.get(response_id)
-        if state is None:
+        if state is None or (device_id is not None and state.device_id != device_id):
             logger.warning(
                 "response_interrupt_ignored",
                 extra={
                     "trace_id": get_trace_id() or "-",
-                    "device_id": "-",
+                    "device_id": device_id or "-",
                     "response_id": response_id,
                     "reason": "unknown_response",
                 },
@@ -525,6 +691,10 @@ class ResponseService:
         )
         state.status = PHASE_ENDED
         state.delivery_status = "interrupted"
+        await self._persist_epoch(state.thread_id)  # ③ 的 epoch 变化回写
+        await self._persist_response(state)
+        # P1-3：打断结算——投影按水位截断 + finish_turn("interrupted") + 记忆提取调度
+        await self._settle_turn(state, status="interrupted", delivered_text=state.delivered_text)
         logger.info(
             "response_interrupted",
             extra=self._log_extra(
@@ -551,6 +721,131 @@ class ResponseService:
             return False
         state.cancellables.append(cancellable)
         return True
+
+    # -------------------------------------------------- 终态结算与持久化（Day 7 B1）
+
+    async def _settle_turn(
+        self,
+        state: _ResponseState,
+        *,
+        status: Literal["completed", "interrupted"],
+        delivered_text: str,
+    ) -> None:
+        """回合终态结算（P1-1/P1-3）：commit_response 投影 → finish_turn 终态 → 记忆提取调度。
+
+        - 结算异常只记日志不抛：终态落库失败不应炸穿 ack/interrupt 主链路
+          （补偿重试登记 Day 9）；CancelledError 不在此捕获（传播语义见 P3-27）。
+        - `history_store` 未注入（装配缺失）时告警一次并跳过——显式暴露装配缺口，
+          不静默吞掉，否则 P1-1（assistant_delivered_text 恒 NULL）悄悄复发。
+        """
+        if self._history is None:
+            if not self._settlement_warned:
+                self._settlement_warned = True
+                logger.error(
+                    "response_settlement_port_missing",
+                    extra=self._log_extra(state, hint="wire history_store adapter in assembly"),
+                )
+            return
+        generated_text = "".join(state.segments)
+        try:
+            await self._history.commit_response(
+                turn_id=state.turn_id,
+                response_id=state.response_id,
+                generated_text=generated_text,
+                delivered_text=delivered_text,
+                status=status,
+            )
+            await self._history.finish_turn(turn_id=state.turn_id, status=status)
+        except Exception as exc:  # 结算容错：见 docstring
+            logger.error(
+                "response_settlement_failed",
+                extra=self._log_extra(state, status=status, error_type=type(exc).__name__),
+            )
+            return
+        if self._memory is not None and state.elder_id is not None:
+            self._schedule_memory_extraction(state, delivered_text=delivered_text)
+
+    def _schedule_memory_extraction(self, state: _ResponseState, *, delivered_text: str) -> None:
+        """后台调度记忆提取（B2 端口）：终态结算后执行，不阻塞 ack/interrupt 返回。"""
+        memory = self._memory
+        assert memory is not None  # 仅在非 None 分支调用
+
+        async def _run() -> None:
+            try:
+                await memory.extract_after_turn(
+                    elder_id=state.elder_id,
+                    thread_id=state.thread_id,
+                    turn_id=state.turn_id,
+                    user_text=state.user_text,
+                    assistant_text=delivered_text,
+                )
+            except Exception:  # 后台容错：提取失败不回滚终态
+                logger.exception("response_memory_extract_failed", extra=self._log_extra(state))
+
+        task = asyncio.create_task(_run())
+        self._memory_tasks.add(task)
+        task.add_done_callback(self._memory_tasks.discard)
+
+    async def _restore_epoch(self, thread_id: str) -> None:
+        """进程重启后从 Redis 恢复会话 epoch（P2-9，单进程范围）。"""
+        if self._persistence is None or thread_id in self._epochs:
+            return
+        try:
+            raw = await self._persistence.get(f"session:{thread_id}:epoch")
+        except Exception as exc:  # 持久化尽力而为
+            logger.warning(
+                "response_epoch_restore_failed", extra={"error_type": type(exc).__name__}
+            )
+            return
+        if raw is None:
+            return
+        try:
+            restored = int(raw)
+        except ValueError:
+            logger.warning("response_epoch_restore_malformed", extra={"raw": raw[:32]})
+            return
+        self._epochs[thread_id] = restored
+        logger.info(
+            "response_epoch_restored",
+            extra={"trace_id": get_trace_id() or "-", "thread_id": thread_id, "epoch": restored},
+        )
+
+    async def _persist_epoch(self, thread_id: str) -> None:
+        """会话 epoch 回写 Redis（P2-9），键 `session:{thread_id}:epoch`，TTL 2h。"""
+        if self._persistence is None:
+            return
+        try:
+            await self._persistence.set(
+                f"session:{thread_id}:epoch",
+                str(self.session_epoch(thread_id)),
+                ex=_PERSIST_TTL_SECONDS,
+            )
+        except Exception as exc:  # 持久化尽力而为
+            logger.warning(
+                "response_epoch_persist_failed", extra={"error_type": type(exc).__name__}
+            )
+
+    async def _persist_response(self, state: _ResponseState) -> None:
+        """response 水位最小字段回写（P2-9），键 `response:{response_id}`，TTL 2h。"""
+        if self._persistence is None:
+            return
+        record = json.dumps(
+            {
+                "thread_id": state.thread_id,
+                "epoch": state.epoch,
+                "last_acked_segment": state.last_acked_segment,
+                "delivery_status": state.delivery_status,
+            },
+            ensure_ascii=False,
+        )
+        try:
+            await self._persistence.set(
+                f"response:{state.response_id}", record, ex=_PERSIST_TTL_SECONDS
+            )
+        except Exception as exc:  # 持久化尽力而为
+            logger.warning(
+                "response_state_persist_failed", extra={"error_type": type(exc).__name__}
+            )
 
     # -------------------------------------------------- 内部工具
 
@@ -579,8 +874,9 @@ class ResponseService:
     ) -> None:
         """事件追加失败不拖垮主链路（与 dialogue_service 写回降级同口径）。
 
-        `CancelledError` 是 `BaseException`（3.12），`except Exception` 兜不住——
-        事件写入是尽力而为的观测面，取消（如旧连接被顶掉）时不许从这里炸穿。
+        `CancelledError` 必须重抛（P3-27）：吞掉违反 asyncio 取消传播——取消即
+        回合任务被取消（如 ws_superseded），主链路本就该终止，吞掉反而丢失取消
+        语义。其余异常仍按尽力而为的观测面处理，不炸穿 ack/interrupt 主链路。
         """
         try:
             await self._events.append_event(
@@ -595,6 +891,7 @@ class ResponseService:
                 "response_event_append_cancelled",
                 extra=self._log_extra(state, event_type=event_type),
             )
+            raise
         except Exception as exc:
             logger.error(
                 "response_event_append_failed",
@@ -632,9 +929,13 @@ __all__ = [
     "AckStatus",
     "Cancellable",
     "DeliveryStatus",
+    "EpochPersistence",
     "EventSink",
     "GenerationResultLike",
+    "HistorySettlementPort",
+    "MemoryExtractionLike",
     "NullTtsQueue",
+    "RedisEpochPersistence",
     "ResponseHandle",
     "ResponsePhase",
     "ResponseService",

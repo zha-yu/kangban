@@ -33,7 +33,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -51,6 +51,10 @@ logger = logging.getLogger(__name__)
 
 #: 轮次终态三值（`open` 不是终态，`finish_turn` 不接受）
 TERMINAL_TURN_STATUSES: tuple[str, ...] = ("completed", "interrupted", "failed")
+
+#: `read_turns` 的 limit 硬上限（P3-32）：上下文层一次最多拖回 50 轮，
+#: 超限截断 + 告警——防止调用方传个大数把整个会话历史拉进内存。
+MAX_READ_TURNS_LIMIT: Final = 50
 
 TurnStatus = Literal["open", "completed", "interrupted", "failed"]
 FinishStatus = Literal["completed", "interrupted", "failed"]
@@ -461,6 +465,23 @@ async def finish_turn(session: AsyncSession, *, turn_id: str, status: FinishStat
         if thread_id is None:
             logger.info("history_turn_missing_for_finish turn_id=%s status=%s", turn_id, status)
             return
+        # 幂等：generic 没有投影行可查 status，改查事件流水——已有 `turn_completed`
+        # 就不再写，否则重复收口（重连补帧很常见）会写出重复事件。
+        already = (
+            await session.execute(
+                select(ConversationEvent.event_id)
+                .where(
+                    ConversationEvent.turn_id == turn_id,
+                    ConversationEvent.event_type == "turn_completed",
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if already is not None:
+            logger.info(
+                "history_turn_already_finished turn_id=%s status=%s (event_only)", turn_id, status
+            )
+            return
         await append_event(
             session,
             thread_id=thread_id,
@@ -511,7 +532,20 @@ async def read_turns(
     - generic（`elder_id is None`）返回空：未确认身份的历史不进任何人的上下文。
     - 会话归属与 `elder_id` 不符时返回空，而不是抛异常——读路径不该因为「查错了会话」
       让整轮对话失败；写路径才需要硬失败（那里会写脏数据）。
+    - `limit` 超过 `MAX_READ_TURNS_LIMIT`（50）时截断到 50 并打告警（P3-32）；
+      传 `limit < 1` 属调用方编程错误，抛 `HistoryError` 不做「猜一个」的兜底。
     """
+    if limit < 1:
+        raise HistoryError(f"limit must be >= 1, got {limit}")
+    if limit > MAX_READ_TURNS_LIMIT:
+        logger.warning(
+            "history_read_turns_limit_capped thread_id=%s requested=%d capped=%d",
+            thread_id,
+            limit,
+            MAX_READ_TURNS_LIMIT,
+        )
+        limit = MAX_READ_TURNS_LIMIT
+
     if session is None:
         async with _read_only_session() as owned:
             return await read_turns(owned, thread_id=thread_id, elder_id=elder_id, limit=limit)
@@ -608,10 +642,52 @@ async def read_events(
     ]
 
 
+class HistorySettlementAdapter:
+    """B1 回合终态结算端口适配器（Day 7 装配用，实现 response_service.HistorySettlementPort）。
+
+    持 session_factory；`commit_response` / `finish_turn` 各开短事务提交——
+    两函数均幂等（前者按 (turn_id, response_id) 已有 response_completed 幂等、
+    后者已终态不覆盖），重试安全；补偿重试登记 Day 9。
+
+    注意：commit_response 的 `status` 只进事件 payload，**不改**轮次状态；
+    轮次终态统一由 finish_turn 写（两写口会让迟到 completed 覆盖 interrupted）。
+    """
+
+    def __init__(self, session_factory: Any) -> None:
+        self._session_factory = session_factory
+
+    async def commit_response(
+        self,
+        *,
+        turn_id: str,
+        response_id: str,
+        generated_text: str,
+        delivered_text: str | None,
+        status: str,
+    ) -> None:
+        async with self._session_factory() as session:
+            await commit_response(
+                session,
+                turn_id=turn_id,
+                response_id=response_id,
+                generated_text=generated_text,
+                delivered_text=delivered_text,
+                status=status,
+            )
+            await session.commit()
+
+    async def finish_turn(self, *, turn_id: str, status: FinishStatus) -> None:
+        async with self._session_factory() as session:
+            await finish_turn(session, turn_id=turn_id, status=status)
+            await session.commit()
+
+
 __all__ = [
+    "MAX_READ_TURNS_LIMIT",
     "TERMINAL_TURN_STATUSES",
     "EventView",
     "HistoryError",
+    "HistorySettlementAdapter",
     "InvalidEventType",
     "ThreadMismatch",
     "ThreadNotFound",

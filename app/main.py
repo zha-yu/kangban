@@ -55,7 +55,13 @@ from app.core.trace import TraceIdMiddleware
 from app.db import session_factory
 from app.mcp_client import MCPClient
 from app.router.safety import SafetyDecision
-from app.services import identity_service, medication_service, voiceprint_service
+from app.services import (
+    history_service,
+    identity_service,
+    medication_service,
+    memory_service,
+    voiceprint_service,
+)
 from app.services.auth_service import (
     AuthConflictError,
     AuthExpiredError,
@@ -71,7 +77,7 @@ from app.services.dialogue_service import (
     identity_decision_to_result,
 )
 from app.services.llm_service import LLMService
-from app.services.response_service import ResponseService
+from app.services.response_service import RedisEpochPersistence, ResponseService
 from app.services.safety_service import escalate_safety_event
 from app.services.state_service import StateCenter
 from app.services.tool_executor import ToolExecutor, ToolResult
@@ -128,6 +134,32 @@ class _SessionToolExecutor:
             except Exception:
                 await session.rollback()
                 raise
+
+
+class _MemoryExtractionAdapter:
+    """B1↔B2 记忆提取端口适配（裁决 O-B2）：终态结算后台调 extract_after_turn。
+
+    ResponseService 侧已用 create_task 调度（不阻塞 ack/interrupt 返回），
+    本适配只做一次性转发；generic（elder_id=None）由 ResponseService 闸门拦截，
+    不会到达此处。失败在 response_service 侧记日志，不回滚终态。
+    """
+
+    async def extract_after_turn(
+        self,
+        *,
+        elder_id: str | None,
+        thread_id: str,
+        turn_id: str,
+        user_text: str,
+        assistant_text: str,
+    ) -> int:
+        return await memory_service.extract_after_turn(
+            elder_id=elder_id,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            user_text=user_text,
+            assistant_text=assistant_text,
+        )
 
 
 @asynccontextmanager
@@ -282,6 +314,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     response_service = ResponseService(
         deliver=signaling.deliver,
         events=HistoryEventSink(session_factory),
+        # Day 7 B1（P1-1/P1-3）：回合终态结算——commit_response 投影 + finish_turn 终态
+        history_store=history_service.HistorySettlementAdapter(session_factory),
+        # Day 7 B1（P2-9）：epoch/水位回写 Redis（重启恢复；单进程范围，多 worker 登记 Day 9）
+        persistence=RedisEpochPersistence(redis_client),
+        # Day 7 B1↔B2（裁决 O-B2）：终态结算后调度记忆提取（真实现；Step 7 统一验收落库）
+        memory_port=_MemoryExtractionAdapter(),
     )
     turn_service = TurnService(
         session_factory=session_factory,
@@ -518,6 +556,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             return
         await response_service.handle_segment_ack(device_id=conn.device_id, message=message)
 
+    async def _on_interrupt(conn: signaling.ConnectionContext, message: Mapping[str, Any]) -> None:
+        """C→S interrupt（day07/README §5.4 冻结口径）：解包 device_id 后转交打断五步。
+
+        设备/会话归属校验在 ResponseService.interrupt（response 必须属于本设备，
+        否则按 unknown_response no-op、不落库）；形状校验已在 signaling 层完成。
+        """
+        if conn.device_id is None:
+            logger.warning(
+                "interrupt_without_device",
+                extra={"trace_id": conn.trace_id, "response_id": str(message.get("response_id"))},
+            )
+            return
+        logger.info(
+            "interrupt_requested",
+            extra={
+                "trace_id": conn.trace_id,
+                "device_id": conn.device_id,
+                "response_id": str(message["response_id"]),
+                "reason": str(message.get("reason", "-")),
+            },
+        )
+        await response_service.interrupt(str(message["response_id"]), device_id=conn.device_id)
+
     async def _on_touch_played(
         conn: signaling.ConnectionContext, message: Mapping[str, Any]
     ) -> None:
@@ -568,6 +629,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     signaling.set_identity_confirm_handler(_on_identity_confirm)
     signaling.set_identity_timeout_handler(_on_identity_timeout)
     signaling.set_segment_ack_handler(_on_segment_ack)
+    signaling.set_interrupt_handler(_on_interrupt)
     signaling.set_touch_played_handler(_on_touch_played)
     app.state.redis = redis_client
     app.state.llm_service = llm_service
@@ -584,6 +646,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         signaling.set_identity_confirm_handler(None)
         signaling.set_identity_timeout_handler(None)
         signaling.set_segment_ack_handler(None)
+        signaling.set_interrupt_handler(None)
         signaling.set_touch_played_handler(None)
         # Day 5：metrics 批量缓冲冲刷（裁决 B6/D2）——先停 worker 再 drain，避免丢批
         await get_metrics_recorder().stop()
