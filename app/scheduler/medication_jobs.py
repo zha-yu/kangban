@@ -1,21 +1,28 @@
 r"""用药到点的调度驱动链（C2 · Day 7）。
 
-**一条铁律**：本文件**绝对不写库**。`session.add / commit / flush` 一行都不允许；
-ORM 查表也不行（service 层是唯一 import models 的地方）。所有写库由
+**一条铁律**：本文件**不做业务写库**。`session.add / flush` 一行都不允许；
+ORM 查表也不行（service 层是唯一 import models 的地方）。所有业务写由
 `medication_confirmation_graph`（子图内部调 `medication_service`）完成。
+
+**事务提交例外（2026-11-10 联调裁决，主理人授权直接修）**：图运行结束后对
+`graph_session` 做一次 `commit()`——这是**会话管理**而非业务写库。修复
+L6#6 缺陷：`record_attempt` 只 `begin_nested+flush`（service 层「调用方提交」
+规范），图节点与 scheduler 原先都无提交，session 关闭即 rollback，导致
+medication_attempts 永远 0 行、事件状态恒 calling、重放防护失效。
 
 两条子任务：
 
 1. **新到点 tick**：`medication_due_service.list_due_plans()` 拿触发列表 → 对每条
    `medication_service.create_event`（幂等键 `(plan_id, scheduled_at)`）→
    `build_medication_graph` → `start_medication_task`（跑到 `wait_confirm` 的 interrupt
-   就停住，让出执行）。
+   就停住，让出执行）→ **提交事务**。
 2. **等待中的子图 resume tick**：扫所有 waiting_confirm 的事件 → 从 checkpointer
-   读子图状态 → 算下次触达时点 → 到点就 resume 一个空 answer。
+   读子图状态 → 算下次触达时点 → 到点就 resume 一个空 answer → **提交事务**。
 
 硬约束：
 
-- `grep "session.add\|session.commit" app/scheduler/` 必须零命中
+- `grep "session\.add(\|session\.flush(\|from app.models" app/scheduler/` 必须零命中
+  （`session.commit()` 已豁免：仅限图运行后的事务提交，见上方裁决说明）
 - `grep "from app.models" app/scheduler/` 必须零命中
 - scheduler 持长开 checkpointer，不在 tick 内临时开关
 """
@@ -218,9 +225,7 @@ class SchedulerRuntime:
             try:
                 await self._trigger_plan(plan)
             except Exception:
-                logger.exception(
-                    "medication_scheduler_trigger_failed plan_id=%s", plan.plan_id
-                )
+                logger.exception("medication_scheduler_trigger_failed plan_id=%s", plan.plan_id)
 
     async def _tick_resume_waiting(self) -> None:
         """每分钟 tick：扫 waiting_confirm 的子图，到点了就 resume 一个空 answer。"""
@@ -286,6 +291,9 @@ class SchedulerRuntime:
                 deadline=plan.deadline,
                 triggered_by="scheduler",
             )
+            # 事务提交（L6#6 裁决）：remind 节点的 record_attempt / 状态推进都在
+            # graph_session 上，不提交则 session 关闭即 rollback——触达记录凭空消失。
+            await graph_session.commit()
 
         logger.info(
             "medication_scheduler_triggered plan_id=%s reminder_id=%s elder_id=%s",
@@ -318,9 +326,7 @@ class SchedulerRuntime:
             state = await graph.aget_state(graph_id)
 
         if state is None:
-            logger.warning(
-                "medication_scheduler_state_missing reminder_id=%s", reminder_id
-            )
+            logger.warning("medication_scheduler_state_missing reminder_id=%s", reminder_id)
             return
 
         values = state.values or {}
@@ -347,9 +353,7 @@ class SchedulerRuntime:
         async with self._session_factory() as session:
             t0 = await get_event_scheduled_at(session, reminder_id)
         if t0 is None:
-            logger.warning(
-                "medication_scheduler_event_missing reminder_id=%s", reminder_id
-            )
+            logger.warning("medication_scheduler_event_missing reminder_id=%s", reminder_id)
             return
 
         next_fire = t0 + datetime.timedelta(minutes=attempt_no * _ATTEMPT_INTERVAL_MINUTES)
@@ -367,6 +371,9 @@ class SchedulerRuntime:
             await resume_medication_task(
                 graph, reminder_id=reminder_id, answer=_EMPTY_ANSWER_FOR_RETRY
             )
+            # 事务提交（L6#6 裁决）：resume 触发的 retry → remind → record_attempt
+            # 同样在 resume_session 上，不提交则 rollback。
+            await resume_session.commit()
 
         logger.info(
             "medication_scheduler_resumed reminder_id=%s attempt_no=%d",

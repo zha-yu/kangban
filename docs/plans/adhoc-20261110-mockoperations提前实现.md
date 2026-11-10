@@ -1,0 +1,81 @@
+> 状态：进行中　｜　版本：v1.0　｜　日期：2026-11-10
+> 关联：docs/team_tasks/day06/contracts.md v1.8（同提交登记）｜mcp-servers/weather（骨架模板）
+> 上游依据：PRD FR-ALT-01/02、FR-RPT-03、AC-38（验收）｜技术设计文档 §1.1 副作用收敛、§3 work_orders/notifications 表（实现）
+> 变更记录见文末
+
+# mock-operations MCP 提前实现（Day 8 范围、Day 7 空闲产能消化）
+
+## 0. 背景与边界
+
+`day06/contracts.md` v1.1 冻结口径「mock-operations 留 Day 8」。本计划把 **Day 8 里不依赖
+任何 Day 7 在改文件的部分**提前消化：server 本体 + 写库服务 + 单测；**ToolExecutor 注册
+接线（L7-6 写锁在 dev-C 手里）与 AC-39 越权端到端证据仍留 Day 8**，范围不扩大。
+
+## 1. 交付物
+
+| 文件 | 动作 | 内容 |
+| --- | --- | --- |
+| `app/services/notify_service.py` | 新增 | 家属（监护人）通知唯一写库口：按 `elder_guardians` active 绑定解析监护人、逐人落 `notifications`（`is_mock=true`、`status='generated'`）、`dedupe_key` 部分唯一幂等（并发走 begin_nested 回查） |
+| `mcp-servers/mock-operations/operations_core.py` | 新增 | 两个工具的核心逻辑：入参强校验 → 失败四分类结构化返回（永不抛异常）；委托 `work_order_service` / `notify_service`，自身不写 SQL |
+| `mcp-servers/mock-operations/server.py` | 新增 | MCPServer 骨架（照 weather）：stdio 默认 / `--http` 绑 `127.0.0.1:7102`，端口可用 `MOCK_OPERATIONS_MCP_PORT` 覆盖 |
+| `tests/test_mcp_mock_operations.py` | 新增 | 参数校验零 DB 用例 + 真库落库/幂等/not_found 用例（savepoint 事务回滚隔离） |
+
+## 2. 关键设计决策（实现口径，供 Day 8 接线对照）
+
+1. **身份注入参数名 `subject_elder_id`**：`MCPClient._resolve_args_identity` 会把 args 里的
+   `elder_id` 键丢弃（闸门③），MCP server 进程拿不到它——工具参数因此用
+   `subject_elder_id`，**由 Day 8 的 ToolExecutor 包装层从 `runtime.elder_id` 注入**，
+   模型传入无效。这是本计划最重要的接线约定。
+2. **失败结构沿用 weather 约定**：`{"ok": false, "error": <机器码>, "message": <长者可读话术>}`；
+   机器码 `bad_request`（参数错→bad_args） / `not_found`（目标不存在→如实告知） /
+   `conflict` 与 `transient`（临时故障→transient）。`mcp_client.tool_error_class()` 零改动可映射。
+3. **建单不指定 assignee**：MCP 工具不暴露 `assignee_id`（谁处理是护工的事，不是模型的），
+   建单留「未分派」真实状态；`severity` 建单快照语义沿用 `work_order_service`。
+4. **家属通知按绑定解析目标**：工具只收 `subject_elder_id`，监护人列表由
+   `elder_guardians(status='active')` 解析（模型不得指定通知对象）；无绑定 →
+   `not_found` 如实失败。逐监护人的幂等键为 `<dedupe_key>:<guardian_id>`。
+5. **通知类型开放枚举校验**：`notifications.type` 无 CHECK（ER §5.3 口径），工具层用
+   `^[a-z][a-z_]{1,63}$` 形态校验防注入，不设死白名单。
+6. **payload 纪律**：必须 JSON 对象、可序列化、≤4096 字节（防塞库）；脱敏由调用方
+   payload 构造时保证（与 `safety_service` 同一口径）。
+7. **不新增 Settings / 迁移 / .env 项**：表全在（0010/0011），channel 复用
+   `settings.notify_channel`，端口覆盖走环境变量豁免口径（同 weather）。
+
+## 3. 验收命令
+
+```bash
+uv run pytest tests/test_mcp_mock_operations.py -q        # 单测（需本地 PG）
+uv run pytest tests/test_mcp_mock_operations.py \
+  --cov=app.services.notify_service --cov=operations_core \
+  --cov-report=term-missing -q                            # 覆盖率（口径见下）
+uv run ruff check app/services/notify_service.py mcp-servers/mock-operations tests/test_mcp_mock_operations.py
+uv run python mcp-servers/mock-operations/server.py --http   # 起进程，curl 调 /mcp 验证两工具
+```
+
+### 覆盖率口径（FR-TC-06「核心 Tool 100%」对照，2026-11-10 实测 29 用例）
+
+- `operations_core.py`：**99%**（仅剩 `event_id` 传入且建单成功的一条部分分支；
+  失败四分类映射 conflict/bad_request/transient/not_found 已全部覆盖）；
+- `notify_service.py`：82%，**两条豁免**（评审留痕，不补测）：
+  1. `148-169` 并发抢插兜底（`begin_nested` 撞唯一索引后回查复用）——需要真并发才触发，
+     逐人幂等路径已有独立用例覆盖，此条是竞态防御层；
+  2. `69-70` payload 序列化炸分支——`json.dumps(default=str)` 已把几乎所有对象转为字符串，
+     仅 `__str__` 也抛异常的对象可达，属不可达防御分支。
+
+## 4. Day 8 待办（本计划不覆盖）
+
+- `tool_executor.py` / `tool_registry.py` 注册两工具（等 dev-C C3 收口，L7-6）；
+- 包装层从 `runtime.elder_id` 注入 `subject_elder_id`；
+- AC-39 越权端到端用例证据（伪造 elder_id → forbidden + 审计）；
+- 家属端推送状态展示（FR-RPT-03 前端，P8 family 后台）。
+
+## 修订记录
+
+| 版本 | 日期 | 说明 |
+| --- | --- | --- |
+| v1.0 | 2026-11-10 | 首版：Day 8 mock-operations 中不依赖 Day 7 写锁的提前实现计划 |
+| v1.1 | 2026-11-10 | 补 5 个失败映射用例（event_id not_found / WorkOrderConflict→conflict / WorkOrderError→bad_request / 两工具裸异常→transient 不泄内部细节），`operations_core.py` 覆盖率 87%→99%；§3 登记覆盖率命令与 `notify_service.py` 两条豁免口径（并发兜底 / 不可达序列化分支） |
+| v1.2 | 2026-11-10 | 容器化提前件（Day 10 七服务版中仅 mock-operations 提前）：① `server.py` 加 `MOCK_OPERATIONS_MCP_HOST` 覆盖（默认仍 127.0.0.1，容器内 0.0.0.0，同 PORT_ENV_VAR 豁免口径）；② 新增 `deploy/mock-operations/Dockerfile`（uv --frozen --no-dev、非 root、无 .env 进层）与仓库根 `.dockerignore`；③ compose 增 `mock-operations-mcp` 服务（无宿主机端口映射，DATABASE_URL 指向服务名 postgres，healthcheck 用 MCP tools/list 协议探活）。实测：build + up 后 healthy，容器内 tools/list / tools/call 均通。weather-mcp 上容器时照抄本 Dockerfile；backend（Day 10）容器化后连 `mock-operations-mcp:7102` |
+| v1.3 | 2026-11-10 | weather-mcp 按同款方案落容器：① `weather/server.py` 加 `WEATHER_MCP_HOST` 覆盖与 `_resolve_bind_host()`（默认仍 127.0.0.1）；② 新增 `deploy/weather/Dockerfile`（同款骨架；weather 不连库，无需 DATABASE_URL，密钥经 compose 变量替换从 .env 注入环境变量）；③ compose 增 `weather-mcp` 服务（7101，同款协议探活）。至此两个 MCP server 均为提前件，Day 10 收口范围剩 backend / nginx / coturn / laya。实测：容器 healthy，容器内 `get_weather("杭州")` 返回真实上游数据；本地 weather 单测 15/15 通过 |
+| v1.4 | 2026-11-10 | 两 MCP 服务补环回端口映射 `127.0.0.1:7101/7102`（仅绑环回不暴露公网）：宿主机侧（本地裸跑的 backend、curl）从此直接访问容器，本地手动起的 MCP 进程可全部停掉，统一 `docker compose up -d`；backend 容器化（Day 10）后改走内部服务名，映射届时移除。实测：宿主机 `get_weather("上海")` 真实数据、mock-ops `tools/list` 均通 |
+| v1.5 | 2026-11-10 | **消费侧 REST 接口提前交付**（契约 v1.9）：① `app/api/workorders.py`（f2-D1 提前件，console 看板数据源）+ `app/api/family.py`（**N1/N4 属 Day 8 P8 范围提前**，家属通知数据源）；均走 services 唯一写库层，经 `app/api/__init__.py` ROUTERS 注册表挂载（`app/main.py` 零改动，L7-2 写锁未碰）；② `work_order_service` 追加只读查询面（`list_work_orders` / `get_work_order`：elder_name / room_label（Bed→Room join） / assignee_name / transitions（actor_name join 补齐））；`notify_service` 追加 `list_guardian_notifications` / `mark_guardian_notification_read`（只写 read_at）；③ 前端切换：`workorders-api.ts` Mock 层换真实现（导出签名不变），`family/api.ts` 增 `NOTIFICATIONS_LIVE` 单独放行 N1/N4（F0/F1/F2 仍 Mock）；④ 测试 `tests/test_api_workorders_family.py` 10 用例（鉴权 401 / 服务端注入操作人（伪造 actor_id 丢弃） / 备注必填 / 红档时间强制 / reopen 仅 admin / 按人隔离 / 已读幂等 / 越权 404）全绿；tsc 全绿 |

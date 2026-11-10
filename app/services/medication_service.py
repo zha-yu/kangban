@@ -23,6 +23,7 @@ import json
 import logging
 import uuid
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -345,6 +346,38 @@ async def get_drug_name(session: AsyncSession, event_id: uuid.UUID) -> str | Non
         return None
     name = row.get("drug_name")
     return str(name) if name else None
+
+
+async def get_medication_card_snapshot(
+    session: AsyncSession, event_id: uuid.UUID
+) -> dict[str, str | int] | None:
+    """pad 用药卡片快照（Day 7 L6#9 联调裁决）。
+
+    只取 drug_snapshot 里**实际存在**的字段（不造 usage 之类没有的事实——
+    快照无 usage 则前端显示为空），scheduled_at 转 Asia/Shanghai 展示口径。
+    字段名与前端 MedicationSnapshot（camelCase）对齐，序列化后直接下发。
+    """
+    row = (
+        await session.execute(
+            select(MedicationEvent.scheduled_at, MedicationEvent.drug_snapshot).where(
+                MedicationEvent.reminder_id == event_id
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        return None
+    scheduled_at, drug_snapshot = row
+    snapshot = drug_snapshot if isinstance(drug_snapshot, dict) else {}
+    drug_name = str(snapshot.get("drug_name") or "")
+    if not drug_name:
+        return None
+    local = scheduled_at.astimezone(ZoneInfo("Asia/Shanghai"))
+    return {
+        "drugName": drug_name,
+        "dose": str(snapshot.get("dose") or ""),
+        "scheduledAt": local.strftime("%H:%M"),
+        "usage": str(snapshot.get("usage") or ""),
+    }
 
 
 async def list_bound_device_ids(session: AsyncSession, *, elder_id: uuid.UUID) -> list[uuid.UUID]:

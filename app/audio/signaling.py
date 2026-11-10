@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.audio.asr import ASREvent, ASREventKind
+from app.audio.asr import ASREvent, ASREventKind, ASRResult
 from app.core.auth import (
     KIND_DEVICE,
     AuthError,
@@ -489,6 +489,44 @@ def set_dialogue_final_handler(handler: DialogueFinalHandler | None) -> None:
     """注册 FINAL → A2 对话编排的唯一 awaitable 回调；传 None 注销（测试/关闭用）。"""
     global _dialogue_final_handler
     _dialogue_final_handler = handler
+
+
+# ------------------------------------------------------------------ Day 7 C2 闭环
+# C→S user_text（pad 确认按钮/输入框降级的文本上行）。契约来源：Day 7 联调裁决
+# （2026-11-10，主理人授权直接修 L6#8）：MedicationCard「已服用/这次不吃」按钮
+# 原先无上行通道（前端半边缺失），确认闭环走不通。文本按 ASR FINAL 同路处理
+# （字幕 → A2 编排 → 用药确认工具 → 词表判定），服务端不区分「人说的」与「点出来的」；
+# A1 契约冻结后按 contracts-system-one.md 逐字段校对。
+
+_USER_TEXT_MAX_LEN = 500
+
+
+async def _handle_user_text(conn: ConnectionContext, message: Mapping[str, Any]) -> None:
+    """C→S user_text 分支：形状校验 → 按 ASR FINAL 同路进对话编排。
+
+    text 为空/超长只 warn 不回执（按钮上行是尽力而为，不因脏帧打断客户端）；
+    与 asr_final 一样经 dispatch_asr_event 去重与编排，不另起第二套路由。
+    """
+    text = message.get("text")
+    if (
+        not isinstance(text, str)
+        or not (stripped := text.strip())
+        or len(stripped) > _USER_TEXT_MAX_LEN
+    ):
+        logger.warning(
+            "ws_user_text_invalid",
+            extra=_log_extra(conn, reason="shape"),
+        )
+        return
+    if not conn.device_id:
+        logger.warning("ws_user_text_no_device", extra=_log_extra(conn, reason="no_device"))
+        return
+    event = ASREvent(
+        kind=ASREventKind.FINAL,
+        result=ASRResult(text=stripped, is_final=True, confidence=None),
+        error=None,
+    )
+    await dispatch_asr_event(conn.device_id, uuid4().hex, conn.trace_id or new_trace_id(), event)
 
 
 async def dispatch_asr_event(
@@ -1290,6 +1328,9 @@ async def _read_loop(conn: ConnectionContext) -> None:
             continue
         if msg_type == "touch_played":
             await _run_guarded(conn, _handle_touch_played(conn, message), msg_type)
+            continue
+        if msg_type == "user_text":
+            await _run_guarded(conn, _handle_user_text(conn, message), msg_type)
             continue
         if msg_type == "auth":
             # 裁决②：连接内重复 auth 按非法凭证处理（防连接内换 token 旁路）

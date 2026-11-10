@@ -23,12 +23,14 @@ from app.api import (
     auth,
     devices,
     elders,
+    family,
     guardians,
     health,
     pad,
     rooms,
     staff,
     voiceprints,
+    workorders,
 )
 
 #: (路由器, 挂载前缀) —— 顺序与 `main.py` 原先手写的 6 条保持一致
@@ -45,6 +47,8 @@ ROUTERS: tuple[tuple[APIRouter, str], ...] = (
     (voiceprints.router, "/api"),  # 路由内只写 /voiceprints/*，需补 /api（C4）
     (rooms.router, ""),  # 自带 /api/rooms 前缀（E18，契约 v1.8）
     (admin_org.router, ""),  # 自带 /api/admin 前缀（房间/床位管理，计划 v1.5）
+    (workorders.router, ""),  # 自带 /api/work-orders 前缀（f2-D1 console 看板，2026-11-10 提前件）
+    (family.router, ""),  # 自带 /api/family 前缀（N1/N4 家属通知，Day 8 P8 提前件）
 )
 
 __all__ = ["ROUTERS"]

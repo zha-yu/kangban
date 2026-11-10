@@ -1,6 +1,6 @@
 # Day 7 · dev-D · 触达真机联调（TD-1/TD-2 收口验收）
 
-> 状态：未开始　｜　版本：v1.0　｜　日期：2026-11-10
+> 状态：已完成　｜　版本：v1.1　｜　日期：2026-11-10
 > 关联：docs/team_tasks/day07/dev-c-触达语音接线.md、docs/team_tasks/day07/dev-c-触达played闭环.md
 > 上游依据：docs/team_tasks/day07/contracts.md v1.0 §1/§2（消息与回执口径）｜两张 dev-C 卡 v1.3（联调项移交本卡）
 > 变更记录见文末
@@ -44,3 +44,4 @@ dev-C 已完成触达语音接线（TD-1）与 played 闭环（TD-2）的全部�
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-10 | 初稿：从两张 dev-C 卡 v1.3 移交真机联调验收项立卡（主理人裁决方案 A） |
+| v1.1 | 2026-11-10 | **已完成收口**：TD-1（真机收到触达卡片+大字幕+TTS 独立通道播出）与 TD-2（`medication_attempts.receipt=played` 落库，`played` 严格 +1、打断/关页不升级、重复回执幂等零重复组，基线差集法）双双 PASS，证据在 `docs/plans/day07/d-联调记录.md` L3 节。执行调整新增的 A3 路由降级联调因 A2 sidecar 未就绪阻塞，已在联调记录 L5 登记并催办 dev-A（前端降级提示已预留 `msg.degraded` 触发），不阻塞本卡；C2 到点触达联调 PASS（L2 复跑）。前置缺陷 L6#6 落库断裂已修复并随 commit 2e41242 收口 |

@@ -54,9 +54,12 @@ from app.core.logging import configure_logging  # noqa: E402
 SERVER_NAME = "silvermate-weather"
 BIND_HOST = "127.0.0.1"
 BIND_PORT = 7101
-# 端口覆盖变量：仅本地进程运维参数，不进 Settings（任务口径「不要动 Settings」）；
+# 端口/绑定地址覆盖变量：仅本地与容器运维参数，不进 Settings（任务口径「不要动 Settings」）；
 # 全局配置基线仍以 .env.example 的 17 组变量为准，此处散读是唯一豁免点。
+# BIND_HOST 默认 127.0.0.1（本地裸跑不对外）；容器里由 compose 设 WEATHER_MCP_HOST=0.0.0.0，
+# backend 容器经 compose 内部网络访问，不做宿主机端口映射（同 mock-operations 终态）。
 PORT_ENV_VAR = "WEATHER_MCP_PORT"
+HOST_ENV_VAR = "WEATHER_MCP_HOST"
 
 TOOL_DESCRIPTION = (
     "查询一个城市当前的天气（温度、天气状况与数据时间戳）。"
@@ -118,17 +121,25 @@ def _resolve_bind_port() -> int:
         return BIND_PORT
 
 
+def _resolve_bind_host() -> str:
+    """HTTP 绑定地址：默认 127.0.0.1（本地裸跑不对外）；容器里经
+    `WEATHER_MCP_HOST=0.0.0.0` 覆盖，供 backend 容器走 compose 内部网络访问。"""
+    raw = os.environ.get(HOST_ENV_VAR, "").strip()
+    return raw if raw else BIND_HOST
+
+
 def _run_http(server: MCPServer) -> None:
-    """streamable-http 传输：绑定环回 7101，纯 JSON 响应便于 curl 调试。"""
+    """streamable-http 传输：默认绑环回 7101，纯 JSON 响应便于 curl 调试。"""
     configure_logging(service="silvermate-weather")
+    bind_host = _resolve_bind_host()
     port = _resolve_bind_port()
     logging.getLogger("mcp_servers.weather").info(
         "weather_mcp_starting",
-        extra={"transport": "streamable-http", "bind_host": BIND_HOST, "bind_port": port},
+        extra={"transport": "streamable-http", "bind_host": bind_host, "bind_port": port},
     )
     server.run(
         "streamable-http",
-        host=BIND_HOST,
+        host=bind_host,
         port=port,
         stateless_http=True,
         json_response=True,

@@ -116,6 +116,38 @@ export interface InterruptMsg {
   reason: "barge_in";
 }
 
+/** Day 7 联调（L6#8）：pad 确认按钮/输入框降级的文本上行。
+ *  服务端按 ASR FINAL 同路处理（字幕→编排→用药确认词表判定）；
+ *  A1 契约冻结后按 contracts-system-one.md 逐字段校对。 */
+export interface UserTextMsg {
+  type: "user_text";
+  text: string;
+}
+
+/** Day 7 联调（L6#9）：主动触达的任务卡片命令（scheduler / 子图下发）。
+ *  shape 与 task-channel.ts 的 PadTaskCommand 对齐（snake_case 下行、camelCase snapshot）；
+ *  同 taskId 重复下发前端幂等（FR-MED-04），不重启面板。 */
+export interface TaskCommandMsg {
+  type: "task_command";
+  task_id: string;
+  kind: "medication";
+  source: "scheduler" | "ws_fallback" | "staff" | "voiceprint";
+  hint: string;
+  payload: {
+    kind: "medication";
+    snapshot: {
+      drugName: string;
+      dose: string;
+      scheduledAt: string;
+      usage: string;
+      attemptNo: number;
+      windowSeconds: number;
+      snapshotAt: string;
+    };
+  };
+  issued_at: number;
+}
+
 export type ClientSignal =
   | AuthMsg
   | OfferMsg
@@ -127,7 +159,8 @@ export type ClientSignal =
   | IdentityConfirmMsg
   | SegmentAckMsg
   | TouchPlayedMsg
-  | InterruptMsg;
+  | InterruptMsg
+  | UserTextMsg;
 
 /* ---- S→C 服务端下发 ---- */
 
@@ -252,13 +285,15 @@ export type ServerSignal =
   | TtsTextMsg
   | ErrorMsg
   | IdentityAskMsg
-  | IdentityResultMsg;
+  | IdentityResultMsg
+  | TaskCommandMsg;
 
 export type ServerSignalType = ServerSignal["type"];
 
 const SERVER_SIGNAL_TYPES: readonly ServerSignalType[] = [
   "auth_ok",
   "auth_fail",
+  "task_command",
   "answer",
   "ice",
   "pong",

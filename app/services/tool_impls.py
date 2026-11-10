@@ -80,8 +80,15 @@ def make_medication_confirm_executor(
         # --- 1. 查等待中的事件（只读，service 层） ---
         async with session_factory() as session:
             waiting = await list_waiting_confirm_events(session)
-            # 过滤：属于当前长者的、有图状态的
-            my_events = [e for e in waiting if _elder_matches_event(session, e.reminder_id, elder_id)]
+            # 过滤：属于当前长者的、有图状态的。
+            # 注意 _elder_matches_event 是 async 且 elder_id 入参口径是 UUID——
+            # 原 bug：漏 await 使协程对象恒真（过滤失效）+ str 直接比对恒 False
+            # （两个错误叠加恰好把所有事件都放进来，跨长者防护形同虚设）。
+            elder_uuid = uuid.UUID(str(elder_id))
+            matched = [
+                e for e in waiting if await _elder_matches_event(session, e.reminder_id, elder_uuid)
+            ]
+            my_events = matched
 
         if not my_events:
             raise ToolNotFoundError("现在没有待确认的用药提醒")
@@ -100,9 +107,7 @@ def make_medication_confirm_executor(
             # resume 会推进到下一个阻塞点（taken_reported → END；或 refuse → END）
             # 如果子图已经终态（调度侧先 finalize 了），resume 会直接到 END 不报错
             try:
-                await resume_medication_task(
-                    graph, reminder_id=reminder_id, answer=answer.strip()
-                )
+                await resume_medication_task(graph, reminder_id=reminder_id, answer=answer.strip())
             except Exception as exc:
                 # 子图 resume 抛异常（比如终态已互斥）——按 transient 处理
                 # 让 ToolExecutor 重试；重试仍失败后降级话术
@@ -112,6 +117,12 @@ def make_medication_confirm_executor(
                     type(exc).__name__,
                 )
                 raise ToolTransientError(str(exc)) from exc
+
+            # 事务提交（L6#6 联调裁决 2026-11-10）：mark_taken/mark_refused/finalize
+            # 的业务写在 graph_session 上，service 层按「调用方提交」规范不自行
+            # commit——这里就是调用方，不提交则 session 关闭即 rollback，确认结果
+            # 凭空消失。
+            await graph_session.commit()
 
             # 读最终状态
             state = await graph.aget_state(graph_config(reminder_id))
@@ -136,9 +147,7 @@ def make_medication_confirm_executor(
     return _executor
 
 
-async def _elder_matches_event(
-    session: Any, reminder_id: uuid.UUID, elder_id: uuid.UUID
-) -> bool:
+async def _elder_matches_event(session: Any, reminder_id: uuid.UUID, elder_id: uuid.UUID) -> bool:
     """验证 medication_event.reminder_id 确实属于这位长者（跨长者防护）。
 
     list_waiting_confirm_events 没带 elder_id 过滤（service 层通用），这里补上。
@@ -150,9 +159,7 @@ async def _elder_matches_event(
     row = (
         (
             await session.execute(
-                select(MedicationEvent.elder_id).where(
-                    MedicationEvent.reminder_id == reminder_id
-                )
+                select(MedicationEvent.elder_id).where(MedicationEvent.reminder_id == reminder_id)
             )
         )
         .scalars()
@@ -218,16 +225,20 @@ def make_memory_recall_executor(
         except ToolError:  # 内层 ToolError 直接上抛让 ToolExecutor 收敛
             raise
         except Exception as exc:
-            logger.warning("memory_recall_error elder_id=%s error_type=%s", elder_id, type(exc).__name__)
+            logger.warning(
+                "memory_recall_error elder_id=%s error_type=%s", elder_id, type(exc).__name__
+            )
             raise ToolTransientError(str(exc)) from exc
 
         # recall_for_turn 的返回类型：MemoryNote 列表 → 转 dict 给 Agent
         note_dicts: list[dict[str, Any]] = []
         for n in notes:
-            note_dicts.append({
-                "content": getattr(n, "content", str(n)),
-                "category": getattr(n, "category", ""),
-            })
+            note_dicts.append(
+                {
+                    "content": getattr(n, "content", str(n)),
+                    "category": getattr(n, "category", ""),
+                }
+            )
         return {"notes": note_dicts}
 
     return _executor

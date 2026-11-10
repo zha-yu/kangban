@@ -20,7 +20,6 @@ import datetime
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
-from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -29,31 +28,29 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.graphs.medication_confirmation_graph import (
-    MAX_ATTEMPTS,
     build_medication_graph,
     graph_config,
     resume_medication_task,
     start_medication_task,
 )
 from app.models.medication import (
-    MedicationAttempt,
     MedicationEvent,
     MedicationPlan,
     WorkOrder,
 )
 from app.models.organization import Device, Elder, Room
 from app.models.staff import StaffAccount
-from app.scheduler.medication_jobs import SchedulerRuntime, _ATTEMPT_INTERVAL_MINUTES
+from app.scheduler.medication_jobs import SchedulerRuntime
 from app.services import medication_service
 from app.services.medication_due_service import list_due_plans
-
 
 # ------------------------------------------------------------------ fixture 复用
 
 
 def _test_psycopg_dsn() -> str:
-    from app.core.config import get_settings
     from sqlalchemy import make_url
+
+    from app.core.config import get_settings
 
     settings = get_settings()
     raw = settings.database_url_test
@@ -138,6 +135,7 @@ async def seeded(session: AsyncSession) -> dict[str, Any]:
 @pytest.fixture
 def runtime_factory(session: AsyncSession, saver: AsyncPostgresSaver):
     """构造一个 SchedulerRuntime（checkpointer 用共享 saver，tick 用控制时间参数）。"""
+
     async def _make() -> SchedulerRuntime:
         # 造一个 session_factory（每次调用返回当前 session 的 savepoint 上下文）
         async def _sf():
@@ -220,7 +218,9 @@ async def test_A2_2_four_attempts_and_finalize(session, seeded, saver):
     # 注入恒 True deliver：模拟设备在线收得到（voice_dispatched），
     # 这样 AC-20 分流后终态仍为 missed_unconfirmed 而非 notification_failed。
     graph = build_medication_graph(
-        session=session, checkpointer=saver, deliver_fn=lambda *_a, **_k: True,
+        session=session,
+        checkpointer=saver,
+        deliver_fn=lambda *_a, **_k: True,
     )
     await start_medication_task(
         graph,
@@ -260,16 +260,23 @@ async def test_A2_3_finalize_state(session, seeded, saver):
     now = _utc_now().replace(second=0, microsecond=0)
 
     rid = await medication_service.create_event(
-        session, plan_id=plan_id, elder_id=elder_id,
+        session,
+        plan_id=plan_id,
+        elder_id=elder_id,
         scheduled_at=now,
         drug_snapshot={"drug_name": "硝苯地平", "dose": "10mg 一片"},
         triggered_by="scheduler",
     )
     await session.flush()
 
-    graph = build_medication_graph(session=session, checkpointer=saver, deliver_fn=lambda *_a, **_k: True)
+    graph = build_medication_graph(
+        session=session, checkpointer=saver, deliver_fn=lambda *_a, **_k: True
+    )
     await start_medication_task(
-        graph, reminder_id=rid, plan_id=plan_id, elder_id=elder_id,
+        graph,
+        reminder_id=rid,
+        plan_id=plan_id,
+        elder_id=elder_id,
         deadline=(now + datetime.timedelta(minutes=15)).isoformat(),
     )
     for _ in range(4):
@@ -288,23 +295,34 @@ async def test_A2_4_one_work_order(session, seeded, saver):
     now = _utc_now().replace(second=0, microsecond=0)
 
     rid = await medication_service.create_event(
-        session, plan_id=plan_id, elder_id=elder_id,
+        session,
+        plan_id=plan_id,
+        elder_id=elder_id,
         scheduled_at=now,
         drug_snapshot={"drug_name": "硝苯地平", "dose": "10mg 一片"},
         triggered_by="scheduler",
     )
     await session.flush()
 
-    graph = build_medication_graph(session=session, checkpointer=saver, deliver_fn=lambda *_a, **_k: True)
+    graph = build_medication_graph(
+        session=session, checkpointer=saver, deliver_fn=lambda *_a, **_k: True
+    )
     await start_medication_task(
-        graph, reminder_id=rid, plan_id=plan_id, elder_id=elder_id,
+        graph,
+        reminder_id=rid,
+        plan_id=plan_id,
+        elder_id=elder_id,
         deadline=(now + datetime.timedelta(minutes=15)).isoformat(),
     )
     for _ in range(4):
         await resume_medication_task(graph, reminder_id=rid, answer="")
 
     # 恰好一张工单
-    orders = (await session.execute(select(WorkOrder).where(WorkOrder.elder_id == elder_id))).scalars().all()
+    orders = (
+        (await session.execute(select(WorkOrder).where(WorkOrder.elder_id == elder_id)))
+        .scalars()
+        .all()
+    )
     assert len(orders) == 1
     o = orders[0]
     assert o.type == "missed_medication"
@@ -325,7 +343,9 @@ async def test_A2_5_restart_recovery(session, seeded, saver):
     now = _utc_now().replace(second=0, microsecond=0)
 
     rid = await medication_service.create_event(
-        session, plan_id=plan_id, elder_id=elder_id,
+        session,
+        plan_id=plan_id,
+        elder_id=elder_id,
         scheduled_at=now,
         drug_snapshot={"drug_name": "硝苯地平", "dose": "10mg 一片"},
         triggered_by="scheduler",
@@ -333,9 +353,14 @@ async def test_A2_5_restart_recovery(session, seeded, saver):
     await session.flush()
 
     # 第一次：start → attempt_no 1 已发（remind）→ wait_confirm
-    graph1 = build_medication_graph(session=session, checkpointer=saver, deliver_fn=lambda *_a, **_k: True)
+    graph1 = build_medication_graph(
+        session=session, checkpointer=saver, deliver_fn=lambda *_a, **_k: True
+    )
     await start_medication_task(
-        graph1, reminder_id=rid, plan_id=plan_id, elder_id=elder_id,
+        graph1,
+        reminder_id=rid,
+        plan_id=plan_id,
+        elder_id=elder_id,
         deadline=(now + datetime.timedelta(minutes=15)).isoformat(),
     )
 
@@ -344,7 +369,9 @@ async def test_A2_5_restart_recovery(session, seeded, saver):
     assert len(attempts_before) == 1
 
     # 模拟重启：新建 graph 实例 → get_state 能读回等待位置
-    graph2 = build_medication_graph(session=session, checkpointer=saver, deliver_fn=lambda *_a, **_k: True)
+    graph2 = build_medication_graph(
+        session=session, checkpointer=saver, deliver_fn=lambda *_a, **_k: True
+    )
     state = await graph2.aget_state(graph_config(rid))
     assert state is not None
     assert state.values.get("attempt_no") == 1
@@ -362,16 +389,23 @@ async def test_A2_6_dual_driver_first_arrives_wins(session, seeded, saver):
     now = _utc_now().replace(second=0, microsecond=0)
 
     rid = await medication_service.create_event(
-        session, plan_id=plan_id, elder_id=elder_id,
+        session,
+        plan_id=plan_id,
+        elder_id=elder_id,
         scheduled_at=now,
         drug_snapshot={"drug_name": "硝苯地平", "dose": "10mg 一片"},
         triggered_by="scheduler",
     )
     await session.flush()
 
-    graph = build_medication_graph(session=session, checkpointer=saver, deliver_fn=lambda *_a, **_k: True)
+    graph = build_medication_graph(
+        session=session, checkpointer=saver, deliver_fn=lambda *_a, **_k: True
+    )
     await start_medication_task(
-        graph, reminder_id=rid, plan_id=plan_id, elder_id=elder_id,
+        graph,
+        reminder_id=rid,
+        plan_id=plan_id,
+        elder_id=elder_id,
         deadline=(now + datetime.timedelta(minutes=15)).isoformat(),
     )
 
@@ -400,16 +434,23 @@ async def test_A2_7_answer_before_deadline_stops_resume(session, seeded, saver):
     now = _utc_now().replace(second=0, microsecond=0)
 
     rid = await medication_service.create_event(
-        session, plan_id=plan_id, elder_id=elder_id,
+        session,
+        plan_id=plan_id,
+        elder_id=elder_id,
         scheduled_at=now,
         drug_snapshot={"drug_name": "硝苯地平", "dose": "10mg 一片"},
         triggered_by="scheduler",
     )
     await session.flush()
 
-    graph = build_medication_graph(session=session, checkpointer=saver, deliver_fn=lambda *_a, **_k: True)
+    graph = build_medication_graph(
+        session=session, checkpointer=saver, deliver_fn=lambda *_a, **_k: True
+    )
     await start_medication_task(
-        graph, reminder_id=rid, plan_id=plan_id, elder_id=elder_id,
+        graph,
+        reminder_id=rid,
+        plan_id=plan_id,
+        elder_id=elder_id,
         deadline=(now + datetime.timedelta(minutes=15)).isoformat(),
     )
     # 提前回答
@@ -437,9 +478,12 @@ async def test_A2_8_list_due_plans_cron_match(session, seeded):
 
     # 现在把 plan 改成 stopped → 不应再返回
     from app.models.medication import MedicationPlan
+
     plan_id = seeded["plan_id"]
     await session.execute(
-        MedicationPlan.__table__.update().where(MedicationPlan.plan_id == plan_id).values(status="stopped")
+        MedicationPlan.__table__.update()
+        .where(MedicationPlan.plan_id == plan_id)
+        .values(status="stopped")
     )
     await session.flush()
     due2 = await list_due_plans(session, now=now)
@@ -447,7 +491,9 @@ async def test_A2_8_list_due_plans_cron_match(session, seeded):
 
     # 日期外：start_date=明天 → 不应返回
     await session.execute(
-        MedicationPlan.__table__.update().where(MedicationPlan.plan_id == plan_id).values(
+        MedicationPlan.__table__.update()
+        .where(MedicationPlan.plan_id == plan_id)
+        .values(
             status="active",
             start_date=datetime.date.today() + datetime.timedelta(days=1),
         )

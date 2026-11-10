@@ -49,6 +49,11 @@ START → remind → wait_confirm ─┬─ 说了"吃了"   → mark_taken  ┐
 建单是派单动作；建单失败时事实仍成立，重跑 `finalize` 可凭终态补建（两侧都幂等）。
 主理人裁决走 B：与 dev-C 的 `safety_service`（急症）**两套并存**，已登记技术债 WD-1。
 
+**建单口径扩到 `notification_failed`（2026-11-10 主理人裁决）**：AC-20 把「送到了没吃」
+（`missed_unconfirmed`）与「根本没送到」（`notification_failed`）拆成两种终态后，
+没送到**更需要**人工跟进（补送/代确认），漏服单照建——两种终态都升级，区别只在
+`terminal_state` 字段本身。
+
 `needs_escalation` 仍保留：它表达「这一轮需要人介入」，与「有没有建成单」是两件事——
 建单成功不代表护工已看到，建单失败也不代表这事不需要人管。
 """
@@ -56,6 +61,7 @@ START → remind → wait_confirm ─┬─ 说了"吃了"   → mark_taken  ┐
 from __future__ import annotations
 
 import base64
+import datetime
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
@@ -65,6 +71,9 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
 from app.services import medication_service, work_order_service
+
+# PRD §4.5 硬性数值：每次触达等待长者确认 60s（卡片窗口与图内 retry 间隔一致）
+_REMIND_WINDOW_SECONDS_PRD = 60
 
 logger = logging.getLogger(__name__)
 
@@ -208,10 +217,38 @@ async def _deliver_reminder(
         }
     tts_result = "ok" if pcm else "tts_failed"
 
+    # Day 7 L6#9 联调裁决：触达卡片命令与 tts_text 同发（同 taskId=reminder_id，
+    # 前端按 taskId 幂等）。快照取不到（无 drug_snapshot）就不发卡片——只降级为
+    # 纯语音触达，不影响投递回执。
+    card_snapshot = await medication_service.get_medication_card_snapshot(
+        session, event_id=reminder_id
+    )
+    card_message: dict[str, Any] | None = None
+    if card_snapshot:
+        card_message = {
+            "type": "task_command",
+            "task_id": str(reminder_id),
+            "kind": "medication",
+            "source": "scheduler",
+            "hint": "该吃药了，请看屏幕上的用药提醒",
+            "payload": {
+                "kind": "medication",
+                "snapshot": {
+                    **card_snapshot,
+                    "attemptNo": attempt_no,
+                    "windowSeconds": _REMIND_WINDOW_SECONDS_PRD,
+                    "snapshotAt": datetime.datetime.now(datetime.UTC).isoformat(),
+                },
+            },
+            "issued_at": int(datetime.datetime.now(datetime.UTC).timestamp() * 1000),
+        }
+
     dispatched = False
     for device_id in device_ids:
         if deliver_fn(str(device_id), message):
             dispatched = True
+        if card_message:
+            deliver_fn(str(device_id), card_message)
     if not dispatched:
         logger.info(
             "medication_reminder_offline reminder_id=%s devices=%s", reminder_id, len(device_ids)
@@ -351,7 +388,9 @@ def build_medication_graph(
             confirm_channel="voice" if terminal == "taken_reported" else None,
         )
         # 终态写完才建单（顺序不可交换）：见文件头 A12 段的说明。
-        if terminal == "missed_unconfirmed":
+        # notification_failed（根本没送到）同样建单——2026-11-10 主理人裁决，
+        # 没送到更需要护工补送/代确认，不能因为「通知失败」就没人管。
+        if terminal in ("missed_unconfirmed", "notification_failed"):
             await _escalate_missed_medication(session, state)
         return {}
 
