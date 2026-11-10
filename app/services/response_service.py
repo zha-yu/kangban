@@ -455,6 +455,8 @@ class ResponseService:
         if status == ACK_PLAYED:
             state.last_acked_segment = segment_id
             state.last_played_segment = segment_id
+            # delivered_text 只收录客户端确认完整播放的连续前缀；`playing` 是进度信号，
+            # 不能让上下文把尚未播完的片段当成用户已听到的事实。
             state.delivered_text = "".join(state.segments[: segment_id + 1])
             await self._safe_append_event(
                 state,

@@ -71,6 +71,7 @@ def build_server() -> tuple[MCPServer, WeatherService]:
         api_key=settings.weather_api_key,
         base_url=settings.weather_api_base_url,
         cache_ttl_seconds=settings.weather_cache_ttl_seconds,
+        provider=settings.weather_api_provider,
     )
 
     server = MCPServer(

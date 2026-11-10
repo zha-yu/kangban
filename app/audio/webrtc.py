@@ -56,6 +56,7 @@ from aiortc.mediastreams import MediaStreamError, MediaStreamTrack
 from aiortc.sdp import candidate_from_sdp
 
 from app.audio.asr import ASRError, ASREvent, ASREventKind, ASRProvider, build_asr
+from app.audio.tts import TTSUnavailable, build_tts
 from app.audio.vad import VadFallbackController, VadSession
 from app.core.config import Settings, get_settings
 from app.core.metrics import record_connection, stopwatch
@@ -1277,7 +1278,12 @@ class MediaSession:
         if self._playback_track is None:
             raise MediaStateError("peer connection is not created")
 
-        if self._playback_turn_id is None or turn_id != self._playback_turn_id:
+        if self._playback_turn_id is None and self._turn_id is None:
+            # 无活跃 ASR turn 时接管播放代际：服务端 VAD 兜底路径不发 asr_start，
+            # `begin_turn` 从未被调用，若仍按 stale 拒绝，回复就会「只有字幕没有声音」。
+            # 有活跃 turn 时不动这条（打断后旧回复的迟到下发仍必须被拒）。
+            self._playback_turn_id = turn_id
+        elif self._playback_turn_id is None or turn_id != self._playback_turn_id:
             _log_event(
                 "tts pcm rejected",
                 trace_id=self.trace_id,
@@ -1305,13 +1311,7 @@ class MediaSession:
             await self._notify_failure(MediaFailureReason.BACKPRESSURE, "playback_queue_full")
             raise MediaBackpressureError("TTS playback queue is full")
 
-        for frame in frames:
-            queue.put_nowait(frame)
-        duration_ms = sum(frame.duration_ms for frame in frames)
-        # Echo suppression：TTS 播放期间 + 1.5s 冷却窗口内，VAD 事件被抑制
-        # （麦克风会把 TTS 播放声收回去，干扰 VAD 判决）
-        ECHO_COOLDOWN_S = 1.5
-        self._playback_active_until = time.monotonic() + duration_ms / 1000.0 + ECHO_COOLDOWN_S
+        self._push_playback_frames(frames)
         _log_event(
             "tts pcm enqueued",
             trace_id=self.trace_id,
@@ -1320,10 +1320,62 @@ class MediaSession:
             state=self._state.value,
             reason="tts_enqueued",
             frames=len(frames),
-            duration_ms=duration_ms,
+            duration_ms=sum(frame.duration_ms for frame in frames),
             queue_depth=queue.qsize(),
             echo_suppress_until=self._playback_active_until,
         )
+
+    async def enqueue_proactive_tts(self, pcm: bytes) -> None:
+        """服务端主动语音（用药触达等）写轨：不绑定 ASR turn，直接进播放队列。
+
+        与 `enqueue_tts_pcm` 的唯一差别是**不做播放代际校验**——主动触达不属于
+        任何一轮用户对话，没有 turn_id 可以对账；打断仍由 `barge_in` 清空队列。
+        """
+        self._ensure_loop()
+        self._ensure_open()
+        if self._playback_track is None:
+            raise MediaStateError("peer connection is not created")
+
+        validate_downlink_pcm(pcm)
+        frames = _tts_pcm_to_48k_frames(pcm)
+        queue = self._playback_queue
+        if queue.qsize() + len(frames) > MAX_PLAYBACK_FRAMES:
+            _log_event(
+                "proactive tts backpressure",
+                trace_id=self.trace_id,
+                connection_id=self.connection_id,
+                turn_id=None,
+                state=self._state.value,
+                reason=MediaFailureReason.BACKPRESSURE.value,
+                queued_frames=queue.qsize(),
+                incoming_frames=len(frames),
+            )
+            await self._notify_failure(MediaFailureReason.BACKPRESSURE, "playback_queue_full")
+            raise MediaBackpressureError("TTS playback queue is full")
+
+        self._push_playback_frames(frames)
+        _log_event(
+            "proactive tts pcm enqueued",
+            trace_id=self.trace_id,
+            connection_id=self.connection_id,
+            turn_id=None,
+            state=self._state.value,
+            reason="proactive_tts_enqueued",
+            frames=len(frames),
+            duration_ms=sum(frame.duration_ms for frame in frames),
+            queue_depth=queue.qsize(),
+            echo_suppress_until=self._playback_active_until,
+        )
+
+    def _push_playback_frames(self, frames: list[PcmFrame]) -> None:
+        """入队并刷新回声抑制窗口（回复与主动触达共用同一口径）。"""
+        for frame in frames:
+            self._playback_queue.put_nowait(frame)
+        duration_ms = sum(frame.duration_ms for frame in frames)
+        # Echo suppression：TTS 播放期间 + 1.5s 冷却窗口内，VAD 事件被抑制
+        # （麦克风会把 TTS 播放声收回去，干扰 VAD 判决）
+        ECHO_COOLDOWN_S = 1.5
+        self._playback_active_until = time.monotonic() + duration_ms / 1000.0 + ECHO_COOLDOWN_S
 
     def barge_in(self) -> None:
         """打断下行播放：递增播放代际、清空队列、旧 turn 后续入队全部拒绝。"""
@@ -2188,6 +2240,47 @@ async def enqueue_tts_for_device(device_id: str, turn_id: str, pcm: bytes) -> bo
     return True
 
 
+async def speak_for_device(device_id: str, text: str) -> bool:
+    """服务端主动语音：合成文本并写入设备下行播放轨（用药触达 E2 用）。
+
+    - 设备无媒体会话 → False（与 `enqueue_tts_for_device` 同口径，不抛异常）；
+    - TTS 不可用（ffmpeg 缺失 / edge-tts 未装 / 网络失败）→ False，由调用方
+      保留字幕降级，不因语音失败回滚业务事实；
+    - 文本为空 → False，不写空缓冲（会把播放轨写坏）。
+    """
+    if not text.strip():
+        return False
+    session = _signaling_registry().get_session(device_id)
+    if session is None:
+        return False
+    try:
+        pcm = await build_tts().synthesize(text)
+        await session.enqueue_proactive_tts(pcm)
+    except TTSUnavailable as exc:
+        _log_event(
+            "proactive tts unavailable",
+            trace_id=session.trace_id,
+            connection_id=device_id,
+            turn_id=None,
+            state=session.state.value,
+            reason="tts_unavailable",
+            error_type=type(exc).__name__,
+        )
+        return False
+    except MediaError as exc:
+        _log_event(
+            "proactive tts rejected",
+            trace_id=session.trace_id,
+            connection_id=device_id,
+            turn_id=None,
+            state=session.state.value,
+            reason="proactive_tts_rejected",
+            error_type=type(exc).__name__,
+        )
+        return False
+    return True
+
+
 async def _handle_offer(
     conn: ConnectionContext,
     registry: MediaSessionRegistry,
@@ -2350,6 +2443,7 @@ __all__ = [
     "handle_signal_message",
     "install_signaling_handler",
     "set_vad_fallback_for_device",
+    "speak_for_device",
     "uninstall_signaling_handler",
     "validate_downlink_pcm",
 ]

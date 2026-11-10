@@ -26,14 +26,14 @@ START → remind → wait_confirm ─┬─ 说了"吃了"   → mark_taken  ┐
 4. **终态只写一次**。`finalize` 调 `medication_service.set_terminal`，后者对"已定终态再改"
    抛 `TerminalStateConflict`；补确认（AC-08）走 `late_taken` 追加，不覆盖原终态。
 
-**E2 已接（2026-11-09 21:10）**：`remind` 经信令层 `deliver()` 把提醒以 `tts_text`
-下发到长者绑定设备——不带 `response_id`/`epoch`/`segment`（它不属于任何回复流，
-客户端按整段一播，契约 §4.1 的可选字段口径）。
+**E2 已接（2026-11-09 21:10，同日补语音）**：`remind` 经信令层 `deliver()` 把提醒以
+`tts_text` 下发到长者绑定设备——不带 `response_id`/`epoch`/`segment`（它不属于任何回复流，
+客户端按整段一播，契约 §4.1 的可选字段口径）；文本投递成功后再经 `speak_fn`
+（TTS 合成 → WebRTC 下行播放轨）补语音。
 
-⚠️ **触达目前只有字幕、没有声音**：`tts_text` 是**文本通道**（前端渲染大字幕），
-真正的声音来自 WebRTC 远端音轨或 HTTP 的 `/api/audio/utterance`，而 WS 侧的 TTS
-队列目前是 `NullTtsQueue` 桩（dev-C 的 N07 同款，全队一致，非本线缺口）。
-`voice_dispatched` 的准确含义是「**提醒文本已投递给设备**」，不是「已出声」。
+语音是**尽力而为**：TTS 不可用（ffmpeg/edge-tts/网络任一失败）或设备没有媒体会话时
+只保留字幕，不改变触达回执、不重试。`voice_dispatched` 的准确含义仍是
+「**提醒文本已投递给设备**」，不是「已出声」——是否真被听到要等 TD-2 的 played 闭环。
 
 触达回执 = **投递**结果：`voice_dispatched`（任一台设备收下）/ `device_offline`
 （都离线）/ `no_bound_device`（没绑设备）；「是否真被听到」需要 played ack 闭环，
@@ -146,11 +146,15 @@ async def _escalate_missed_medication(session: Any, state: MedicationState) -> N
 async def _deliver_reminder(
     session: Any,
     deliver_fn: Any,
+    speak_fn: Any,
     *,
     elder_id: uuid.UUID,
     reminder_id: uuid.UUID,
 ) -> str:
     """把用药提醒下发到长者绑定设备，返回触达回执（E2）。
+
+    两条腿：`tts_text`（字幕）+ `speak_fn`（WebRTC 下行语音）。音频是**尽力而为**：
+    合成失败或设备没有媒体会话时只保留字幕，不改变回执，也不重试（重试是 scheduler 的职责）。
 
     消息形状：`{"type": "tts_text", "text": ..., "degraded": false}`——**不带**
     `response_id` / `epoch` / `segment_id`。它不属于任何回复流，是子图的主动触达；
@@ -158,8 +162,8 @@ async def _deliver_reminder(
 
     回执三态（如实记录，不做美化和重试——重试是 scheduler 的职责）：
 
-    - `voice_dispatched`：至少一台绑定设备把消息收进了发送队列（**文本已投递**，
-      不代表已出声——WS 侧 TTS 仍是 `NullTtsQueue` 桩）；
+    - `voice_dispatched`：至少一台绑定设备把消息收进了发送队列（**文本已投递**；
+      语音是否真的写轨成功另看 `speak_fn` 的返回，不进回执口径）；
     - `device_offline`：有绑定设备但全部离线/未鉴权；
     - `no_bound_device`：根本没绑设备——运维缺口，同样不算本轮失败。
     """
@@ -169,7 +173,8 @@ async def _deliver_reminder(
         if drug_name
         else "到吃药时间了，请确认您的药是否已经服用。"
     )
-    # 文本通道：前端渲染字幕并切状态；声音待 WS 语音链路就绪后另行接线。
+    # 先走 WS 文本通道让字幕立即到达；后续 speak_fn 另走 TTS → WebRTC 音轨，
+    # 语音失败只保留字幕。这里的触达回执因此只表示文本入队，不表示已经出声。
     message = {"type": "tts_text", "text": text, "degraded": False}
 
     device_ids = await medication_service.list_bound_device_ids(session, elder_id=elder_id)
@@ -180,16 +185,33 @@ async def _deliver_reminder(
         return "no_bound_device"
 
     dispatched = False
+    voiced = 0
     for device_id in device_ids:
         if deliver_fn(str(device_id), message):
             dispatched = True
+            # 文本到达后再补语音：字幕不能因为 TTS 慢/失败而晚到
+            try:
+                spoken = await speak_fn(str(device_id), text)
+            except Exception:  # 语音是尽力而为，绝不能拖垮触达事务
+                logger.warning(
+                    "medication_reminder_voice_failed reminder_id=%s device_id=%s",
+                    reminder_id,
+                    device_id,
+                    exc_info=True,
+                )
+                spoken = False
+            if spoken:
+                voiced += 1
     if not dispatched:
         logger.info(
             "medication_reminder_offline reminder_id=%s devices=%s", reminder_id, len(device_ids)
         )
         return "device_offline"
     logger.info(
-        "medication_reminder_dispatched reminder_id=%s devices=%s", reminder_id, len(device_ids)
+        "medication_reminder_dispatched reminder_id=%s devices=%s voiced=%s",
+        reminder_id,
+        len(device_ids),
+        voiced,
     )
     return "voice_dispatched"
 
@@ -201,16 +223,35 @@ def _default_deliver(device_id: str, message: dict[str, Any]) -> bool:
     return deliver(device_id, message)
 
 
+async def _default_speak(device_id: str, text: str) -> bool:
+    """主动语音出口：TTS 合成 → WebRTC 下行播放轨（延迟 import，理由同上）。
+
+    合成失败/设备无媒体会话一律返回 False，只保留字幕（C1 降级边界）。
+    """
+    from app.audio.webrtc import speak_for_device
+
+    return await speak_for_device(device_id, text)
+
+
 def build_medication_graph(
-    *, session: Any, checkpointer: Any, deliver_fn: Any | None = None
+    *,
+    session: Any,
+    checkpointer: Any,
+    deliver_fn: Any | None = None,
+    speak_fn: Any | None = None,
 ) -> Any:
     """编译子图。`session` 是本次运行的事务会话，`checkpointer` 由 N10 的 A08 提供。
 
     `deliver_fn(device_id, message) -> bool` 是 **E2 触达出口**（信令层
     `app.audio.signaling.deliver` 的同形接口）：设备不在线返回 False、不抛异常。
     缺省用真实信令层；测试注入假函数即可覆盖「在线 / 离线 / 未绑设备」三路。
+
+    `speak_fn(device_id, text) -> Awaitable[bool]` 是 **主动语音出口**（TTS 合成 +
+    WebRTC 下行轨）：音频尽力而为，失败返回 False 只保留字幕，不影响触达回执。
+    缺省用真实 TTS 链路；测试注入假函数可断言「文本与语音都下发到同一台设备」。
     """
     _deliver = deliver_fn if deliver_fn is not None else _default_deliver
+    _speak = speak_fn if speak_fn is not None else _default_speak
 
     async def remind(state: MedicationState) -> dict[str, Any]:
         event_id = _uuid(state["reminder_id"])
@@ -234,6 +275,7 @@ def build_medication_graph(
             receipt = await _deliver_reminder(
                 session,
                 _deliver,
+                _speak,
                 elder_id=_uuid(state["elder_id"]),
                 reminder_id=event_id,
             )

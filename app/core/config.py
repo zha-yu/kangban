@@ -118,6 +118,9 @@ class Settings(BaseSettings):
     tts_voice_id: str = ""
     tts_speed: float = 1.0
     tts_timeout_ms: int = 300
+    # edge 兜底链路用的 ffmpeg 可执行文件（默认走 PATH；Windows 装了 WinGet 包
+    # 但 IDE 进程 PATH 未刷新时可填绝对路径）
+    tts_ffmpeg_bin: str = "ffmpeg"
 
     # ---------------------------- WebRTC / TURN ----------------------------
     stun_url: str = "stun:localhost:3478"

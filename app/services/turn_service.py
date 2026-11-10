@@ -753,10 +753,14 @@ class TurnService:
                 # ---- 第 6 步：再改状态 ----
                 await self._state.apply(runtime.thread_id, state_version, ("response_completed",))
 
+                # ★ 先提交事实事务，再下发：ResponseService 的事件出口（HistoryEventSink）
+                # 走**独立会话**，若本事务还占着 conversation_threads 的行锁（第 1 步
+                # append_event 已拿），独立会话在 last_event_seq 上会永久等锁——整轮对话
+                # 自死锁（表现为只有字幕/无回复，且后续每轮都排在锁后面）。
+                await session.commit()
+
                 # ---- 第 7 步：最后下发（response_id 与第 5 步同一枚，事实与下发对账一致） ----
                 handle = await self._response_stream.start(context, result, response_id=response_id)
-
-                await session.commit()
             except BaseException:
                 await session.rollback()
                 raise

@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import __version__
-from app.agents.companion import CompanionAgent
+from app.agents.companion import DEFAULT_TOOLS, CompanionAgent
 from app.agents.guardrails import Guardrails
 from app.agents.session_coordinator import SessionCoordinator
 from app.api import ROUTERS
@@ -272,6 +272,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # mcp_client 四分类降级「查不到」，不阻塞启动）
             mcp_client=MCPClient(settings),
         ),
+        # N26 装配收口：把工具清单注册进 ReAct 协议（缺省 () 时模型根本不知道
+        # 有 get_weather 可用，天气问题只能靠常识编答 → 实时天气不可用）
+        tools=DEFAULT_TOOLS,
         on_event=_agent_event_sink,
     )
     # Day 6 S4：ResponseService 提升为 lifespan 局部变量——TurnService 持有做第 7 步

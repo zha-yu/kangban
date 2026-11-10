@@ -342,6 +342,60 @@ class TestA308TTSWriteTrack:
 # ===========================================================================
 
 
+class TestTTSNoTurnAndProactive:
+    """TD-1 回归：无 asr_start（服务端 VAD 兜底）与主动触达都要能出声。"""
+
+    @pytest.mark.asyncio
+    async def test_reply_audio_accepted_without_begin_turn(self) -> None:
+        """未走 begin_turn 时，回复音频接管播放代际而不是被 stale 拒绝。"""
+        sess = MediaSession(connection_id="c1", trace_id="t1", config=_config())
+        sess.create_peer_connection()
+        await asyncio.sleep(0.05)
+
+        await sess.enqueue_tts_pcm("turn-no-asr-start", b"\x00" * 3200)
+
+        assert sess.playback_queue_depth > 0
+        await sess.close()
+
+    @pytest.mark.asyncio
+    async def test_proactive_tts_enqueued_without_turn(self) -> None:
+        """主动触达不绑定 turn：没有 ASR turn 也能写轨（用药提醒 E2）。"""
+        sess = MediaSession(connection_id="c1", trace_id="t1", config=_config())
+        sess.create_peer_connection()
+        await asyncio.sleep(0.05)
+
+        await sess.enqueue_proactive_tts(b"\x00" * 3200)
+
+        assert sess.playback_queue_depth == 5  # 100 ms → 5 个 20 ms 帧
+        await sess.close()
+
+    @pytest.mark.asyncio
+    async def test_speak_for_device_synthesizes_and_writes_track(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """E2 主动语音：TTS 合成成功 → 写入该设备的下行播放轨。"""
+        from app.audio import webrtc as w
+
+        registry = w._signaling_registry()
+        sess = registry.create_session("dev-speak", "t-speak", config=_config())
+        sess.create_peer_connection()
+        await asyncio.sleep(0.05)
+
+        class _FakeTts:
+            async def synthesize(self, text: str) -> bytes:
+                assert text
+                return b"\x00" * 3200
+
+        monkeypatch.setattr(w, "build_tts", lambda: _FakeTts())
+        try:
+            assert await w.speak_for_device("dev-speak", "到吃药时间了") is True
+            assert sess.playback_queue_depth == 5
+            # 未建会话的设备 → False，不抛异常
+            assert await w.speak_for_device("dev-unknown", "到吃药时间了") is False
+        finally:
+            await registry.close_session("dev-speak", reason="test")
+
+
 class TestA309Backpressure:
     @pytest.mark.asyncio
     async def test_over_15s_rejected_entirely(self) -> None:

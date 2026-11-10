@@ -20,6 +20,7 @@ if str(_WEATHER_DIR) not in sys.path:
 
 from weather_core import (  # noqa: E402  （sys.path 引导后才能 import）
     MAX_CITY_LENGTH,
+    WeatherCityNotFound,
     WeatherFetchError,
     WeatherFetchTimeout,
     WeatherService,
@@ -224,3 +225,88 @@ async def test_invalid_city_rejected(city: object, reason: str) -> None:
     assert result["ok"] is False, reason
     assert result["error"] == "bad_request"
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# Open-Meteo 分支：免费无 key；城市查不到 → bad_request；上游失败回退旧缓存
+# ---------------------------------------------------------------------------
+
+OpenMeteoFetchFn = Callable[[str, str], Awaitable[dict[str, Any]]]
+
+
+def make_open_meteo_fetch(
+    payload: dict[str, Any] | None = None,
+    *,
+    error: Exception | None = None,
+) -> tuple[OpenMeteoFetchFn, list[str]]:
+    calls: list[str] = []
+
+    async def fetch(city: str, base_url: str) -> dict[str, Any]:
+        calls.append(city)
+        if error is not None:
+            raise error
+        return dict(
+            payload
+            or {
+                "condition": "晴",
+                "temperature_c": 21.5,
+                "observed_at": "2026-11-09T22:00",
+            }
+        )
+
+    return fetch, calls
+
+
+def make_open_meteo_service(fetch: OpenMeteoFetchFn, **overrides: Any) -> WeatherService:
+    return WeatherService(
+        api_key="",
+        base_url="",
+        cache_ttl_seconds=600,
+        provider="open-meteo",
+        open_meteo_fetch_fn=fetch,
+        **overrides,
+    )
+
+
+async def test_open_meteo_works_without_api_key() -> None:
+    """provider=open-meteo 时无 key 也能查到实时天气（今天为什么用不了 weather 的回归）。"""
+    fetch, calls = make_open_meteo_fetch()
+    svc = make_open_meteo_service(fetch)
+
+    result = await svc.fetch_city("北京")
+
+    assert result["ok"] is True
+    assert result["city"] == "北京"
+    assert result["condition"] == "晴"
+    assert result["temperature_c"] == 21.5
+    assert result["cached"] is False
+    assert calls == ["北京"], "只查一次上游，命中缓存后不再请求"
+
+
+async def test_open_meteo_unknown_city_maps_bad_request() -> None:
+    fetch, _ = make_open_meteo_fetch(error=WeatherCityNotFound())
+    svc = make_open_meteo_service(fetch)
+
+    result = await svc.fetch_city("一个不存在的城市")
+
+    assert result["ok"] is False
+    assert result["error"] == "bad_request"
+
+
+async def test_open_meteo_upstream_failure_falls_back_to_stale_cache() -> None:
+    """上游失败时回退曾成功过的旧缓存，observed_at 保留原观测时间（不编造）。"""
+    payload = {"condition": "多云", "temperature_c": 9.9, "observed_at": "2026-11-09T20:00"}
+    ok_fetch, _ = make_open_meteo_fetch(payload)
+    now = 1000.0
+    svc = make_open_meteo_service(ok_fetch, clock=lambda: now)
+    first = await svc.fetch_city("上海")
+    assert first["ok"] is True
+
+    failing_fetch, _ = make_open_meteo_fetch(error=WeatherFetchError("upstream down"))
+    now += 601  # TTL 过期 → 重新请求上游
+    svc._open_meteo_fetch = failing_fetch
+    second = await svc.fetch_city("上海")
+
+    assert second["ok"] is True
+    assert second["cached"] is True
+    assert second["observed_at"] == "2026-11-09T20:00"
