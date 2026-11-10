@@ -20,12 +20,18 @@ import asyncio
 from collections.abc import Mapping
 from typing import Any
 
+import pytest
+
 from app.audio.signaling import (
+    InterruptMsg,
     SegmentAckMsg,
     TouchPlayedMsg,
     TtsTextMsg,
+    _handle_interrupt,
     _handle_segment_ack,
     _handle_touch_played,
+    _run_guarded,
+    set_interrupt_handler,
     set_segment_ack_handler,
     set_touch_played_handler,
 )
@@ -226,3 +232,107 @@ async def test_touch_played_branch_without_handler_is_safely_ignored() -> None:
     await _handle_touch_played(conn, _touch_played_message())
 
     assert conn.downstream.empty()  # 回执是尽力而为的上报：未装配只 warn，不回执不关连接
+
+
+# ---------------------------------------------------------------------------
+# Day 7 B1：C→S interrupt 分支（§5.4 冻结口径）+ P3-28 分支统一异常包裹
+# ---------------------------------------------------------------------------
+
+
+def _interrupt_message(response_id: str = "r1", *, reason: str = "barge_in") -> dict[str, Any]:
+    return {"type": "interrupt", "response_id": response_id, "reason": reason}
+
+
+def test_interrupt_msg_contract_shape() -> None:
+    annotations = InterruptMsg.__annotations__
+    assert set(annotations) == {"type", "response_id", "reason"}  # §5.4 冻结三字段
+
+
+async def test_interrupt_branch_dispatches_valid_message_to_handler() -> None:
+    conn = _FakeConn()
+    received: list[tuple[Any, Mapping[str, Any]]] = []
+
+    async def handler(connection: Any, message: Mapping[str, Any]) -> None:
+        received.append((connection, dict(message)))
+
+    set_interrupt_handler(handler)
+    try:
+        message = _interrupt_message("r1", reason="barge_in")
+        await _handle_interrupt(conn, message)
+    finally:
+        set_interrupt_handler(None)
+
+    assert len(received) == 1
+    assert received[0][0] is conn
+    assert received[0][1] == message
+    assert conn.downstream.empty()  # 正常分发不回 error
+
+
+async def test_interrupt_branch_rejects_malformed_shape_before_handler() -> None:
+    conn = _FakeConn()
+    called = False
+
+    async def handler(connection: Any, message: Mapping[str, Any]) -> None:
+        nonlocal called
+        called = True
+
+    set_interrupt_handler(handler)
+    try:
+        bad_reason: dict[str, Any] = _interrupt_message("r1", reason=123)  # type: ignore[arg-type]
+        missing_reason: dict[str, Any] = {"type": "interrupt", "response_id": "r1"}
+        missing_response: dict[str, Any] = {"type": "interrupt", "reason": "barge_in"}
+        for message in (bad_reason, missing_reason, missing_response):
+            await _handle_interrupt(conn, message)
+    finally:
+        set_interrupt_handler(None)
+
+    assert called is False
+    errors = [conn.downstream.get_nowait() for _ in range(3)]
+    assert all(error["type"] == "error" and error["code"] == "internal" for error in errors)
+
+
+async def test_interrupt_branch_without_handler_is_safely_ignored() -> None:
+    conn = _FakeConn()
+    set_interrupt_handler(None)
+
+    await _handle_interrupt(conn, _interrupt_message())
+
+    assert conn.downstream.empty()  # 打断是尽力而为的上报：未装配只 warn，不回执不关连接
+
+
+async def test_interrupt_branch_handler_exception_does_not_crash() -> None:
+    """打断失败不允许炸连接：handler 抛异常被包裹，只记日志。"""
+    conn = _FakeConn()
+
+    async def broken_handler(connection: Any, message: Mapping[str, Any]) -> None:
+        raise RuntimeError("response service down")
+
+    set_interrupt_handler(broken_handler)
+    try:
+        await _handle_interrupt(conn, _interrupt_message())
+    finally:
+        set_interrupt_handler(None)
+
+    assert conn.downstream.empty()  # 不炸连接：无 error 回执、无断开
+
+
+async def test_run_guarded_swallows_branch_exception() -> None:
+    """P3-28：identity_confirm/client_diag/media 分支统一包裹——异常只记日志不炸连接。"""
+    conn = _FakeConn()
+
+    async def broken() -> None:
+        raise RuntimeError("boom")
+
+    await _run_guarded(conn, broken(), "client_diag")  # 不抛
+    assert conn.downstream.empty()
+
+
+async def test_run_guarded_reraises_cancellation() -> None:
+    """取消必须照常传播（连接被顶掉/关闭时 read_loop 随之退出走清理）。"""
+    conn = _FakeConn()
+
+    async def cancelled() -> None:
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await _run_guarded(conn, cancelled(), "media")
