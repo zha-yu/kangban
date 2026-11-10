@@ -57,7 +57,14 @@ from app.db import session_factory
 from app.mcp_client import MCPClient
 from app.router.decision import Router
 from app.router.safety import SafetyDecision
-from app.services import identity_service, medication_service, voiceprint_service
+from app.scheduler.medication_jobs import install_scheduler  # Day 7 C2：用药到点调度接线
+from app.services import (
+    history_service,
+    identity_service,
+    medication_service,
+    memory_service,
+    voiceprint_service,
+)
 from app.services.auth_service import (
     AuthConflictError,
     AuthExpiredError,
@@ -73,7 +80,7 @@ from app.services.dialogue_service import (
     identity_decision_to_result,
 )
 from app.services.llm_service import LLMService
-from app.services.response_service import ResponseService
+from app.services.response_service import RedisEpochPersistence, ResponseService
 from app.services.safety_service import escalate_safety_event
 from app.services.state_service import StateCenter
 from app.services.tool_executor import ToolExecutor, ToolResult
@@ -139,6 +146,32 @@ class _SessionToolExecutor:
             except Exception:
                 await session.rollback()
                 raise
+
+
+class _MemoryExtractionAdapter:
+    """B1↔B2 记忆提取端口适配（裁决 O-B2）：终态结算后台调 extract_after_turn。
+
+    ResponseService 侧已用 create_task 调度（不阻塞 ack/interrupt 返回），
+    本适配只做一次性转发；generic（elder_id=None）由 ResponseService 闸门拦截，
+    不会到达此处。失败在 response_service 侧记日志，不回滚终态。
+    """
+
+    async def extract_after_turn(
+        self,
+        *,
+        elder_id: str | None,
+        thread_id: str,
+        turn_id: str,
+        user_text: str,
+        assistant_text: str,
+    ) -> int:
+        return await memory_service.extract_after_turn(
+            elder_id=elder_id,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            user_text=user_text,
+            assistant_text=assistant_text,
+        )
 
 
 @asynccontextmanager
@@ -297,36 +330,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
             checkpointer_cm = None
 
-    # ---- D1 调度装配（C2 交付，五参数）：install_scheduler 用 @app.on_event 注册启动钩子，
-    #      而本应用有自定义 lifespan（Starlette 在自定义 lifespan 下**不会**执行 on_event
-    #      钩子），所以这里在装配后把新增的钩子取出来，在 lifespan 内显式驱动一次。 ----
-    scheduler_startup: list[Any] = []
-    scheduler_shutdown: list[Any] = []
-    if settings.app_env.lower() != "test":
-        try:
-            from app.scheduler.medication_jobs import install_scheduler
-
-            _start_before = len(app.router.on_startup)
-            _stop_before = len(app.router.on_shutdown)
-            install_scheduler(
-                app,
-                session_factory=session_factory,
-                checkpointer_dsn=settings.langgraph_checkpoint_database_url,
-                checkpointer_schema=settings.langgraph_checkpoint_schema,
-                timezone_name=settings.scheduler_timezone,
-            )
-            scheduler_startup = list(app.router.on_startup[_start_before:])
-            scheduler_shutdown = list(app.router.on_shutdown[_stop_before:])
-            for _handler in scheduler_startup:
-                await _handler()
-            logger.info("medication_scheduler_installed handlers=%d", len(scheduler_startup))
-        except Exception as exc:
-            logger.error(
-                "medication_scheduler_install_failed",
-                extra={"error_type": type(exc).__name__, "detail": str(exc)[:200]},
-            )
-            scheduler_startup, scheduler_shutdown = [], []
-
     # ---- G1 升级口：分类器只给「疑似敏感」，不给急症类别 ----
     # `escalate_safety_event()` 要求 category ∈ {chest_pain, breathing, fall, stroke, self_harm}
     # 才能建红色事件+工单（见 safety_service._ORDER_TYPE_BY_CATEGORY）。分类器给不出这个分类，
@@ -430,6 +433,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     response_service = ResponseService(
         deliver=signaling.deliver,
         events=HistoryEventSink(session_factory),
+        # Day 7 B1（P1-1/P1-3）：回合终态结算——commit_response 投影 + finish_turn 终态
+        history_store=history_service.HistorySettlementAdapter(session_factory),
+        # Day 7 B1（P2-9）：epoch/水位回写 Redis（重启恢复；单进程范围，多 worker 登记 Day 9）
+        persistence=RedisEpochPersistence(redis_client),
+        # Day 7 B1↔B2（裁决 O-B2）：终态结算后调度记忆提取（真实现；Step 7 统一验收落库）
+        memory_port=_MemoryExtractionAdapter(),
     )
     turn_service = TurnService(
         session_factory=session_factory,
@@ -670,6 +679,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             return
         await response_service.handle_segment_ack(device_id=conn.device_id, message=message)
 
+    async def _on_interrupt(conn: signaling.ConnectionContext, message: Mapping[str, Any]) -> None:
+        """C→S interrupt（day07/README §5.4 冻结口径）：解包 device_id 后转交打断五步。
+
+        设备/会话归属校验在 ResponseService.interrupt（response 必须属于本设备，
+        否则按 unknown_response no-op、不落库）；形状校验已在 signaling 层完成。
+        """
+        if conn.device_id is None:
+            logger.warning(
+                "interrupt_without_device",
+                extra={"trace_id": conn.trace_id, "response_id": str(message.get("response_id"))},
+            )
+            return
+        logger.info(
+            "interrupt_requested",
+            extra={
+                "trace_id": conn.trace_id,
+                "device_id": conn.device_id,
+                "response_id": str(message["response_id"]),
+                "reason": str(message.get("reason", "-")),
+            },
+        )
+        await response_service.interrupt(str(message["response_id"]), device_id=conn.device_id)
+
     async def _on_touch_played(
         conn: signaling.ConnectionContext, message: Mapping[str, Any]
     ) -> None:
@@ -720,6 +752,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     signaling.set_identity_confirm_handler(_on_identity_confirm)
     signaling.set_identity_timeout_handler(_on_identity_timeout)
     signaling.set_segment_ack_handler(_on_segment_ack)
+    signaling.set_interrupt_handler(_on_interrupt)
     signaling.set_touch_played_handler(_on_touch_played)
     app.state.redis = redis_client
     app.state.llm_service = llm_service
@@ -736,24 +769,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             extra={"degraded": warm.degraded, "intent": warm.intent, "provider": "sidecar"},
         )
 
+    # Day 7 C2：用药到点调度接线——install_scheduler 构造 SchedulerRuntime 并存到
+    # app.state.medication_scheduler；FastAPI 0.110+ 的 lifespan 与旧式 @app.on_event
+    # 互斥，所以 start/stop 必须手动管理（不在装饰器里）。
+    # Day 7 A3（合并上游后）：补 checkpointer 两参——用药确认子图与 Agent 必须同一 DSN、
+    # 同一 schema（J6 联调项），不传则各建一套连接池。
+    medication_scheduler = install_scheduler(
+        app,
+        session_factory=session_factory,
+        checkpointer_dsn=settings.langgraph_checkpoint_database_url,
+        checkpointer_schema=settings.langgraph_checkpoint_schema,
+        timezone_name=settings.scheduler_timezone,
+    )
+    await medication_scheduler.start()
+
     logger.info("application starting", extra={"app_env": settings.app_env})
     try:
         yield
     finally:
+        await medication_scheduler.stop()
         signaling.set_dialogue_final_handler(None)
         signaling.set_identity_confirm_handler(None)
         signaling.set_identity_timeout_handler(None)
         signaling.set_segment_ack_handler(None)
+        signaling.set_interrupt_handler(None)
         signaling.set_touch_played_handler(None)
-        # Day 7 A3：调度器停机（与启动成对；shutdown 失败只记日志）
-        for _handler in reversed(scheduler_shutdown):
-            try:
-                await _handler()
-            except Exception as exc:
-                logger.warning(
-                    "medication_scheduler_shutdown_failed",
-                    extra={"error_type": type(exc).__name__},
-                )
         if checkpointer_cm is not None:
             try:
                 await checkpointer_cm.__aexit__(None, None, None)

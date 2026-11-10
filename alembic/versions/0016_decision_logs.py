@@ -28,8 +28,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0014_decision_logs"
-down_revision: str | None = "0013_touch_played_receipt"
+revision: str = "0016_decision_logs"
+down_revision: str | None = "0015_elders_updated_at"
 branch_labels: str | tuple[str, ...] | None = None
 depends_on: str | tuple[str, ...] | None = None
 

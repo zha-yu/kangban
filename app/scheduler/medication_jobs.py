@@ -72,36 +72,33 @@ def install_scheduler(
     checkpointer_dsn: str | None = None,
     checkpointer_schema: str | None = None,
     timezone_name: str = "Asia/Shanghai",
-) -> None:
-    """把用药调度挂到 FastAPI lifespan 上。
+) -> SchedulerRuntime:
+    """构造 SchedulerRuntime 并挂到 `app.state.medication_scheduler`，返回实例给调用方。
+
+    ⚠️ 调用方（main.py lifespan）**必须**自行管理 start() / stop() 生命周期：
+        runtime = install_scheduler(app, ...)
+        await runtime.start()   # yield 前
+        ... yield ...
+        await runtime.stop()    # finally 块内
+
+    不用 `@app.on_event("startup")` / `@app.on_event("shutdown")` 是因为 FastAPI 0.110+
+    里 lifespan 与旧式事件互斥，后者会被静默忽略。
 
     :param session_factory: 装配层的数据库会话工厂（`app.db.session_factory`）。
     :param checkpointer_dsn / checkpointer_schema: LangGraph checkpointer 连接参数。
         None = 走 Pydantic Settings（`langgraph_checkpoint_database_url` /
         `langgraph_checkpoint_schema`），与子图 N10 的口径一致。
     :param timezone_name: cron 解释时区（默认 Asia/Shanghai）。
+    :return: 已构造但**未启动**的 SchedulerRuntime 实例。
     """
-    # 闭包捕获参数，模块顶层不持有 session_factory
-    runtime_holder: dict[str, SchedulerRuntime] = {}
-
-    @app.on_event("startup")
-    async def _start() -> None:
-        runtime = SchedulerRuntime(
-            session_factory=session_factory,
-            checkpointer_dsn=checkpointer_dsn,
-            checkpointer_schema=checkpointer_schema,
-            timezone_name=timezone_name,
-        )
-        await runtime.start()
-        runtime_holder["runtime"] = runtime
-        app.state.medication_scheduler = runtime
-
-    @app.on_event("shutdown")
-    async def _stop() -> None:
-        runtime = runtime_holder.pop("runtime", None)
-        if runtime is not None:
-            await runtime.stop()
-            app.state.medication_scheduler = None
+    runtime = SchedulerRuntime(
+        session_factory=session_factory,
+        checkpointer_dsn=checkpointer_dsn,
+        checkpointer_schema=checkpointer_schema,
+        timezone_name=timezone_name,
+    )
+    app.state.medication_scheduler = runtime
+    return runtime
 
 
 # ------------------------------------------------------------------ SchedulerRuntime
@@ -132,19 +129,32 @@ class SchedulerRuntime:
     # --- start / stop ---
 
     async def start(self) -> None:
-        """启动顺序：开 checkpointer → 起 scheduler → 注册两个 tick。"""
+        """启动顺序：开 checkpointer → 起 scheduler → 注册两个 tick。
+
+        任何环节失败都**不阻塞主应用启动**：打 warning 继续 yield，避免 PG/Redis 临时
+        不可用时整个 FastAPI 起不来。scheduler 自身会停在半初始化状态，下一次 restart
+        会重新尝试（APScheduler 的 replace_existing=True 保证幂等）。
+        """
         from app.graphs.checkpointer import medication_checkpointer
 
         # 开 checkpointer（长开，整个进程生命周期）
-        self._checkpointer_ctx = medication_checkpointer(
-            dsn=self._checkpointer_dsn,
-            schema=self._checkpointer_schema,
-        )
-        self._checkpointer = await self._checkpointer_ctx.__aenter__()
-        logger.info(
-            "medication_scheduler_checkpointer_ready schema=%s",
-            self._checkpointer_schema or "default",
-        )
+        try:
+            self._checkpointer_ctx = medication_checkpointer(
+                dsn=self._checkpointer_dsn,
+                schema=self._checkpointer_schema,
+            )
+            self._checkpointer = await self._checkpointer_ctx.__aenter__()
+            logger.info(
+                "medication_scheduler_checkpointer_ready schema=%s",
+                self._checkpointer_schema or "default",
+            )
+        except Exception as exc:
+            logger.warning(
+                "medication_scheduler_checkpointer_unavailable",
+                extra={"error_type": type(exc).__name__},
+            )
+            # checkpointer 没起来时 scheduler 也没法正常工作（resume tick 会
+            # 因 self._checkpointer is None 直接跳过），但主应用不受影响
 
         # 起 scheduler（绑定 uvicorn 事件循环）
         self._scheduler = AsyncIOScheduler(timezone=self._timezone)

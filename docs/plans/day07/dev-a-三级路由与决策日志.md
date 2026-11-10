@@ -771,6 +771,11 @@ grep -nE "httpx|session\.|app\.models|import app\.services\.tool_executor" app/r
     → 仍会周期性 503（宿主负载问题，非预算可解）。另修两个真缺陷：预热掐断加载导致二次
     加载、超时释放许可导致并发雪崩（许可改为跟随线程）。详见 a3-路由基线.md §6.1
 
+> ⚠️ **合并上游后的编号变更（2026-11-10 18:5x）**：`decision_logs` 迁移原计划占 `0014`，
+> 但 develop 上 dev-B 已先合入 `0014_metrics_response_segment` 与 `0015_elders_updated_at`，
+> 两笔 `0014` 会在 alembic 里形成双 head。合并时已把本迁移改名为 **`0016_decision_logs`**，
+> `down_revision` 指向 `0015_elders_updated_at`。表结构与索引未变，只是链在队尾。
+
 确认点③ A3：
   状态：已完成（2026-11-10 17:0x），2 项指标未达门槛已如实标红
   迁移：alembic upgrade head → downgrade -1 → upgrade head **三次全过**（在 silvermate_test 上实跑），

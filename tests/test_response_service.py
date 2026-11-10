@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable, Mapping
 from typing import Any
@@ -259,31 +260,19 @@ async def test_start_rejects_empty_text_and_bad_context() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_safe_append_event_swallows_cancellation() -> None:
-    """S4 试跑修复②：事件追加被取消（ws_superseded 场景）不得炸穿主链路。
+async def test_safe_append_event_reraises_cancellation() -> None:
+    """P3-27：事件追加被取消必须重抛（asyncio 取消传播），不再吞掉。
 
-    CancelledError 是 BaseException，except Exception 兜不住——修复前它会从
-    _safe_append_event 逃出 start()，分段循环根本不跑（dev-D 试跑的
-    「response_started 之后段未下发」即此链）。
+    Day 6 曾按「吞掉不炸主链路」修复（S4 试跑②）；Day 7 任务卡 P3-27 明确改为
+    重抛——取消即整个回合任务被取消（如 ws_superseded），剩余分段本就不应继续
+    下发，吞掉反而丢失取消语义。
     """
     h = Harness()
     h.sink.cancel_next = True  # response_started 追加恰好被取消
-    handle = await h.start("你好。今天天气真不错！")  # 2 段
-
-    # 取消被吞掉，分段照常逐段下发
-    assert [msg["text"] for _, msg in h.deliver.messages] == ["你好。", "今天天气真不错！"]
-    assert handle.total == 2
-    # 服务仍然活着：后续 ack 四步照常工作（被取消的只是那一次事件追加）
-    assert (
-        await h.service.ack(
-            device_id="dev-1",
-            response_id=handle.response_id,
-            epoch=handle.epoch,
-            segment_id=0,
-            status="playing",
-        )
-        is True
-    )
+    with pytest.raises(asyncio.CancelledError):
+        await h.start("你好。今天天气真不错！")
+    # 取消传播：取消点之后的分段不再下发
+    assert h.deliver.messages == []
 
 
 async def test_ack_unknown_response_rejected(caplog: pytest.LogCaptureFixture) -> None:
@@ -444,7 +433,13 @@ async def test_ack_playing_then_played_completes_delivery() -> None:
         "response_completed",
     ]
     completed = h.sink.events[-1][1]
-    assert completed == {"total_segments": 2}
+    # P2-10（B1）：payload 写入时即写全（唯一写口 + 事件只追加不回填）
+    assert completed == {
+        "total_segments": 2,
+        "generated_text": "第一段话。第二段话。",
+        "delivered_text": "第一段话。第二段话。",
+        "response_status": "completed",
+    }
     # 末段 played 后回复已结束：再来的 ack 走③ wrong_status
     assert not await h.service.ack(
         device_id="dev-1", response_id=rid, epoch=epoch, segment_id=1, status="playing"
@@ -456,40 +451,62 @@ async def test_ack_playing_then_played_completes_delivery() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_canceled_ack_skips_monotonic_and_mutates_nothing() -> None:
-    h = Harness()
+async def test_canceled_ack_settles_interrupted_and_ends_response() -> None:
+    """canceled 是终态上报（Day 7 P2-7）：置 interrupted、以水位截断、写事件、结算。
+
+    Day 6 语义「canceled 陈述性上报不改状态」已由 Day 7 任务卡改写为终态结算；
+    终态后同代 played 与再次 canceled 均被 ③ wrong_status 拒绝（P2-7）。
+    """
+    h = SettlementHarness()
     handle = await h.start("第一段话。第二段话。")
     rid = handle.response_id
-    epoch = h.service.session_epoch(_THREAD)
-    await h.service.ack(
-        device_id="dev-1", response_id=rid, epoch=epoch, segment_id=0, status="playing"
-    )
-    await h.service.ack(
-        device_id="dev-1", response_id=rid, epoch=epoch, segment_id=0, status="played"
-    )
-    before = h.service.handle(rid)
-    assert before is not None
-    assert before.segment_id == 0
+    await h.play(rid, 0, status="playing")
+    await h.play(rid, 0)
 
-    # 正例①：canceled 带已确认段号（== last_acked，单调规则会拒 0 > 0）→ 跳过④被接受
-    assert await h.service.ack(
-        device_id="dev-1", response_id=rid, epoch=epoch, segment_id=0, status="canceled"
-    )
-    # 正例②：无一完整播放段时客户端带 -1 哨兵（0 基合法域之外）→ 仍被接受
-    assert await h.service.ack(
-        device_id="dev-1", response_id=rid, epoch=epoch, segment_id=-1, status="canceled"
-    )
+    # 段号==水位 → 被接受并结算为 interrupted
+    assert await h.play(rid, 0, status="canceled")
+    final = h.service.handle(rid)
+    assert final is not None
+    assert final.delivery_status == "interrupted"
+    assert final.delivered_text == "第一段话。"  # 按水位截断
+    assert final.segment_id == 0
+    assert _event_names(h).count("response_interrupted") == 1
+    assert _event_names(h).count("response_completed") == 0
+    assert len(h.store.finishes(turn_id="turn-1", status="interrupted")) == 1
 
-    after = h.service.handle(rid)
-    assert after is not None
-    assert after.segment_id == 0  # canceled 不推进单调基线
-    assert after.delivered_text == "第一段话。"  # 不改已拼 played 文本
-    assert after.delivery_status == "unknown"  # 陈述性上报不改状态
-    assert after.last_played_segment == 0
-    assert [event_type for event_type, _, _ in h.sink.events] == [
-        "response_started",
-        "response_segment_delivered",
-    ]
+    # 终态后：同代 played / 再次 canceled 均被拒绝
+    assert not await h.play(rid, 1)
+    assert not await h.play(rid, 0, status="canceled")
+
+
+async def test_canceled_watermark_mismatch_uses_watermark() -> None:
+    """P2-8：canceled 段号与水位不一致 → 告警并以水位为准（不按客户端段号截断）。"""
+    h = SettlementHarness()
+    handle = await h.start("第一段。第二段。")
+    rid = handle.response_id
+    await h.play(rid, 0, status="playing")
+    await h.play(rid, 0)
+
+    # 客户端上报已播到第 1 段，但服务端水位只有 0 → 以水位为准
+    assert await h.play(rid, 1, status="canceled")
+    final = h.service.handle(rid)
+    assert final is not None
+    assert final.delivered_text == "第一段。"
+    assert final.last_played_segment == 0
+
+
+async def test_canceled_with_no_played_segments_settles_empty_prefix() -> None:
+    """无一完整播放段：canceled（-1 哨兵）→ 结算 interrupted、投影空串。"""
+    h = SettlementHarness()
+    handle = await h.start("第一段。第二段。")
+    rid = handle.response_id
+
+    assert await h.play(rid, -1, status="canceled")
+    final = h.service.handle(rid)
+    assert final is not None
+    assert final.delivery_status == "interrupted"
+    assert final.delivered_text == ""
+    assert len(h.store.finishes(turn_id="turn-1", status="interrupted")) == 1
 
 
 async def test_canceled_ack_still_enforces_first_three_steps(
@@ -727,3 +744,386 @@ async def test_ack_rejection_records_no_metric(caplog: pytest.LogCaptureFixture)
             device_id="dev-1", response_id=rid, epoch=epoch, segment_id=99, status="playing"
         )  # not_monotonic（合法域之外）
     assert len(_response_segment_metrics(caplog)) == baseline  # 被拒 ack 不打 response_segment
+
+
+# ---------------------------------------------------------------------------
+# Day 7 B1 契约（先红）：回合终态结算端口 / response_completed 唯一 / canceled 终态
+# ---------------------------------------------------------------------------
+
+
+class FakeHistoryStore:
+    """B1 结算端口替身（Step 5 注入 ResponseService，替代 HistoryStore 适配层）。
+
+    契约形状与 `history_service` 语义同构：
+    - `commit_response(delivered_text=...)`：只写已送达投影，**不改**轮次状态；
+    - `finish_turn(status=...)`：轮次终态唯一写口（幂等不覆盖由 Step 5c 保证）。
+    """
+
+    def __init__(self) -> None:
+        self.commit_calls: list[dict[str, Any]] = []
+        self.finish_calls: list[dict[str, Any]] = []
+
+    async def commit_response(
+        self,
+        *,
+        turn_id: str,
+        response_id: str,
+        generated_text: str,
+        delivered_text: str | None,
+        status: str,
+    ) -> None:
+        self.commit_calls.append(
+            {
+                "turn_id": turn_id,
+                "response_id": response_id,
+                "generated_text": generated_text,
+                "delivered_text": delivered_text,
+                "status": status,
+            }
+        )
+
+    async def finish_turn(self, *, turn_id: str, status: str) -> None:
+        self.finish_calls.append({"turn_id": turn_id, "status": status})
+
+    def commits(self, *, turn_id: str, status: str) -> list[dict[str, Any]]:
+        return [c for c in self.commit_calls if c["turn_id"] == turn_id and c["status"] == status]
+
+    def finishes(self, *, turn_id: str, status: str) -> list[dict[str, Any]]:
+        return [f for f in self.finish_calls if f["turn_id"] == turn_id and f["status"] == status]
+
+
+class SettlementHarness:
+    """带结算端口的组装器：替身与 Harness 相同，另注入 FakeHistoryStore。"""
+
+    def __init__(self, *, elder_id: str | None = "elder-a") -> None:
+        self.deliver = FakeDeliver()
+        self.sink = FakeEventSink()
+        self.tts_queue = FakeTtsQueue()
+        self.store = FakeHistoryStore()
+        self.service = ResponseService(
+            deliver=self.deliver,
+            events=self.sink,
+            tts_queue=self.tts_queue,
+            history_store=self.store,
+        )
+        self.turn = TurnContext(
+            thread_id=_THREAD, turn_id="turn-1", device_id="dev-1", elder_id=elder_id
+        )
+
+    async def start(self, text: str) -> ResponseHandle:
+        return await self.service.start(self.turn, _result(text))
+
+    async def play(self, rid: str, segment_id: int, *, status: str = "played") -> bool:
+        """以当前会话 epoch 发送一次 ack（played 默认）。"""
+        return await self.service.ack(
+            device_id="dev-1",
+            response_id=rid,
+            epoch=self.service.session_epoch(_THREAD),
+            segment_id=segment_id,
+            status=status,
+        )
+
+
+def _event_names(h: SettlementHarness) -> list[str]:
+    return [event_type for event_type, _, _ in h.sink.events]
+
+
+async def test_played_last_segment_finishes_turn() -> None:
+    """契约①（P1-1）：末段 played → 轮次终态 completed + delivered 投影非 NULL。"""
+    h = SettlementHarness()
+    handle = await h.start("第一段话。第二段话。")
+    rid = handle.response_id
+
+    assert await h.play(rid, 0, status="playing")
+    assert await h.play(rid, 0)
+    assert await h.play(rid, 1, status="playing")
+    assert await h.play(rid, 1)
+
+    # 投影：assistant_delivered_text 非 NULL 且等于完整文本（只拼 played 段）
+    completed_commits = h.store.commits(turn_id="turn-1", status="completed")
+    assert len(completed_commits) == 1
+    assert completed_commits[0]["delivered_text"] == "第一段话。第二段话。"
+    assert completed_commits[0]["response_id"] == rid
+    assert completed_commits[0]["generated_text"] == "第一段话。第二段话。"
+    # 终态：conversation_turns.status=completed（finish_turn 唯一写口，恰好一次）
+    assert len(h.store.finishes(turn_id="turn-1", status="completed")) == 1
+    # response_completed 每轮恰好 1 条
+    assert _event_names(h).count("response_completed") == 1
+    # P2-10（B1）：事件 payload 在写入时就写全——唯一写口 + 事件只追加不回填，
+    # 事后 commit_response 只补投影（handoff-B-to-A §2），generated_text 缺了就永久缺。
+    completed_payloads = [p for t, p, _ in h.sink.events if t == "response_completed"]
+    assert completed_payloads == [
+        {
+            "total_segments": 2,
+            "generated_text": "第一段话。第二段话。",
+            "delivered_text": "第一段话。第二段话。",
+            "response_status": "completed",
+        }
+    ]
+
+
+async def test_interrupted_turn_truncates_delivered_text() -> None:
+    """契约②（P1-3）：打断 → 终态 interrupted + 投影为 [0..last_played] 连续前缀。"""
+    h = SettlementHarness()
+    handle = await h.start("第一段。第二段。第三段。")
+    rid = handle.response_id
+    await h.play(rid, 0, status="playing")
+    await h.play(rid, 0)
+    await h.play(rid, 1, status="playing")
+    await h.service.interrupt(rid)
+
+    interrupted_commits = h.store.commits(turn_id="turn-1", status="interrupted")
+    assert len(interrupted_commits) == 1
+    assert interrupted_commits[0]["delivered_text"] == "第一段。"  # 只含已 played 前缀
+    assert len(h.store.finishes(turn_id="turn-1", status="interrupted")) == 1
+    # 打断后不得出现 response_completed；response_interrupted 恰好 1 条
+    assert _event_names(h).count("response_completed") == 0
+    assert _event_names(h).count("response_interrupted") == 1
+
+
+async def test_duplicate_played_does_not_duplicate_completed() -> None:
+    """契约③：重复 ack / 迟到 ack 不重复写事件，completed 结算恰好一次。"""
+    h = SettlementHarness()
+    handle = await h.start("第一段话。第二段话。")
+    rid = handle.response_id
+    await h.play(rid, 0, status="playing")
+    await h.play(rid, 0)
+    await h.play(rid, 1, status="playing")
+    assert await h.play(rid, 1)  # 末段 played：结束
+
+    # 重复 played：③ wrong_status 拒绝（response 已 ended）
+    assert not await h.play(rid, 1)
+    # 迟到 ack（即使伪造当前 epoch）同样被拒
+    assert not await h.play(rid, 0)
+
+    assert _event_names(h).count("response_completed") == 1
+    assert len(h.store.commits(turn_id="turn-1", status="completed")) == 1
+    assert len(h.store.finishes(turn_id="turn-1", status="completed")) == 1
+
+
+async def test_canceled_same_epoch_played_rejected() -> None:
+    """契约③续（P2-7）：canceled 是终态上报——结算 interrupted，再拒绝同代 played。"""
+    h = SettlementHarness()
+    handle = await h.start("第一段。第二段。")
+    rid = handle.response_id
+    await h.play(rid, 0, status="playing")
+    await h.play(rid, 0)
+
+    # canceled 上报（同代、段号==水位）：置终态 interrupted，按水位截断投影
+    assert await h.play(rid, 0, status="canceled")
+    canceled_commits = h.store.commits(turn_id="turn-1", status="interrupted")
+    assert len(canceled_commits) == 1
+    assert canceled_commits[0]["delivered_text"] == "第一段。"
+    assert len(h.store.finishes(turn_id="turn-1", status="interrupted")) == 1
+    assert _event_names(h).count("response_interrupted") == 1
+
+    # canceled 后同代 played 必须被拒绝（P2-7）：response 已 ended
+    assert not await h.play(rid, 1)
+    # 永不出现 response_completed
+    assert _event_names(h).count("response_completed") == 0
+
+
+async def test_interrupt_idempotent() -> None:
+    """契约③续：重复 interrupt 幂等——不重复写事件、不重复结算、不重复 bump epoch。"""
+    h = SettlementHarness()
+    handle = await h.start("第一段。第二段。")
+    rid = handle.response_id
+    await h.play(rid, 0, status="playing")
+    await h.play(rid, 0)
+    await h.service.interrupt(rid)
+    epoch_after_first = h.service.session_epoch(_THREAD)
+    before = h.service.handle(rid)
+
+    again = await h.service.interrupt(rid)
+
+    assert again == before  # no-op 返回当前快照
+    assert h.service.session_epoch(_THREAD) == epoch_after_first  # 不重复 bump
+    assert _event_names(h).count("response_interrupted") == 1
+    assert len(h.store.finishes(turn_id="turn-1", status="interrupted")) == 1
+    assert len(h.store.commits(turn_id="turn-1", status="interrupted")) == 1
+
+
+async def test_interrupt_rejects_foreign_device() -> None:
+    """§5.4 归属校验：非接收该回复的设备发起打断 → no-op、不落库、不炸连接。
+
+    signaling 的 interrupt 分支必传 device_id；N14 内部调用不传（None = 不校验）。
+    """
+    h = SettlementHarness()
+    handle = await h.start("第一段。")
+    rid = handle.response_id
+
+    # 异设备打断：no-op
+    assert await h.service.interrupt(rid, device_id="dev-other") is None
+    current = h.service.handle(rid)
+    assert current is not None
+    assert current.delivery_status == "unknown"  # 未被打断
+    assert _event_names(h).count("response_interrupted") == 0
+    assert h.store.finish_calls == []  # 不落库
+    assert h.service.session_epoch(_THREAD) == 1  # 不 bump epoch
+
+    # 本设备打断：正常五步 + 结算
+    interrupted = await h.service.interrupt(rid, device_id="dev-1")
+    assert interrupted is not None
+    assert interrupted.delivery_status == "interrupted"
+    assert len(h.store.finishes(turn_id="turn-1", status="interrupted")) == 1
+
+
+# ---------------------------------------------------------------------------
+# Day 7 Step 5a 续：Redis epoch/水位恢复回写（P2-9）+ 记忆提取调度点（B1↔B2）
+# ---------------------------------------------------------------------------
+
+
+class FakePersistence:
+    """EpochPersistence 替身：dict 仿 Redis，可预置「重启前」状态。"""
+
+    def __init__(self, seed: dict[str, str] | None = None) -> None:
+        self.data: dict[str, str] = dict(seed or {})
+        self.sets: list[tuple[str, str, int | None]] = []
+
+    async def get(self, key: str) -> str | None:
+        return self.data.get(key)
+
+    async def set(self, key: str, value: str, *, ex: int | None = None) -> None:
+        self.data[key] = value
+        self.sets.append((key, value, ex))
+
+
+class FakeMemoryPort:
+    """MemoryExtractionLike 替身：记录 extract_after_turn 调用参数。"""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def extract_after_turn(
+        self,
+        *,
+        elder_id: str | None,
+        thread_id: str,
+        turn_id: str,
+        user_text: str,
+        assistant_text: str,
+    ) -> int:
+        self.calls.append(
+            {
+                "elder_id": elder_id,
+                "thread_id": thread_id,
+                "turn_id": turn_id,
+                "user_text": user_text,
+                "assistant_text": assistant_text,
+            }
+        )
+        return 1
+
+
+async def test_redis_epoch_restore() -> None:
+    """P2-9：进程重启后从 Redis 恢复会话 epoch；epoch 与水位回写带 TTL。"""
+    persistence = FakePersistence(seed={"session:thread-1:epoch": "5"})  # 重启前 epoch=5
+    deliver = FakeDeliver()
+    sink = FakeEventSink()
+    tts_queue = FakeTtsQueue()
+    store = FakeHistoryStore()
+    service = ResponseService(
+        deliver=deliver,
+        events=sink,
+        tts_queue=tts_queue,
+        history_store=store,
+        persistence=persistence,
+    )
+    turn = TurnContext(thread_id=_THREAD, turn_id="turn-1", device_id="dev-1", elder_id="elder-a")
+
+    handle = await service.start(turn, _result("你好。今天天气真不错！"))
+
+    # 重启恢复：新代 = 持久化 epoch + 1（而非归 0 后的 1）
+    assert handle.epoch == 6
+    assert persistence.data["session:thread-1:epoch"] == "6"
+    assert persistence.sets and persistence.sets[0][2] == 7200  # TTL 2h
+
+    # 旧代 epoch=5 的迟到 ack 被淘汰；恢复后的新代 ack 被接受（不再全拒）
+    assert not await service.ack(
+        device_id="dev-1", response_id=handle.response_id, epoch=5, segment_id=0, status="playing"
+    )
+    assert await service.ack(
+        device_id="dev-1", response_id=handle.response_id, epoch=6, segment_id=0, status="playing"
+    )
+
+    # response:{id} 水位回写：注册时与水位推进时各写一次
+    record = json.loads(persistence.data[f"response:{handle.response_id}"])
+    assert record["thread_id"] == _THREAD
+    assert record["epoch"] == 6
+    assert record["last_acked_segment"] == -1  # playing ack 不推进水位
+
+
+async def test_settlement_schedules_memory_extraction() -> None:
+    """B1↔B2 边界（裁决 O-B2）：终态结算调度记忆提取；generic 轮不调度。
+
+    本步只接调用点（端口由装配注入）；Step 7 总收口把真实 extract_after_turn
+    换入。提取在后台任务执行，不阻塞 ack 返回。
+    """
+    memory = FakeMemoryPort()
+    deliver = FakeDeliver()
+    sink = FakeEventSink()
+    store = FakeHistoryStore()
+    service = ResponseService(
+        deliver=deliver,
+        events=sink,
+        tts_queue=FakeTtsQueue(),
+        history_store=store,
+        memory_port=memory,
+    )
+    turn = TurnContext(
+        thread_id=_THREAD,
+        turn_id="turn-1",
+        device_id="dev-1",
+        elder_id="elder-a",
+        user_text="我喜欢越剧",
+    )
+
+    handle = await service.start(turn, _result("好的。"))
+    assert await service.ack(
+        device_id="dev-1",
+        response_id=handle.response_id,
+        epoch=service.session_epoch(_THREAD),
+        segment_id=0,
+        status="played",
+    )
+    # 等后台提取任务跑完
+    tasks = list(service._memory_tasks)
+    assert len(tasks) == 1
+    await asyncio.gather(*tasks)
+
+    assert memory.calls == [
+        {
+            "elder_id": "elder-a",
+            "thread_id": _THREAD,
+            "turn_id": "turn-1",
+            "user_text": "我喜欢越剧",
+            "assistant_text": "好的。",
+        }
+    ]
+
+
+async def test_generic_turn_skips_memory_extraction() -> None:
+    """generic 轮（elder_id=None）不调度记忆提取（闸门②）。"""
+    memory = FakeMemoryPort()
+    deliver = FakeDeliver()
+    sink = FakeEventSink()
+    store = FakeHistoryStore()
+    service = ResponseService(
+        deliver=deliver,
+        events=sink,
+        tts_queue=FakeTtsQueue(),
+        history_store=store,
+        memory_port=memory,
+    )
+    turn = TurnContext(thread_id=_THREAD, turn_id="turn-1", device_id="dev-1", elder_id=None)
+
+    handle = await service.start(turn, _result("好的。"))
+    await service.ack(
+        device_id="dev-1",
+        response_id=handle.response_id,
+        epoch=service.session_epoch(_THREAD),
+        segment_id=0,
+        status="played",
+    )
+    assert service._memory_tasks == set()
+    assert memory.calls == []

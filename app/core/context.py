@@ -12,17 +12,23 @@ Day 4 A2 追加 `build_dialogue_messages()`：**纯参数组装**，不查 DB / 
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from collections.abc import Sequence
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
-from datetime import datetime
-from typing import TYPE_CHECKING, Final, Literal
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, Final, Literal
 from zoneinfo import ZoneInfo
 
+from sqlalchemy.exc import SQLAlchemyError
+
 if TYPE_CHECKING:
+    from app.services.history_service import TurnView
     from app.services.state_service import StateSnapshot
+
+logger = logging.getLogger(__name__)
 
 # 对外约定：请求头与响应头同名
 TRACE_HEADER = "X-Trace-Id"
@@ -333,44 +339,43 @@ async def build_turn_context(
         )
     )
 
-    # [4] authoritative_facts —— memory_chunks 偏好类事实（闸门② elder_id）
-    facts_text = await _assemble_authoritative_facts(identity, cfg)
+    # [4]+[5] authoritative_facts / relevant_memories —— 单次查询切分（P2-21）
+    facts_text, memories_text, memory_reason = await _load_memory_layers(identity, cfg)
     layers.append(
         ContextLayerResult(
             layer="authoritative_facts",
             content=facts_text,
             token_estimate=_estimate_tokens(facts_text),
-            degraded=(facts_text == "" and not identity.is_generic),
-            degraded_reason="memory_chunks_not_queried" if facts_text == "" else None,
+            degraded=memory_reason is not None,
+            degraded_reason=memory_reason,
         )
     )
-
-    # [5] relevant_memories —— memory_chunks 召回（骨架 N08 负责，Day 6 桩复用 authoritative_facts）
-    memories_text = await _assemble_relevant_memories(identity, cfg)
     layers.append(
         ContextLayerResult(
             layer="relevant_memories",
             content=memories_text,
             token_estimate=_estimate_tokens(memories_text),
-            degraded=(memories_text == "" and not identity.is_generic),
-            degraded_reason="memory_service_not_ready" if memories_text == "" else None,
+            degraded=memory_reason is not None,
+            degraded_reason=memory_reason,
         )
     )
 
-    # [6] older_summary —— 历史对话摘要（dev-A HistoryStore 桩，返回空 + degraded）
-    older_text = await _assemble_older_summary(thread_id, identity, cfg)
+    # [6] older_summary —— 与 history_turns 共用单次 read_turns（P2-21）
+    turns, history_reason = await _load_history_views(thread_id, identity, cfg)
+    older_text = _older_summary_from_views(turns)
     layers.append(
         ContextLayerResult(
             layer="older_summary",
             content=older_text,
             token_estimate=_estimate_tokens(older_text),
-            degraded=(older_text == "" and not identity.is_generic),
-            degraded_reason="history_store_not_ready" if older_text == "" else None,
+            degraded=history_reason is not None,
+            degraded_reason=history_reason,
         )
     )
 
-    # waiting_for 绑定（讲义 §7.2）—— 独立于七层，不进预算裁剪
-    waiting_for_text = _assemble_waiting_for_binding(state_snapshot)
+    # waiting_for 绑定（讲义 §7.2）—— generic 轮短路（P2-16）：
+    # 通用模式不得注入“优先解释为用药确认”，否则未确认身份也会被引向用药答复。
+    waiting_for_text = "" if identity.is_generic else _assemble_waiting_for_binding(state_snapshot)
 
     # --- 预算裁剪 ---
     degraded_names: list[str] = []
@@ -420,16 +425,36 @@ async def build_turn_context(
     if waiting_for_text.strip():
         messages.append({"role": "system", "content": waiting_for_text})
 
-    history_messages = await _assemble_history_turns(thread_id, identity, cfg)
+    # 历史与摘要共用 Step 6 那一次 read_turns 的结果（P2-21：每轮只调 1 次）
+    history_messages = _history_messages_from_views(turns)
     messages.extend(history_messages)
 
     messages.append({"role": "user", "content": text})
 
+    # 预算口径（P2-18）：waiting_for 与 history_turns 计入 budget_used，不再只数七层。
+    # 两者不在七层裁剪范围内（任务绑定与最近历史按 must_keep 语义不裁）；
+    # 超预算时如实上报 used > total，裁剪策略扩展登记后续迭代。
+    budget_used = (
+        layers_total
+        + _estimate_tokens(waiting_for_text)
+        + sum(_estimate_tokens(m["content"]) for m in history_messages)
+    )
+
+    # 降级汇总（P2-17）：预算裁剪 + 装配失败的层都进 degraded_layers（去重保序）
+    degraded_layers = tuple(
+        dict.fromkeys(
+            [
+                *degraded_names,
+                *(layer.layer for layer in layers if layer.degraded),
+            ]
+        )
+    )
+
     return TurnContext(
         messages=messages,
-        budget_used_tokens=layers_total,
+        budget_used_tokens=budget_used,
         budget_total_tokens=cfg.budget_tokens,
-        degraded_layers=tuple(degraded_names),
+        degraded_layers=degraded_layers,
     )
 
 
@@ -472,11 +497,67 @@ def _assemble_active_task(state_snapshot: StateSnapshot | None) -> str:
     return f"【当前任务进行中】任务类型：{kind}。等待中。"
 
 
-async def _assemble_authoritative_facts(
-    identity: DialogueIdentity, cfg: ContextBuilderConfig
-) -> str:
-    if identity.is_generic or identity.elder_id is None:
+def _memory_sort_key(row: Any) -> tuple[int, float, float]:
+    """memories 召回排序：last_accessed 最近优先（NULL 最后），importance 次之。
+
+    与 SQL 口径 `last_accessed DESC NULLS LAST, importance DESC` 对齐；
+    naive datetime 统一按 UTC 折算时间戳，保证 naive/aware 可比。
+    """
+    accessed = row.last_accessed
+    if accessed is None:
+        return (1, 0.0, -float(row.importance))
+    ts = (
+        accessed.timestamp()
+        if accessed.tzinfo is not None
+        else accessed.replace(tzinfo=UTC).timestamp()
+    )
+    return (0, -ts, -float(row.importance))
+
+
+def _split_memory_rows(
+    rows: Sequence[Any], cfg: ContextBuilderConfig
+) -> tuple[list[Any], list[Any]]:
+    """同一批行切出 facts 与 memories：**单次查询**（P2-21），跨层按 chunk_id 去重。
+
+    `rows` 已按 importance 降序；facts 取 importance 前 N，
+    memories 在其余行里按 last_accessed 最近优先取 M——同一条记忆不会同时进两层。
+    """
+    facts = list(rows[: cfg.max_authoritative_facts])
+    used_ids = {r.chunk_id for r in facts}
+    candidates = [r for r in rows if r.chunk_id not in used_ids]
+    memories = sorted(candidates, key=_memory_sort_key)[: cfg.max_memories]
+    return facts, memories
+
+
+def _render_memory_chunks(rows: Sequence[Any], *, kind: str) -> str:
+    if not rows:
         return ""
+    lines: list[str] = []
+    for chunk in rows:
+        lines.append(
+            _boundary_wrap(
+                kind=kind,
+                source="memory_chunks",
+                identifier=str(chunk.chunk_id),
+                confidence=float(chunk.confidence) if chunk.confidence is not None else None,
+                inner=chunk.content,
+            )
+        )
+    return "\n".join(lines)
+
+
+async def _load_memory_layers(
+    identity: DialogueIdentity, cfg: ContextBuilderConfig
+) -> tuple[str, str, str | None]:
+    """**一次查询**同时产出 authoritative_facts 与 relevant_memories 两层（P2-21）。
+
+    返回 `(facts_text, memories_text, degraded_reason)`：
+    - 查询成功但零记忆 → `reason=None`，两层为空——零记忆是正常状态，不是降级（P3-35）；
+    - `ImportError` / `SQLAlchemyError` → `logger.warning` + `"memory_query_failed"`
+      （P2-17：不再裸 `except Exception`，编程错误继续外抛）。
+    """
+    if identity.is_generic or identity.elder_id is None:
+        return "", "", None
     try:
         from sqlalchemy import select
 
@@ -493,134 +574,73 @@ async def _assemble_authoritative_facts(
                             MemoryChunk.status == "active",
                         )
                         .order_by(MemoryChunk.importance.desc())
-                        .limit(cfg.max_authoritative_facts)
+                        .limit(cfg.max_authoritative_facts + cfg.max_memories)
                     )
                 )
                 .scalars()
                 .all()
             )
-    except Exception:
-        return ""
+    except (ImportError, SQLAlchemyError) as exc:
+        logger.warning("context_memory_query_failed elder_id=%s error=%s", identity.elder_id, exc)
+        return "", "", "memory_query_failed"
 
-    if not rows:
-        return ""
-    lines: list[str] = []
-    for chunk in rows:
-        lines.append(
-            _boundary_wrap(
-                kind="authoritative_fact",
-                source="memory_chunks",
-                identifier=str(chunk.chunk_id),
-                confidence=float(chunk.confidence) if chunk.confidence is not None else None,
-                inner=chunk.content,
-            )
-        )
-    return "\n".join(lines)
+    facts_rows, memory_rows = _split_memory_rows(rows, cfg)
+    facts_text = _render_memory_chunks(facts_rows, kind="authoritative_fact")
+    memories_text = _render_memory_chunks(memory_rows, kind="memory")
+    return facts_text, memories_text, None
 
 
-async def _assemble_relevant_memories(identity: DialogueIdentity, cfg: ContextBuilderConfig) -> str:
-    if identity.is_generic or identity.elder_id is None:
-        return ""
-    try:
-        from sqlalchemy import select
-
-        from app.db import session_factory
-        from app.models.memory import MemoryChunk
-
-        async with session_factory() as session:
-            rows = (
-                (
-                    await session.execute(
-                        select(MemoryChunk)
-                        .where(
-                            MemoryChunk.elder_id == identity.elder_id,
-                            MemoryChunk.status == "active",
-                        )
-                        .order_by(
-                            MemoryChunk.last_accessed.desc().nullslast(),
-                            MemoryChunk.importance.desc(),
-                        )
-                        .limit(cfg.max_memories)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-    except Exception:
-        return ""
-
-    if not rows:
-        return ""
-    lines: list[str] = []
-    for chunk in rows:
-        lines.append(
-            _boundary_wrap(
-                kind="memory",
-                source="memory_chunks",
-                identifier=str(chunk.chunk_id),
-                confidence=float(chunk.confidence) if chunk.confidence is not None else None,
-                inner=chunk.content,
-            )
-        )
-    return "\n".join(lines)
-
-
-async def _assemble_older_summary(
+async def _load_history_views(
     thread_id: str, identity: DialogueIdentity, cfg: ContextBuilderConfig
-) -> str:
-    if identity.is_generic:
-        return ""
-    try:
-        from app.services.history_service import read_turns
+) -> tuple[list[TurnView], str | None]:
+    """每轮**只调 1 次** `read_turns`（P2-21）：older_summary 与 history_turns 共用同一批数据。
 
-        # dev-A history_service 已合入，签名 read_turns(session, *, thread_id, elder_id, limit)
-        # Day 6 桩：session 不可用时用 None 触发 dev-A 自己的降级逻辑；
-        # 若签名不匹配（catch TypeError）也回空，避免被 dev-A 的改动阻塞
+    只捕获可预期的域/基础设施异常（P2-17）：`HistoryError`、`SecurityError`
+    （elder_id 非法 UUID）、`SQLAlchemyError`；其余异常视为编程错误，不打野吞。
+    history_service 反向依赖本模块的 `get_trace_id`，只能在调用点延迟导入（避免循环）。
+    """
+    if identity.is_generic or identity.elder_id is None:
+        return [], None
+    from app.core.security import SecurityError
+    from app.services.history_service import HistoryError, read_turns
+
+    try:
         turns = await read_turns(
-            session=None,
             thread_id=thread_id,
             elder_id=identity.elder_id,
             limit=cfg.max_history_turns,
         )
-    except Exception:
-        # dev-A history_service 签名/实现随时可能变；任何异常都走降级回空
-        # （UUID 非法 → TokenPayloadError；session=None → AttributeError；签名变 → TypeError）
-        return ""
+    except (HistoryError, SecurityError, SQLAlchemyError) as exc:
+        logger.warning("context_history_read_failed thread_id=%s error=%s", thread_id, exc)
+        return [], "history_read_failed"
+    return list(turns), None
 
+
+def _assistant_content_for_history(view: TurnView) -> str:
+    """P1-2：`assistant_delivered_text` 可为 NULL；空文本不拼打断标记，content 永不为 None。"""
+    delivered = view.assistant_delivered_text or ""
+    if view.status == "interrupted" and delivered:
+        delivered = f"{delivered}\n[标记：本轮回复被打断]"
+    return delivered
+
+
+def _history_messages_from_views(turns: Sequence[TurnView]) -> list[dict[str, str]]:
+    """把 TurnView 序列展开成 user/assistant 消息；content 绝不为 None（P1-2）。"""
+    messages: list[dict[str, str]] = []
+    for t in turns:
+        messages.append({"role": "user", "content": t.user_text or ""})
+        messages.append({"role": "assistant", "content": _assistant_content_for_history(t)})
+    return messages
+
+
+def _older_summary_from_views(turns: Sequence[TurnView]) -> str:
     if not turns:
         return ""
     lines = ["【最近对话摘要】"]
     for t in turns:
-        text = getattr(t, "user_text", str(t))
+        text = t.user_text or ""
         lines.append(f"- 长者说：{text[:80]}{'…' if len(text) > 80 else ''}")
     return "\n".join(lines)
-
-
-async def _assemble_history_turns(
-    thread_id: str, identity: DialogueIdentity, cfg: ContextBuilderConfig
-) -> list[dict[str, str]]:
-    if identity.is_generic:
-        return []
-    try:
-        from app.services.history_service import read_turns
-
-        turns = await read_turns(
-            session=None,
-            thread_id=thread_id,
-            elder_id=identity.elder_id,
-            limit=cfg.max_history_turns,
-        )
-    except Exception:
-        return []
-
-    messages: list[dict[str, str]] = []
-    for t in turns:
-        messages.append({"role": "user", "content": getattr(t, "user_text", "")})
-        assistant = getattr(t, "assistant_delivered_text", "")
-        if getattr(t, "status", "") == "interrupted":
-            assistant += "\n[标记：本轮回复被打断]"
-        messages.append({"role": "assistant", "content": assistant})
-    return messages
 
 
 def _assemble_waiting_for_binding(state_snapshot: StateSnapshot | None) -> str:

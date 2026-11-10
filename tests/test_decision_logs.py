@@ -73,17 +73,32 @@ def test_indexes_match_migration_names() -> None:
     }
 
 
-def test_migration_is_single_head_after_0013() -> None:
+def test_decision_logs_migration_is_on_the_single_head_chain() -> None:
+    """迁移必须**单 head**，且 `decision_logs` 在 head 的祖先链上。
+
+    不写死编号：2026-11-10 合并上游时，本迁移原计划占 `0014`，而 develop 上 dev-B 已
+    先合入 `0014_metrics_response_segment` / `0015_elders_updated_at` —— 两笔 `0014`
+    会让 alembic 出现**双 head**（`upgrade head` 直接报 multiple heads）。改名到 `0016`
+    并挂到 `0015` 之后才对。所以这里断言的是「结构正确」（单 head + 在链上），
+    不是「编号是几」——否则每次有人加迁移这条就假红一次。
+    """
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     heads = script.get_heads()
+    assert len(heads) == 1, f"迁移必须单 head，实际 {heads}"
 
-    assert heads == ["0014_decision_logs"]
-    revision = script.get_revision("0014_decision_logs")
-    assert revision is not None
-    assert revision.down_revision == "0013_touch_played_receipt"
+    revisions = {rev.revision: rev for rev in script.walk_revisions()}
+    decision_logs = [rid for rid in revisions if rid.endswith("_decision_logs")]
+    assert len(decision_logs) == 1, f"decision_logs 迁移应恰好一笔，实际 {decision_logs}"
+
+    # 从 head 往下的整条链（walk_revisions 默认从 heads 出发）
+    chain = {rev.revision for rev in script.walk_revisions(base="base", head=heads[0])}
+    assert decision_logs[0] in chain, "decision_logs 迁移不在 head 链上（会被 upgrade head 跳过）"
+
+    revision = revisions[decision_logs[0]]
+    assert revision.down_revision is not None, "本迁移必须挂在既有链尾，不能是新的 base"
 
 
 @pytest.mark.parametrize(
