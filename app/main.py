@@ -364,6 +364,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
             await signaling.request_identity_confirmation(device_id, reason=ask_reason)
             return
+        except asyncio.CancelledError:
+            # 上层 session 清理（旧 WS superseded 等）对 shield 内部协程的间接取消：
+            # 连接已关，无需向前端 deliver，静默 return 即可
+            logger.info(
+                "dialogue_final_cancelled",
+                extra={"trace_id": trace_id, "device_id": device_id, "turn_id": turn_id},
+            )
+            return
         except Exception:
             logger.exception(
                 "dialogue_final_failed",

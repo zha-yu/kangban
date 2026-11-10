@@ -22,7 +22,7 @@ import logging
 import uuid
 from collections.abc import Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import STAFF_ROLES, hash_password
@@ -229,7 +229,7 @@ async def update_staff(
         if old_relation is not None and new_relation is not None and old_relation != new_relation:
             # 同一个 staff 的所有 assignment 的 relation 一起换
             await session.execute(
-                ElderStaffAssignment.__table__.update()
+                update(ElderStaffAssignment)
                 .where(ElderStaffAssignment.staff_id == staff_id)
                 .values(relation=new_relation)
             )
@@ -361,7 +361,7 @@ async def reassign_elders(
     staff_id: uuid.UUID,
     elder_ids: Sequence[uuid.UUID],
     operator_id: uuid.UUID | None,
-) -> dict:
+) -> dict[str, object]:
     """全量替换式改绑：计算 diff → 409 判定 → 执行 → 审计。
 
     事务边界：本函数只 `flush()`，不 `commit()`；调用方在同一事务里传 session，
@@ -438,7 +438,7 @@ async def reassign_elders(
     # 先删后加；两者在同一 flush 内完成
     if removed_ids:
         await session.execute(
-            ElderStaffAssignment.__table__.delete().where(
+            delete(ElderStaffAssignment).where(
                 ElderStaffAssignment.staff_id == staff_id,
                 ElderStaffAssignment.relation == relation,
                 ElderStaffAssignment.elder_id.in_(removed_ids),
@@ -491,7 +491,6 @@ async def list_staff_accounts(
 
     仅用于 GET /api/staff（契约 E12 读入口补齐）。
     """
-    from sqlalchemy import select
 
     stmt = select(StaffAccount)
     if role_filter:
