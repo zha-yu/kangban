@@ -563,7 +563,7 @@ def main() -> int:
     parser.add_argument(
         "--dump-json",
         default="",
-        help="逐条结果落盘（分析 bad case 分布用，如 eval/reports/day07_intent_rows.json）",
+        help="逐条结果落盘（分析 bad case 分布用；建议 eval/artifacts/…，该目录不入库）",
     )
     parser.add_argument(
         "--provider",

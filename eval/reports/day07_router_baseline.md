@@ -151,7 +151,9 @@ A3 侧已做的是**不让 G1 绕过四类边界**：分类器说敏感后，先
 
 ### 6.6 「普通意图 80%」到底错在哪（**已裁决：选方案 B**）
 
-数据来源：`eval/reports/day07_intent_rows.json`（本报告同一批 110 条逐条落盘，`--dump-json` 产出）。
+数据来源：`eval/artifacts/day07_intent_rows.json`（本报告同一批 110 条逐条落盘，`--dump-json` 产出；
+**该文件不入库**，复跑即可重建：
+`PYTHONPATH=. <jev-python> scripts/eval_router.py --provider local --report <report> --dump-json eval/artifacts/day07_intent_rows.json`）。
 
 **先把 10 条错拆成三类**（这三类的处置完全不同）：
 

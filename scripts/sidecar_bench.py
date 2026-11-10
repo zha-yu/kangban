@@ -316,7 +316,11 @@ def main() -> int:
         help="all=http+degrade；pure 需在 jev 环境跑（要 torch）",
     )
     parser.add_argument("--requests", type=int, default=20, help="http 模式请求数（默认 20）")
-    parser.add_argument("--json-out", default="eval/reports/a2_latency.json", help="结果落盘路径")
+    parser.add_argument(
+        "--json-out",
+        default="eval/artifacts/a2_latency.json",
+        help="结果落盘路径（默认落不入库的 eval/artifacts/）",
+    )
     args = parser.parse_args()
     code = asyncio.run(main_async(args))
     pending = _pending_payload[0]
