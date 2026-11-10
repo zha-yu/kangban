@@ -245,3 +245,31 @@ def test_degraded_result_holds_three_invariants() -> None:
     assert result.is_out_of_domain is True
     assert result.is_sensitive is False
     assert result.sub_intents == ()
+
+
+async def test_http_client_ignores_system_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """连接池必须 `trust_env=False`：本机回环不该经任何代理。
+
+    实测事故（2026-11-10，开发机自带 `HTTP_PROXY=http://127.0.0.1:65489`）：
+    httpx 默认 trust_env=True 会把发往 `127.0.0.1:7001` 的请求也交给代理，
+    结果是 **10 次只成功 1 次、成功那次 p50 181ms**，看起来像「195ms 预算不够」，
+    实际是代理多一跳并破坏 keep-alive 复用。关掉后同一台机 **10/10 成功、p50 131ms**。
+
+    这条断言不依赖私有属性：直接看构造 AsyncClient 时传了什么。
+    """
+    captured: dict[str, object] = {}
+    real_async_client = httpx.AsyncClient
+
+    def spy(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        captured.update(kwargs)
+        return real_async_client(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(httpx, "AsyncClient", spy)
+
+    client = SystemOneClient(_settings())
+    try:
+        await client._http()  # 触发连接池创建
+    finally:
+        await client.aclose()
+
+    assert captured.get("trust_env") is False, "连接池必须信任环境变量=False，否则会走系统代理"

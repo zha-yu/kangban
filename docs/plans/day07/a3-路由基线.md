@@ -106,6 +106,22 @@ MCP、IDE 抢同一批核），不是再放宽预算能解决的；真机/容器
    现改为「许可跟着线程走」：`score` 包成 Task 用 `shield` 等，超时只放弃等待，
    **许可由 Task 完成回调释放**，同时在算的前向恒等于 `max_concurrency=1`。
 
+3. **系统代理拦截本机回环**（2026-11-10 下午复测时暴露）：开发机设了
+   `HTTP_PROXY=http://127.0.0.1:65489`，`httpx` 默认 `trust_env=True`，把发往
+   `127.0.0.1:7001` 的请求也交给代理 → **10 次只成功 1 次、成功那次 p50 181ms**。
+   关掉 `trust_env` 后同一台机 **10/10 成功、p50 131ms**。`client._http()` 与
+   `sidecar_bench._health()` 均已改为 `trust_env=False`（本机回环不该经任何代理）。
+4. **Windows 上 `asyncio.wait_for` 定时器提前 ~15ms**：微基准实测 175ms 的任务有 4/6 次
+   在 177ms 就抛 `TimeoutError`（预算写的是 195ms）。表现是「推理明明 180ms 完成却 503
+   `timeout`」，很容易被误读成"预算不够要继续调大"。现改为**软预算 + 硬截止**：
+   `wait_for` 只挂 `HARD_DEADLINE_S=1.0s` 防线程卡死，**预算按真实耗时判定**
+   （`latency_ms > 195` 才 503）。修完在两个 sidecar 抢 CPU 的最坏情况下实测：
+   24 次请求 **23 成功 / 1 次客户端 ReadTimeout**，成功 p50 **180ms**、服务端仅 1 条
+   `overtime=true`（217ms，如实 503）。
+
+> 这两条修完后，「HTTP 通道稳定 503」的解释不再是"195ms 预算不够"，
+> 而是**代理 + 定时器精度**两个工程缺陷。**`system_one_timeout_ms` 始终未动。**
+
 ### 6.2 延迟口径：shadow 计入路由耗时（主理人裁决 2026-11-10）
 
 `RouteDecision.latency_ms` **包含 shadow 等待**，`decision_logs.latency_ms` 与评测 p95 同口径，

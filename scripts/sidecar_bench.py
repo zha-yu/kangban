@@ -89,7 +89,9 @@ def _env_report(settings: Settings) -> dict[str, Any]:
 
 async def _health(base_url: str) -> tuple[bool, dict[str, Any]]:
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        # trust_env=False：见 app/system_one/client.py 的注释——开发机的 HTTP_PROXY
+        # 会把 127.0.0.1 也绕进代理，健康检查会误判「sidecar 不可用」
+        async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
             response = await client.get(f"{base_url}/health")
             body = response.json()
     except Exception as exc:  # 没起就是 False，不抛

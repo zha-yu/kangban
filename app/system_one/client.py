@@ -263,6 +263,13 @@ class SystemOneClient:
                     headers=headers,
                     transport=self._transport,
                     timeout=self._fast_timeout,
+                    # **必须关掉环境代理**：sidecar 是本机回环服务，不该经任何代理。
+                    # 踩过的坑（2026-11-10 实测）：开发机常设 `HTTP_PROXY=127.0.0.1:65489`，
+                    # httpx 默认 trust_env=True 会把发往 127.0.0.1:7001 的请求也交给代理，
+                    # 结果是「10 次只成功 1 次、p50 181ms」，看起来像 195ms 预算不够，
+                    # 实为代理在中间加了一次跳转并破坏 keep-alive 复用。
+                    # 关掉后同一台机 10/10 成功、p50 131ms。**离线自检同样适用**。
+                    trust_env=False,
                 )
             return self._client
 

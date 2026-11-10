@@ -43,6 +43,12 @@ logger = logging.getLogger("app.system_one.server")
 #: sidecar 内部推理预算（秒）。**195ms**（2026-11-10 主理人裁决：在 190–195 区间内放宽，
 #: 仍在 PRD §5.3 的 200ms 之内）。
 #:
+#: ⚠️ 它是**软预算**：判定看真实耗时（`elapsed > INTERNAL_BUDGET_S`），不靠 asyncio 定时器。
+#: 原因（2026-11-10 实测）：Windows 上 `asyncio.wait_for(0.195)` 的定时器会**提前约 15ms**
+#: 触发——175ms 的任务有 4/6 次被判超时（177ms 就抛 TimeoutError）。用定时器承担 200ms
+#: 预算的精度职责，等于把预算悄悄缩到 ~180ms，表现为「推理明明 180ms 完成却 503」。
+#: 现在定时器只做 `HARD_DEADLINE_S`（防线程卡死），预算判定改看墙钟。
+#:
 #: 为什么从 180 改成 195：实测单问纯前向 p50 161 / p95 167ms，加上服务层开销（JSON 解析、
 #: Pydantic 校验、`to_thread` 调度、两条日志、响应序列化）后端到端 p50 188 / max 193ms——
 #: 180ms 正好压在中位数上，HTTP 通道稳定 503。放宽到 195 后仍留 5ms 给网络与客户端序列化，
@@ -51,6 +57,10 @@ logger = logging.getLogger("app.system_one.server")
 #: 注意 5ms 缓冲很薄：机器被别的进程抢核时仍可能撞客户端 200ms——那属于降级路径的正常触发
 #: （`fallback` + Agent 兜底），不是本常量该继续放大的理由。
 INTERNAL_BUDGET_S: Final[float] = 0.195
+
+#: 硬截止（秒）：只防「推理线程永远不返回」，**不承担 200ms 预算的精度职责**（见上）。
+#: 取 1.0s：正常前向 160~190ms，超过 1s 必然是异常（死锁/内存抖动），此时如实 503。
+HARD_DEADLINE_S: Final[float] = 1.0
 
 #: 权重加载上限（秒）。615MB 权重 + 建图实测 40s，**加载与推理是两件事**，
 #: 不能用 180ms 去卡加载——卡了就会取消加载、留下半截状态（曾在实测中触发
@@ -172,13 +182,34 @@ async def decide(request: SystemOneRequest) -> Any:
     )
     inference.add_done_callback(_release)
     try:
-        answers = await asyncio.wait_for(asyncio.shield(inference), timeout=INTERNAL_BUDGET_S)
+        answers = await asyncio.wait_for(asyncio.shield(inference), timeout=HARD_DEADLINE_S)
     except TimeoutError:
+        # 坑：`TimeoutError` 有两个来源，混在一起会误导排障。
+        #   1) 预算到期（wait_for 自己抛的）—— 真·慢；
+        #   2) **推理任务自己抛了 TimeoutError**（`concurrent.futures.TimeoutError`
+        #      在 3.11+ 就是内置 `TimeoutError` 的别名，模型侧线程池/取数超时会抛它）。
+        # 第 2 种本质是「推理失败」，若记成 timeout，运维会去调预算——方向就错了。
+        # 实测症状：客户端 178ms 收到 503 `timeout`，而预算写的是 195ms，凭空少了 17ms。
+        task_error = None
+        if inference.done() and not inference.cancelled():
+            task_error = inference.exception()
+        if task_error is not None:
+            logger.error(
+                "system_one_decide_failed trace_id=%s text_len=%d text_sha8=%s error=%s",
+                request.trace_id or "-",
+                text_len,
+                digest,
+                f"{type(task_error).__name__}: {task_error}",
+            )
+            return JSONResponse(status_code=503, content={"status": "inference_failed"})
         logger.warning(
-            "system_one_decide_timeout trace_id=%s text_len=%d text_sha8=%s",
+            "system_one_decide_timeout trace_id=%s text_len=%d text_sha8=%s "
+            "elapsed_ms=%d budget_ms=%d",
             request.trace_id or "-",
             text_len,
             digest,
+            int((time.perf_counter() - started) * 1000),
+            int(INTERNAL_BUDGET_S * 1000),
         )
         return JSONResponse(status_code=503, content={"status": "timeout"})
     except Exception as exc:  # 推理异常：如实 503，不编造答案
@@ -192,6 +223,19 @@ async def decide(request: SystemOneRequest) -> Any:
         return JSONResponse(status_code=503, content={"status": "inference_failed"})
 
     latency_ms = int((time.perf_counter() - started) * 1000)
+    if latency_ms > INTERNAL_BUDGET_S * 1000:
+        # 结果出来了但已超预算：客户端 200ms 早已放弃，如实 503，不装作成功
+        logger.warning(
+            "system_one_decide_timeout trace_id=%s text_len=%d text_sha8=%s "
+            "elapsed_ms=%d budget_ms=%d overtime=true",
+            request.trace_id or "-",
+            text_len,
+            digest,
+            latency_ms,
+            int(INTERNAL_BUDGET_S * 1000),
+        )
+        return JSONResponse(status_code=503, content={"status": "timeout"})
+
     result = map_answers(
         answers,
         model_version=request.model_version or settings.system_one_model_version,
@@ -217,6 +261,7 @@ def _state_text(state: Any) -> str:
 
 
 __all__ = [
+    "HARD_DEADLINE_S",
     "INTERNAL_BUDGET_S",
     "LOAD_TIMEOUT_S",
     "WARMUP_INFER_TIMEOUT_S",
