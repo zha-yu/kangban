@@ -634,6 +634,63 @@ async def _handle_segment_ack(conn: ConnectionContext, message: Mapping[str, Any
         )
 
 
+# ------------------------------------------------------------------ Day 7 B1 契约追加
+# C→S interrupt（day07/README §5.4 冻结口径）：客户端打断当前正在下发的回复。
+# 分层：字段形状校验在本层；设备/会话归属校验与打断五步在 ResponseService
+# （经 set_interrupt_handler 由装配层注册；本层不 import 该服务）。
+# 口径：非法 response_id / 非本设备的打断不落库、不炸连接——归属校验失败的
+# response 在服务侧按 unknown_response 处理（no-op）。
+
+InterruptReason = Literal["barge_in", "user_skip", "client_error"]
+
+
+class InterruptMsg(TypedDict):  # C→S，打断当前回复
+    """§5.4 冻结形状：reason 只做服务端日志/事件留痕，不参与打断判定。"""
+
+    type: Literal["interrupt"]
+    response_id: str
+    reason: InterruptReason
+
+
+InterruptHandler = Callable[[ConnectionContext, Mapping[str, Any]], Awaitable[None]]
+_interrupt_handler: InterruptHandler | None = None
+
+
+def set_interrupt_handler(handler: InterruptHandler | None) -> None:
+    """注册 C→S interrupt 的服务端处理回调；传 None 注销（测试/关闭用）。"""
+    global _interrupt_handler
+    _interrupt_handler = handler
+
+
+async def _handle_interrupt(conn: ConnectionContext, message: Mapping[str, Any]) -> None:
+    """C→S interrupt 分支：形状校验 → 交注册回调做归属校验 + 打断五步 + 终态结算。
+
+    形状非法照 segment_ack 同款处理（warn + error，不关连接）；回调缺失只 warn
+    不回执（打断是尽力而为的上报）；回调异常统一包裹——打断失败不允许炸连接。
+    """
+    response_id = message.get("response_id")
+    reason = message.get("reason")
+    if not isinstance(response_id, str) or not isinstance(reason, str):
+        logger.warning(
+            "ws_bad_message",
+            extra=_log_extra(conn, reason="interrupt_invalid"),
+        )
+        await _send_error(conn, "internal")
+        return
+
+    handler = _interrupt_handler
+    if handler is None:
+        logger.warning("ws_no_interrupt_handler", extra=_log_extra(conn, response_id=response_id))
+        return
+    try:
+        await handler(conn, message)
+    except Exception as exc:
+        logger.error(
+            "interrupt_handler_failed",
+            extra=_log_extra(conn, response_id=response_id, error_type=type(exc).__name__),
+        )
+
+
 # ------------------------------------------------------------------ Day 7 TD-2 契约追加
 # C→S touch_played（day07/contracts.md §2）：pad 播完触达语音的回执。
 # 与 segment_ack 同层分发、互不干扰；字段校验在本层，落库在装配层回调
@@ -1185,6 +1242,21 @@ async def _handle_client_diag(conn: ConnectionContext, message: Mapping[str, Any
         )
 
 
+async def _run_guarded(conn: ConnectionContext, coro: Awaitable[None], branch: str) -> None:
+    """P3-28：C→S 分支统一异常包裹——任一 handler 异常只记日志，不炸整条连接。
+
+    CancelledError 是 BaseException 不在此捕获：连接被顶掉/关闭时取消必须照常
+    传播，read_loop 随之退出走 _cleanup。
+    """
+    try:
+        await coro
+    except Exception as exc:
+        logger.error(
+            "ws_branch_failed",
+            extra=_log_extra(conn, branch=branch, error_type=type(exc).__name__),
+        )
+
+
 async def _read_loop(conn: ConnectionContext) -> None:
     """auth 后的消息主循环（W4）：任何合法帧都刷新 last_frame_at（W3：业务帧同样续命）。"""
     websocket = conn.websocket
@@ -1205,16 +1277,19 @@ async def _read_loop(conn: ConnectionContext) -> None:
             conn.downstream.put_nowait({"type": "pong"})
             continue
         if msg_type == "identity_confirm":
-            await _handle_identity_confirm(conn, message)
+            await _run_guarded(conn, _handle_identity_confirm(conn, message), msg_type)
             continue
         if msg_type == "client_diag":
-            await _handle_client_diag(conn, message)
+            await _run_guarded(conn, _handle_client_diag(conn, message), msg_type)
             continue
         if msg_type == "segment_ack":
-            await _handle_segment_ack(conn, message)
+            await _run_guarded(conn, _handle_segment_ack(conn, message), msg_type)
+            continue
+        if msg_type == "interrupt":
+            await _run_guarded(conn, _handle_interrupt(conn, message), msg_type)
             continue
         if msg_type == "touch_played":
-            await _handle_touch_played(conn, message)
+            await _run_guarded(conn, _handle_touch_played(conn, message), msg_type)
             continue
         if msg_type == "auth":
             # 裁决②：连接内重复 auth 按非法凭证处理（防连接内换 token 旁路）
@@ -1235,7 +1310,7 @@ async def _read_loop(conn: ConnectionContext) -> None:
                 logger.warning("ws_no_media_handler", extra=_log_extra(conn, msg_type=msg_type))
                 await _send_error(conn, "internal")
                 continue
-            await handler(conn, message)
+            await _run_guarded(conn, handler(conn, message), msg_type)
             continue
 
         # 未知消息类型（裁决④）：不关连接

@@ -5,6 +5,9 @@
  * 建家属账号（E15）、家属绑定长者（E13，≤2 位由服务端 409 兜底）。
  * Day 6 新增：员工列表（GET /api/staff 契约增补）+ 调整负责长者（E20 全量覆盖），
  * 改绑弹窗多选来自真实 E7，是否「最后一位责任护工」不做本地预判，以后端 409 为准。
+ * Day 7（D2，P2-25/40）：长者候选改完整分页（page_size=100 循环取满 total，不再只取
+ * 前 100 位）；保存只提交「勾选 ∪ 未进候选列表的已绑长者」，未列出的长者不被解除；
+ * createStaff 成功后刷新员工列表；refreshStaffList 加请求序号防旧响应覆盖。
  * 设备建档见 AdminDevicesPage。
  *
  * 范围边界：不含 E12 PATCH 改角色/停用、教学数据重置、人设配置、审计日志（后续批次）。
@@ -12,7 +15,7 @@
  * 表单校验前后端双层；错误文案用用户语言，不回显 trace_id 与内部细节。
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError, roleLabel } from "../api";
 import {
   AdminApiError,
@@ -59,6 +62,20 @@ function staffRoleLabel(role: StaffRole): string {
   return ROLE_OPTIONS.find((opt) => opt.value === role)?.label ?? role;
 }
 
+/** E7 完整分页拉取（P2-25）：page_size=100 循环取满 total，候选不再只取前 100 位。
+ *  超过 100 位长者时第 101 位起必须可见可勾，否则全量覆盖改绑会误解除真实绑定。 */
+const ELDERS_PAGE_SIZE = 100;
+async function fetchAllElders(): Promise<ElderListItem[]> {
+  const first = await listElders({ page: 1, pageSize: ELDERS_PAGE_SIZE });
+  const items = [...first.items];
+  const totalPages = Math.ceil(first.total / ELDERS_PAGE_SIZE);
+  for (let page = 2; page <= totalPages; page++) {
+    const res = await listElders({ page, pageSize: ELDERS_PAGE_SIZE });
+    items.push(...res.items);
+  }
+  return items;
+}
+
 export function AdminUsersPage() {
   // 长者候选（真实 E7，admin 全量）
   const [elders, setElders] = useState<ElderListItem[] | null>(null);
@@ -102,12 +119,24 @@ export function AdminUsersPage() {
   const [bindError, setBindError] = useState<string | null>(null);
   const [bindResult, setBindResult] = useState<GuardianBinding | null>(null);
 
+  // 员工列表请求序号（P2-40）：并发刷新时旧响应不覆盖新状态
+  const staffListSeqRef = useRef(0);
+
+  // 员工列表本页检索与角色统计：纯前端过滤，不改 GET /api/staff 契约
+  const [staffQuery, setStaffQuery] = useState("");
+  const visibleStaff = (staffList ?? []).filter((s) => {
+    const q = staffQuery.trim().toLowerCase();
+    return !q || s.name.toLowerCase().includes(q) || s.phone_masked.toLowerCase().includes(q);
+  });
+  const countByRole = (role: StaffRole) =>
+    (staffList ?? []).filter((s) => s.role === role).length;
+
   useEffect(() => {
     let cancelled = false;
-    listElders({ page: 1, pageSize: 100 })
-      .then((res) => {
+    fetchAllElders()
+      .then((items) => {
         if (cancelled) return;
-        setElders(res.items);
+        setElders(items);
         setEldersError(null);
       })
       .catch((err: unknown) => {
@@ -129,12 +158,17 @@ export function AdminUsersPage() {
     };
   }, []);
 
-  /** 改绑成功后重拉员工列表（服务端为准，不本地推算差集） */
+  /** 改绑成功后重拉员工列表（服务端为准，不本地推算差集）。
+   *  请求序号防并发覆盖（P2-40）：连续快速刷新时只让最后一次请求生效。 */
   async function refreshStaffList() {
+    const seq = ++staffListSeqRef.current;
     try {
-      setStaffList(await listStaff());
+      const items = await listStaff();
+      if (seq !== staffListSeqRef.current) return; // 已有更新请求发出，丢弃旧响应
+      setStaffList(items);
       setStaffListError(null);
     } catch (err) {
+      if (seq !== staffListSeqRef.current) return;
       setStaffListError(errorText(err));
     }
   }
@@ -158,7 +192,16 @@ export function AdminUsersPage() {
     setReassignError(null);
     setReassignBusy(true);
     try {
-      const result = await reassignElders(reassignTarget.staff_id, reassignIds);
+      // P2-25 差集口径：最终集合 = 用户勾选 ∪ 未进候选列表的已绑长者（如已归档，
+      // 不参与勾选也不得被解除）。候选已完整分页，不存在「未加载的长者」；
+      // 若 E7 过滤导致个别已绑长者不在候选中，此处原样保留，不会被误解除。
+      const candidateIds = new Set((elders ?? []).map((e) => e.elder_id));
+      const preservedBound = reassignTarget.bound_elder_ids.filter(
+        (id) => !candidateIds.has(id),
+      );
+      const result = await reassignElders(reassignTarget.staff_id, [
+        ...new Set([...reassignIds, ...preservedBound]),
+      ]);
       setReassignResult({
         name: reassignTarget.name,
         added: result.added.length,
@@ -205,6 +248,7 @@ export function AdminUsersPage() {
       setStaffPhone("");
       setStaffPassword("");
       setStaffElderIds([]);
+      await refreshStaffList(); // P2-25：新员工立即出现在上方列表，不等下次进页
     } catch (err) {
       setStaffError(errorText(err));
     } finally {
@@ -275,12 +319,35 @@ export function AdminUsersPage() {
   return (
     <div className="admin-page">
       <section className="admin-card" aria-labelledby="admin-staff-list-title">
-        <h2 className="admin-card-title" id="admin-staff-list-title">
-          员工列表
-        </h2>
-        <p className="admin-card-sub">
-          对应 GET /api/staff（Day 6 契约增补）；「调整负责长者」为全量覆盖（E20），保存后未勾选的长者将解除负责关系。
-        </p>
+        <header className="staff-head">
+          <div>
+            <h2 className="admin-card-title" id="admin-staff-list-title">
+              员工列表
+            </h2>
+            <p className="staff-meta">
+              共 {staffList?.length ?? 0} 位 · 护工 {countByRole("care_worker")} · 医生{" "}
+              {countByRole("doctor")} · 管理员 {countByRole("admin")}
+            </p>
+          </div>
+          {staffList && staffList.length > 0 && (
+            <input
+              className="input staff-search"
+              type="search"
+              value={staffQuery}
+              placeholder="搜索姓名或手机号"
+              aria-label="搜索员工姓名或手机号"
+              onChange={(e) => setStaffQuery(e.target.value)}
+            />
+          )}
+        </header>
+
+        {/* 接口与全量覆盖口径留给开发/联调查阅，不占产品界面首屏 */}
+        <details className="staff-devnote">
+          <summary>接口与改绑口径</summary>
+          <p>
+            对应 GET /api/staff（Day 6 契约增补）；「调整负责长者」为全量覆盖（E20），保存后未勾选的长者将解除负责关系。
+          </p>
+        </details>
         {staffListError && (
           <p className="alert-danger" role="alert">
             {staffListError}
@@ -288,39 +355,63 @@ export function AdminUsersPage() {
         )}
         {!staffListError && !staffList && <p className="admin-empty">员工列表加载中…</p>}
         {staffList && staffList.length === 0 && <p className="admin-empty">暂无员工账号</p>}
-        {staffList && staffList.length > 0 && (
-          <table className="admin-table">
-            <thead>
-              <tr>
-                <th>姓名</th>
-                <th>角色</th>
-                <th>手机号</th>
-                <th>负责长者数</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {staffList.map((s) => (
-                <tr key={s.staff_id}>
-                  <td>{s.name}</td>
-                  <td>{staffRoleLabel(s.role)}</td>
-                  <td className="admin-mono">{s.phone_masked}</td>
-                  <td>{s.role === "admin" ? "—" : s.bound_elder_ids.length}</td>
-                  <td>
-                    {s.role !== "admin" && (
-                      <button
-                        type="button"
-                        className="btn-secondary btn-sm"
-                        onClick={() => openReassign(s)}
-                      >
-                        调整负责长者
-                      </button>
-                    )}
-                  </td>
+        {staffList && staffList.length > 0 && visibleStaff.length > 0 && (
+          <div className="staff-table-wrap">
+            <table className="admin-table staff-table">
+              <thead>
+                <tr>
+                  <th scope="col">姓名</th>
+                  <th scope="col">角色</th>
+                  <th scope="col">手机号</th>
+                  <th scope="col" className="staff-num">负责长者数</th>
+                  <th scope="col" className="staff-actions">操作</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {visibleStaff.map((s) => (
+                  <tr key={s.staff_id}>
+                    <td className="staff-name">{s.name}</td>
+                    <td>
+                      <span className={`badge ${s.role === "admin" ? "badge-brand" : "badge-neutral"}`}>
+                        {staffRoleLabel(s.role)}
+                      </span>
+                    </td>
+                    <td className="admin-mono">{s.phone_masked}</td>
+                    <td
+                      className={`staff-num ${s.role !== "admin" && s.bound_elder_ids.length === 0 ? "is-zero" : ""}`}
+                    >
+                      {s.role === "admin"
+                        ? "—"
+                        : s.bound_elder_ids.length > 0
+                          ? `${s.bound_elder_ids.length} 位`
+                          : "未分配"}
+                    </td>
+                    <td className="staff-actions">
+                      {s.role !== "admin" && (
+                        <button
+                          type="button"
+                          className="btn-ghost btn-ghost-brand"
+                          aria-label={`调整 ${s.name} 的负责长者`}
+                          title={`调整 ${s.name} 的负责长者`}
+                          onClick={() => openReassign(s)}
+                        >
+                          调整
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {staffList && staffList.length > 0 && visibleStaff.length === 0 && (
+          <p className="staff-no-match">
+            没有找到匹配的员工。
+            <button type="button" className="btn-ghost btn-ghost-brand" onClick={() => setStaffQuery("")}>
+              清空搜索
+            </button>
+          </p>
         )}
         {reassignResult && (
           <p className="admin-result" role="status">
@@ -396,6 +487,9 @@ export function AdminUsersPage() {
           {staffRole !== "admin" && (
             <div className="admin-checks">
               <span className="admin-field-label">分配长者（可留空，留空表示暂不分配）</span>
+              <span className="admin-field-label">
+                已选择 {staffElderIds.length} 位 / 共 {elders?.length ?? 0} 位
+              </span>
               {eldersError && <p className="helper-error">{eldersError}</p>}
               {!eldersError && !elders && <p className="admin-empty">长者列表加载中…</p>}
               {elders && elders.length === 0 && <p className="admin-empty">暂无在住长者</p>}
@@ -585,6 +679,11 @@ export function AdminUsersPage() {
             <h3 className="wo-dialog-title">调整负责长者 · {reassignTarget.name}</h3>
             <p className="admin-card-sub">
               全量覆盖：保存后未勾选的长者将解除负责关系；若某长者因此失去最后一位责任护工，服务端会拒绝并提示。
+              已选择 {reassignIds.length} 位 / 共 {elders?.length ?? 0} 位
+              {reassignTarget.bound_elder_ids.some(
+                (id) => !(elders ?? []).some((e) => e.elder_id === id),
+              ) && "；未列出但已绑定的长者将保持不变"}
+              。
             </p>
             {eldersError && <p className="field-error">{eldersError}</p>}
             {!eldersError && !elders && <p className="admin-empty">长者列表加载中…</p>}

@@ -469,6 +469,88 @@ async def test_unknown_thread_and_event_type(session: AsyncSession, seeded: dict
         )
 
 
+# ------------------------------------------------------------------ 9. Day 7 · limit 上限 50 与 finish 幂等强化
+
+
+async def test_read_turns_limit_capped_at_50(
+    session: AsyncSession, seeded: dict, caplog: pytest.LogCaptureFixture
+) -> None:
+    """P3-32：`read_turns` limit 上限 50，超限截断 + 告警日志——上下文层不得拖走整个会话。"""
+    for i in range(60):
+        await begin_turn(
+            session,
+            thread_id=seeded["thread_a"],
+            elder_id=seeded["elder_a"],
+            turn_id=f"turn-cap-{i:02d}",
+            user_text=f"第 {i} 句",
+        )
+
+    with caplog.at_level(logging.WARNING, logger="app.services.history_service"):
+        views = await read_turns(
+            session, thread_id=seeded["thread_a"], elder_id=seeded["elder_a"], limit=200
+        )
+    assert len(views) == 50, "超过上限 50 必须被截断"
+    assert "history_read_turns_limit_capped" in caplog.text, "截断必须留痕（告警日志）"
+    # 截断保留的是最近 50 轮：时间正序返回，最早 turn-10、最新 turn-59
+    assert views[0].turn_id == "turn-cap-10"
+    assert views[-1].turn_id == "turn-cap-59"
+
+    # 边界：恰好 50 不截断、不告警
+    caplog.clear()
+    views_50 = await read_turns(
+        session, thread_id=seeded["thread_a"], elder_id=seeded["elder_a"], limit=50
+    )
+    assert len(views_50) == 50
+    assert "history_read_turns_limit_capped" not in caplog.text
+
+
+async def test_finish_turn_generic_duplicate_is_idempotent(
+    session: AsyncSession, seeded: dict
+) -> None:
+    """generic 轮没有投影行，重复 `finish_turn` 不得写出第二条 `turn_completed` 事件。"""
+    await begin_turn(
+        session,
+        thread_id=seeded["thread_generic"],
+        elder_id=None,
+        device_id=seeded["device_id"],
+        turn_id="turn-g-idem",
+        user_text="你是谁呀",
+    )
+    await finish_turn(session, turn_id="turn-g-idem", status="completed")
+    await finish_turn(session, turn_id="turn-g-idem", status="completed")
+
+    events = [
+        e
+        for e in await read_events(session, thread_id=seeded["thread_generic"])
+        if e.event_type == "turn_completed"
+    ]
+    assert len(events) == 1, "generic 重复收口必须幂等，事件恰好一条"
+
+
+async def test_finish_turn_late_interrupted_after_completed_not_overwritten(
+    session: AsyncSession, seeded: dict
+) -> None:
+    """反向钉死任务卡口径：先 completed、迟到的 interrupted 不得改掉终态。"""
+    await begin_turn(
+        session,
+        thread_id=seeded["thread_a"],
+        elder_id=seeded["elder_a"],
+        turn_id="turn-late",
+        user_text="就这样吧",
+    )
+    await finish_turn(session, turn_id="turn-late", status="completed")
+    await finish_turn(session, turn_id="turn-late", status="interrupted")
+
+    turn = await session.get(ConversationTurn, "turn-late")
+    assert turn is not None and turn.status == "completed", "迟到的 interrupted 不得覆盖 completed"
+    completed = [
+        e
+        for e in await read_events(session, thread_id=seeded["thread_a"])
+        if e.event_type == "turn_completed"
+    ]
+    assert len(completed) == 1
+
+
 # ------------------------------------------------------------------ 8. 并发无重号
 
 

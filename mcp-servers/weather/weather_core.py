@@ -25,12 +25,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, Final
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -44,6 +46,11 @@ MAX_CITY_LENGTH: Final[int] = 64
 _CITY_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[\w\u4e00-\u9fff .·-]+$")
 # 上游自身的超时要小于客户端整体预算（mcp_call_timeout_seconds=5s），留出协议开销
 UPSTREAM_TIMEOUT_SECONDS: Final[float] = 4.0
+# 高德 REST 端点（挂在 base_url 根地址之后）
+_AMAP_GEOCODE_PATH: Final[str] = "/v3/geocode/geo"
+_AMAP_WEATHER_PATH: Final[str] = "/v3/weather/weatherInfo"
+# 高德 reporttime 是北京时间字符串；存储口径 UTC（AGENTS §8），转成 UTC ISO 后下发
+_AMAP_TZ: Final[ZoneInfo] = ZoneInfo("Asia/Shanghai")
 
 # 长者可读的失败话术：不暴露内部细节（无 key / 上游问题统一「查不到」口径，契约 §5.4）
 FAILURE_MESSAGES: Final[dict[str, str]] = {
@@ -54,9 +61,10 @@ FAILURE_MESSAGES: Final[dict[str, str]] = {
     "bad_upstream_response": "这个我暂时查不到，请稍后再试，或者找护工帮帮忙。",
 }
 
-# 假设：上游为 OpenWeatherMap 兼容的 current-weather 接口（provider 未冻结，
-# 默认 fetch 只按此形态解析；解析失败一律走 bad_upstream_response，不猜字段）。
-# 上线接真实 provider 时只需换掉本函数或注入自定义 fetch，核心逻辑零改动。
+# 假设（2026-11-10 落实）：上游为高德开放平台 REST API（国内直连，OpenWeatherMap
+# 大陆网络不可达已实测）。base_url 配 REST 根地址（如 https://restapi.amap.com），
+# 默认 fetch 走两步：/v3/geocode/geo（城市名 → adcode）→ /v3/weather/weatherInfo
+# （adcode → 实况）。换供应商只需替换本函数或注入自定义 fetch，核心逻辑零改动。
 
 
 class WeatherFetchError(Exception):
@@ -67,155 +75,106 @@ class WeatherFetchTimeout(WeatherFetchError):
     """上游超时（区别于连接失败，方便日志分类，返回码同为 upstream_timeout）。"""
 
 
-class WeatherCityNotFound(Exception):
-    """城市地理编码查不到（Open-Meteo 分支）；映射为 bad_request，不触达天气上游。"""
+class WeatherCityUnknown(WeatherFetchError):
+    """城市名无法在 geocoding 中解析（映射为 bad_request：回传模型换个说法重试）。"""
 
 
 # 注入点：async (city, api_key, base_url) -> 上游 JSON dict；
 # 失败抛 WeatherFetchError / WeatherFetchTimeout。签名不含任何内部细节。
 WeatherFetch = Callable[[str, str, str], Awaitable[dict[str, Any]]]
-# Open-Meteo 分支注入点：async (city, base_url) -> 归一化片段
-# {"condition", "temperature_c", "observed_at"}；失败抛上面三类异常之一。
-OpenMeteoFetch = Callable[[str, str], Awaitable[dict[str, Any]]]
-
-# Open-Meteo：无需 key 的公开实时天气（provider=open-meteo 时启用）。
-OPEN_METEO_PROVIDER: Final[str] = "open-meteo"
-OPEN_METEO_GEOCODING_URL: Final[str] = "https://geocoding-api.open-meteo.com/v1/search"
-OPEN_METEO_DEFAULT_BASE_URL: Final[str] = "https://api.open-meteo.com/v1/forecast"
-
-# WMO weather_code → 长者可读中文（Open-Meteo 官方 code 表，未列出的按「未知天气」）
-_WMO_CONDITIONS: Final[dict[int, str]] = {
-    0: "晴",
-    1: "大部晴朗",
-    2: "多云",
-    3: "阴",
-    45: "雾",
-    48: "雾凇",
-    51: "小毛毛雨",
-    53: "毛毛雨",
-    55: "大毛毛雨",
-    56: "冻毛毛雨",
-    57: "强冻毛毛雨",
-    61: "小雨",
-    63: "中雨",
-    65: "大雨",
-    66: "冻雨",
-    67: "强冻雨",
-    71: "小雪",
-    73: "中雪",
-    75: "大雪",
-    77: "米雪",
-    80: "小阵雨",
-    81: "阵雨",
-    82: "强阵雨",
-    85: "小阵雪",
-    86: "强阵雪",
-    95: "雷阵雨",
-    96: "雷阵雨伴冰雹",
-    99: "强雷暴伴冰雹",
-}
-
-
-async def open_meteo_fetch(city: str, base_url: str) -> dict[str, Any]:
-    """Open-Meteo 默认实现：城市 → 经纬度 → 当前天气（无需 API key）。
-
-    只发两次请求：地理编码（取第一条）与 current 天气；城市查不到抛
-    ``WeatherCityNotFound``（映射 bad_request），上游故障/超时按既有两类异常上抛。
-    """
-    try:
-        async with httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT_SECONDS) as client:
-            geo = await client.get(
-                OPEN_METEO_GEOCODING_URL,
-                params={"name": city, "count": 1, "language": "zh", "format": "json"},
-            )
-            if geo.status_code != 200:
-                raise WeatherFetchError("geocoding http error")
-            try:
-                geo_payload: Any = geo.json()
-            except ValueError as exc:
-                raise WeatherFetchError("geocoding returned non-json") from exc
-            results = geo_payload.get("results") if isinstance(geo_payload, dict) else None
-            if not isinstance(results, list) or not results:
-                raise WeatherCityNotFound
-
-            place = results[0]
-            if not isinstance(place, dict):
-                raise WeatherFetchError("geocoding returned unexpected shape")
-            latitude = place.get("latitude")
-            longitude = place.get("longitude")
-            if not isinstance(latitude, (int, float)) or not isinstance(longitude, (int, float)):
-                raise WeatherFetchError("geocoding returned no coordinates")
-
-            weather = await client.get(
-                (base_url or OPEN_METEO_DEFAULT_BASE_URL).strip(),
-                params={
-                    "latitude": latitude,
-                    "longitude": longitude,
-                    "current": "temperature_2m,weather_code",
-                    "timezone": "auto",
-                },
-            )
-            if weather.status_code != 200:
-                raise WeatherFetchError("weather http error")
-            try:
-                payload: Any = weather.json()
-            except ValueError as exc:
-                raise WeatherFetchError("weather returned non-json") from exc
-    except httpx.TimeoutException as exc:
-        raise WeatherFetchTimeout("open-meteo timed out") from exc
-    except httpx.TransportError as exc:
-        raise WeatherFetchError("open-meteo unreachable") from exc
-
-    current = payload.get("current") if isinstance(payload, dict) else None
-    if not isinstance(current, dict):
-        raise WeatherFetchError("open-meteo returned no current block")
-    temperature = current.get("temperature_2m")
-    code = current.get("weather_code")
-    if not isinstance(temperature, (int, float)) or isinstance(temperature, bool):
-        raise WeatherFetchError("open-meteo returned no temperature")
-    try:
-        condition = _WMO_CONDITIONS.get(int(code), "未知天气") if code is not None else "未知天气"
-    except (TypeError, ValueError):
-        condition = "未知天气"
-    observed_at = current.get("time")
-    if not isinstance(observed_at, str) or not observed_at:
-        observed_at = datetime.now(tz=UTC).isoformat(timespec="seconds")
-    return {
-        "condition": condition,
-        "temperature_c": round(float(temperature), 1),
-        "observed_at": observed_at,
-    }
-
 
 # 时钟注入点：测试可替换为假时钟，避免真等 TTL
 MonotonicClock = Callable[[], float]
 
 
 async def httpx_fetch(city: str, api_key: str, base_url: str) -> dict[str, Any]:
-    """默认上游 fetch：GET {base_url}（OpenWeather 兼容查询串）。"""
-    if not base_url.strip():
+    """默认上游 fetch：高德两步——geocoding（城市名 → adcode）→ 实况天气。
+
+    两步共享同一个总超时预算（UPSTREAM_TIMEOUT_SECONDS），保证 fetch 整体仍小于
+    客户端 5s 总预算；key 无效 / 配额超限（status != "1"）按临时故障处理，
+    城市解析不出（geocodes 为空）抛 WeatherCityUnknown → bad_request。
+    """
+    root = base_url.strip().rstrip("/")
+    if not root:
         raise WeatherFetchError("weather upstream base_url is not configured")
-    params = {"q": city, "appid": api_key, "units": "metric", "lang": "zh_cn"}
     try:
-        async with httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT_SECONDS) as client:
-            response = await client.get(base_url.strip(), params=params)
+        async with asyncio.timeout(UPSTREAM_TIMEOUT_SECONDS):
+            async with httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT_SECONDS) as client:
+                adcode = await _amap_geocode(client, root, city, api_key)
+                return await _amap_weather(client, root, adcode, api_key)
+    except TimeoutError as exc:  # asyncio.timeout 预算耗尽（含两步合计超支）
+        raise WeatherFetchTimeout("upstream timed out") from exc
     except httpx.TimeoutException as exc:
         raise WeatherFetchTimeout("upstream timed out") from exc
     except httpx.TransportError as exc:
         raise WeatherFetchError("upstream unreachable") from exc
-    # 状态码只进日志，不进异常消息（异常消息可能被上层透传，防内部细节外泄）
+
+
+async def _amap_get_json(
+    client: httpx.AsyncClient, url: str, params: dict[str, str], what: str
+) -> dict[str, Any]:
+    """高德单次 GET：状态码 / JSON / 对象形态三重把关，异常消息不含内部细节。"""
+    try:
+        response = await client.get(url, params=params)
+    except httpx.TimeoutException:
+        raise
+    except httpx.TransportError as exc:
+        raise WeatherFetchError(f"amap {what} unreachable") from exc
     if response.status_code != 200:
         logger.warning(
             "weather_upstream_http_error",
-            extra={"trace_id": get_trace_id() or "-", "status_code": response.status_code},
+            extra={
+                "trace_id": get_trace_id() or "-",
+                "status_code": response.status_code,
+                "step": what,
+            },
         )
-        raise WeatherFetchError("upstream http error")
+        raise WeatherFetchError(f"amap {what} http error")
     try:
         payload: Any = response.json()
     except ValueError as exc:
-        raise WeatherFetchError("upstream returned non-json") from exc
+        raise WeatherFetchError(f"amap {what} returned non-json") from exc
     if not isinstance(payload, dict):
-        raise WeatherFetchError("upstream returned non-object json")
+        raise WeatherFetchError(f"amap {what} returned non-object json")
+    return payload
+
+
+async def _amap_geocode(client: httpx.AsyncClient, root: str, city: str, api_key: str) -> str:
+    """城市名 → 行政区划 adcode；解析不出抛 WeatherCityUnknown。"""
+    payload = await _amap_get_json(
+        client, root + _AMAP_GEOCODE_PATH, {"address": city, "key": api_key}, "geocode"
+    )
+    if payload.get("status") != "1":
+        # infocode 10001（key 无效）/ 1000x（配额）等统一按临时故障，细节只进日志
+        logger.warning(
+            "weather_amap_geocode_rejected",
+            extra={"trace_id": get_trace_id() or "-", "infocode": payload.get("infocode")},
+        )
+        raise WeatherFetchError("amap geocode rejected")
+    geocodes = payload.get("geocodes")
+    first = geocodes[0] if isinstance(geocodes, list) and geocodes else None
+    adcode = first.get("adcode") if isinstance(first, dict) else None
+    if not isinstance(adcode, str) or not adcode:
+        raise WeatherCityUnknown(f"city not resolvable: {city}")
+    return adcode
+
+
+async def _amap_weather(
+    client: httpx.AsyncClient, root: str, adcode: str, api_key: str
+) -> dict[str, Any]:
+    """adcode → 实况天气 payload；status 非 "1" 按临时故障。"""
+    payload = await _amap_get_json(
+        client,
+        root + _AMAP_WEATHER_PATH,
+        {"city": adcode, "key": api_key, "extensions": "base"},
+        "weather",
+    )
+    if payload.get("status") != "1":
+        logger.warning(
+            "weather_amap_weather_rejected",
+            extra={"trace_id": get_trace_id() or "-", "infocode": payload.get("infocode")},
+        )
+        raise WeatherFetchError("amap weather rejected")
     return payload
 
 
@@ -236,31 +195,55 @@ def normalize_city(city: object) -> str | None:
     return stripped
 
 
+def _parse_temperature(raw: object) -> float | None:
+    """高德温度字段（字符串或数值）→ float；形态不符返回 None。"""
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            return float(raw.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_observed_at(reporttime: object) -> str:
+    """高德 reporttime（北京时间字符串）→ UTC ISO；解析不出用当前 UTC 兜底。"""
+    if isinstance(reporttime, str) and reporttime.strip():
+        try:
+            local = datetime.strptime(reporttime.strip(), "%Y-%m-%d %H:%M:%S")
+            return local.replace(tzinfo=_AMAP_TZ).astimezone(UTC).isoformat(timespec="seconds")
+        except ValueError:
+            pass
+    return datetime.now(tz=UTC).isoformat(timespec="seconds")
+
+
 def _normalize_upstream(payload: dict[str, Any], canonical_city: str) -> dict[str, Any] | None:
-    """上游 JSON → 工具成功返回结构；形态不符返回 None（由调用方转为失败）。"""
-    weather = payload.get("weather")
-    main = payload.get("main")
-    if not isinstance(weather, list) or not weather or not isinstance(main, dict):
+    """高德实况 JSON → 工具成功返回结构；形态不符返回 None（由调用方转为失败）。
+
+    只认 `lives[0]` 里的 `weather` / `temperature`（或 `temperature_float`）/
+    `reporttime`，不猜其他字段——status 与 infocode 已在 fetch 层把关。
+    """
+    lives = payload.get("lives")
+    if not isinstance(lives, list) or not lives or not isinstance(lives[0], dict):
         return None
-    first = weather[0]
-    if not isinstance(first, dict) or not isinstance(first.get("description"), str):
+    first = lives[0]
+    condition = first.get("weather")
+    if not isinstance(condition, str) or not condition.strip():
         return None
-    temperature = main.get("temp")
-    if not isinstance(temperature, (int, float)) or isinstance(temperature, bool):
+    temperature = _parse_temperature(first.get("temperature"))
+    if temperature is None:
+        temperature = _parse_temperature(first.get("temperature_float"))
+    if temperature is None:
         return None
-    observed_at: str
-    dt = payload.get("dt")
-    if isinstance(dt, (int, float)) and not isinstance(dt, bool) and dt > 0:
-        observed_at = datetime.fromtimestamp(dt, tz=UTC).isoformat(timespec="seconds")
-    else:
-        # 上游不带观测时间时用本进程当前 UTC 时间兜底，仍如实标注数据时间
-        observed_at = datetime.now(tz=UTC).isoformat(timespec="seconds")
     return {
         "ok": True,
         "city": canonical_city,
-        "condition": first["description"],
-        "temperature_c": round(float(temperature), 1),
-        "observed_at": observed_at,
+        "condition": condition.strip(),
+        "temperature_c": round(temperature, 1),
+        "observed_at": _parse_observed_at(first.get("reporttime")),
     }
 
 
@@ -273,20 +256,13 @@ class WeatherService:
         api_key: str,
         base_url: str,
         cache_ttl_seconds: int,
-        provider: str = "",
         fetch: WeatherFetch | None = None,
-        open_meteo_fetch_fn: OpenMeteoFetch | None = None,
         clock: MonotonicClock = time.monotonic,
     ) -> None:
         self._api_key = api_key.strip()
         self._base_url = base_url.strip()
-        self._provider = provider.strip().lower()
-        self._is_open_meteo = self._provider in {"open-meteo", "open_meteo", "openmeteo"}
         self._cache_ttl_seconds = max(0, cache_ttl_seconds)
         self._fetch = fetch if fetch is not None else httpx_fetch
-        self._open_meteo_fetch: OpenMeteoFetch = (
-            open_meteo_fetch_fn if open_meteo_fetch_fn is not None else open_meteo_fetch
-        )
         self._clock = clock
         # key: 规范化城市名 -> (写入时刻 monotonic, 归一化成功载荷)
         self._cache: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -296,8 +272,6 @@ class WeatherService:
         canonical = normalize_city(city)
         if canonical is None:
             return _failure("bad_request")
-        if self._is_open_meteo:
-            return await self._fetch_open_meteo(canonical)
         if not self._api_key:
             logger.warning("weather_missing_api_key", extra={"trace_id": get_trace_id() or "-"})
             return _failure("missing_api_key")
@@ -311,6 +285,10 @@ class WeatherService:
         except WeatherFetchTimeout:
             logger.warning("weather_upstream_timeout", extra={"trace_id": get_trace_id() or "-"})
             return self._stale_or_failure(canonical, "upstream_timeout")
+        except WeatherCityUnknown:
+            # 城市解析不出是参数问题：回传模型换个说法重试（计入预算），不当临时故障
+            logger.info("weather_city_unknown", extra={"trace_id": get_trace_id() or "-"})
+            return _failure("bad_request")
         except WeatherFetchError:
             logger.warning("weather_upstream_error", extra={"trace_id": get_trace_id() or "-"})
             return self._stale_or_failure(canonical, "upstream_unavailable")
@@ -324,27 +302,6 @@ class WeatherService:
 
         self._cache_put(canonical, normalized)
         return {**normalized, "cached": False}
-
-    async def _fetch_open_meteo(self, canonical: str) -> dict[str, Any]:
-        """Open-Meteo 分支：无需 key；城市查不到 → bad_request，上游故障 → 缓存兜底。"""
-        cached = self._cache_get(canonical)
-        if cached is not None:
-            return {**cached, "cached": True}
-        try:
-            normalized = await self._open_meteo_fetch(canonical, self._base_url)
-        except WeatherCityNotFound:
-            logger.info("weather_city_not_found", extra={"trace_id": get_trace_id() or "-"})
-            return _failure("bad_request")
-        except WeatherFetchTimeout:
-            logger.warning("weather_upstream_timeout", extra={"trace_id": get_trace_id() or "-"})
-            return self._stale_or_failure(canonical, "upstream_timeout")
-        except WeatherFetchError:
-            logger.warning("weather_upstream_error", extra={"trace_id": get_trace_id() or "-"})
-            return self._stale_or_failure(canonical, "upstream_unavailable")
-
-        payload = {"ok": True, "city": canonical, **normalized}
-        self._cache_put(canonical, payload)
-        return {**payload, "cached": False}
 
     def _cache_get(self, canonical: str) -> dict[str, Any] | None:
         entry = self._cache.get(canonical)
@@ -371,17 +328,13 @@ class WeatherService:
 __all__ = [
     "FAILURE_MESSAGES",
     "MAX_CITY_LENGTH",
-    "OPEN_METEO_DEFAULT_BASE_URL",
-    "OPEN_METEO_PROVIDER",
     "UPSTREAM_TIMEOUT_SECONDS",
     "MonotonicClock",
-    "OpenMeteoFetch",
-    "WeatherCityNotFound",
+    "WeatherCityUnknown",
     "WeatherFetch",
     "WeatherFetchError",
     "WeatherFetchTimeout",
     "WeatherService",
     "httpx_fetch",
     "normalize_city",
-    "open_meteo_fetch",
 ]
