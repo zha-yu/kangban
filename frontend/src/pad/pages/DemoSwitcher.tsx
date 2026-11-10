@@ -15,7 +15,7 @@ const ITEMS: { key: TaskKind; label: string }[] = [
   { key: "none", label: "主对话" },
   { key: "medication", label: "用药提醒" },
   { key: "health", label: "健康 5 问" },
-  { key: "identity", label: "身份确认" },
+  // { key: "identity", label: "身份确认" },
   { key: "sos", label: "SOS 结果" },
 ];
 
