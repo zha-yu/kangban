@@ -1,6 +1,6 @@
 # dev-A · 第 7 天工作推进计划 · 三级路由与决策日志
 
-> 状态：草稿　｜　版本：v1.1　｜　日期：2026-11-10
+> 状态：已完成（A1/A2/A3 已落地并入 develop 7565b6a）　｜　版本：v1.1　｜　日期：2026-11-10
 > 关联：`docs/team_tasks/day07/dev-a-day07.md`（任务卡，唯一任务源）｜`docs/team_tasks/day07/README.md`（DAG 与总表）｜`docs/team_tasks/day07/contracts.md`｜`docs/plans/day07/handoff-A-to-C-用药到点接线.md`｜`docs/plans/adhoc-20261110-day6全面审查.md`
 > 上游依据：PRD §4.2 FR-DLG-01/02/03/05/06/07/09（line 264–274）、§5.2 固定测试集（line 527–541）、§5.3 性能（line 543–550）｜技术设计文档 §1.4（line 182）、§3.4 `decision_logs`（line 686–706）、§6 主控 Agent（line 897）、§8.3
 > 变更记录见文末

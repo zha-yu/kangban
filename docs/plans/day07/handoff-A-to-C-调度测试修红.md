@@ -1,6 +1,6 @@
 # 交接件 · A→C：Day 7 调度接线测试修红
 
-> 状态：待 dev-C 处理　｜　版本：v1.0　｜　日期：2026-11-10
+> 状态：已完成（8 条 fixture ERROR 与 10 个 lint 错已随 8c980aa/7565b6a 清零）　｜　版本：v1.0　｜　日期：2026-11-10
 > 关联：`docs/team_tasks/day07/dev-c2-用药到点触发接线.md`（C2 卡 §4 验收判据）｜`docs/plans/day07/handoff-A-to-C-用药到点接线.md`（A 线接口契约，不重开）
 > 触发：develop `4cefef6` 合入后，A 线跑全量门禁发现该测试文件全红 + lint 不干净
 
