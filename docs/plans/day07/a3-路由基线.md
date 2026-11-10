@@ -258,3 +258,30 @@ DATABASE_URL=postgresql+asyncpg://... uv run alembic upgrade head
 `tests/test_decision_logs.py` 的断言也一并从「写死 `0014`」改成**结构性检查**
 （单 head + `decision_logs` 在 head 链上）：写死编号会在每次有人加迁移时假红一次，
 而真正要防的是「双 head」和「迁移被跳过」这两个事故。
+
+### 6.9 重要勘误（2026-11-10 深夜）：「322M 上限」的归因错了
+
+组内指出后经查证（arXiv 2609.36965《Chinese-Jev: Bringing System One Model to
+Chinese-Language Tasks》）：我们此前把普通意图 40/50 归因为「322M/CPU 权重能力上限」，
+**归因有误**。事实链：
+
+- **Jev**：TypeSafe AI 的闭源云端 System One 决策 API（2026-09-15 发布）——真实模型，不是接口代号；
+- **Laya**：Convai Innovations 三天后开源的同类模型（Apache-2.0，HF 仓库即我们用的权重），
+  接口与 Jev 兼容但相互独立；
+- **Chinese-Jev**：以上述 Laya Multilingual 为**基座**做中文特化的模型家族（论文 Table 1）——
+  基座在中文任务 ACC **40.22%**，Chinese-Jev General 达 **69.20%**（同架构、同 14ms 中位延迟），
+  另有 Medical（300 万医疗决策特化）/ Legal / Finance 变体与 ONNX 版。
+
+三个推论：
+
+1. 我们加载的 `laya-multilingual` 是**未中文特化的基座**——40/50 恰与论文的 40.22% 起点
+   吻合，错例集中在 `chat↔other`、`movie↔opera` 的中文语义边界，正是基座的短板；
+2. 若 Chinese-Jev 权重发布，**换权重零代码改动**（同 Jev 兼容接口、同 322M、同
+   head_max_len=256），只改 `SYSTEM_ONE_MODEL_PATH` 并重跑 110 条——90% 意图线有望达成，
+   「换 GPU」不再是必要条件；CJ-Medical 变体对用药/健康场景可能更有针对性；
+3. 论文用 RLCD 训练（ECE 3.78%），概率校准好——对 G1 的 `noul ≥ 0.80` 阈值是利好。
+
+**当前行动**：HF 全站搜 `chinese-jev` 为 0——权重尚未发布，Laya 基座仍是唯一可用选项，
+方案 B（分意图澄清）等既有结论不变。新增待办：**跟踪 Chinese-Jev 权重发布**（发布即换、
+重跑 110 条基线）。另：任务卡与文档中「Chinese-Jev」的命名指的就是这条技术线，此前
+「Chinese-Jev 是立项自造词」「Jev 只是接口代号」两处表述一并勘误。
