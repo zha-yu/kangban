@@ -1,6 +1,9 @@
 # 交接件 · A3 → B1：终态结算还差两步（`generated_text` 正在丢）
 
 > 发起：dev-A（2026-11-10 17:26）　｜　接收：dev-B1（终态结算 / `response_service`）
+> **状态：已发出 2026-11-10 17:32（主理人经 IM 转达 dev-B1），待 B1 回执**。回执后本文件不删，
+> 转为验收依据（§4 的三条命令 + §5 的合并顺序），供 reviewer 对照。
+>
 > 背景：dev-B 的 `handoff-B-to-A-终态结算patch需求.md`（J2）要求 A 删掉第 5 步非 generic 的
 > `commit_response` 双写。**A 已按交接删除并合入**（commit `80fd7a7`，`turn_service` 第 5 步现在
 > 只发 `response_id`，generic 直写保留）。删除后暴露出 B 侧尚未落地的两步——不补上，
