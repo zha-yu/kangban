@@ -109,6 +109,7 @@ _GENERAL_ADVICE_KEYWORDS: Final[tuple[str, ...]] = (
     "用不用动手术",
     "要开刀吗",
     "要不要开刀",
+    "用不用开刀",
 )
 
 
