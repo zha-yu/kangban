@@ -156,8 +156,25 @@ WEATHER_TOOL: Final[ToolSpec] = ToolSpec(
     description="查询城市当前天气；查不到时如实告知长者，不编造。",
 )
 
-#: 默认注册表：桩期仅天气一个注册位；用药查询等工具随 N12 执行器落地后追加。
-DEFAULT_TOOLS: Final[tuple[ToolSpec, ...]] = (WEATHER_TOOL,)
+MEMORY_RECALL_TOOL: Final[ToolSpec] = ToolSpec(
+    name="memory_recall",
+    description="查询这位长者此前说过的偏好与事实（比如喜欢什么戏曲、儿女叫什么名字），用于个性化回应；查不到时返回空结果。",
+)
+
+MEDICATION_CONFIRM_TOOL: Final[ToolSpec] = ToolSpec(
+    name="medication_confirm",
+    description="记录长者对服药提醒的回答（吃了 / 没吃 / 稍后），推进用药任务状态。",
+)
+
+#: 默认工具清单：三个 —— 天气（MCP 远端）+ 用药确认（本地执行器）+ 记忆召回（本地执行器）。
+#: 与 tool_registry.default_registry() 里的 ToolSpec 三条**同名**（两边独立定义，
+#: companion.py 这一套只有 name + description，服务于 ReAct prompt 描述；
+#: tool_registry 那套有完整 schema + executor，服务于实际执行）。
+DEFAULT_TOOLS: Final[tuple[ToolSpec, ...]] = (
+    WEATHER_TOOL,
+    MEMORY_RECALL_TOOL,
+    MEDICATION_CONFIRM_TOOL,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,12 +234,24 @@ def _build_turn_context(
     """
     if identity is None:
         # 兜底：**从凭证主体推断身份结论是不可靠的**，只为本函数单独可调用而保留。
-        # `runtime.kind` 只有 device/staff/guardian/staff_card，而上下文要的是
-        # device/voice/confirm/generic —— staff 的 elder_id 恒为 None（Identity 强制），
-        # 于是「员工发起的对话」会被判成 generic（无人设、无历史），且不报错。
-        # 正确做法由调用方（N14 统一出口）把 A1 的 IdentityDecision 产出传进来。
-        inferred_source: Literal["device", "generic"] = "device" if runtime.elder_id else "generic"
-        identity = DialogueIdentity(source=inferred_source, elder_id=runtime.elder_id)
+        # 生产路径（N14 统一出口）必须显式传入 identity（A1 IdentityDecision 产出）。
+        #
+        # 推断规则（按 runtime.kind 区分，原来的二元推断把 staff/guardian 全静默判 generic）：
+        # - device + elder_id present → device（长者端正常）
+        # - device + elder_id missing → generic（设备还没识别到长者）
+        # - staff / staff_card → generic（员工端不该走这个 Agent，但真走了也不崩）
+        # - guardian → generic（家属端同理）
+        if runtime.kind == "device":
+            inferred_source: Literal["device", "generic"] = (
+                "device" if runtime.elder_id else "generic"
+            )
+        else:
+            # 非 device 凭证（staff/guardian/staff_card）→ 一律 generic
+            inferred_source = "generic"
+        identity = DialogueIdentity(
+            source=inferred_source,
+            elder_id=runtime.elder_id if inferred_source != "generic" else None,
+        )
         logger.warning(
             "companion_identity_inferred runtime_kind=%s inferred_source=%s elder_present=%s",
             runtime.kind,
@@ -583,6 +612,8 @@ __all__ = [
     "FORBIDDEN_FALLBACK_TEXT",
     "HIGH_RISK_REFUSED_TEXT",
     "HIGH_RISK_TOOL_NAMES",
+    "MEDICATION_CONFIRM_TOOL",
+    "MEMORY_RECALL_TOOL",
     "TRANSIENT_DEGRADED_TEXT",
     "WEATHER_TOOL",
     "AgentTurnResult",

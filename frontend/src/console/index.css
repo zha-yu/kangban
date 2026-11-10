@@ -1333,3 +1333,152 @@ body {
   gap: 8px;
   margin-left: auto;
 }
+
+/* ---- 员工列表（信息层级重排）----
+   产品首屏只留「标题 + 概览 + 检索 + 表格」；接口契约与全量覆盖口径折进 details。
+   姓名加粗作行锚点、角色用徽标、数量右对齐且等宽数字、行内操作降为文字按钮，
+   避免每行重复同一个描边按钮把表格铺满。全部复用冻结 token，无新增色值。 */
+.staff-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.staff-meta {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--color-ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 覆盖 .input 的 width: 100%（表头里的检索只占右侧一小块） */
+.staff-search {
+  width: 220px;
+  max-width: 100%;
+  font-size: 14px;
+}
+
+.staff-search::placeholder {
+  color: var(--color-ink-subtle);
+}
+
+.staff-devnote {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--color-ink-muted);
+}
+
+.staff-devnote > summary {
+  width: fit-content;
+  padding: 2px 0;
+  cursor: pointer;
+}
+
+.staff-devnote > summary::marker {
+  color: var(--color-brand-line);
+}
+
+.staff-devnote > summary:hover {
+  color: var(--color-brand);
+}
+
+.staff-devnote > summary:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.staff-devnote > p {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-sunken);
+  line-height: 1.6;
+}
+
+.staff-table-wrap {
+  margin-top: 16px;
+  overflow-x: auto;
+}
+
+.staff-table {
+  margin-top: 0;
+  min-width: 640px;
+}
+
+.staff-table th,
+.staff-table td {
+  padding: 12px 14px;
+  vertical-align: middle;
+}
+
+.staff-table th {
+  font-size: 13px;
+  color: var(--color-ink-muted);
+  white-space: nowrap;
+}
+
+.staff-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.staff-table tbody tr:hover td {
+  background: var(--color-canvas);
+}
+
+.staff-name {
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* 角色徽标：管理员用主色 8% 底，护工 / 医生用中性底；信号色不进表格 */
+.badge-brand {
+  background: var(--color-brand-soft);
+  color: var(--color-brand-strong);
+}
+
+/* 前缀 .staff-table 提高权重，压过 .admin-table th/td 的 text-align: left */
+.staff-table .staff-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.staff-table .staff-num.is-zero {
+  color: var(--color-ink-subtle);
+}
+
+.staff-table .staff-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* 行内文字按钮：比 console 40px 控件再收一档，11 行列表才不显笨重 */
+.staff-actions .btn-ghost {
+  min-height: 32px;
+  padding: 0 10px;
+}
+
+.btn-ghost-brand {
+  color: var(--color-brand);
+}
+
+.btn-ghost-brand:hover:not(:disabled) {
+  background: var(--color-brand-soft);
+  color: var(--color-brand-strong);
+}
+
+.staff-no-match {
+  margin: 20px 0 4px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--color-ink-muted);
+}
+
+.staff-no-match .btn-ghost {
+  margin-left: 8px;
+}

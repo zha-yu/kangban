@@ -11,7 +11,13 @@
  * Day 6（N16）：tts_text 带分段字段（contracts.md v1.0 §4）→ PlaybackQueue 结算
  * playing/played/canceled（「下一段到达即结算」口径，见 playback-queue.ts 头注释）；
  * 无分段字段 → 整段一播原路径不动（回滚兼容）。C-6 计时改一段一次：上一段未结算
- * 则在新段到达时先结算。 */
+ * 则在新段到达时先结算。
+ * Day 7 D1（S1.2，docs/plans/day07/d-推进计划-pad可靠性改绑联调.md）：
+ *  tts_text 先过队列淘汰判定再放开播放态（P2-22）；teardown/setup 解绑
+ *  devicechange 防重连累积 listener（P2-23）；reopenMic 并发守卫、mic.start 失败
+ *  上报诊断、stop/teardown 复位播放态、tts_text play() 失败给提示（P3-38）；
+ *  speechstart 本地停播后立即上行 interrupt（P1-3 前端半边，字段按 Day7 README
+ *  §5.4 草案，待 A1 契约冻结校对）；路由降级提示预留（A3 下发 degraded 标记时显示）。 */
 import type { PadStatus } from "./types";
 import type { SubtitleSource } from "./components/BigSubtitle";
 import type {
@@ -19,6 +25,7 @@ import type {
   ClientDiagStage,
   IdentityAskMsg,
   IdentityResultMsg,
+  InterruptMsg,
   ServerSignal,
   TtsTextMsg,
 } from "./protocol";
@@ -28,6 +35,9 @@ import { TenVad } from "./audio/vad";
 import { PlaybackQueue, isSegmentedTts } from "./audio/playback-queue";
 import { TouchPlayback } from "./audio/touch-audio";
 import { SignalSocket } from "./signal-socket";
+
+/** Day 7 D1 S1.2.7 预留：路由降级常量文案（A3 下发降级标记时显示；不新增协议字段） */
+const FALLBACK_NOTICE = "网络慢，正在换种方式回答";
 
 export interface RealtimeCallbacks {
   onStatus: (status: PadStatus) => void;
@@ -50,6 +60,8 @@ export class RealtimeClient {
   private pc: RTCPeerConnection | null = null;
   private unbindDeviceChange: (() => void) | null = null;
   private starting = false;
+  /** Day 7 D1 关 P3-38：reopenMic 并发守卫（重连进行中直接返回，防级联重入） */
+  private reopenMicBusy = false;
   /** 信令就绪 = auth_ok 已到（SocketState "ready"）：client_diag 只在此时放行（C2：auth 前上行会被 4401 关连） */
   private socketReady = false;
   /** TTS 是否在播（打断判定用；tts_text 置位，打断/新一轮 partial 复位） */
@@ -122,6 +134,7 @@ export class RealtimeClient {
 
   async stop(): Promise<void> {
     this.starting = false;
+    this.ttsPlaying = false; // Day 7 D1 关 P3-38：登出复位播放态，防下次会话误判打断
     this.unbindDeviceChange?.();
     this.unbindDeviceChange = null;
     this.socket?.stop();
@@ -170,16 +183,31 @@ export class RealtimeClient {
           this.handleTouchAudio(msg);
           break;
         }
+        // Day 7 D1 关 P2-22：分段消息先过队列淘汰判定——旧 epoch 段不播、不 ack、
+        // 不改 ttsPlaying/状态条、不渲染字幕（防止覆盖新一代回复的字幕）
+        if (isSegmentedTts(msg) && this.playbackQueue.isStale(msg)) break;
         // C-6 一段一次计时：分段模式下段到达即上一段播完，先结算上一段再起表；
         // 整段模式两次 tts_text 间无此场景（服务端一轮只发一条），结算为无害兜底
         this.reportPlayback();
         this.playbackStartMs = performance.now();
         this.ttsPlaying = true;
         this.cb.audioEl.muted = false; // 真 TTS 到了才出声
-        void this.cb.audioEl.play().catch(() => {});
+        void this.cb.audioEl
+          .play()
+          // Day 7 D1 关 P3-39：实际起播成功后补发 pending 的 playing ack
+          .then(() => this.playbackQueue.notifyPlaybackStarted())
+          // Day 7 D1 关 P3-38：失败不再静默（与 ontrack 路径话术一致）
+          .catch(() => {
+            this.cb.onSubtitle("点击屏幕后开始播放语音", "notice");
+          });
         this.cb.onSubtitle(msg.text, "reply");
         this.cb.onStatus("speaking");
-        // Day 6：带分段字段 → 队列结算 playing/played；旧 epoch 丢弃时字幕照常渲染
+        // Day 7 D1 S1.2.7 预留：A3 下发降级标记时显示常量文案（不新增协议字段，
+        // A3 未下发则永不触发，不阻塞 D1）
+        if (msg.degraded === true) {
+          this.cb.onSubtitle(FALLBACK_NOTICE, "notice");
+        }
+        // Day 6：带分段字段 → 队列结算 playing/played（playing 由起播后补发）
         if (isSegmentedTts(msg)) this.playbackQueue.handleSegment(msg);
         break;
       case "error": {
@@ -216,11 +244,18 @@ export class RealtimeClient {
 
   /** auth_ok 后建立一轮会话：麦克风 + VAD + PeerConnection + offer */
   private async setupSession(): Promise<void> {
+    // Day 7 D1 关 P2-23：建新监听前先解绑旧引用，重连不累积 devicechange listener
+    this.unbindDeviceChange?.();
+    this.unbindDeviceChange = null;
     // 1. 麦克风
     this.mic = new MicCapture();
     try {
       await this.mic.start();
     } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      // Day 7 D1 关 P3-38：mic.start 失败必须上报诊断（此前静默无 offer，
+      // 服务端 VadFallbackController 无法感知）
+      this.sendDiag("webrtc", false, `mic_start_failed: ${reason}`);
       this.cb.onSubtitle(err instanceof Error ? err.message : "麦克风启动失败", "notice");
       this.mic = null;
       return;
@@ -239,6 +274,18 @@ export class RealtimeClient {
             this.cb.audioEl.pause();
             this.cb.onSubtitle("", "final");
             this.reportPlayback(); // C-6：打断也结算（实际已播时长，如实入档）
+            // Day 7 D1 关 P1-3（前端半边）：本地停播后立即上行打断，不等回执。
+            // response_id 取当前活跃回复（S1.1 配套暴露），无活跃回复不发送；
+            // 字段按 Day7 README §5.4 草案，待 A1 契约冻结后逐字段校对
+            const responseId = this.playbackQueue.activeResponseId;
+            if (responseId !== null) {
+              const interrupt: InterruptMsg = {
+                type: "interrupt",
+                response_id: responseId,
+                reason: "barge_in",
+              };
+              this.socket?.send(interrupt);
+            }
             // Day 6：canceled 收口（segment_id 填最后已播完段，无则 -1——dev-C 口径转达件③）
             this.playbackQueue.interrupt();
           }
@@ -250,6 +297,12 @@ export class RealtimeClient {
         onSpeechEnd: () => {
           this.cb.onStatus("thinking");
           this.socket?.send({ type: "asr_end" });
+        },
+        // Day 7 D1 关 P1-6：运行期 VAD 错误/遥测上报（acceptWaveform 异常、
+        // vad_no_speech_120s 心跳、运行期脚本错误），触发服务端 webrtcvad 兜底；
+        // 心跳同时作为现场收音复测的观测点
+        onRuntimeError: (message) => {
+          this.sendDiag("vad", false, `vad_runtime_error: ${message}`);
         },
       });
     } catch (err) {
@@ -334,6 +387,12 @@ export class RealtimeClient {
   }
 
   private async teardownSession(): Promise<void> {
+    // Day 7 D1 关 P2-23：拆线解绑设备监听（重连/登出路径均不残留旧 handler）
+    this.unbindDeviceChange?.();
+    this.unbindDeviceChange = null;
+    // Day 7 D1 关 P3-38：清播放元素回调并复位静音，防旧 onended 在新会话误触发
+    this.cb.audioEl.onended = null;
+    this.cb.audioEl.muted = true;
     this.vad?.free();
     this.vad = null;
     this.degradeLevel = null;
@@ -352,25 +411,32 @@ export class RealtimeClient {
 
   /** 麦克风拔出/失效 → 重新 getUserMedia 并 replaceTrack，PeerConnection 不重建 */
   private async reopenMic(): Promise<void> {
-    if (!this.mic || !this.pc) return;
-    const sender = this.pc.getSenders().find((s) => s.track?.kind === "audio");
-    await this.mic.stop();
+    // Day 7 D1 关 P3-38：并发守卫——重连进行中（或无可重连对象）直接返回，
+    // 防多次 ended/devicechange 事件级联重入
+    if (this.reopenMicBusy || !this.mic || !this.pc) return;
+    this.reopenMicBusy = true;
     try {
-      await this.mic.start();
-    } catch (err) {
-      this.cb.onSubtitle(err instanceof Error ? err.message : "麦克风重连失败", "notice");
-      return;
+      const sender = this.pc.getSenders().find((s) => s.track?.kind === "audio");
+      await this.mic.stop();
+      try {
+        await this.mic.start();
+      } catch (err) {
+        this.cb.onSubtitle(err instanceof Error ? err.message : "麦克风重连失败", "notice");
+        return;
+      }
+      this.mic.onFrame = (pcm) => this.vad?.feed(pcm);
+      const track = this.mic.stream?.getAudioTracks()[0];
+      if (track) {
+        track.addEventListener("ended", () => {
+          this.cb.onSubtitle("麦克风已断开，正在重连…", "notice");
+          void this.reopenMic();
+        });
+        await sender?.replaceTrack(track);
+      }
+      this.cb.onStatus("listening");
+    } finally {
+      this.reopenMicBusy = false;
     }
-    this.mic.onFrame = (pcm) => this.vad?.feed(pcm);
-    const track = this.mic.stream?.getAudioTracks()[0];
-    if (track) {
-      track.addEventListener("ended", () => {
-        this.cb.onSubtitle("麦克风已断开，正在重连…", "notice");
-        void this.reopenMic();
-      });
-      await sender?.replaceTrack(track);
-    }
-    this.cb.onStatus("listening");
   }
 
   private watchDeviceChange(): () => void {

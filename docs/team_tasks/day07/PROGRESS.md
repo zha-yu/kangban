@@ -13,14 +13,17 @@
 | 4 | TD-2 · 主动触达 played 闭环 | ✅ 已完成 | `docs/team_tasks/day07/dev-c-触达played闭环.md` |
 | 5 | TD-1 · 触达语音接线（WS） | ✅ 已完成 | `docs/team_tasks/day07/dev-c-触达语音接线.md` |
 | 6 | Task dev-C2 · 用药到点触发接线（APScheduler → 用药确认子图） | ⬜ 未开始 | `docs/team_tasks/day07/dev-c2-用药到点触发接线.md` |
-| 7 | Task dev-D · Day 7 · pad 可靠性、console 改绑与联调收口 | ⬜ 未开始 | `docs/team_tasks/day07/dev-d-day07.md` |
+| 7 | Task dev-D · Day 7 · pad 可靠性、console 改绑与联调收口 | 🚧 进行中 | `docs/team_tasks/day07/dev-d-day07.md` |
 | 8 | Day 7 · dev-D · 触达真机联调（TD-1/TD-2 收口验收） | ⬜ 未开始 | `docs/team_tasks/day07/dev-d-触达真机联调.md` |
 
 ## 计划件状态
 
 | 计划 | 状态 |
 | --- | --- |
+| `docs/plans/day07/d-推进计划-pad可靠性改绑联调.md` | 🚧 进行中 |
+| `docs/plans/day07/d-联调记录.md` | 🚧 进行中 |
 | `docs/plans/day07/dev-b-day07-工作推进计划.md` | ❔ 待主理人确认 |
+| `docs/plans/day07/dev-c-day07-执行计划.md` | 📝 草稿 |
 | `docs/plans/day07/handoff-A-to-C-用药到点接线.md` | ✅ 已完成 |
 | `docs/plans/day07/handoff-B-to-A-终态结算patch需求.md` | ✅ 已完成 |
 | `docs/plans/day07/handoff-B-to-D-打断契约与终态口径.md` | ✅ 已完成 |
