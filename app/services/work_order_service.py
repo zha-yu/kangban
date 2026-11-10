@@ -48,10 +48,12 @@ import datetime
 import hashlib
 import logging
 import uuid
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.medication import WorkOrder, WorkOrderTransition
 from app.models.relation import ElderStaffAssignment
@@ -404,15 +406,157 @@ async def transition(
     )
 
 
+# ------------------------------------------------------------------ 查询（f2-D1 console 工单看板真实接口，2026-11-10）
+#
+# 只读查询面：给 app/api/workorders.py 提供「工单 + 冗余展示字段 + 全程流转」的
+# 一体化取数。冗余字段**只算不存**（elder_name / room_label 由 join 推导，
+# 前端 Mock 层的注释口径即「真实接口由服务端 join 返回」）。
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class TransitionRow:
+    """单条流转记录 + 操作人姓名。
+
+    `work_order_transitions` 只存 `actor_id`（FK→staff_accounts），姓名由这里
+    join 补齐；系统自动流转（actor_id 为空）或员工被删（SET NULL）时为 None。
+    """
+
+    transition: WorkOrderTransition
+    actor_name: str | None
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class WorkOrderRow:
+    """看板行：工单本体 + 冗余展示字段 + 全程流转（FR-ALT-02）。"""
+
+    order: WorkOrder
+    elder_name: str | None
+    room_no: str | None
+    assignee_name: str | None
+    transitions: tuple[TransitionRow, ...]
+
+    @property
+    def room_label(self) -> str | None:
+        """Mock 前端的展示口径（如 "A-301"）；未入住床位时为 None。"""
+        return self.room_no
+
+
+def _occupied_room_sq() -> Any:
+    """在住长者的房号子查询：Bed(elder_id) → Room(room_no)。
+
+    `Bed.elder_id` 无唯一约束（业务上一长者一床，但不赌数据），
+    `DISTINCT` 兜底避免脏数据把工单 join 成多行。
+    """
+    from app.models.organization import Bed, Room
+
+    return (
+        select(Bed.elder_id.label("elder_id"), Room.room_no.label("room_no"))
+        .select_from(Bed)
+        .join(Room, Bed.room_id == Room.room_id)
+        .where(Bed.elder_id.is_not(None))
+        .distinct()
+        .subquery()
+    )
+
+
+async def _load_transition_rows(
+    session: AsyncSession, order_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, tuple[TransitionRow, ...]]:
+    """按 order_id 分组取全程流转（含操作人姓名），按发生时间升序。"""
+    if not order_ids:
+        return {}
+    from app.models.staff import StaffAccount
+
+    rows = (
+        await session.execute(
+            select(WorkOrderTransition, StaffAccount.name)
+            .outerjoin(StaffAccount, WorkOrderTransition.actor_id == StaffAccount.staff_id)
+            .where(WorkOrderTransition.order_id.in_(order_ids))
+            .order_by(WorkOrderTransition.at, WorkOrderTransition.transition_id)
+        )
+    ).all()
+    grouped: dict[uuid.UUID, list[TransitionRow]] = {}
+    for transition, actor_name in rows:
+        grouped.setdefault(transition.order_id, []).append(
+            TransitionRow(transition=transition, actor_name=actor_name)
+        )
+    return {k: tuple(v) for k, v in grouped.items()}
+
+
+async def list_work_orders(
+    session: AsyncSession, *, limit: int = 500
+) -> list[WorkOrderRow]:
+    """看板列表（Mock 前端口径：一次返回全量，筛选/红档置顶在页面层做）。
+
+    长者用 `OUTER JOIN`：长者被归档不该让工单在看板上消失（FR-ALT-02 全程留痕），
+    兜底 `elder_name=None`，由 API 层渲染成「未知长者」。
+    """
+    from app.models.organization import Elder
+    from app.models.staff import StaffAccount
+
+    room_sq = _occupied_room_sq()
+    assignee = aliased(StaffAccount)
+    rows = (
+        await session.execute(
+            select(WorkOrder, Elder.name, room_sq.c.room_no, assignee.name)
+            .join(Elder, WorkOrder.elder_id == Elder.elder_id)
+            .outerjoin(room_sq, room_sq.c.elder_id == Elder.elder_id)
+            .outerjoin(assignee, WorkOrder.assignee_id == assignee.staff_id)
+            .order_by(WorkOrder.created_at.desc())
+            .limit(limit)
+        )
+    ).all()
+    transition_map = await _load_transition_rows(session, [o.order_id for o, _, _, _ in rows])
+    return [
+        WorkOrderRow(
+            order=order, elder_name=elder_name, room_no=room_no,
+            assignee_name=assignee_name,
+            transitions=transition_map.get(order.order_id, ()),
+        )
+        for order, elder_name, room_no, assignee_name in rows
+    ]
+
+
+async def get_work_order(
+    session: AsyncSession, *, order_id: uuid.UUID
+) -> WorkOrderRow | None:
+    """单张工单（含全程流转）。查不到返回 None。"""
+    from app.models.organization import Elder
+    from app.models.staff import StaffAccount
+
+    room_sq = _occupied_room_sq()
+    assignee = aliased(StaffAccount)
+    row = (
+        await session.execute(
+            select(WorkOrder, Elder.name, room_sq.c.room_no, assignee.name)
+            .join(Elder, WorkOrder.elder_id == Elder.elder_id)
+            .outerjoin(room_sq, room_sq.c.elder_id == Elder.elder_id)
+            .outerjoin(assignee, WorkOrder.assignee_id == assignee.staff_id)
+            .where(WorkOrder.order_id == order_id)
+        )
+    ).first()
+    if row is None:
+        return None
+    order, elder_name, room_no, assignee_name = row
+    transition_map = await _load_transition_rows(session, [order.order_id])
+    return WorkOrderRow(
+        order=order, elder_name=elder_name, room_no=room_no,
+        assignee_name=assignee_name,
+        transitions=transition_map.get(order.order_id, ()),
+    )
+
+
 __all__ = [
     "ORDER_TYPES",
     "SEVERITIES",
     "STATUSES",
     "InvalidTransition",
+    "TransitionRow",
     "WorkOrderConflict",
     "WorkOrderError",
     "WorkOrderNotFound",
     "WorkOrderRef",
+    "WorkOrderRow",
     "open_missed_medication",
     "open_work_order",
     "resolve_primary_care_staff",

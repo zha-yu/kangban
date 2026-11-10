@@ -13,12 +13,13 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,6 +45,10 @@ class NotificationPayloadError(NotificationError):
 
 class NotificationTargetNotFound(NotificationError):
     """长者没有 active 家属绑定 → 目标不存在，如实告知不编造。"""
+
+
+class GuardianNotificationNotFound(NotificationError):
+    """通知不存在或不属于当前监护人 → 404，不泄露存在性（越权同口径）。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,3 +193,78 @@ async def send_guardian_notifications(
         sum(1 for r in refs if r.created),
     )
     return refs
+
+
+# ------------------------------------------------------------------ 家属端查询（N1/N4，family 通知中心，2026-11-10 提前件）
+#
+# 只读 + read_at 单列写：target_id 即登录家属的 guardian_id，天然按人隔离；
+# `status` 送达状态机归 Day 8 调度器，本文件不碰。
+
+
+async def list_guardian_notifications(
+    session: AsyncSession,
+    *,
+    guardian_id: uuid.UUID,
+    page: int,
+    page_size: int,
+    unread_only: bool = False,
+) -> tuple[list[Notification], int]:
+    """某监护人收到的通知列表（N1：分页 1 起、page_size ≤100、默认不筛已读）。
+
+    范围过滤：`target_type='guardian' AND target_id=guardian_id`——家属只能
+    看到**发给自己**的通知，长者维度越权在查询条件里就被排除。
+    返回 `(rows, total)`，`total` 为过滤后总数（分页元数据）。
+    """
+    base = select(Notification).where(
+        Notification.target_type == _TYPE_GUARDIAN,
+        Notification.target_id == guardian_id,
+    )
+    if unread_only:
+        base = base.where(Notification.read_at.is_(None))
+    total = (
+        await session.execute(select(func.count()).select_from(base.subquery()))
+    ).scalar_one()
+    rows = list(
+        (
+            await session.execute(
+                base.order_by(Notification.created_at.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        ).scalars()
+    )
+    return rows, total
+
+
+async def mark_guardian_notification_read(
+    session: AsyncSession,
+    *,
+    guardian_id: uuid.UUID,
+    notification_id: uuid.UUID,
+) -> datetime.datetime:
+    """标记已读（N4：只写 `read_at`，不动 `status`）。
+
+    幂等：已读直接返回原 `read_at`。找不到或**不属于当前监护人**一律
+    抛 `GuardianNotificationNotFound`（越权与不存在同口径，不泄露存在性）。
+    """
+    notification = (
+        await session.execute(
+            select(Notification).where(
+                Notification.notification_id == notification_id,
+                Notification.target_type == _TYPE_GUARDIAN,
+                Notification.target_id == guardian_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if notification is None:
+        raise GuardianNotificationNotFound("通知不存在")
+    if notification.read_at is not None:
+        return notification.read_at
+    notification.read_at = datetime.datetime.now(datetime.UTC)
+    await session.flush()
+    logger.debug(
+        "guardian notification marked read: notification=%s guardian=%s",
+        notification_id,
+        guardian_id,
+    )
+    return notification.read_at
