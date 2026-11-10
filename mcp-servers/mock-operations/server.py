@@ -61,9 +61,11 @@ from app.core.logging import configure_logging  # noqa: E402
 SERVER_NAME = "silvermate-mock-operations"
 BIND_HOST = "127.0.0.1"
 BIND_PORT = 7102
-# 端口覆盖变量：仅本地进程运维参数，不进 Settings（同 weather server 的豁免口径）；
-# 全局配置基线仍以 .env.example 为准，此处散读是唯一豁免点。
+# 端口/绑定地址覆盖变量：仅本地与容器运维参数，不进 Settings（同 weather server 的
+# 豁免口径）。BIND_HOST 默认 127.0.0.1（本地裸跑不对外）；容器里由 compose 设
+# MOCK_OPERATIONS_MCP_HOST=0.0.0.0，backend 容器经 compose 内部网络访问，不做宿主机映射。
 PORT_ENV_VAR = "MOCK_OPERATIONS_MCP_PORT"
+HOST_ENV_VAR = "MOCK_OPERATIONS_MCP_HOST"
 
 CREATE_WORK_ORDER_DESCRIPTION = (
     "为一位长者创建一张照护工单（红色健康事件或漏服药时使用）。"
@@ -164,17 +166,25 @@ def _resolve_bind_port() -> int:
         return BIND_PORT
 
 
+def _resolve_bind_host() -> str:
+    """HTTP 绑定地址：默认 127.0.0.1（本地裸跑不对外）；容器里经
+    `MOCK_OPERATIONS_MCP_HOST=0.0.0.0` 覆盖，供 backend 容器走内部网络访问。"""
+    raw = os.environ.get(HOST_ENV_VAR, "").strip()
+    return raw if raw else BIND_HOST
+
+
 def _run_http(server: MCPServer) -> None:
-    """streamable-http 传输：绑定环回 7102，纯 JSON 响应便于 curl 调试。"""
+    """streamable-http 传输：默认绑环回 7102，纯 JSON 响应便于 curl 调试。"""
     configure_logging(service="silvermate-mock-operations")
+    bind_host = _resolve_bind_host()
     port = _resolve_bind_port()
     logging.getLogger("mcp_servers.mock_operations").info(
         "mock_operations_mcp_starting",
-        extra={"transport": "streamable-http", "bind_host": BIND_HOST, "bind_port": port},
+        extra={"transport": "streamable-http", "bind_host": bind_host, "bind_port": port},
     )
     server.run(
         "streamable-http",
-        host=BIND_HOST,
+        host=bind_host,
         port=port,
         stateless_http=True,
         json_response=True,

@@ -1,5 +1,6 @@
 # 本地依赖服务最小版（task-3）：postgres + redis，Day 3 任务卡 a1 追加 funasr（本地 ASR 基线）。
-# 完整 7 服务版（nginx / coturn / backend / laya / weather-mcp / mock-operations-mcp）按大纲留到 Day 10。
+# 完整 7 服务版（nginx / coturn / backend / laya）按大纲留到 Day 10；
+# 两个 MCP server（mock-operations-mcp:7102 / weather-mcp:7101）为提前件，contracts.md 留痕。
 # 口令默认值与 .env.example / app/core/config.py 的本地默认一致；生产值一律经 .env 覆盖，不写死在这里。
 services:
   postgres:
@@ -93,6 +94,62 @@ services:
         limits:
           cpus: "2"
     stop_grace_period: 30s
+
+  mock-operations-mcp:
+    # mock-operations MCP 容器（Day 10 七服务版提前件，contracts.md v1.8 口径）：
+    # create_work_order / send_family_notification 两工具，Mock 落库非真实外发。
+    # 容器内绑 0.0.0.0 供 backend 走 compose 内部网络（mock-operations-mcp:7102）。
+    # 环回端口映射：让宿主机（本地裸跑的 backend / curl）也能访问容器，
+    # 仅绑 127.0.0.1 不暴露公网；backend 容器化后改走内部服务名，届时可移除。
+    ports:
+      - "127.0.0.1:7102:7102"
+    build:
+      context: .
+      dockerfile: deploy/mock-operations/Dockerfile
+    container_name: silvermate-mock-operations-mcp
+    restart: unless-stopped
+    environment:
+      MOCK_OPERATIONS_MCP_HOST: 0.0.0.0
+      # 容器内覆盖 .env 的本地库地址：一律指向 compose 服务名 postgres
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-silvermate}:${POSTGRES_PASSWORD:-silvermate}@postgres:5432/${POSTGRES_DB:-silvermate}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # MCP 协议级探活：POST tools/list，能返回 JSON-RPC 即存活
+      test: ["CMD", "python", "-c", "import urllib.request,json; req=urllib.request.Request('http://127.0.0.1:7102/mcp', data=json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/list','params':{}}).encode(), headers={'Content-Type':'application/json','Accept':'application/json'}); urllib.request.urlopen(req, timeout=5).read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  weather-mcp:
+    # weather MCP 容器（Day 10 七服务版提前件）：唯一真实外部接口 MCP（AGENTS §1）。
+    # 容器内绑 0.0.0.0 供 backend 走 compose 内部网络（weather-mcp:7101）；
+    # **不做宿主机端口映射**（本地裸跑用 `uv run python mcp-servers/weather/server.py --http`）。
+    # 密钥经 compose 变量替换从 .env 注入环境变量，不进镜像层；缺 key 时
+    # weather_core 按口径返回「key 未配置」的显式失败，不编造天气。
+    build:
+      context: .
+      dockerfile: deploy/weather/Dockerfile
+    container_name: silvermate-weather-mcp
+    restart: unless-stopped
+    environment:
+      WEATHER_MCP_HOST: 0.0.0.0
+      WEATHER_API_PROVIDER: ${WEATHER_API_PROVIDER:-amap}
+      WEATHER_API_BASE_URL: ${WEATHER_API_BASE_URL:-}
+      WEATHER_API_KEY: ${WEATHER_API_KEY:-}
+      WEATHER_CACHE_TTL_SECONDS: ${WEATHER_CACHE_TTL_SECONDS:-600}
+    # 环回端口映射（同 mock-operations-mcp 口径）：仅绑 127.0.0.1，宿主机可访问
+    ports:
+      - "127.0.0.1:7101:7101"
+    healthcheck:
+      # MCP 协议级探活：POST tools/list，能返回 JSON-RPC 即存活
+      test: ["CMD", "python", "-c", "import urllib.request,json; req=urllib.request.Request('http://127.0.0.1:7101/mcp', data=json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/list','params':{}}).encode(), headers={'Content-Type':'application/json','Accept':'application/json'}); urllib.request.urlopen(req, timeout=5).read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   voiceprint:
     # 声纹推理容器（Day 4 A1）。只做 POST /extract + GET /health。

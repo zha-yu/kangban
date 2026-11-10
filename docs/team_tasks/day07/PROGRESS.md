@@ -12,7 +12,6 @@
 | 3 | Task dev-C · Day 7 · 用药工具、到点调度与 Agent 边界 | ⬜ 未开始 | `docs/team_tasks/day07/dev-c-day07.md` |
 | 4 | TD-2 · 主动触达 played 闭环 | ✅ 已完成 | `docs/team_tasks/day07/dev-c-触达played闭环.md` |
 | 5 | TD-1 · 触达语音接线（WS） | ✅ 已完成 | `docs/team_tasks/day07/dev-c-触达语音接线.md` |
-
 | 6 | Task dev-C2 · 用药到点触发接线（APScheduler → 用药确认子图） | ✅ 已完成 | `docs/team_tasks/day07/dev-c2-用药到点触发接线.md` |
 | 7 | Task dev-D · Day 7 · pad 可靠性、console 改绑与联调收口 | 🚧 进行中 | `docs/team_tasks/day07/dev-d-day07.md` |
 | 8 | Day 7 · dev-D · 触达真机联调（TD-1/TD-2 收口验收） | ⬜ 未开始 | `docs/team_tasks/day07/dev-d-触达真机联调.md` |
