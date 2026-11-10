@@ -20,11 +20,13 @@ import type {
   IdentityAskMsg,
   IdentityResultMsg,
   ServerSignal,
+  TtsTextMsg,
 } from "./protocol";
 import { nextDegradeLevel, type DegradeLevel } from "./degrade";
 import { MicCapture } from "./audio/capture";
 import { TenVad } from "./audio/vad";
 import { PlaybackQueue, isSegmentedTts } from "./audio/playback-queue";
+import { TouchPlayback } from "./audio/touch-audio";
 import { SignalSocket } from "./signal-socket";
 
 export interface RealtimeCallbacks {
@@ -63,6 +65,13 @@ export class RealtimeClient {
       this.socket.send(msg);
       return true;
     },
+    sendDiag: (ok, error) => this.sendDiag("playback", ok, error),
+  });
+  /** Day 7 TD-1/TD-2：触达音频独立播放轨（WS base64 PCM，不进 WebRTC 轨、不进队列）。
+   *  在途触达的回传坐标（touch_id → 服务端下发的 event_id/attempt_no，播完原样回传） */
+  private touchMeta = new Map<string, { event_id: string; attempt_no: number }>();
+  private touchPlayback = new TouchPlayback({
+    onPlayed: (touchId) => this.sendTouchPlayed(touchId),
     sendDiag: (ok, error) => this.sendDiag("playback", ok, error),
   });
 
@@ -143,6 +152,15 @@ export class RealtimeClient {
         this.cb.onStatus("thinking");
         break;
       case "tts_text":
+        // Day 7 TD-1：触达消息（带 touch_id）走独立音频通道——字幕照常渲染，
+        // 但**不动** WebRTC 音频轨、不进 PlaybackQueue、不参与打断/计时逻辑
+        //（与回复流互不打断、互不串流，契约 §1）。降级（无 audio 字段）= 纯字幕，不回执。
+        if (msg.touch_id !== undefined) {
+          this.cb.onSubtitle(msg.text, "reply");
+          this.cb.onStatus("speaking");
+          this.handleTouchAudio(msg);
+          break;
+        }
         // C-6 一段一次计时：分段模式下段到达即上一段播完，先结算上一段再起表；
         // 整段模式两次 tts_text 间无此场景（服务端一轮只发一条），结算为无害兜底
         this.reportPlayback();
@@ -271,6 +289,32 @@ export class RealtimeClient {
     this.cb.onStatus("listening");
   }
 
+  /** Day 7 TD-1：触达音频独立播放（day07/contracts.md §1/§2）。
+   *  解码/起播失败 → 降级纯字幕，不回 played（宁缺勿假）；自然播完才结算回执。 */
+  private handleTouchAudio(msg: TtsTextMsg): void {
+    const touchId = msg.touch_id;
+    if (touchId === undefined || !msg.audio) return; // 纯字幕降级：不回执
+    this.touchMeta.set(touchId, {
+      event_id: msg.touch_event_id ?? "",
+      attempt_no: msg.touch_attempt_no ?? 0,
+    });
+    if (!this.touchPlayback.play(touchId, msg.audio)) this.touchMeta.delete(touchId);
+  }
+
+  /** Day 7 TD-2：touch_played 上行（仅自然播完触发）；未就绪时静默丢弃，不排队不重发 */
+  private sendTouchPlayed(touchId: string): void {
+    const meta = this.touchMeta.get(touchId);
+    if (!meta) return;
+    this.touchMeta.delete(touchId);
+    if (!this.socketReady || this.socket?.ready !== true) return;
+    this.socket.send({
+      type: "touch_played",
+      touch_id: touchId,
+      event_id: meta.event_id,
+      attempt_no: meta.attempt_no,
+    });
+  }
+
   /** C-6：结算 playback 段并经 client_diag 上报（duration_ms 必填，服务端代打 metrics）；
    *  无计时起点（未播过/已结算）时静默跳过 */
   private reportPlayback(): void {
@@ -285,6 +329,8 @@ export class RealtimeClient {
     this.vad = null;
     this.degradeLevel = null;
     this.playbackQueue.reset(); // 重连清旧会话：分段确认状态一并复位（不发 ack）
+    this.touchPlayback.stop(); // 触达音频一并停（宁缺勿假，不发 played）
+    this.touchMeta.clear();
     if (this.pc) {
       this.pc.onicecandidate = null;
       this.pc.ontrack = null;

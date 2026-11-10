@@ -327,6 +327,7 @@ async def list_elder_candidates(
             display_name=_mask_display_name(name),
         )
         for elder_id, bed_no, name in rows
+        if elder_id is not None  # Bed.elder_id 可空，SQL 已过滤，此处仅为类型收窄
     ]
     # PRD §3.2：单人间 1 位、双人间 2 位。0 位（空房）按 single 返回空列表。
     mode = "double" if len(candidates) == 2 else "single"

@@ -33,8 +33,11 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Annotated, Any, Literal, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, TypedDict
 from uuid import UUID, uuid4
+
+if TYPE_CHECKING:
+    from app.audio.tts import TTSProvider
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -134,6 +137,9 @@ __all__ = [
     "SegmentAckHandler",
     "SegmentAckMsg",
     "SegmentAckStatus",
+    "TouchAudioPayload",
+    "TouchPlayedHandler",
+    "TouchPlayedMsg",
     "TtsTextMsg",
     "apply_generic_identity",
     "apply_voice_identity",
@@ -143,6 +149,8 @@ __all__ = [
     "set_identity_confirm_handler",
     "set_identity_timeout_handler",
     "set_segment_ack_handler",
+    "set_touch_played_handler",
+    "synthesize_touch_audio",
 ]
 
 
@@ -205,6 +213,18 @@ class AsrFinalMsg(TypedDict):
     text: str
 
 
+class TouchAudioPayload(TypedDict):
+    """S→C 触达音频载荷（day07/contracts.md §1，仅触达消息的 `audio` 字段出现）。
+
+    C1 口径整段 PCM：s16le / 单声道；经 WS 文本帧 base64 传输，不进 WebRTC 音频轨、
+    不进回复流播放队列——前端独立输出通道播出，与对话回复互不打断、互不串流。
+    """
+
+    format: Literal["pcm_s16le"]
+    sample_rate: int  # 恒 16000
+    data_b64: str  # s16le/mono PCM 整段的 base64
+
+
 class TtsTextMsg(TypedDict):
     """S→C，大字幕渲染数字人回复（打断时前端立即停播）。
 
@@ -212,6 +232,12 @@ class TtsTextMsg(TypedDict):
     v2（day06/contracts.md §4.1）追加五字段，全部可选、老字段顺序与语义不变：
     老客户端忽略新字段仍按整段一播处理；`epoch` 客户端**原样回传**，不得自增；
     分段由服务端切（`。！？；` 优先，单段 ≤40 字，长句按逗号补切），前端不二次切分。
+
+    v3（day07/contracts.md §1，TD-1）追加四个触达字段，全部可选、仅触达消息携带；
+    回复流消息**不得**出现（触达与回复流严格隔离）：
+    - `touch_id`：触达唯一 message_id，`touch_played` 回带；
+    - `touch_event_id` / `touch_attempt_no`：用药事件与第几次触达，回传用；
+    - `audio`：合成成功才携带；缺省 = 纯字幕降级，与 Day 6 形状完全一致。
     """
 
     type: Literal["tts_text"]
@@ -222,6 +248,10 @@ class TtsTextMsg(TypedDict):
     segment_id: NotRequired[int]  # 可选：0 基
     index: NotRequired[int]  # 可选：0 基，与 segment_id 同值（保留两字段便于未来乱序）
     total: NotRequired[int]  # 可选：本回复总段数
+    touch_id: NotRequired[str]  # v3 触达：uuid4 hex，touch_played 回带
+    touch_event_id: NotRequired[str]  # v3 触达：用药事件 uuid 字符串
+    touch_attempt_no: NotRequired[int]  # v3 触达：1=T0 … 4=T+15
+    audio: NotRequired[TouchAudioPayload]  # v3 触达：合成成功才带；缺省纯字幕降级
 
 
 class ErrorMsg(TypedDict):  # S→C，服务端降级/异常通知
@@ -423,6 +453,37 @@ def deliver_asr_event(device_id: str, event: ASREvent) -> bool:
 DialogueFinalHandler = Callable[[str, str, str, str, bytes | None], Awaitable[None]]
 _dialogue_final_handler: DialogueFinalHandler | None = None
 
+# TD-1（day07/contracts.md §1）：触达文本 → 整段 PCM 的合成出口。
+# provider 只建一次（build_tts 按 Settings 分派 mock/edge/cloud）；类型仅注解用，
+# 运行时惰性 import——signaling 不在 import 期依赖 tts 的可选依赖链。
+_touch_tts_provider: TTSProvider | None = None
+
+
+def _touch_tts() -> TTSProvider:
+    global _touch_tts_provider
+    if _touch_tts_provider is None:
+        from app.audio.tts import build_tts
+
+        _touch_tts_provider = build_tts()
+    return _touch_tts_provider
+
+
+async def synthesize_touch_audio(text: str) -> bytes | None:
+    """触达文本经 `build_tts()` 合成整段 16k PCM；任何失败返回 None（调用方降级纯字幕）。
+
+    这是主动触达的 TTS 唯一出口（TD-1）：与回复流的合成互不相干——触达不允许
+    把回复流的在途任务/缓冲卷进来，也不共享失败语义。失败**不抛**：触达的降级
+    路径（纯字幕）是契约行为，不是异常，`tts_result=tts_failed` 由调用方落库。
+    """
+    try:
+        return await _touch_tts().synthesize(text)
+    except Exception as exc:  # TTSUnavailable 及 provider 的任何未预期失败都归一为降级
+        logger.warning(
+            "touch_tts_failed",
+            extra={"error_type": type(exc).__name__},
+        )
+        return None
+
 
 def set_dialogue_final_handler(handler: DialogueFinalHandler | None) -> None:
     """注册 FINAL → A2 对话编排的唯一 awaitable 回调；传 None 注销（测试/关闭用）。"""
@@ -569,6 +630,69 @@ async def _handle_segment_ack(conn: ConnectionContext, message: Mapping[str, Any
     except Exception as exc:
         logger.error(
             "segment_ack_handler_failed",
+            extra=_log_extra(conn, error_type=type(exc).__name__),
+        )
+
+
+# ------------------------------------------------------------------ Day 7 TD-2 契约追加
+# C→S touch_played（day07/contracts.md §2）：pad 播完触达语音的回执。
+# 与 segment_ack 同层分发、互不干扰；字段校验在本层，落库在装配层回调
+# （medication_service.mark_attempt_played，本层不 import 该服务）。
+
+
+class TouchPlayedMsg(TypedDict):  # C→S，触达语音播完回执
+    """只在音频**自然播完**后上报；打断 / 播放失败 / 离线不回（宁缺勿假）。
+
+    三个字段均为服务端下发的 tts_text 触达字段原样回传，客户端不得自造。
+    """
+
+    type: Literal["touch_played"]
+    touch_id: str  # 原样回传 tts_text.touch_id
+    event_id: str  # 原样回传 touch_event_id（用药事件 uuid 字符串）
+    attempt_no: int  # 原样回传 touch_attempt_no
+
+
+TouchPlayedHandler = Callable[[ConnectionContext, Mapping[str, Any]], Awaitable[None]]
+_touch_played_handler: TouchPlayedHandler | None = None
+
+
+def set_touch_played_handler(handler: TouchPlayedHandler | None) -> None:
+    """注册 touch_played 的服务端处理回调；传 None 注销（测试/关闭用）。"""
+    global _touch_played_handler
+    _touch_played_handler = handler
+
+
+async def _handle_touch_played(conn: ConnectionContext, message: Mapping[str, Any]) -> None:
+    """C→S touch_played 分支：形状校验 → 交注册回调幂等落库。
+
+    形状非法照 segment_ack 同款处理（warn + error，不关连接）；回调缺失只 warn
+    不回执（回执是尽力而为的上报，不允许因服务端未装配而打断客户端）。
+    """
+    touch_id = message.get("touch_id")
+    event_id = message.get("event_id")
+    attempt_no = message.get("attempt_no")
+    if (
+        not isinstance(touch_id, str)
+        or not isinstance(event_id, str)
+        or isinstance(attempt_no, bool)
+        or not isinstance(attempt_no, int)
+    ):
+        logger.warning(
+            "ws_bad_message",
+            extra=_log_extra(conn, reason="touch_played_invalid"),
+        )
+        await _send_error(conn, "internal")
+        return
+
+    handler = _touch_played_handler
+    if handler is None:
+        logger.warning("ws_no_touch_played_handler", extra=_log_extra(conn))
+        return
+    try:
+        await handler(conn, message)
+    except Exception as exc:
+        logger.error(
+            "touch_played_handler_failed",
             extra=_log_extra(conn, error_type=type(exc).__name__),
         )
 
@@ -1088,6 +1212,9 @@ async def _read_loop(conn: ConnectionContext) -> None:
             continue
         if msg_type == "segment_ack":
             await _handle_segment_ack(conn, message)
+            continue
+        if msg_type == "touch_played":
+            await _handle_touch_played(conn, message)
             continue
         if msg_type == "auth":
             # 裁决②：连接内重复 auth 按非法凭证处理（防连接内换 token 旁路）

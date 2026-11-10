@@ -26,18 +26,23 @@ START → remind → wait_confirm ─┬─ 说了"吃了"   → mark_taken  ┐
 4. **终态只写一次**。`finalize` 调 `medication_service.set_terminal`，后者对"已定终态再改"
    抛 `TerminalStateConflict`；补确认（AC-08）走 `late_taken` 追加，不覆盖原终态。
 
-**E2 已接（2026-11-09 21:10，同日补语音）**：`remind` 经信令层 `deliver()` 把提醒以
-`tts_text` 下发到长者绑定设备——不带 `response_id`/`epoch`/`segment`（它不属于任何回复流，
-客户端按整段一播，契约 §4.1 的可选字段口径）；文本投递成功后再经 `speak_fn`
-（TTS 合成 → WebRTC 下行播放轨）补语音。
+**E2 已接（2026-11-09 21:10）**：`remind` 经信令层 `deliver()` 把提醒下发到长者绑定设备——
+不带 `response_id`/`epoch`/`segment`（它不属于任何回复流，客户端按整段一播，契约 §4.1 的
+可选字段口径）。触达回执 = **投递**结果：`voice_dispatched`（任一台设备收下）/
+`device_offline`（都离线）/ `no_bound_device`（没绑设备）。
 
-语音是**尽力而为**：TTS 不可用（ffmpeg/edge-tts/网络任一失败）或设备没有媒体会话时
-只保留字幕，不改变触达回执、不重试。`voice_dispatched` 的准确含义仍是
-「**提醒文本已投递给设备**」，不是「已出声」——是否真被听到要等 TD-2 的 played 闭环。
+**TD-1/TD-2 已接（2026-11-09，day07/contracts.md v1.0）**：触达从「只有字幕」升级为
+「语音 + 字幕」——下发前经 `synthesize_touch_audio`（信令层 TTS 出口，可注入替换）合成
+整段 PCM，随消息 `audio` 字段（base64）下发；合成失败降级纯字幕并把
+`medication_attempts.tts_result` 记 `tts_failed`。触达消息带 `touch_id` /
+`touch_event_id` / `touch_attempt_no`，pad 播完后回 `touch_played` →
+`medication_service.mark_attempt_played` 把 `receipt` 从 `voice_dispatched` 幂等升级为
+`played`（留痕闭环，**不参与**重试与终态判定）。
 
-触达回执 = **投递**结果：`voice_dispatched`（任一台设备收下）/ `device_offline`
-（都离线）/ `no_bound_device`（没绑设备）；「是否真被听到」需要 played ack 闭环，
-主动触达暂无此闭环（见交接件与执行计划的技术债登记）。
+**重放防护已接（2026-11-10，develop 侧 N10 增量合入）**：`remind` 投递前先
+`get_attempt` 问这次触达是否已发生过——图恢复会重放本节点，`record_attempt` 的幂等
+只挡**记录**、挡不住**投递**，不先查就会给长者再播一遍同一次提醒；已有记录 → 跳过
+投递只推进状态（同一 reminder 按 thread 串行，「先查后发」无竞态）。
 
 **A12 已接（2026-11-09）**：`finalize` 在写完结态后，对 `missed_unconfirmed` 建漏服工单
 （`work_order_service.open_missed_medication`）。**先写终态、再建单**——终态是事实，
@@ -50,8 +55,10 @@ START → remind → wait_confirm ─┬─ 说了"吃了"   → mark_taken  ┐
 
 from __future__ import annotations
 
+import base64
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -146,26 +153,29 @@ async def _escalate_missed_medication(session: Any, state: MedicationState) -> N
 async def _deliver_reminder(
     session: Any,
     deliver_fn: Any,
-    speak_fn: Any,
+    tts_fn: Callable[[str], Awaitable[bytes | None]],
     *,
     elder_id: uuid.UUID,
     reminder_id: uuid.UUID,
-) -> str:
-    """把用药提醒下发到长者绑定设备，返回触达回执（E2）。
+    attempt_no: int,
+) -> tuple[str, str | None]:
+    """把用药提醒下发到长者绑定设备，返回 (触达回执, TTS 结果)（E2 + TD-1）。
 
-    两条腿：`tts_text`（字幕）+ `speak_fn`（WebRTC 下行语音）。音频是**尽力而为**：
-    合成失败或设备没有媒体会话时只保留字幕，不改变回执，也不重试（重试是 scheduler 的职责）。
-
-    消息形状：`{"type": "tts_text", "text": ..., "degraded": false}`——**不带**
+    消息形状（day07/contracts.md §1）：`{"type": "tts_text", "text": ..., "degraded": false,
+    "touch_id", "touch_event_id", "touch_attempt_no", "audio"?}`——**不带**
     `response_id` / `epoch` / `segment_id`。它不属于任何回复流，是子图的主动触达；
-    契约 §4.1 里这些字段全部可选，缺省时客户端按整段一播，pad 侧零改动。
+    `touch_id` 是 played 回执（TD-2）的关联 id，`audio` 仅合成成功时携带，
+    缺省即 Day 6 纯字幕形状，旧客户端零改动。
 
     回执三态（如实记录，不做美化和重试——重试是 scheduler 的职责）：
 
-    - `voice_dispatched`：至少一台绑定设备把消息收进了发送队列（**文本已投递**；
-      语音是否真的写轨成功另看 `speak_fn` 的返回，不进回执口径）；
+    - `voice_dispatched`：至少一台绑定设备把消息收进了发送队列（**文本已投递**，
+      不代表已出声——WS 侧 TTS 仍是 `NullTtsQueue` 桩）；
     - `device_offline`：有绑定设备但全部离线/未鉴权；
     - `no_bound_device`：根本没绑设备——运维缺口，同样不算本轮失败。
+
+    TTS 结果（与投递回执是两个独立事实）：`ok` = 合成成功且随消息下发；
+    `tts_failed` = 合成失败、降级纯字幕；没绑设备时不做合成（None，省一次调用）。
     """
     drug_name = await medication_service.get_drug_name(session, event_id=reminder_id)
     text = (
@@ -173,47 +183,47 @@ async def _deliver_reminder(
         if drug_name
         else "到吃药时间了，请确认您的药是否已经服用。"
     )
-    # 先走 WS 文本通道让字幕立即到达；后续 speak_fn 另走 TTS → WebRTC 音轨，
-    # 语音失败只保留字幕。这里的触达回执因此只表示文本入队，不表示已经出声。
-    message = {"type": "tts_text", "text": text, "degraded": False}
-
     device_ids = await medication_service.list_bound_device_ids(session, elder_id=elder_id)
     if not device_ids:
         logger.warning(
             "medication_reminder_no_device reminder_id=%s elder_id=%s", reminder_id, elder_id
         )
-        return "no_bound_device"
+        return "no_bound_device", None
+
+    # TD-1：先合成再下发——合成失败降级纯字幕，触达照常投递（字幕是底线）。
+    pcm = await tts_fn(text)
+    message: dict[str, Any] = {
+        "type": "tts_text",
+        "text": text,
+        "degraded": False,
+        "touch_id": uuid.uuid4().hex,
+        "touch_event_id": str(reminder_id),
+        "touch_attempt_no": attempt_no,
+    }
+    if pcm:
+        message["audio"] = {
+            "format": "pcm_s16le",
+            "sample_rate": 16000,
+            "data_b64": base64.b64encode(pcm).decode("ascii"),
+        }
+    tts_result = "ok" if pcm else "tts_failed"
 
     dispatched = False
-    voiced = 0
     for device_id in device_ids:
         if deliver_fn(str(device_id), message):
             dispatched = True
-            # 文本到达后再补语音：字幕不能因为 TTS 慢/失败而晚到
-            try:
-                spoken = await speak_fn(str(device_id), text)
-            except Exception:  # 语音是尽力而为，绝不能拖垮触达事务
-                logger.warning(
-                    "medication_reminder_voice_failed reminder_id=%s device_id=%s",
-                    reminder_id,
-                    device_id,
-                    exc_info=True,
-                )
-                spoken = False
-            if spoken:
-                voiced += 1
     if not dispatched:
         logger.info(
             "medication_reminder_offline reminder_id=%s devices=%s", reminder_id, len(device_ids)
         )
-        return "device_offline"
+        return "device_offline", tts_result
     logger.info(
-        "medication_reminder_dispatched reminder_id=%s devices=%s voiced=%s",
+        "medication_reminder_dispatched reminder_id=%s devices=%s tts=%s",
         reminder_id,
         len(device_ids),
-        voiced,
+        tts_result,
     )
-    return "voice_dispatched"
+    return "voice_dispatched", tts_result
 
 
 def _default_deliver(device_id: str, message: dict[str, Any]) -> bool:
@@ -223,41 +233,33 @@ def _default_deliver(device_id: str, message: dict[str, Any]) -> bool:
     return deliver(device_id, message)
 
 
-async def _default_speak(device_id: str, text: str) -> bool:
-    """主动语音出口：TTS 合成 → WebRTC 下行播放轨（延迟 import，理由同上）。
+async def _default_tts(text: str) -> bytes | None:
+    """触达 TTS 缺省出口（延迟 import，理由同上）；失败返回 None 降级纯字幕。"""
+    from app.audio.signaling import synthesize_touch_audio
 
-    合成失败/设备无媒体会话一律返回 False，只保留字幕（C1 降级边界）。
-    """
-    from app.audio.webrtc import speak_for_device
-
-    return await speak_for_device(device_id, text)
+    return await synthesize_touch_audio(text)
 
 
 def build_medication_graph(
-    *,
-    session: Any,
-    checkpointer: Any,
-    deliver_fn: Any | None = None,
-    speak_fn: Any | None = None,
+    *, session: Any, checkpointer: Any, deliver_fn: Any | None = None, tts_fn: Any | None = None
 ) -> Any:
     """编译子图。`session` 是本次运行的事务会话，`checkpointer` 由 N10 的 A08 提供。
 
     `deliver_fn(device_id, message) -> bool` 是 **E2 触达出口**（信令层
     `app.audio.signaling.deliver` 的同形接口）：设备不在线返回 False、不抛异常。
-    缺省用真实信令层；测试注入假函数即可覆盖「在线 / 离线 / 未绑设备」三路。
-
-    `speak_fn(device_id, text) -> Awaitable[bool]` 是 **主动语音出口**（TTS 合成 +
-    WebRTC 下行轨）：音频尽力而为，失败返回 False 只保留字幕，不影响触达回执。
-    缺省用真实 TTS 链路；测试注入假函数可断言「文本与语音都下发到同一台设备」。
+    `tts_fn(text) -> bytes | None` 是 **TD-1 合成出口**（信令层
+    `synthesize_touch_audio` 的同形接口）：失败返回 None、不抛异常，触达降级纯字幕。
+    两者缺省用真实信令层；测试注入假函数即可覆盖「在线 / 离线 / 未绑设备 /
+    合成成功 / 合成失败」各路。
     """
     _deliver = deliver_fn if deliver_fn is not None else _default_deliver
-    _speak = speak_fn if speak_fn is not None else _default_speak
+    _synthesize = tts_fn if tts_fn is not None else _default_tts
 
     async def remind(state: MedicationState) -> dict[str, Any]:
         event_id = _uuid(state["reminder_id"])
         attempt_no = int(state.get("attempt_no") or 1)
 
-        # E2 触达：**先问这次触达是否已经发生过**。
+        # E2 触达：**先问这次触达是否已经发生过**（重放防护）。
         # 图恢复会重放本节点；`record_attempt` 的幂等只挡记录、挡不住投递——
         # 不先查就会给长者再播一遍同一次提醒。已有记录 → 跳过投递，只推进状态。
         # （同一 reminder 不会并发执行：图按 thread 串行，故「先查后发」无竞态。）
@@ -272,16 +274,22 @@ def build_medication_graph(
                 already.get("receipt"),
             )
         else:
-            receipt = await _deliver_reminder(
+            # TD-1 触达：先合成、再下发、再记回执。顺序不可换——record_attempt 对
+            # (event_id, attempt_no) 幂等，重放安全；下发失败也要记（触达尝试是事实）。
+            receipt, tts_result = await _deliver_reminder(
                 session,
                 _deliver,
-                _speak,
+                _synthesize,
                 elder_id=_uuid(state["elder_id"]),
                 reminder_id=event_id,
+                attempt_no=attempt_no,
             )
-            # 下发失败也要记：触达尝试是事实（设备离线四次后照样升级工单）
             await medication_service.record_attempt(
-                session, event_id=event_id, attempt_no=attempt_no, receipt=receipt
+                session,
+                event_id=event_id,
+                attempt_no=attempt_no,
+                receipt=receipt,
+                tts_result=tts_result,
             )
         await medication_service.set_waiting_confirm(
             session, event_id=event_id, graph_thread_id=state.get("graph_thread_id")

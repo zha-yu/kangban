@@ -55,7 +55,7 @@ from app.core.trace import TraceIdMiddleware
 from app.db import session_factory
 from app.mcp_client import MCPClient
 from app.router.safety import SafetyDecision
-from app.services import identity_service, voiceprint_service
+from app.services import identity_service, medication_service, voiceprint_service
 from app.services.auth_service import (
     AuthConflictError,
     AuthExpiredError,
@@ -510,10 +510,57 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             return
         await response_service.handle_segment_ack(device_id=conn.device_id, message=message)
 
+    async def _on_touch_played(
+        conn: signaling.ConnectionContext, message: Mapping[str, Any]
+    ) -> None:
+        """C→S touch_played（day07/contracts.md §2）：pad 播完触达语音 → 幂等落库。
+
+        **独立短事务**：绝不复用 WS 长连接的请求会话写药单行——子图事务窗口若还
+        持有同一行，短事务才不会与之互锁（Day 6 死锁教训的同款应用）。回执是尽力
+        而为的上报：落库失败只记日志，不回 error、不断连接。
+        """
+        if conn.device_id is None:
+            logger.warning(
+                "touch_played_without_device",
+                extra={"trace_id": conn.trace_id, "touch_id": str(message.get("touch_id"))},
+            )
+            return
+        try:
+            event_id = UUID(str(message["event_id"]))
+            attempt_no = int(message["attempt_no"])
+        except (KeyError, TypeError, ValueError):
+            logger.warning(
+                "touch_played_invalid_coordinates",
+                extra={"trace_id": conn.trace_id, "touch_id": str(message.get("touch_id"))},
+            )
+            return
+        try:
+            async with session_factory() as session:
+                upgraded = await medication_service.mark_attempt_played(
+                    session, event_id=event_id, attempt_no=attempt_no
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.error(
+                "touch_played_persist_failed",
+                extra={"trace_id": conn.trace_id, "error_type": type(exc).__name__},
+            )
+            return
+        logger.info(
+            "touch_played_recorded",
+            extra={
+                "trace_id": conn.trace_id,
+                "event_id": str(event_id),
+                "attempt_no": attempt_no,
+                "upgraded": upgraded,
+            },
+        )
+
     signaling.set_dialogue_final_handler(_on_dialogue_final)
     signaling.set_identity_confirm_handler(_on_identity_confirm)
     signaling.set_identity_timeout_handler(_on_identity_timeout)
     signaling.set_segment_ack_handler(_on_segment_ack)
+    signaling.set_touch_played_handler(_on_touch_played)
     app.state.redis = redis_client
     app.state.llm_service = llm_service
     app.state.tts_provider = tts_provider
@@ -529,6 +576,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         signaling.set_identity_confirm_handler(None)
         signaling.set_identity_timeout_handler(None)
         signaling.set_segment_ack_handler(None)
+        signaling.set_touch_played_handler(None)
         # Day 5：metrics 批量缓冲冲刷（裁决 B6/D2）——先停 worker 再 drain，避免丢批
         await get_metrics_recorder().stop()
         await llm_service.aclose()
