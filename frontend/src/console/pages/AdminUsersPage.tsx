@@ -122,6 +122,15 @@ export function AdminUsersPage() {
   // 员工列表请求序号（P2-40）：并发刷新时旧响应不覆盖新状态
   const staffListSeqRef = useRef(0);
 
+  // 员工列表本页检索与角色统计：纯前端过滤，不改 GET /api/staff 契约
+  const [staffQuery, setStaffQuery] = useState("");
+  const visibleStaff = (staffList ?? []).filter((s) => {
+    const q = staffQuery.trim().toLowerCase();
+    return !q || s.name.toLowerCase().includes(q) || s.phone_masked.toLowerCase().includes(q);
+  });
+  const countByRole = (role: StaffRole) =>
+    (staffList ?? []).filter((s) => s.role === role).length;
+
   useEffect(() => {
     let cancelled = false;
     fetchAllElders()
@@ -310,12 +319,35 @@ export function AdminUsersPage() {
   return (
     <div className="admin-page">
       <section className="admin-card" aria-labelledby="admin-staff-list-title">
-        <h2 className="admin-card-title" id="admin-staff-list-title">
-          员工列表
-        </h2>
-        <p className="admin-card-sub">
-          对应 GET /api/staff（Day 6 契约增补）；「调整负责长者」为全量覆盖（E20），保存后未勾选的长者将解除负责关系。
-        </p>
+        <header className="staff-head">
+          <div>
+            <h2 className="admin-card-title" id="admin-staff-list-title">
+              员工列表
+            </h2>
+            <p className="staff-meta">
+              共 {staffList?.length ?? 0} 位 · 护工 {countByRole("care_worker")} · 医生{" "}
+              {countByRole("doctor")} · 管理员 {countByRole("admin")}
+            </p>
+          </div>
+          {staffList && staffList.length > 0 && (
+            <input
+              className="input staff-search"
+              type="search"
+              value={staffQuery}
+              placeholder="搜索姓名或手机号"
+              aria-label="搜索员工姓名或手机号"
+              onChange={(e) => setStaffQuery(e.target.value)}
+            />
+          )}
+        </header>
+
+        {/* 接口与全量覆盖口径留给开发/联调查阅，不占产品界面首屏 */}
+        <details className="staff-devnote">
+          <summary>接口与改绑口径</summary>
+          <p>
+            对应 GET /api/staff（Day 6 契约增补）；「调整负责长者」为全量覆盖（E20），保存后未勾选的长者将解除负责关系。
+          </p>
+        </details>
         {staffListError && (
           <p className="alert-danger" role="alert">
             {staffListError}
@@ -323,39 +355,63 @@ export function AdminUsersPage() {
         )}
         {!staffListError && !staffList && <p className="admin-empty">员工列表加载中…</p>}
         {staffList && staffList.length === 0 && <p className="admin-empty">暂无员工账号</p>}
-        {staffList && staffList.length > 0 && (
-          <table className="admin-table">
-            <thead>
-              <tr>
-                <th>姓名</th>
-                <th>角色</th>
-                <th>手机号</th>
-                <th>负责长者数</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {staffList.map((s) => (
-                <tr key={s.staff_id}>
-                  <td>{s.name}</td>
-                  <td>{staffRoleLabel(s.role)}</td>
-                  <td className="admin-mono">{s.phone_masked}</td>
-                  <td>{s.role === "admin" ? "—" : s.bound_elder_ids.length}</td>
-                  <td>
-                    {s.role !== "admin" && (
-                      <button
-                        type="button"
-                        className="btn-secondary btn-sm"
-                        onClick={() => openReassign(s)}
-                      >
-                        调整负责长者
-                      </button>
-                    )}
-                  </td>
+        {staffList && staffList.length > 0 && visibleStaff.length > 0 && (
+          <div className="staff-table-wrap">
+            <table className="admin-table staff-table">
+              <thead>
+                <tr>
+                  <th scope="col">姓名</th>
+                  <th scope="col">角色</th>
+                  <th scope="col">手机号</th>
+                  <th scope="col" className="staff-num">负责长者数</th>
+                  <th scope="col" className="staff-actions">操作</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {visibleStaff.map((s) => (
+                  <tr key={s.staff_id}>
+                    <td className="staff-name">{s.name}</td>
+                    <td>
+                      <span className={`badge ${s.role === "admin" ? "badge-brand" : "badge-neutral"}`}>
+                        {staffRoleLabel(s.role)}
+                      </span>
+                    </td>
+                    <td className="admin-mono">{s.phone_masked}</td>
+                    <td
+                      className={`staff-num ${s.role !== "admin" && s.bound_elder_ids.length === 0 ? "is-zero" : ""}`}
+                    >
+                      {s.role === "admin"
+                        ? "—"
+                        : s.bound_elder_ids.length > 0
+                          ? `${s.bound_elder_ids.length} 位`
+                          : "未分配"}
+                    </td>
+                    <td className="staff-actions">
+                      {s.role !== "admin" && (
+                        <button
+                          type="button"
+                          className="btn-ghost btn-ghost-brand"
+                          aria-label={`调整 ${s.name} 的负责长者`}
+                          title={`调整 ${s.name} 的负责长者`}
+                          onClick={() => openReassign(s)}
+                        >
+                          调整
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {staffList && staffList.length > 0 && visibleStaff.length === 0 && (
+          <p className="staff-no-match">
+            没有找到匹配的员工。
+            <button type="button" className="btn-ghost btn-ghost-brand" onClick={() => setStaffQuery("")}>
+              清空搜索
+            </button>
+          </p>
         )}
         {reassignResult && (
           <p className="admin-result" role="status">
