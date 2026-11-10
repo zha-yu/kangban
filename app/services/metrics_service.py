@@ -4,7 +4,7 @@
 - **异步批量缓冲**：`record_stage()` 只做校验 + 进程内入队（同步、非阻塞），
   后台任务按 `FLUSH_INTERVAL_SECONDS` 周期批量 INSERT——观测旁路，不阻塞对话主链路；
 - **失败降级**：落库失败丢弃该批并记 warning 日志（打点允许丢失，不允许拖垮主链路）；
-- **非法值不入库**：stage 不在七值白名单、trace_id 缺失、duration_ms < 0 的行
+- **非法值不入库**：stage 不在八值白名单、trace_id 缺失、duration_ms < 0 的行
   直接丢弃记日志（对齐 ER §4.4.7 CHECK 约束，不让 DB 报错回流调用方）；
 - **只写指标不写内容**：调用方不应传转写全文/隐私字段；本服务不主动截取任何业务内容。
 """
@@ -23,7 +23,7 @@ from app.models.metrics import Metric
 
 logger = logging.getLogger("app.services.metrics")
 
-#: stage 七值白名单（对齐 models/metrics.py CHECK 约束）
+#: stage 八值白名单（对齐 models/metrics.py CHECK 约束；0014 迁移加值 response_segment）
 STAGES: frozenset[str] = frozenset(
     {
         "wakeup",
@@ -33,6 +33,7 @@ STAGES: frozenset[str] = frozenset(
         "llm_first_token",
         "tts_first_packet",
         "playback",
+        "response_segment",
     }
 )
 

@@ -18,6 +18,7 @@ owner=建号接口（adhoc-20261106）· 依据 docs/plans/adhoc-20261106-员工
 
 from __future__ import annotations
 
+import datetime
 import logging
 import uuid
 from collections.abc import Sequence
@@ -202,11 +203,15 @@ async def update_staff(
     staff_id: uuid.UUID,
     role: str | None = None,
     status: str | None = None,
+    operator_id: uuid.UUID | None = None,
 ) -> StaffAccount:
     """改角色 / 停用。任一字段真的变了就让旧 Token 失效（`token_version += 1`）。
 
     取值合法性由请求模型（`Literal`）与表 CHECK 约束兜底，服务层不再重复判定；
     这里只保证「传了但值没变」不会误伤 —— 空 PATCH 与同值 PATCH 都不加版本号。
+
+    P2-20 自我保护（停用 admin 时）：不能停用自己；不能停用最后一位 active admin
+    ——否则后台会失去全部可登录的管理员，锁死在门外。
 
     角色变更联动（P1 修复 2026-11-06）：
     `doctor ↔ care_worker` 互转时，同步更新 `elder_staff_assignments.relation`
@@ -219,6 +224,19 @@ async def update_staff(
     ).scalar_one_or_none()
     if staff is None:
         raise StaffNotFoundError(f"员工账号不存在：{staff_id}")
+
+    if status == "disabled" and staff.role == "admin":
+        if operator_id is not None and operator_id == staff_id:
+            raise StaffProtectedError("不能停用自己的管理员账号")
+        active_admins = (
+            await session.execute(
+                select(func.count())
+                .select_from(StaffAccount)
+                .where(StaffAccount.role == "admin", StaffAccount.status == "active")
+            )
+        ).scalar_one()
+        if active_admins <= 1:
+            raise StaffProtectedError("不能停用最后一位 active 管理员")
 
     changed: list[str] = []
     if role is not None and role != staff.role:
@@ -355,57 +373,188 @@ class PrimaryCareGapError(StaffServiceError):
     """移除后某长者失去全部责任护工（服务层校验，裁决 C4）。"""
 
 
+class StaleWriteConflictError(StaffServiceError):
+    """E20 乐观并发冲突（P2-20）：页面加载后该长者的绑定已被别人改过，后提交者 409。"""
+
+
+class StaffProtectedError(StaffServiceError):
+    """受保护 admin：不能停用自己，也不能停用最后一位 active admin（P2-20 自我保护）。"""
+
+
+async def _lock_elders_for_reassign(
+    session: AsyncSession, elder_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, datetime.datetime]:
+    """按 `elder_id` 排序对一批长者行 `SELECT … FOR UPDATE`，返回 elder_id → updated_at。
+
+    P2-19：没有行锁时，两个并发改绑各自读到旧计数、双双过检 → 长者 0 位责任护工。
+    排序加锁与 `_lock_elder` 的单一锁不同——多行锁必须固定顺序，否则两个事务
+    交叉锁两批长者会构成死锁环。
+    锁等待结束后本语句返回的是**最新已提交**的 `updated_at`（READ COMMITTED
+    语句级快照），并发事务先提交的变更对本事务可见——这是"后提交者 409"的依据。
+    """
+    if not elder_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(Elder.elder_id, Elder.updated_at)
+            .where(Elder.elder_id.in_(elder_ids))
+            .order_by(Elder.elder_id.asc())
+            .with_for_update()
+        )
+    ).all()
+    return {elder_id: updated_at for elder_id, updated_at in rows}
+
+
 async def reassign_elders(
     session: AsyncSession,
     *,
     staff_id: uuid.UUID,
     elder_ids: Sequence[uuid.UUID],
     operator_id: uuid.UUID | None,
+    expected_updated_at: datetime.datetime | None = None,
 ) -> dict[str, object]:
-    """全量替换式改绑：计算 diff → 409 判定 → 执行 → 审计。
+    """全量替换式改绑：计算 diff → 行锁 → CAS → 409 判定 → 执行 → 审计。
 
-    事务边界：本函数只 `flush()`，不 `commit()`；调用方在同一事务里传 session，
-    业务回滚则审计一起回滚（`audit_log_service.record_audit` 与业务写入同 session）。
+    并发口径（P2-19/P2-20，总表 §5.7 冻结契约）：
+    - 涉改动长者按 `elder_id` 排序行锁；锁后重读 diff，并发先提交者的变更可见，
+      "最后一位责任护工"检查据此拦住后到事务（1 成功 1 409）；
+    - `expected_updated_at`（可选）为乐观 CAS 基准：涉改动长者任一行的
+      `updated_at` 晚于该值 → `StaleWriteConflictError`（API 层映射 409
+      STALE_WRITE），页面加载后的 stale 全量覆盖不再静默冲掉他人变更；
+      不传则只走行锁（D2 未接入版本前不被阻塞）；
+    - 成功路径显式推进涉改动长者的 `updated_at`，作为下一轮 CAS 的新基准；
+    - 409/403/404 失败路径写 `audit_logs`（操作者、trace_id、原因、差集）后原样
+      重抛——审计与业务同事务，调用方 commit 时一并落库（`get_session` 对错误
+      响应体也走正常返回 → commit）。
+
+    事务边界：本函数只 `flush()`，不 `commit()`。
     """
     from app.services.audit_log_service import record_audit
 
-    # --- 1. staff 存在性 + 角色合法性 ---
-    staff = (
-        await session.execute(select(StaffAccount).where(StaffAccount.staff_id == staff_id))
-    ).scalar_one_or_none()
-    if staff is None:
-        raise StaffNotFoundError(f"员工账号不存在：{staff_id}")
+    wanted_ids = list(dict.fromkeys(elder_ids))
+    added_ids: set[uuid.UUID] = set()
+    removed_ids: set[uuid.UUID] = set()
+    staff: StaffAccount | None = None
 
-    relation = _ROLE_TO_RELATION.get(staff.role)
-    if relation is None:
-        # admin 不参与绑定（裁决 D-01）；403 让 API 层映射
-        raise StaffRoleConflictError("管理员账号不参与长者绑定（裁决 D-01）")
+    try:
+        # --- 1. staff 存在性 + 角色合法性 ---
+        staff = (
+            await session.execute(select(StaffAccount).where(StaffAccount.staff_id == staff_id))
+        ).scalar_one_or_none()
+        if staff is None:
+            raise StaffNotFoundError(f"员工账号不存在：{staff_id}")
 
-    # --- 2. elder_ids 去重 + 全量存在校验 ---
-    wanted_ids = await _ensure_elders(session, elder_ids)
+        relation = _ROLE_TO_RELATION.get(staff.role)
+        if relation is None:
+            # admin 不参与绑定（裁决 D-01）；403 让 API 层映射
+            raise StaffRoleConflictError("管理员账号不参与长者绑定（裁决 D-01）")
 
-    # --- 3. 查当前已有 assignment（同 relation，同 staff） ---
-    existing_rows = (
-        (
-            await session.execute(
-                select(ElderStaffAssignment.elder_id).where(
-                    ElderStaffAssignment.staff_id == staff_id,
-                    ElderStaffAssignment.relation == relation,
+        # --- 2. elder_ids 去重 + 全量存在校验（一条 IN，写前失败不残留） ---
+        wanted_ids = await _ensure_elders(session, wanted_ids)
+
+        # --- 3. 无锁预读现有 assignment（只为确定锁集合；权威 diff 在锁后重算） ---
+        pre_existing = set(
+            (
+                await session.execute(
+                    select(ElderStaffAssignment.elder_id).where(
+                        ElderStaffAssignment.staff_id == staff_id,
+                        ElderStaffAssignment.relation == relation,
+                    )
                 )
             )
+            .scalars()
+            .all()
         )
-        .scalars()
-        .all()
-    )
-    existing_ids: set[uuid.UUID] = set(existing_rows)
 
-    # --- 4. 算 diff ---
-    wanted_set: set[uuid.UUID] = set(wanted_ids)
-    removed_ids: set[uuid.UUID] = existing_ids - wanted_set
-    added_ids: set[uuid.UUID] = wanted_set - existing_ids
+        # --- 4. 行锁（P2-19）：wanted ∪ 现有，按 elder_id 排序，防交叉死锁 ---
+        locked = await _lock_elders_for_reassign(session, sorted(wanted_ids + list(pre_existing)))
 
-    # 无变化直接返回（仍写审计，便于审计追踪管理员操作）
-    if not removed_ids and not added_ids:
+        # --- 5. 锁后重读 + 算 diff：锁等待期间其他事务的提交在这里生效 ---
+        existing_ids: set[uuid.UUID] = set(
+            (
+                await session.execute(
+                    select(ElderStaffAssignment.elder_id).where(
+                        ElderStaffAssignment.staff_id == staff_id,
+                        ElderStaffAssignment.relation == relation,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        wanted_set: set[uuid.UUID] = set(wanted_ids)
+        removed_ids = existing_ids - wanted_set
+        added_ids = wanted_set - existing_ids
+
+        # 无变化直接返回（仍写审计，便于审计追踪管理员操作）
+        if not removed_ids and not added_ids:
+            await record_audit(
+                session,
+                actor_type="staff",
+                actor_id=operator_id,
+                action="reassign_elders",
+                resource_type="staff",
+                resource_id=staff_id,
+                detail={"added": [], "removed": [], "role": staff.role},
+            )
+            return {"staff_id": staff_id, "added": [], "removed": []}
+
+        involved_ids = sorted(removed_ids | added_ids, key=str)
+
+        # --- 6. 乐观 CAS（P2-20）：涉改动长者任一行比客户端基准新 → 后提交者 409 ---
+        if expected_updated_at is not None:
+            expected = expected_updated_at
+            if expected.tzinfo is None:
+                # 客户端可能发无时区的 ISO 串：按 UTC 解读，避免 aware/naive 比较报 TypeError
+                expected = expected.replace(tzinfo=datetime.UTC)
+            for elder_id in involved_ids:
+                current = locked.get(elder_id)
+                if current is not None and current > expected:
+                    raise StaleWriteConflictError(
+                        f"长者 {elder_id} 的绑定在页面加载后已被他人修改，请刷新后重试"
+                    )
+
+        # --- 7. 409 判定：只在 care_worker 改绑时检查 primary_care 剩余 ---
+        if staff.role == "care_worker":
+            for elder_id in sorted(removed_ids, key=str):
+                remaining = (
+                    await session.execute(
+                        select(func.count())
+                        .select_from(ElderStaffAssignment)
+                        .where(
+                            ElderStaffAssignment.elder_id == elder_id,
+                            ElderStaffAssignment.relation == "primary_care",
+                            ElderStaffAssignment.staff_id != staff_id,
+                        )
+                    )
+                ).scalar_one()
+                if remaining == 0:
+                    raise PrimaryCareGapError(f"长者 {elder_id} 移除后将失去全部责任护工")
+
+        # --- 8. 执行 diff ---
+        # 先删后加；两者在同一 flush 内完成
+        if removed_ids:
+            await session.execute(
+                delete(ElderStaffAssignment).where(
+                    ElderStaffAssignment.staff_id == staff_id,
+                    ElderStaffAssignment.relation == relation,
+                    ElderStaffAssignment.elder_id.in_(removed_ids),
+                )
+            )
+        for elder_id in added_ids:
+            session.add(
+                ElderStaffAssignment(elder_id=elder_id, staff_id=staff_id, relation=relation)
+            )
+
+        # --- 9. 推进涉改动长者的 updated_at（下一轮 CAS 的新基准） ---
+        await session.execute(
+            update(Elder)
+            .where(Elder.elder_id.in_(involved_ids))
+            .values(updated_at=datetime.datetime.now(datetime.UTC))
+        )
+        await session.flush()
+
+        # --- 10. 写审计（与业务同事务） ---
         await record_audit(
             session,
             actor_type="staff",
@@ -413,60 +562,55 @@ async def reassign_elders(
             action="reassign_elders",
             resource_type="staff",
             resource_id=staff_id,
-            detail={"added": [], "removed": [], "role": staff.role},
+            detail={
+                "added": [str(eid) for eid in sorted(added_ids, key=str)],
+                "removed": [str(eid) for eid in sorted(removed_ids, key=str)],
+                "role": staff.role,
+            },
         )
-        return {"staff_id": staff_id, "added": [], "removed": []}
-
-    # --- 5. 409 判定：只在 care_worker 改绑时检查 primary_care 剩余 ---
-    if staff.role == "care_worker":
-        for elder_id in removed_ids:
-            remaining = (
-                await session.execute(
-                    select(func.count())
-                    .select_from(ElderStaffAssignment)
-                    .where(
-                        ElderStaffAssignment.elder_id == elder_id,
-                        ElderStaffAssignment.relation == "primary_care",
-                        ElderStaffAssignment.staff_id != staff_id,
-                    )
-                )
-            ).scalar_one()
-            if remaining == 0:
-                raise PrimaryCareGapError(f"长者 {elder_id} 移除后将失去全部责任护工")
-
-    # --- 6. 执行 diff ---
-    # 先删后加；两者在同一 flush 内完成
-    if removed_ids:
-        await session.execute(
-            delete(ElderStaffAssignment).where(
-                ElderStaffAssignment.staff_id == staff_id,
-                ElderStaffAssignment.relation == relation,
-                ElderStaffAssignment.elder_id.in_(removed_ids),
-            )
+    except (StaffNotFoundError, StaffRoleConflictError, ElderNotFoundError) as exc:
+        # 404/403 失败路径也留审计（操作者、trace_id 由 record_audit 注入、原因、已知差集）
+        await record_audit(
+            session,
+            actor_type="staff",
+            actor_id=operator_id,
+            action="reassign_elders_rejected",
+            resource_type="staff",
+            resource_id=staff_id,
+            detail={
+                "reason": type(exc).__name__,
+                "message": exc.message,
+                "added": [str(eid) for eid in sorted(added_ids, key=str)],
+                "removed": [str(eid) for eid in sorted(removed_ids, key=str)],
+            },
         )
-    for elder_id in added_ids:
-        session.add(ElderStaffAssignment(elder_id=elder_id, staff_id=staff_id, relation=relation))
-    await session.flush()
-
-    # --- 7. 写审计（与业务同事务） ---
-    await record_audit(
-        session,
-        actor_type="staff",
-        actor_id=operator_id,
-        action="reassign_elders",
-        resource_type="staff",
-        resource_id=staff_id,
-        detail={
-            "added": [str(eid) for eid in sorted(added_ids, key=str)],
-            "removed": [str(eid) for eid in sorted(removed_ids, key=str)],
-            "role": staff.role,
-        },
-    )
+        raise
+    except (PrimaryCareGapError, StaleWriteConflictError) as exc:
+        # 409 失败路径：此时 diff 已算出，审计带上差集便于复盘"谁想动谁"
+        await record_audit(
+            session,
+            actor_type="staff",
+            actor_id=operator_id,
+            action="reassign_elders_rejected",
+            resource_type="staff",
+            resource_id=staff_id,
+            detail={
+                "reason": type(exc).__name__,
+                "message": exc.message,
+                "role": staff.role if staff is not None else None,
+                "expected_updated_at": expected_updated_at.isoformat()
+                if expected_updated_at is not None
+                else None,
+                "added": [str(eid) for eid in sorted(added_ids, key=str)],
+                "removed": [str(eid) for eid in sorted(removed_ids, key=str)],
+            },
+        )
+        raise
 
     logger.info(
         "elders reassigned: staff_id=%s role=%s added=%d removed=%d",
         staff_id,
-        staff.role,
+        staff.role if staff is not None else "?",
         len(added_ids),
         len(removed_ids),
     )
@@ -534,8 +678,10 @@ __all__ = [
     "StaffAccount",
     "StaffConflictError",
     "StaffNotFoundError",
+    "StaffProtectedError",
     "StaffRoleConflictError",
     "StaffServiceError",
+    "StaleWriteConflictError",
     "bind_guardian",
     "create_guardian",
     "create_staff",

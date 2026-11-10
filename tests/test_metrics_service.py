@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import AsyncIterator
 
@@ -76,7 +77,7 @@ async def recorder(np_conn):  # type: ignore[no-untyped-def]
 
 
 async def test_stage_whitelist_matches_model_check() -> None:
-    """七值白名单与 models/metrics.py CHECK 约束一字不差。"""
+    """八值白名单与 models/metrics.py CHECK 约束一字不差（0014 加值 response_segment）。"""
     assert (
         frozenset(
             {
@@ -87,10 +88,32 @@ async def test_stage_whitelist_matches_model_check() -> None:
                 "llm_first_token",
                 "tts_first_packet",
                 "playback",
+                "response_segment",
             }
         )
         == STAGES
     )
+
+
+async def test_response_segment_persists_without_warning(
+    np_conn,
+    recorder,
+    caplog: pytest.LogCaptureFixture,  # type: ignore[no-untyped-def]
+) -> None:
+    """P1-12：response_segment 进白名单——分段打点可落库，且不再每段 WARNING。"""
+    with caplog.at_level(logging.WARNING, logger="app.services.metrics"):
+        assert recorder.record_stage(TRACE, None, "response_segment", 123.4, "server") is True
+        assert await recorder.drain_once() == 1
+
+    assert await _count(np_conn) == 1
+    async with _db_session(np_conn) as session:
+        row = (
+            await session.execute(
+                select(Metric).where(Metric.trace_id == TRACE, Metric.stage == "response_segment")
+            )
+        ).scalar_one()
+    assert row.duration_ms == 123
+    assert "非法 stage" not in caplog.text, "response_segment 是合法 stage，不得再打丢弃告警"
 
 
 async def test_valid_rows_persist_with_fields(np_conn, recorder) -> None:  # type: ignore[no-untyped-def]

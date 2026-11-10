@@ -24,6 +24,8 @@ from app.api.schemas.staff import (
     StaffCreateRequest,
     StaffListItemResponse,
     StaffResponse,
+    StaffRole,
+    StaffStatus,
     StaffUpdateRequest,
 )
 from app.core.auth import require_roles
@@ -35,7 +37,9 @@ from app.services.staff_service import (
     PrimaryCareGapError,
     StaffConflictError,
     StaffNotFoundError,
+    StaffProtectedError,
     StaffRoleConflictError,
+    StaleWriteConflictError,
 )
 
 router = APIRouter(
@@ -59,8 +63,8 @@ def _to_response(row: staff_service.StaffAccount) -> StaffResponse:
 async def list_staff(
     session: Annotated[AsyncSession, Depends(get_session)],
     _admin: Annotated[Identity, Depends(require_roles("admin"))],
-    role: str | None = None,
-    status: str | None = None,
+    role: StaffRole | None = None,
+    status: StaffStatus | None = None,
 ) -> dict[str, object]:
     """列出所有员工（admin 权限）。
 
@@ -68,8 +72,9 @@ async def list_staff(
     改绑 UI 需要员工列表渲染，因此追加 GET 读入口（主理人裁决，不升级契约版本）。
 
     Query:
-        role=care_worker|doctor|admin   可选过滤
-        status=active|disabled           可选过滤
+        role=care_worker|doctor|admin   可选过滤（Literal 校验，非法值 422——P3-33，
+                                        不再返回 200 空列表掩盖调用方拼写错误）
+        status=active|disabled           可选过滤（同上）
     """
     rows = await staff_service.list_staff_accounts(session, role_filter=role, status_filter=status)
     items: list[StaffListItemResponse] = []
@@ -117,7 +122,7 @@ async def update_staff(
     staff_id: uuid.UUID,
     payload: StaffUpdateRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
-    _admin: Annotated[Identity, Depends(require_roles("admin"))],
+    admin: Annotated[Identity, Depends(require_roles("admin"))],
 ) -> StaffResponse:
     """改角色或停用；任一变更都会让该账号旧 Token 立即失效（AC-24）。"""
     try:
@@ -126,9 +131,13 @@ async def update_staff(
             staff_id=staff_id,
             role=payload.role,
             status=payload.status,
+            # P2-20 自我保护需要知道操作者：admin 不能停用自己 / 最后一位 active admin
+            operator_id=uuid.UUID(admin.staff_id) if admin.staff_id else None,
         )
     except StaffNotFoundError as exc:
         return _error_response(404, "NOT_FOUND", exc.message)  # type: ignore[return-value]
+    except StaffProtectedError as exc:
+        return _error_response(403, "PROTECTED_ADMIN", exc.message)  # type: ignore[return-value]
     return _to_response(row)
 
 
@@ -150,6 +159,7 @@ async def reassign_elders(
             staff_id=staff_id,
             elder_ids=payload.elder_ids,
             operator_id=uuid.UUID(admin.staff_id) if admin.staff_id else None,
+            expected_updated_at=payload.expected_updated_at,
         )
     except StaffNotFoundError as exc:
         return _error_response(404, "NOT_FOUND", exc.message)  # type: ignore[return-value]
@@ -159,6 +169,9 @@ async def reassign_elders(
         return _error_response(404, "NOT_FOUND", exc.message)  # type: ignore[return-value]
     except PrimaryCareGapError as exc:
         return _error_response(409, "CONFLICT", exc.message)  # type: ignore[return-value]
+    except StaleWriteConflictError as exc:
+        # P2-20 乐观并发：后提交者 409，前端应提示刷新后重试（D2 交接件 §5.7）
+        return _error_response(409, "STALE_WRITE", exc.message)  # type: ignore[return-value]
     return ElderReassignResponse(
         staff_id=result["staff_id"],
         added=result["added"],
