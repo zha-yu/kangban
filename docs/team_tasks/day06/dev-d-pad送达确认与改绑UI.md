@@ -1,4 +1,4 @@
-> 状态：未开始　｜　版本：v1.1　｜　日期：2026-11-09
+> 状态：已完成　｜　版本：v1.2　｜　日期：2026-11-10
 > 负责人：dev-D（前端 · pad 送达确认 + console 改绑）
 > 关联：docs/plans/day06/day-06-长者侧Agent闭环.md（主计划 §3.1 节点表为唯一事实源）｜docs/team_tasks/day06/dev-a/dev-b/dev-c
 > 上游依据：技术设计文档 line 573（媒体分发）、line 517（`work_orders.assignee_id`）、line 375-383（`elder_staff_assignments`）｜PRD line 250（FR-UI-04 打断）、line 254（FR-UI-08 撤销边界）、line 437（FR-ADM-03 服务端校验）、line 499（AC-18）
@@ -146,3 +146,4 @@ pnpm --dir frontend dev                        # 手工：喊小伴→说两句�
 | --- | --- | --- |
 | v1.0 | 2026-11-09 | 首版：按主计划 v1.0 拆 4 个节点；含 `tts_text` v2 兼容策略、`segment_ack` 五字段、0 基 `segment_id` 约定、打断顺序、a0 三态响应文案 |
 | v1.1 | 2026-11-09 | 随主计划 v2.0 收紧：**删除 N17**（待答提示 UI），打断收口并入 N16（4.0→4.5h）；移除 `TaskHint.tsx` 与 `App.tsx` 接线、写作用域与风险各一条；节点 4→3，本卡合计 12.5→10.0 |
+| v1.2 | 2026-11-10 | 状态 未开始→**已完成**（S1–S4/S6–S8 全部执行）：契约代码同步、播放队列分段+ack、打断收口（canceled 双口径实测）、20 轮验证 ack 54/54=100%（判据 3 达标 ≥95%）、console 改绑 UI、上下文样例底稿、build 门禁通过。遗留：①真人停声复测与 TEN-VAD 漏检复现**延后**（主理人 2026-11-10 指示），判据 2「delivered_text 只到第 1 段」因 dev-C D1 缺陷（turn 终态全量不落库）暂不可验；②D1/D2 转 dev-C、D4 转 dev-A+C，见 docs/plans/day06/d-s4-20轮验证记录.md §4 |

@@ -66,6 +66,15 @@ export class RealtimeClient {
       return true;
     },
     sendDiag: (ok, error) => this.sendDiag("playback", ok, error),
+    // Day 6：末段兜底结算收口回调——轨 ended 不触发时由队列计时器结算 played，
+    // 此处同步复位播放态与状态条（与 onended 路径行为一致，幂等）
+    onResponseSettled: () => {
+      if (this.ttsPlaying) {
+        this.ttsPlaying = false;
+        this.reportPlayback(); // C-6：末段播完结算（无计时起点时内部静默跳过）
+        this.cb.onStatus("listening"); // 播放收口 → 回到在听，麦克风保持捕获
+      }
+    },
   });
   /** Day 7 TD-1/TD-2：触达音频独立播放轨（WS base64 PCM，不进 WebRTC 轨、不进队列）。
    *  在途触达的回传坐标（touch_id → 服务端下发的 event_id/attempt_no，播完原样回传） */
