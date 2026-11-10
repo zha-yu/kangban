@@ -1,0 +1,246 @@
+"""Day 7 C1 · 本地工具执行器（闭包工厂）。
+
+**为什么闭包**：ToolExecutorFn 签名被 ToolRegistry 钉死在 `(args, runtime) -> dict`。
+medication_confirm 需要 session + checkpointer 才能调子图；memory_recall 需要 session
+才能查记忆。这俩都是外部依赖，executor 函数本身拿不到。工厂把依赖闭包捕获进去，
+返回的 executor 签名不变——ToolRegistry 和 ToolExecutor 都不知道背后接了啥，干净。
+
+**两层职责**：
+
+- 身份收敛：elder_id 只从 `runtime.elder_id` 取，args 里的同名参数已被 ToolExecutor
+  在 `_strip_identity` 里丢了（并审计），这里再兜底检查一次避免未来漏改。
+- 四类失败：抛 ToolNotFoundError / ToolForbiddenError / ToolTransientError /
+  ToolArgumentError —— ToolExecutor._run 会按 error_class 收敛成 ToolResult，
+  本模块不直接返回 ToolResult。
+
+**依赖方向**：tool_executor.py → 本模块 → services/ + graphs/ —— 不反向。
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+from app.core.runtime_context import Identity
+from app.graphs.medication_confirmation_graph import (
+    build_medication_graph,
+    graph_config,
+    resume_medication_task,
+)
+from app.services.medication_due_service import list_waiting_confirm_events
+from app.services.tool_executor import (
+    ToolArgumentError,
+    ToolForbiddenError,
+    ToolNotFoundError,
+    ToolTransientError,
+)
+
+logger = logging.getLogger(__name__)
+
+#: 图状态「等待长者回答」的节点名（子图 node id；不能瞎改——与 graphs 目录同源）
+_WAITING_NODE: str = "wait_confirm"
+
+
+# ------------------------------------------------------------------ medication_confirm
+
+
+def make_medication_confirm_executor(
+    *,
+    session_factory: Callable[[], Any],
+    checkpointer: AsyncPostgresSaver,
+) -> Callable[[dict[str, Any], Identity], Awaitable[dict[str, Any]]]:
+    """返回 `medication_confirm` 工具的本地执行器。
+
+    工厂注入：
+    - ``session_factory``：每次调用开短会话（不持有，避免跨请求串 session）
+    - ``checkpointer``：**必须是与 SchedulerRuntime 同一个**——对话侧 resume 和
+      调度侧 resume 共享图状态才能做「先到先得」双驱动守卫
+
+    核心逻辑（三跳）：
+    1. 查「这位长者当前是否有 waiting_for=taken_answer 的事件」（service 层只读查询）
+    2. 无 → 抛 ToolNotFoundError（ToolExecutor 收敛成 readable not_found）
+    3. 有 → build graph + resume(answer) → 返回 terminal_state + 播报文本
+    """
+
+    async def _executor(args: dict[str, Any], runtime: Identity) -> dict[str, Any]:
+        # --- 身份收敛（兜底：ToolExecutor 已丢 args.elder_id，但 runtime 应该有） ---
+        elder_id = runtime.elder_id
+        if elder_id is None:
+            raise ToolForbiddenError("无法识别长者身份")
+
+        # --- 参数校验（ToolExecutor._validate_args 已过 schema，这里只做业务兜底） ---
+        answer = args.get("answer", "")
+        if not isinstance(answer, str) or not answer.strip():
+            raise ToolArgumentError("answer 不能为空")
+
+        # --- 1. 查等待中的事件（只读，service 层） ---
+        async with session_factory() as session:
+            waiting = await list_waiting_confirm_events(session)
+            # 过滤：属于当前长者的、有图状态的
+            my_events = [e for e in waiting if _elder_matches_event(session, e.reminder_id, elder_id)]
+
+        if not my_events:
+            raise ToolNotFoundError("现在没有待确认的用药提醒")
+
+        # 取第一条（同一长者不应有多条同时 waiting；有多条就处理最早的，其余
+        # 按「对话侧只能确认一条」的业务口径走——不报错，不批量处理）
+        event = my_events[0]
+        reminder_id = event.reminder_id
+
+        # --- 2. build graph + resume ---
+        async with session_factory() as graph_session:
+            graph = build_medication_graph(
+                session=graph_session,
+                checkpointer=checkpointer,
+            )
+            # resume 会推进到下一个阻塞点（taken_reported → END；或 refuse → END）
+            # 如果子图已经终态（调度侧先 finalize 了），resume 会直接到 END 不报错
+            try:
+                await resume_medication_task(
+                    graph, reminder_id=reminder_id, answer=answer.strip()
+                )
+            except Exception as exc:
+                # 子图 resume 抛异常（比如终态已互斥）——按 transient 处理
+                # 让 ToolExecutor 重试；重试仍失败后降级话术
+                logger.warning(
+                    "medication_confirm_resume_error reminder_id=%s error_type=%s",
+                    reminder_id,
+                    type(exc).__name__,
+                )
+                raise ToolTransientError(str(exc)) from exc
+
+            # 读最终状态
+            state = await graph.aget_state(graph_config(reminder_id))
+
+        values = (state.values if state is not None else None) or {}
+        terminal = values.get("terminal")
+
+        # --- 3. 组装播报文本（不返回技术字段） ---
+        speech = _terminal_to_speech(terminal)
+        logger.info(
+            "medication_confirm_done elder_id=%s reminder_id=%s terminal=%s",
+            elder_id,
+            reminder_id,
+            terminal,
+        )
+
+        return {
+            "terminal_state": terminal,
+            "message": speech,
+        }
+
+    return _executor
+
+
+async def _elder_matches_event(
+    session: Any, reminder_id: uuid.UUID, elder_id: uuid.UUID
+) -> bool:
+    """验证 medication_event.reminder_id 确实属于这位长者（跨长者防护）。
+
+    list_waiting_confirm_events 没带 elder_id 过滤（service 层通用），这里补上。
+    """
+    from sqlalchemy import select
+
+    from app.models.medication import MedicationEvent
+
+    row = (
+        (
+            await session.execute(
+                select(MedicationEvent.elder_id).where(
+                    MedicationEvent.reminder_id == reminder_id
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if row is None:
+        return False
+    return uuid.UUID(str(row)) == elder_id
+
+
+def _terminal_to_speech(terminal: Any) -> str:
+    """终态 → 可播报文本（不把 taken_reported 等术语直接念给长者）。"""
+    mapping: dict[str, str] = {
+        "taken_reported": "好的，我帮您记下来了。",
+        "refused": "好的，我帮您记下来了。",
+        "missed_unconfirmed": "好的，我帮您记下来了。",
+        "notification_failed": "好的，我帮您记下来了。",
+    }
+    if not isinstance(terminal, str):
+        return "好的，我帮您记下来了。"
+    return mapping.get(terminal, "好的，我帮您记下来了。")
+
+
+# ------------------------------------------------------------------ memory_recall
+
+
+def make_memory_recall_executor(
+    *,
+    session_factory: Callable[[], Any],
+) -> Callable[[dict[str, Any], Identity], Awaitable[dict[str, Any]]]:
+    """返回 `memory_recall` 工具的本地执行器。
+
+    依赖 dev-B 的 `recall_for_turn(elder_id, query, limit)` 接口。
+    B2 还没落地时会抛 ImportError——**降级为返回空列表（succeeded + notes=[]），不报错**。
+    原因：memory_recall 是只读查询，没有副作用，返回空列表不会破坏任何业务事实。
+    """
+
+    async def _executor(args: dict[str, Any], runtime: Identity) -> dict[str, Any]:
+        elder_id = runtime.elder_id
+        if elder_id is None:
+            raise ToolForbiddenError("无法识别长者身份")
+
+        query = args.get("query", "")
+        category = args.get("category")
+
+        # --- 软依赖 B2 的 recall_for_turn ---
+        try:
+            from app.services.memory_service import recall_for_turn
+        except ImportError:
+            logger.info(
+                "memory_recall_stub_no_impl elder_id=%s query=%r "
+                "(dev-B recall_for_turn not yet wired)",
+                elder_id,
+                query,
+            )
+            return {"notes": []}
+
+        try:
+            async with session_factory() as session:
+                notes = await recall_for_turn(
+                    session, elder_id=elder_id, query=query, category=category
+                )
+        except ToolError:  # 内层 ToolError 直接上抛让 ToolExecutor 收敛
+            raise
+        except Exception as exc:
+            logger.warning("memory_recall_error elder_id=%s error_type=%s", elder_id, type(exc).__name__)
+            raise ToolTransientError(str(exc)) from exc
+
+        # recall_for_turn 的返回类型：MemoryNote 列表 → 转 dict 给 Agent
+        note_dicts: list[dict[str, Any]] = []
+        for n in notes:
+            note_dicts.append({
+                "content": getattr(n, "content", str(n)),
+                "category": getattr(n, "category", ""),
+            })
+        return {"notes": note_dicts}
+
+    return _executor
+
+
+class ToolError(Exception):
+    """占位：本模块自己不定义 ToolError 基类——用 tool_executor 里的四类域异常即可。
+    这个类只是让 import 不出错（B2 接线后如果 recall_for_turn 也抛 ToolError，
+    它应该是 tool_executor 那个——让它冒泡让父 except 接）。
+    """
+
+
+__all__ = [
+    "make_medication_confirm_executor",
+    "make_memory_recall_executor",
+]

@@ -22,6 +22,7 @@
 | --- | --- |
 | `docs/plans/day07/d-推进计划-pad可靠性改绑联调.md` | 🚧 进行中 |
 | `docs/plans/day07/d-联调记录.md` | 🚧 进行中 |
+| `docs/plans/day07/dev-c-day07-执行计划.md` | 📝 草稿 |
 | `docs/plans/day07/handoff-A-to-C-用药到点接线.md` | ✅ 已完成 |
 
 ## 契约冻结：**已冻结**
