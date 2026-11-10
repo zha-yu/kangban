@@ -25,7 +25,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from sqlalchemy import make_url
+from sqlalchemy import make_url, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -38,6 +38,7 @@ from app.graphs.medication_confirmation_graph import (
     resume_medication_task,
     start_medication_task,
 )
+from app.models.medication import MedicationAttempt
 from app.models.organization import Device, Elder, Room
 from app.models.staff import StaffAccount
 from app.services import medication_service
@@ -403,6 +404,147 @@ async def test_all_devices_offline_still_completes_missed_flow(
         ).scalars()
     )
     assert len(orders) == 1, "设备全离线的漏服照样升级工单（人工兜底）"
+
+
+# ------------------------------------------------------------------ 8. TD-1/TD-2 触达语音与 played 闭环
+
+
+def _fake_tts(calls: list[str], pcm: bytes | None):
+    async def _tts(text: str) -> bytes | None:
+        calls.append(text)
+        return pcm
+
+    return _tts
+
+
+def _pcm_of(touch_message: dict[str, Any]) -> bytes:
+    import base64
+
+    audio = touch_message["audio"]
+    assert audio["format"] == "pcm_s16le" and audio["sample_rate"] == 16000
+    return base64.b64decode(audio["data_b64"])
+
+
+async def test_touch_message_carries_audio_and_ids(
+    session: AsyncSession, seeded: dict[str, Any], saver: AsyncPostgresSaver
+) -> None:
+    """TD-1：合成成功 → 触达消息带 touch_id/坐标/audio，tts_result=ok（字幕字段仍在）。"""
+    await _bind_device(session, seeded)
+    reminder_id = await _new_event(session, seeded)
+    calls: list[tuple[str, dict[str, Any]]] = []
+    tts_calls: list[str] = []
+    pcm = b"\x01\x00" * 16000
+    graph = build_medication_graph(
+        session=session,
+        checkpointer=saver,
+        deliver_fn=_fake_deliver(calls, ok=True),
+        tts_fn=_fake_tts(tts_calls, pcm),
+    )
+
+    await start_medication_task(
+        graph,
+        reminder_id=reminder_id,
+        plan_id=seeded["plan_id"],
+        elder_id=seeded["elder_id"],
+        deadline="2026-11-09T08:15:00+00:00",
+    )
+
+    message = calls[0][1]
+    assert tts_calls == [message["text"]], "合成的是下发的那句触达话术"
+    assert message["touch_event_id"] == str(reminder_id), "坐标原样下发（touch_played 回传用）"
+    assert message["touch_attempt_no"] == 1
+    assert isinstance(message["touch_id"], str) and message["touch_id"]
+    assert "response_id" not in message, "触达消息仍不得混入回复流字段"
+    assert _pcm_of(message) == pcm
+
+    rows = list(
+        (
+            await session.execute(
+                select(MedicationAttempt).where(MedicationAttempt.event_id == reminder_id)
+            )
+        ).scalars()
+    )
+    assert rows[0].tts_result == "ok" and rows[0].receipt == "voice_dispatched"
+
+
+async def test_touch_tts_failed_degrades_to_subtitle(
+    session: AsyncSession, seeded: dict[str, Any], saver: AsyncPostgresSaver
+) -> None:
+    """TD-1：合成失败 → 无 audio 字段（Day 6 纯字幕形状），触达照常投递并记 tts_failed。"""
+    await _bind_device(session, seeded)
+    reminder_id = await _new_event(session, seeded)
+    calls: list[tuple[str, dict[str, Any]]] = []
+    graph = build_medication_graph(
+        session=session,
+        checkpointer=saver,
+        deliver_fn=_fake_deliver(calls, ok=True),
+        tts_fn=_fake_tts([], None),
+    )
+
+    await start_medication_task(
+        graph,
+        reminder_id=reminder_id,
+        plan_id=seeded["plan_id"],
+        elder_id=seeded["elder_id"],
+        deadline="2026-11-09T08:15:00+00:00",
+    )
+
+    message = calls[0][1]
+    assert "audio" not in message, "合成失败降级纯字幕，消息形状与 Day 6 完全一致"
+    assert "touch_id" in message, "message_id 仍要带——字幕降级路径的形状稳定是回执纪律的前提"
+    rows = list(
+        (
+            await session.execute(
+                select(MedicationAttempt).where(MedicationAttempt.event_id == reminder_id)
+            )
+        ).scalars()
+    )
+    assert rows[0].tts_result == "tts_failed"
+    assert rows[0].receipt == "voice_dispatched", "字幕照样送到了，投递回执不变"
+
+
+async def test_mark_attempt_played_upgrades_dispatched_row(
+    session: AsyncSession, seeded: dict[str, Any], saver: AsyncPostgresSaver
+) -> None:
+    """TD-2：voice_dispatched → played 幂等升级；重复/迟到回执是无操作不是错误。"""
+    reminder_id = await _new_event(session, seeded)
+    await medication_service.record_attempt(
+        session, event_id=reminder_id, attempt_no=1, receipt="voice_dispatched"
+    )
+
+    assert await medication_service.mark_attempt_played(
+        session, event_id=reminder_id, attempt_no=1
+    ), "首条回执应发生升级"
+    assert (
+        await medication_service.mark_attempt_played(session, event_id=reminder_id, attempt_no=1)
+        is False
+    ), "重复回执幂等无操作"
+
+    attempts = await medication_service.list_attempts(session, reminder_id)
+    assert len(attempts) == 1 and attempts[0]["receipt"] == "played"
+
+
+async def test_mark_attempt_played_ignores_offline_and_missing(
+    session: AsyncSession, seeded: dict[str, Any], saver: AsyncPostgresSaver
+) -> None:
+    """TD-2 宁缺勿假：device_offline 的触达音频没出过门，不能被回执「洗白」。"""
+    reminder_id = await _new_event(session, seeded)
+    await medication_service.record_attempt(
+        session, event_id=reminder_id, attempt_no=1, receipt="device_offline"
+    )
+
+    assert not await medication_service.mark_attempt_played(
+        session, event_id=reminder_id, attempt_no=1
+    ), "离线触达不允许被标记 played"
+    assert not await medication_service.mark_attempt_played(
+        session, event_id=reminder_id, attempt_no=9
+    ), "不存在的触达尝试如实返回 False，不抛错"
+
+    attempts = await medication_service.list_attempts(session, reminder_id)
+    assert attempts[0]["receipt"] == "device_offline"
+
+
+# ------------------------------------------------------------------ 9. develop 侧合入：record_attempt 语义与重放防护
 
 
 async def test_record_attempt_does_not_swallow_check_violation(

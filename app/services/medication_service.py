@@ -193,6 +193,32 @@ async def record_attempt(
         logger.info("medication_attempt_duplicate event_id=%s attempt_no=%s", event_id, attempt_no)
 
 
+async def mark_attempt_played(
+    session: AsyncSession, *, event_id: uuid.UUID, attempt_no: int
+) -> bool:
+    """触达语音「真被听到」的幂等落库（TD-2，receipt 白名单加值 `played`，迁移 0013）。
+
+    只允许从投递态 `voice_dispatched` **升级**：`device_offline` / `no_bound_device`
+    的触达音频根本没出过门，不能被回执「洗白」（宁缺勿假）；已 `played` 的行再收到
+    重复/迟到回执是无操作。返回是否真的发生了升级（False = 幂等无操作，或行不存在、
+    状态不符——调用方只记日志，不报错）。
+
+    played 只做留痕闭环，**不参与**重试与终态判定（TD-2 明确不做该消费）。
+    """
+    if attempt_no < 1:
+        raise MedicationError("attempt_no starts at 1")
+    result = await session.execute(
+        update(MedicationAttempt)
+        .where(
+            MedicationAttempt.event_id == event_id,
+            MedicationAttempt.attempt_no == attempt_no,
+            MedicationAttempt.receipt == "voice_dispatched",
+        )
+        .values(receipt="played")
+    )
+    return bool(result.rowcount)  # type: ignore[attr-defined]
+
+
 async def get_attempt(
     session: AsyncSession, *, event_id: uuid.UUID, attempt_no: int
 ) -> dict[str, Any] | None:
@@ -386,6 +412,7 @@ __all__ = [
     "get_event",
     "list_attempts",
     "list_bound_device_ids",
+    "mark_attempt_played",
     "payload_hash",
     "record_attempt",
     "record_response",

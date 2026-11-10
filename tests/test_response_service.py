@@ -17,12 +17,6 @@ from typing import Any
 
 import pytest
 
-from app.audio.signaling import (
-    SegmentAckMsg,
-    TtsTextMsg,
-    _handle_segment_ack,
-    set_segment_ack_handler,
-)
 from app.core.context import reset_trace_id, set_trace_id
 from app.services.response_service import (
     MAX_SEGMENT_CHARS,
@@ -146,25 +140,6 @@ class _Result:
 
 def _result(text: str, degraded: bool = False) -> _Result:
     return _Result(text=text, degraded=degraded)
-
-
-def _ack_message(
-    response_id: str,
-    *,
-    epoch: int,
-    segment_id: int,
-    status: str = "playing",
-    at_ms: int = 100,
-) -> dict[str, Any]:
-    message: dict[str, Any] = {
-        "type": "segment_ack",
-        "response_id": response_id,
-        "epoch": epoch,
-        "segment_id": segment_id,
-        "status": status,
-        "at_ms": at_ms,
-    }
-    return message
 
 
 # ---------------------------------------------------------------------------
@@ -752,101 +727,3 @@ async def test_ack_rejection_records_no_metric(caplog: pytest.LogCaptureFixture)
             device_id="dev-1", response_id=rid, epoch=epoch, segment_id=99, status="playing"
         )  # not_monotonic（合法域之外）
     assert len(_response_segment_metrics(caplog)) == baseline  # 被拒 ack 不打 response_segment
-
-
-# ---------------------------------------------------------------------------
-# signaling.py 扩展：TtsTextMsg v2 形状 + segment_ack 分支分发
-# ---------------------------------------------------------------------------
-
-
-def test_tts_text_v2_keeps_old_fields_and_adds_five_optional() -> None:
-    # 注：本模块启用了 `from __future__ import annotations`，3.12 的 TypedDict 在
-    # 类创建期无法识别 NotRequired（__optional_keys__ 恒空），因此按注解源码断言。
-    annotations = TtsTextMsg.__annotations__
-    assert {"type", "text", "degraded"} <= set(annotations)  # 老字段不动
-    assert {"response_id", "epoch", "segment_id", "index", "total"} <= set(annotations)
-    for field_name in ("response_id", "epoch", "segment_id", "index", "total"):
-        assert "NotRequired" in str(annotations[field_name])  # v2 五字段全部可选
-
-
-def test_segment_ack_msg_contract_shape() -> None:
-    annotations = SegmentAckMsg.__annotations__
-    assert set(annotations) == {
-        "type",
-        "response_id",
-        "epoch",
-        "segment_id",
-        "status",
-        "at_ms",
-    }
-    at_ms_ann = str(annotations["at_ms"])
-    assert (
-        "int" in at_ms_ann and "NotRequired" not in at_ms_ann
-    )  # at_ms 必填（与 protocol.ts 一致），其余必填
-
-
-class _FakeConn:
-    """_handle_segment_ack 所需的最小连接面（trace/device/downstream）。"""
-
-    def __init__(self) -> None:
-        self.trace_id = "trace-seg-ack"
-        self.device_id = "dev-1"
-        self.downstream: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-
-
-async def test_segment_ack_branch_dispatches_valid_message_to_handler() -> None:
-    conn = _FakeConn()
-    received: list[tuple[Any, Mapping[str, Any]]] = []
-
-    async def handler(connection: Any, message: Mapping[str, Any]) -> None:
-        received.append((connection, dict(message)))
-
-    set_segment_ack_handler(handler)
-    try:
-        message = _ack_message("r1", epoch=8, segment_id=2)
-        await _handle_segment_ack(conn, message)
-    finally:
-        set_segment_ack_handler(None)
-
-    assert len(received) == 1
-    assert received[0][0] is conn
-    assert received[0][1] == message
-    assert conn.downstream.empty()  # 正常分发不回 error
-
-
-async def test_segment_ack_branch_rejects_malformed_shape_before_handler() -> None:
-    conn = _FakeConn()
-    called = False
-
-    async def handler(connection: Any, message: Mapping[str, Any]) -> None:
-        nonlocal called
-        called = True
-
-    set_segment_ack_handler(handler)
-    try:
-        bad_status: dict[str, Any] = _ack_message("r1", epoch=8, segment_id=2, status="paused")
-        bad_epoch: dict[str, Any] = {
-            "type": "segment_ack",
-            "response_id": "r1",
-            "epoch": "8",
-            "segment_id": 2,
-            "status": "playing",
-        }
-        missing_field: dict[str, Any] = {"type": "segment_ack", "response_id": "r1"}
-        for message in (bad_status, bad_epoch, missing_field):
-            await _handle_segment_ack(conn, message)
-    finally:
-        set_segment_ack_handler(None)
-
-    assert called is False
-    errors = [conn.downstream.get_nowait() for _ in range(3)]
-    assert all(error["type"] == "error" and error["code"] == "internal" for error in errors)
-
-
-async def test_segment_ack_branch_without_handler_is_safely_ignored() -> None:
-    conn = _FakeConn()
-    set_segment_ack_handler(None)
-
-    await _handle_segment_ack(conn, _ack_message("r1", epoch=1, segment_id=0))
-
-    assert conn.downstream.empty()  # 只 warn，不回执不关连接

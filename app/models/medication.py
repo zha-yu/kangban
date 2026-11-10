@@ -235,11 +235,12 @@ class MedicationAttempt(Base):
             ondelete="CASCADE",
         ),
         CheckConstraint(
-            # 白名单含三态投递回执（E2，0012）：voice_dispatched=任一设备收下、
-            # device_offline=有绑定但全离线、no_bound_device=没绑设备（运维缺口）。
-            # 前三值为 0010 占位口径，保留兼容已有行。
+            # 白名单含三态投递回执（E2，0012）与 played 留痕（TD-2，0013）：
+            # voice_dispatched=任一设备收下、device_offline=有绑定但全离线、
+            # no_bound_device=没绑设备（运维缺口）、played=触达语音真被听到
+            # （只允许从 voice_dispatched 升级）。前三值为 0010 占位口径，保留兼容已有行。
             "receipt IS NULL OR receipt IN ('card_rendered', 'tts_finished', 'none', "
-            "'voice_dispatched', 'device_offline', 'no_bound_device')",
+            "'voice_dispatched', 'device_offline', 'no_bound_device', 'played')",
             name="receipt",
         ),
         CheckConstraint(
@@ -277,7 +278,9 @@ class MedicationAttempt(Base):
     receipt: Mapped[str | None] = mapped_column(
         Text(),
         nullable=True,
-        comment="页面回执 card_rendered / tts_finished / none（「提醒送达」判定依据）",
+        comment="页面回执 card_rendered / tts_finished / none（「提醒送达」判定依据）；"
+        "投递三态 voice_dispatched / device_offline / no_bound_device（E2）；"
+        "played = 触达语音真被听到（TD-2，仅从 voice_dispatched 升级）",
     )
     tts_result: Mapped[str | None] = mapped_column(
         Text(),
