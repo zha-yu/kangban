@@ -5,8 +5,13 @@
     1. history.begin_turn        —— 事实先落（generic 只写事件，不建投影）
     2. state_center.snapshot/apply —— 读一致状态并应用轮次启动事件
     3. context_builder.build     —— 组装上下文
+    3.5 router.decide           —— 三级路由（规则 → System One → Agent；Day 7 A3 新增，
+                                   **不改前后六步语义**，只在第 3 与第 4 步之间做分流）
     4. agent.run                 —— 执行（工具事件经上下文缓冲后回灌 history）
-    5. history.commit_response   —— 先记生成（generic 跳过投影，直写 response_completed 事件）
+    5. response_id 发号          —— 只发号不再写库：`response_completed` 的唯一写口在
+                                   响应层终态结算（dev-B P2-10；此前 A/B 双写靠幂等兜住，
+                                   但 payload 恒为 `playing`，打断后状态就错了）。
+                                   **例外**：generic 无投影，直写事件是它唯一写口，不许删。
     6. state_center.apply        —— 再改状态
     7. response_stream.start     —— 最后下发
 
@@ -41,6 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.context import DialogueTurn, PersonaContext, get_trace_id
 from app.core.runtime_context import Identity
+from app.services.decision_log_service import record_decision as _record_decision_row
 from app.services.history_service import (
     TurnRef,
 )
@@ -117,6 +123,9 @@ class TurnRuntime:
     persona: PersonaContext | None = None
     identity_source: str | None = None
     history_degraded: bool = False  # 缓存源不可用 → 第 2 步补 state_degraded 事件
+    #: 本轮 ASR final 文本（`handle_user_turn` 入口统一写入，不信任调用方传参）。
+    #: 记忆提取 / 上下文组装读这里，就不必各自再要一次文本（dev-B J2 patch，两处小改之一）。
+    user_text: str | None = None
 
     @property
     def elder_id(self) -> str | None:
@@ -138,6 +147,10 @@ class TurnOutcome:
 
     `escalated_to_agent` 在统一出口内恒为 True——安全否决发生在 orchestrator
     前置层（N27），命中时不进入本服务。
+
+    Day 7 A3 只**追加**三个字段（`route_layer` / `intent` / `confidence`，B1 已确认
+    响应流契约不变）：它们是「这轮走了哪一层」的服务端视图，与 `decision_logs`
+    同一份结论，方便 orchestrator / 联调直接断言，不必回表查。
     """
 
     turn_id: str
@@ -147,6 +160,13 @@ class TurnOutcome:
     escalated_to_agent: bool
     followup_required: bool
     followup_reason: str | None
+    #: 命中层：rule / system_one / agent / fallback（未装配 Router 时为 agent，
+    #: 因为旧路径等价于「一直下沉 Agent」）
+    route_layer: str = "agent"
+    intent: str = "other"
+    confidence: float = 0.0
+    #: 本轮是否已澄清过（Router 判定的 clarify 轮为 True；供联调核对「只澄清一次」）
+    clarified: bool = False
 
 
 @dataclass(slots=True)
@@ -204,6 +224,20 @@ class AgentLike(Protocol):
         persona: PersonaContext | None = None,
         now: datetime | None = None,
     ) -> Awaitable[AgentTurnResult]: ...
+
+
+class RouterLike(Protocol):
+    """三级路由装配缝（`app.router.decision.Router` 天然满足，测试可换桩）。
+
+    只暴露两个动作：给结论、执行直连工具。Router 内部不碰 DB（本服务才是写库层），
+    直连工具也由 Router 交给注入的 `ToolExecutor`（G2 唯一入口）。
+    """
+
+    async def decide(self, text: str, *, thread_id: str, runtime: TurnRuntime) -> Any: ...
+
+    async def execute_tool(
+        self, decision: Any, *, runtime: TurnRuntime, turn_id: str
+    ) -> Any | None: ...
 
 
 class HistoryLike(Protocol):
@@ -278,6 +312,11 @@ class CoordinatorStateCenterAdapter:
     读写一致），返回真 `state_service.StateSnapshot`：thread_id/version 与桩期
     `StateSnapshot` 同构，结构上满足装配缝；下游可按需读 output.generation_epoch、
     input.status 等真实字段。
+
+    ⚠️ `StateVersionConflict.actual == -2` 不是「版本落后」：`state_service` 用 -2 表示
+    Redis 里的状态 JSON **已损坏/不可解析**（见 `CAS_LUA`），此刻重取快照得到的版本号
+    没有意义。调用方**不要盲目重试**（会连续冲突直到连接超时），应按「状态不可信」处理：
+    落 `state_degraded`、让本轮走降级路径，并报警由人清理该 thread 的 key。
     """
 
     def __init__(self, *, coordinator: SessionCoordinator, state_center: StateCenter) -> None:
@@ -438,6 +477,10 @@ class MinimalContextBuilder:
     """默认 ContextBuilder：返回最小 TurnContext 供第 7 步下发（测试/未注入兜底用）。
 
     N06 真身 `ContextBuilder` 由装配层注入；生产路径应使用真身（承载记忆召回）。
+
+    本轮用户文本从 `runtime.user_text` 读（`handle_user_turn` 入口已回填），
+    不额外开参数：`TurnContext` 目前没有 `user_text` 字段，加字段属响应层（dev-B 写锁），
+    本类只保证「文本在运行时里一定拿得到」。
     """
 
     async def build(
@@ -572,6 +615,9 @@ class TurnService:
         context_builder: ContextBuilderLike | None = None,
         now_provider: Callable[[], datetime] | None = None,
         seen_capacity: int = SEEN_CAPACITY,
+        router: RouterLike | None = None,
+        model_version: str = "",
+        confidence_threshold: float = 0.85,
     ) -> None:
         self._session_factory = session_factory
         self._agent = agent
@@ -587,6 +633,12 @@ class TurnService:
             now_provider if now_provider is not None else (lambda: datetime.now(UTC))
         )
         self._seen_capacity = seen_capacity
+        #: Day 7 A3：三级路由（未注入时行为与 Day 6 完全一致——一直走 Agent）
+        self._router = router
+        #: 写入 `decision_logs.model_version`（装配层传 settings.system_one_model_version）
+        self._model_version = model_version
+        #: 与 Router 同一阈值（澄清判据在 `was_clarified` 侧使用）
+        self._confidence_threshold = confidence_threshold
         self._records: OrderedDict[tuple[str, str], _TurnRecord] = OrderedDict()
 
     # -- 幂等检视面 ------------------------------------------------------
@@ -631,6 +683,9 @@ class TurnService:
             raise ValueError("asr_final must be non-empty ASR final text")
         if not turn_id:
             raise ValueError("turn_id is required")
+        # 文本统一回填运行时：下游（记忆提取 / ContextBuilder 真身）读 `runtime.user_text`，
+        # 不再各自持有第二份入参（dev-B J2 patch）。
+        runtime = replace(runtime, user_text=text)
 
         # 幂等主路径：进程内命中直接返回首次 ResponseHandle，不重复调 LLM
         key = (runtime.device_id or "-", turn_id)
@@ -699,35 +754,71 @@ class TurnService:
                 # ---- 第 3 步：组装上下文 ----
                 context = await self._builder.build(runtime, snapshot, turn_ref)
 
-                # ---- 第 4 步：执行（工具事件经上下文缓冲，结束后回灌 history） ----
-                buffer: list[_PendingEvent] = []
-                token = _pending_agent_events.set(buffer)
-                try:
-                    result = await self._agent.run(
-                        runtime=runtime.identity,
-                        turn_id=turn_id,
-                        user_text=text,
-                        history=runtime.history,
-                        persona=runtime.persona,
-                        now=self._now_provider(),
+                # ---- 第 3.5 步：三级路由（Day 7 A3；规则 → System One → Agent） ----
+                # 位置严格在「上下文已就绪、Agent 未启动」之间：路由需要 thread_id/runtime，
+                # 但绝不能抢在事实落库（第 1/2 步）之前——否则决策日志会指向不存在的轮次。
+                decision: Any | None = None
+                tool_result: Any | None = None
+                if self._router is not None:
+                    decision = await self._router.decide(
+                        text, thread_id=runtime.thread_id, runtime=runtime
                     )
-                finally:
-                    _pending_agent_events.reset(token)
-                for pending in buffer:
-                    await self._history.append_event(
-                        session,
-                        thread_id=runtime.thread_id,
-                        event_type=pending.event_type,
-                        payload=pending.payload,
-                        turn_id=turn_id,
-                        call_id=call_id,
-                    )
+                    # 路由结论先落库（同一事务）：工具再慢也不能让这一轮「查不到走了哪一层」
+                    if not is_generic:
+                        await self._record_decision(session, runtime, text, decision)
+                    if decision.action == "tool":
+                        # 直连工具**只**经 Router → ToolExecutor（G2 唯一入口）
+                        tool_result = await self._router.execute_tool(
+                            decision, runtime=runtime, turn_id=turn_id
+                        )
+                        if tool_result is not None:
+                            await self._append_tool_events(
+                                session, runtime, turn_id, decision, tool_result, call_id
+                            )
 
-                # ---- 第 5 步：先记生成（delivered_text 传 None：此时尚无送达事实，投影只留已送达） ----
+                # ---- 第 4 步：执行（工具事件经上下文缓冲，结束后回灌 history） ----
+                # clarify / escalate 不调 Agent（验收：G1 命中 → Agent 调用 0、工具执行 0）；
+                # tool 有结果时也不调 Agent（同一工具不得出现第二套实现）。
+                short_circuit = self._short_circuit_result(decision, tool_result)
+                if short_circuit is not None:
+                    result = short_circuit
+                else:
+                    buffer: list[_PendingEvent] = []
+                    token = _pending_agent_events.set(buffer)
+                    try:
+                        result = await self._agent.run(
+                            runtime=runtime.identity,
+                            turn_id=turn_id,
+                            user_text=text,
+                            history=runtime.history,
+                            persona=runtime.persona,
+                            now=self._now_provider(),
+                        )
+                    finally:
+                        _pending_agent_events.reset(token)
+                    for pending in buffer:
+                        await self._history.append_event(
+                            session,
+                            thread_id=runtime.thread_id,
+                            event_type=pending.event_type,
+                            payload=pending.payload,
+                            turn_id=turn_id,
+                            call_id=call_id,
+                        )
+
+                # ---- 第 5 步：只发号（生成事实的落库归响应层终态结算，P2-10） ----
+                # 为什么不再调 commit_response：
+                #   1) `response_completed` 的**唯一写口**在响应层（末段 played / interrupt 时
+                #      按同一 response_id 写终态）。A 这里再写一次是双写，只靠 history 层的
+                #      幂等兜住；
+                #   2) 更要紧的是 payload：谁先写谁定 `response_status`。A 在生成时只能写
+                #      `playing`，于是「打断后 status 仍是 playing」——终态对不上（P2-10）。
+                # 生成事实不会丢：响应层结算时用同一 response_id 写 `response_completed`
+                # （generated_text 在响应层手里），投影也由它一并补。
                 response_id = uuid.uuid4().hex
                 if is_generic:
-                    # commit_response 依赖 ConversationTurn 投影（generic 无投影会抛 HistoryError）
-                    # → generic 改直写 response_completed 事件，生成事实仍闭合
+                    # generic 没有 ConversationTurn 投影（commit_response 会抛 HistoryError），
+                    # 直写事件是它**唯一**的写口——不要删。
                     await self._history.append_event(
                         session,
                         thread_id=runtime.thread_id,
@@ -739,15 +830,6 @@ class TurnService:
                         },
                         turn_id=turn_id,
                         response_id=response_id,
-                    )
-                else:
-                    await self._history.commit_response(
-                        session,
-                        turn_id=turn_id,
-                        response_id=response_id,
-                        generated_text=result.text,
-                        delivered_text=None,
-                        status=DELIVERY_STATUS_PLAYING,
                     )
 
                 # ---- 第 6 步：再改状态 ----
@@ -776,6 +858,10 @@ class TurnService:
             escalated_to_agent=True,
             followup_required=result.followup_required,
             followup_reason=result.followup_reason,
+            route_layer=getattr(decision, "route_layer", "agent"),
+            intent=getattr(decision, "intent", "other"),
+            confidence=float(getattr(decision, "confidence", 0.0) or 0.0),
+            clarified=bool(decision is not None and decision.action == "clarify"),
         )
         self._records[key] = _TurnRecord(handle=handle, outcome=outcome)
         while len(self._records) > self._seen_capacity:
@@ -796,6 +882,102 @@ class TurnService:
         )
         return handle
 
+    # -- Day 7 A3：路由结论落库 / 短路结果 / 直连工具事件 --------------------
+
+    async def _record_decision(
+        self,
+        session: AsyncSession,
+        runtime: TurnRuntime,
+        text: str,
+        decision: Any,
+    ) -> None:
+        """写 `decision_logs`（每轮恰好 1 行；失败只降级记录，不影响对话）。"""
+        await _record_decision_row(
+            session,
+            thread_id=runtime.thread_id,
+            elder_id=runtime.elder_id,
+            trace_id=get_trace_id(),
+            input_text=text,
+            decision=decision,
+            model_version=self._model_version,
+        )
+
+    def _short_circuit_result(self, decision: Any, tool_result: Any) -> AgentTurnResult | None:
+        """把路由结论转成「可播报的轮次结果」；返回 None 表示继续走 Agent。
+
+        - `clarify`：用 Router 给的常量话术（**不调 LLM**：澄清本身不该再花 200ms）；
+        - `escalate`：G1 敏感命中，复用安全否决话术（同一句话只说一份）；
+        - `tool`：把 `ToolResult.message` 直接播（失败话术已由 ToolExecutor 四分类给出）。
+        """
+        if decision is None:
+            return None
+        from app.agents.companion import AgentTurnResult  # 局部导入：避免模块级耦合 Agent
+
+        if decision.action == "clarify":
+            return AgentTurnResult(text=decision.clarify_text or "您再说一遍好吗？", degraded=False)
+        if decision.action == "escalate":
+            from app.services.dialogue_service import (
+                SAFETY_VETO_REPLY_TEXT,  # 局部导入：避模块级循环（response_service → dialogue_service）
+            )
+
+            return AgentTurnResult(text=SAFETY_VETO_REPLY_TEXT, degraded=True)
+        if decision.action == "tool":
+            if tool_result is None:
+                # 执行器未装配：不假装查到了，交 Agent 用常识兜住（并留日志）
+                logger.warning(
+                    "route_tool_not_executed_fallback_agent tool=%s",
+                    getattr(decision, "tool_name", "-"),
+                )
+                return None
+            ok = bool(getattr(tool_result, "ok", False))
+            return AgentTurnResult(
+                text=self._tool_speech(decision.tool_name, tool_result),
+                degraded=not ok,
+            )
+        return None
+
+    @staticmethod
+    def _tool_speech(tool_name: str | None, tool_result: Any) -> str:
+        """直连工具的播报文本。`ToolResult.message` 有值直接用（失败四分类都在里面）。"""
+        message = getattr(tool_result, "message", None)
+        if isinstance(message, str) and message:
+            return message
+        data = getattr(tool_result, "data", None) or {}
+        if tool_name == "get_weather" and isinstance(data, dict):
+            city = data.get("city") or "当地"
+            condition = data.get("condition") or ""
+            temperature = data.get("temperature_c")
+            if condition and isinstance(temperature, (int, float)):
+                return f"{city}现在{condition}，气温{round(float(temperature))}度左右。"
+        # 成功但形状不认识：不编数据，如实请长者再问一次
+        return "我查到了，不过没太看懂，您再问我一次好吗？"
+
+    async def _append_tool_events(
+        self,
+        session: AsyncSession,
+        runtime: TurnRuntime,
+        turn_id: str,
+        decision: Any,
+        tool_result: Any,
+        call_id: str | None,
+    ) -> None:
+        """直连工具也写事件流水（与 Agent 路径同一套 12 值枚举，复盘才对得上）。"""
+        status = getattr(tool_result, "status", "failed")
+        event_type = "tool_succeeded" if getattr(tool_result, "ok", False) else "tool_failed"
+        await self._history.append_event(
+            session,
+            thread_id=runtime.thread_id,
+            event_type=event_type,
+            payload={
+                "tool_name": getattr(decision, "tool_name", None),
+                "status": status,
+                "error_class": getattr(tool_result, "error_class", None),
+                "route_layer": getattr(decision, "route_layer", "rule"),
+            },
+            turn_id=turn_id,
+            call_id=call_id,
+        )
+
 
 __all__ = [
     "DELIVERY_STATUS_PLAYING",
@@ -809,6 +991,7 @@ __all__ = [
     "HistoryLike",
     "MemoryStateCenter",
     "MinimalContextBuilder",
+    "RouterLike",
     "StateCenterLike",
     "StateSnapshot",
     "StateVersionConflict",

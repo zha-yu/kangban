@@ -20,6 +20,7 @@ from app.models.conversation import (
     ConversationTurn,
     ToolExecution,
 )
+from app.models.decision import DecisionLog
 from app.models.guardian import GuardianAccount
 from app.models.metrics import Metric
 from app.models.notifications import Notification
@@ -36,6 +37,7 @@ __all__ = [
     "ConversationEvent",
     "ConversationThread",
     "ConversationTurn",
+    "DecisionLog",
     "Device",
     "Elder",
     "ElderGuardian",

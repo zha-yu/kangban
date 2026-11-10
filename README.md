@@ -200,7 +200,7 @@ docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:a
 | 数据库 | `DATABASE_URL` `LANGGRAPH_CHECKPOINT_DATABASE_URL` `LANGGRAPH_CHECKPOINT_SCHEMA` | checkpoint 必须落独立 schema `langgraph` 与独立连接池 |
 | 缓存 | `REDIS_URL` | 短期会话、限流、重复调用检测 |
 | System Two | `LLM_BASE_URL` `LLM_API_KEY` `LLM_MODEL` `LLM_TIMEOUT_SECONDS` | DeepSeek / Qwen 兼容端点，经统一适配器 |
-| System One | `LAYA_ENABLED` `LAYA_BASE_URL` `LAYA_API_KEY` `LAYA_TIMEOUT_MS` `LAYA_CONFIDENCE_THRESHOLD` | 本地 CPU 分类器，阈值默认 0.85 |
+| System One | `SYSTEM_ONE_ENABLED` `SYSTEM_ONE_PROVIDER` `SYSTEM_ONE_BASE_URL` `SYSTEM_ONE_API_KEY` `SYSTEM_ONE_TIMEOUT_MS` `SYSTEM_ONE_CONFIDENCE_THRESHOLD` `SYSTEM_ONE_MODEL_ID` `SYSTEM_ONE_MODEL_PATH` `SYSTEM_ONE_MODEL_VERSION` `SYSTEM_ONE_DEVICE` `SYSTEM_ONE_MAX_CONCURRENCY` | 本地 Laya multilingual 权重 + sidecar，CPU 推理；阈值默认 0.85、超时 200ms。旧的 `LAYA_*` 仍可读但会打一次弃用告警（新代码禁读） |
 | 语音 | `ASR_*` `TTS_*` | 第三方流式服务，教师统一发 key |
 | 实时通话 | `TURN_URL` `TURN_USERNAME` `TURN_CREDENTIAL` `STUN_URL` `WEBRTC_ICE_TIMEOUT_SECONDS` `WEBRTC_VAD_AGGRESSIVENESS` | ICE 超时触发降级；服务端 webrtcvad 兜底判定强度 0~3，默认 3（adhoc-20261106） |
 | 天气 | `WEATHER_API_PROVIDER` `WEATHER_API_KEY` `WEATHER_API_BASE_URL` `WEATHER_CACHE_TTL_SECONDS` | 全系统唯一真实外部接口 |
@@ -267,7 +267,7 @@ wsl -e sh -lc "docker run --rm -v /mnt/e/project_month/silvermate/deploy/nginx.c
 | redis | 6379 | 缓存与限流 |
 | backend（FastAPI + aiortc） | 8000 | `/health` 健康检查；WebSocket 信令 |
 | frontend（nginx） | 80 / 443 | 静态资源 + HTTPS 入口 + 媒体直连 |
-| laya | 7001 | 本地 System One 推理服务 |
+| system-one（sidecar） | 7001 | 本地 Laya multilingual 推理；`GET /health`、`POST /v1/decide`。端口沿用 Day 6 的 laya 口径，未变更 |
 | funasr | 7002 | 本地 ASR 基线（FunASR runtime） |
 | weather-mcp | 7101 | `get_weather` |
 | mock-operations-mcp | 7102 | 工单 / 家属通知 |
