@@ -32,7 +32,7 @@ import json
 import logging
 import re
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict
@@ -507,8 +507,13 @@ class DialogueOrchestrator:
         turn_id: str,
         text: str,
         audio_bytes: bytes | None = None,
+        audio_sink: Callable[[str], Awaitable[bool]] | None = None,
     ) -> DialogueReply | None:
-        """FINAL 文本 → 文本/degraded；空文本与重复 turn 返回 None，零 LLM 调用。"""
+        """FINAL 文本 → 文本/degraded；空文本与重复 turn 返回 None，零 LLM 调用。
+
+        `audio_sink` 仅在 N14 统一出口分支生效：透传给 turn_service →
+        ResponseService.start，注入时段文字随段音频开始流送逐段下发。
+        """
         final_text = text.strip()
         if not device_id or not trace_id or not turn_id:
             return None
@@ -621,6 +626,7 @@ class DialogueOrchestrator:
                         identity=identity,
                         persona=persona,
                         turn_id=turn_id,
+                        audio_sink=audio_sink,
                     )
 
                 return await self._service.respond(
@@ -716,11 +722,13 @@ class DialogueOrchestrator:
         identity: DialogueIdentity,
         persona: PersonaContext | None,
         turn_id: str,
+        audio_sink: Callable[[str], Awaitable[bool]] | None = None,
     ) -> DialogueReply:
         """N14 分支：组装 TurnRuntime → 统一出口七步 → 组装 DialogueReply。
 
         Redis 最近 5 轮只作缓存（读喂上下文、写回本轮）；generic 不读不写，
         读失败退化为空历史并让统一出口补 state_degraded。
+        `audio_sink` 透传统一出口（分节奏下发，见 turn_service.handle_user_turn）。
         """
         # 运行时 import 避环：turn_service → response_service → 本模块（见文件头说明）
         from app.services.turn_service import TurnRuntime
@@ -737,7 +745,7 @@ class DialogueOrchestrator:
             history_degraded=history_degraded,
         )
         handle = await self._turn_service.handle_user_turn(
-            runtime, final_text, call_id=None, turn_id=turn_id
+            runtime, final_text, call_id=None, turn_id=turn_id, audio_sink=audio_sink
         )
         outcome = self._turn_service.outcome_of(turn_id)
         if outcome is None:

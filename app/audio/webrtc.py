@@ -652,19 +652,23 @@ class PlaybackAudioTrack(MediaStreamTrack):
         super().__init__()
         self._queue = queue
         self._pts = 0
+        self._start: float | None = None  # 首帧墙钟锚点（recv 墙钟对齐用）
         self._frame_count = 0
 
     async def recv(self) -> av.AudioFrame:
-        if self.readyState != "live":
-            raise MediaStreamError
-        # 按实时节奏出帧，避免 aiortc 发送器空转占满 CPU。
-        await asyncio.sleep(DOWNLINK_FRAME_MS / 1000)
+        """按实时节奏出帧；节奏用「首帧锚点 + pts 目标时刻」墙钟对齐。
+
+        不能用固定 `sleep(20ms)`：叠加每帧处理/事件循环开销后实际 ~24ms/帧，
+        出帧速率比实时慢 20%，RTP 时间戳与真实时间持续漂移，浏览器 NetEq
+        长期饥饿、连续丢包补偿（PLC）→ 听感为持续电流声、语音不可辨
+        （真机踩坑 2026-11-10：故事语音全程滋滋声）。aiortc 官方
+        AudioStreamTrack.recv 同款锚点算法：wait = start + pts/rate - now，
+        每帧开销被目标时刻吸收，平均出帧速率恰为实时（50 fps）。
+        """
         if self.readyState != "live":
             raise MediaStreamError
 
-        frame = av.AudioFrame(format="s16", layout="mono", samples=DOWNLINK_FRAME_SAMPLES)
-        frame.sample_rate = DOWNLINK_SAMPLE_RATE
-
+        # 先取帧再等目标时刻：帧内容就绪后卡准 pts 对应的墙钟点再交出
         pcm: bytes | None = None
         queue_depth = self._queue.qsize()
         if queue_depth > 0:
@@ -676,12 +680,31 @@ class PlaybackAudioTrack(MediaStreamTrack):
                 and item.sample_count == DOWNLINK_FRAME_SAMPLES
             ):
                 pcm = item.data
+
+        now = time.time()
+        if self._start is None:
+            self._start = now
+        else:
+            self._pts += DOWNLINK_FRAME_SAMPLES
+            wait = self._start + (self._pts / DOWNLINK_SAMPLE_RATE) - now
+            if wait > 0:
+                await asyncio.sleep(wait)
+        if self.readyState != "live":
+            raise MediaStreamError
+
+        frame = av.AudioFrame(format="s16", layout="mono", samples=DOWNLINK_FRAME_SAMPLES)
+        frame.sample_rate = DOWNLINK_SAMPLE_RATE
         if pcm is not None:
             frame.planes[0].update(pcm)
+        else:
+            # PyAV 的 AudioFrame 缓冲区是未初始化内存，静音帧必须显式清零：
+            # 长期运行后内存复用会让空缓冲区携带上一帧的脏数据，重复出帧 =
+            # 恒定嘶声（真机踩坑 2026-11-10：故事播放全程均匀电流声）。
+            # 新进程分配到 OS 清零页时恰好全零，本地短测容易漏掉此坑。
+            frame.planes[0].update(bytes(DOWNLINK_FRAME_BYTES))
 
         frame.pts = self._pts
         frame.time_base = Fraction(1, DOWNLINK_SAMPLE_RATE)
-        self._pts += DOWNLINK_FRAME_SAMPLES
         self._frame_count += 1
 
         # 每 100 帧（≈2 秒）打一行诊断，确认 recv 没有卡死
@@ -2240,6 +2263,20 @@ async def enqueue_tts_for_device(device_id: str, turn_id: str, pcm: bytes) -> bo
     return True
 
 
+def playback_queue_depth_for(device_id: str) -> int | None:
+    """A2 分节奏下发用：读该设备下行播放队列当前深度（只读、不阻塞、不抛异常）。
+
+    分节奏入轨（main.py 的 segment audio sink）据此**等上一段音频排空再入轨下一段**：
+    ① 对齐 contracts §4「段音频开始流送 → 发对应 tts_text」的前端结算序；
+    ② 队列深度恒 ≤ 单段帧数，远离 750 帧(15s)上限，整段拒绝不再触发。
+    无会话返回 None（与 enqueue_tts_for_device 的 None-session 同口径），调用方停止喂轨。
+    """
+    session = _signaling_registry().get_session(device_id)
+    if session is None:
+        return None
+    return session.playback_queue_depth
+
+
 async def speak_for_device(device_id: str, text: str) -> bool:
     """服务端主动语音：合成文本并写入设备下行播放轨（用药触达 E2 用）。
 
@@ -2442,6 +2479,7 @@ __all__ = [
     "enqueue_tts_for_device",
     "handle_signal_message",
     "install_signaling_handler",
+    "playback_queue_depth_for",
     "set_vad_fallback_for_device",
     "speak_for_device",
     "uninstall_signaling_handler",
