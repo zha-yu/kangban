@@ -15,9 +15,11 @@ interface TaskPanelProps {
   command: PadTaskCommand;
   onExit: () => void;
   onHint: (text: string) => void;
+  /** Day 7 L6#8：任务卡片按钮的文本上行（用药确认等），由 App 接到 user_text 发送。 */
+  onAnswer?: (text: string) => void;
 }
 
-export function TaskPanel({ command, onExit, onHint }: TaskPanelProps) {
+export function TaskPanel({ command, onExit, onHint, onAnswer }: TaskPanelProps) {
   const payload = command.payload;
 
   switch (command.kind) {
@@ -30,6 +32,7 @@ export function TaskPanel({ command, onExit, onHint }: TaskPanelProps) {
           data={snapshot}
           onExit={onExit}
           onSubtitle={onHint}
+          onAnswer={onAnswer}
         />
       );
     }

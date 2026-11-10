@@ -11,7 +11,7 @@
  * 不改）——acceptWaveform 异常、120s 零语音心跳、运行期 worker.onerror 一律经
  * onRuntimeError 回调转发上层 sendDiag("vad")，不再只 console.warn；
  * ready 后的 init_error 路径不变（仍抛 VadUnavailableError → 上层上报）。
- * 参数与事件口径不变：adhoc-20261105 §4.2（threshold 0.38 见 worker 文件头 J-D1
+ * 参数与事件口径不变：adhoc-20261105 §4.2（threshold 见 worker 文件头 J-D1，
  * 裁决 / silence 0.8s / minSpeech 0.25s / maxSpeech 30s / window 256 / 16k）。
  */
 

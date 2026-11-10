@@ -8,7 +8,8 @@
    `needs_escalation=True`（A12 的交接位）；
 4. 事件幂等：同 `(plan_id, scheduled_at)` 同内容返回同一 `reminder_id`，异内容抛冲突；
 5. 终态不覆盖：已定终态再写另一个 → `TerminalStateConflict`；
-6. **A12 建单**：`missed_unconfirmed` 落一张 `missed_medication` / yellow 工单，
+6. **A12 建单**：`missed_unconfirmed` 与 `notification_failed`（AC-20，根本没送到）
+   都落一张 `missed_medication` / yellow 工单（2026-11-10 主理人裁决），
    且 `needs_escalation` 与「有没有建成单」互不替代。
 
 checkpointer 用**独立 schema + 独立池**（与生产同一条代码路径）；
@@ -177,7 +178,9 @@ async def test_restart_recovers_without_resending(
         elder_id=seeded["elder_id"],
         deadline="2026-11-09T08:15:00+00:00",
     )
-    assert len(calls) == 1, "首触达投递一次"
+    # L6#9 后每台设备投两条（tts_text + task_command 卡片），计数只看语音触达
+    tts_calls = [(d, m) for d, m in calls if m.get("type") == "tts_text"]
+    assert len(tts_calls) == 1, "首触达投递一次"
 
     # 模拟进程重启：新建图实例，状态只在 checkpointer 里
     revived = build_medication_graph(
@@ -191,7 +194,8 @@ async def test_restart_recovers_without_resending(
 
     attempts = await medication_service.list_attempts(session, reminder_id)
     assert len(attempts) == 1, "恢复后不得把已发过的触达再发一次"
-    assert len(calls) == 1, (
+    tts_after_restart = [(d, m) for d, m in calls if m.get("type") == "tts_text"]
+    assert len(tts_after_restart) == 1, (
         "恢复后不得**再投递**一次——长者会听到同一句提醒两遍。"
         "（record_attempt 的幂等只挡记录，挡不住投递，所以要单独断言投递次数。）"
     )
@@ -205,8 +209,17 @@ async def test_restart_recovers_without_resending(
 async def test_no_answer_retries_then_missed(
     session: AsyncSession, seeded: dict[str, Any], saver: AsyncPostgresSaver
 ) -> None:
+    """送到了但长者始终无回应：四次触达（receipt=voice_dispatched）→ missed_unconfirmed。
+
+    必须绑设备 + 投递成功——不绑设备会落 no_bound_device，AC-20 会把终态判成
+    notification_failed（「根本没送到」），与本测场景（「送到了没吃」）不符。
+    """
+    await _bind_device(session, seeded)
     reminder_id = await _new_event(session, seeded)
-    graph = build_medication_graph(session=session, checkpointer=saver)
+    calls: list[tuple[str, dict[str, Any]]] = []
+    graph = build_medication_graph(
+        session=session, checkpointer=saver, deliver_fn=_fake_deliver(calls, ok=True)
+    )
     await start_medication_task(
         graph,
         reminder_id=reminder_id,
@@ -331,14 +344,20 @@ async def test_reminder_dispatches_to_bound_device(
         deadline="2026-11-09T08:15:00+00:00",
     )
 
-    assert calls == [(str(device.device_id), calls[0][1])], "恰好发给绑定的那台设备"
-    message = calls[0][1]
+    # L6#9 后同发 task_command 卡片：目标设备不变，计数只看语音触达那条
+    tts_msgs = [(d, m) for d, m in calls if m.get("type") == "tts_text"]
+    assert [d for d, _ in tts_msgs] == [str(device.device_id)], "恰好发给绑定的那台设备"
+    message = tts_msgs[0][1]
     assert message["type"] == "tts_text"
     assert "氨氯地平" in message["text"], "话术要带药名（来自 drug_snapshot）"
     assert "response_id" not in message and "epoch" not in message, (
         "主动触达不属于任何回复流，不带 response_id/epoch（契约 §4.1 可选字段）"
     )
     assert tts_calls == [message["text"]], "语音合成的就是下发的那句字幕文本"
+    # 卡片命令与语音触达同 taskId、同设备
+    card_msgs = [(d, m) for d, m in calls if m.get("type") == "task_command"]
+    assert [d for d, _ in card_msgs] == [str(device.device_id)], "卡片同发到绑定设备"
+    assert card_msgs[0][1]["task_id"] == str(reminder_id), "卡片 taskId=reminder_id（前端幂等键）"
 
     attempts = await medication_service.list_attempts(session, reminder_id)
     assert attempts[0]["receipt"] == "voice_dispatched"
@@ -370,10 +389,13 @@ async def test_reminder_without_device_records_no_bound_device(
 async def test_all_devices_offline_still_completes_missed_flow(
     session: AsyncSession, seeded: dict[str, Any], saver: AsyncPostgresSaver
 ) -> None:
-    """设备全离线：每次触达记 device_offline，四次后照样 missed_unconfirmed + 建单。
+    """设备全离线：每次触达记 device_offline，四次后 notification_failed + 建单。
 
-    这条是 E2 接线最要紧的保证：下发失败**不是**放弃治疗的理由——
-    四次触达的语义是「尝试了四次没联系上」，联系不上的记录本身就是证据。
+    AC-20：终态区分「送到了没吃」（missed_unconfirmed）与「根本没送到」
+    （notification_failed），本测是后者。但建单口径两种终态一致（2026-11-10
+    主理人裁决）——没送到更需要护工补送/代确认，不能因为通知失败就没人管。
+    下发失败**不是**放弃治疗的理由：四次触达的语义是「尝试了四次没联系上」，
+    联系不上的记录本身就是证据。
     """
     await _bind_device(session, seeded)
     reminder_id = await _new_event(session, seeded)
@@ -395,10 +417,12 @@ async def test_all_devices_offline_still_completes_missed_flow(
 
     attempts = await medication_service.list_attempts(session, reminder_id)
     assert [a["receipt"] for a in attempts] == ["device_offline"] * MAX_ATTEMPTS
-    assert len(calls) == MAX_ATTEMPTS, "四次触达每次都真实调用了下发"
+    # L6#9 后每台设备每次触达投两条（tts_text + task_command 卡片），计数只看语音触达
+    tts_calls = [(d, m) for d, m in calls if m.get("type") == "tts_text"]
+    assert len(tts_calls) == MAX_ATTEMPTS, "四次触达每次都真实调用了下发（卡片消息不计数）"
 
     event = await medication_service.get_event(session, reminder_id)
-    assert event is not None and event["terminal_state"] == "missed_unconfirmed"
+    assert event is not None and event["terminal_state"] == "notification_failed"
 
     from sqlalchemy import select
 

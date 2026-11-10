@@ -245,6 +245,20 @@ function MainScreen({
           pushSubtitle("身份确认好啦，请再讲一遍。", "notice");
         }
       },
+      // Day 7 L6#9：主动触达任务卡片 → 任务总线打开面板（同 taskId 幂等，不重启）
+      onTaskCommand: (msg) => {
+        emitPadTask({
+          type: "open",
+          command: {
+            taskId: msg.task_id,
+            kind: msg.kind,
+            source: msg.source,
+            hint: msg.hint,
+            payload: msg.payload,
+            issuedAt: msg.issued_at,
+          },
+        });
+      },
       audioEl: audioRef.current,
     });
     clientRef.current = client;
@@ -399,6 +413,10 @@ function MainScreen({
               command={activeTask}
               onExit={closeTask}
               onHint={setTaskHint}
+              onAnswer={(text) => {
+                // Day 7 L6#8：卡片按钮 → user_text 上行（词表内口语，ASR FINAL 同路）
+                clientRef.current?.sendUserText(text);
+              }}
             />
           </>
         ) : showTranscript ? (

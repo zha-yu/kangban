@@ -1,0 +1,37 @@
+# build context 收口（AGENTS §5：密钥与无关大文件不进镜像层/上下文）。
+# 仓库根是 mock-operations 镜像的 build context，必须排除 .venv / 前端产物 / 密钥。
+
+# 密钥与本地环境（红线：.env 绝不进镜像）
+.env
+.env.*
+!.env.example
+
+# 虚拟环境与缓存
+.venv/
+.ruff_cache/
+.pytest_cache/
+__pycache__/
+*.pyc
+.coverage
+htmlcov/
+
+# 前端与媒体（镜像不需要）
+frontend/
+node_modules/
+*.vrm
+*.glb
+docs/
+eval/
+spikes/
+tests/
+alembic/
+scripts/
+
+# 版本控制与 IDE
+.git/
+.vscode/
+.trae/
+.githooks/
+
+# 部署件里 mock-operations 只需要自身目录；voiceprint 有独立 build context
+deploy/voiceprint/

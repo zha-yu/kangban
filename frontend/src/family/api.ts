@@ -265,8 +265,14 @@ export function logout(): void {
 /**
  * S-11：后端 daily_reports / notifications 属 Day 8 批次尚未交付，
  * 前端 Mock 先行——本常量切 false 后走真实接口，联调通过后删除 mock 分支。
+ *
+ * 2026-11-10：N1/N4（notifications）后端已交付（app/api/family.py，P8 提前件），
+ * `NOTIFICATIONS_LIVE` 单独放行；F0/F1/F2（绑定长者 / 日报）仍走 Mock。
  */
 export const USE_MOCK = true;
+
+/** N1/N4 真实接口已交付的开关（与 USE_MOCK 独立；联调通过后并入 USE_MOCK=false） */
+export const NOTIFICATIONS_LIVE = true;
 
 // 业务类型与 Mock 数据已迁至 ./data-source.ts（N6）；本文件只保留类型再导出与双轨切换。
 
@@ -316,8 +322,8 @@ export async function fetchReport(reportId: string): Promise<DailyReportDetail> 
 }
 
 export async function fetchNotifications(): Promise<FamilyNotification[]> {
-  if (USE_MOCK) return mockNotifications();
-  // 待冻结：N1 GET /api/family/notifications（分页 1/20，上限 100；unread_only 默认 false）
+  if (USE_MOCK && !NOTIFICATIONS_LIVE) return mockNotifications();
+  // N1 已交付（app/api/family.py，2026-11-10 P8 提前件）：分页 1 起、上限 100
   const res = await authedFetch("/api/family/notifications?page=1&page_size=100&unread_only=false");
   await ensureOk(res);
   const data = (await res.json()) as Paged<FamilyNotification>;
@@ -326,12 +332,12 @@ export async function fetchNotifications(): Promise<FamilyNotification[]> {
 
 /** N4 标记已读（幂等：重复调用返回原 read_at，且只写 read_at、不动 status） */
 export async function markNotificationRead(notificationId: string): Promise<string> {
-  if (USE_MOCK) {
+  if (USE_MOCK && !NOTIFICATIONS_LIVE) {
     const readAt = mockMarkNotificationRead(notificationId);
     if (!readAt) throw new ApiError("invalid", "通知不存在或已删除");
     return readAt;
   }
-  // 待冻结：N4 POST /api/family/notifications/{notification_id}/read
+  // N4 已交付（app/api/family.py）：只写 read_at、不动 status；越权与不存在同口径 404
   const res = await authedFetch(
     `/api/family/notifications/${encodeURIComponent(notificationId)}/read`,
     { method: "POST" },
