@@ -15,16 +15,22 @@ DB 不可用时 authoritative_facts / relevant_memories 层自动降级为空 + 
 from __future__ import annotations
 
 import datetime as dt
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.context import (
     ContextBuilderConfig,
+    DialogueIdentity,
     _assemble_active_task,
     _assemble_waiting_for_binding,
     _boundary_wrap,
     _estimate_tokens,
+    _history_messages_from_views,
+    _older_summary_from_views,
+    _split_memory_rows,
     build_turn_context,
 )
 from app.services.state_service import (
@@ -162,9 +168,7 @@ class TestBuildTurnContext:
     async def test_generic_identity_uses_generic_prompt(self) -> None:
         from app.core.context import DialogueIdentity
 
-        identity = DialogueIdentity(
-            source="generic", elder_id=None, display_name=None
-        )
+        identity = DialogueIdentity(source="generic", elder_id=None, display_name=None)
         ctx = await build_turn_context(
             identity=identity,
             user_text="你好",
@@ -335,6 +339,238 @@ class TestBuildTurnContextExample:
         assert any("当前时间" in t for t in system_contents)  # runtime_info
         assert any("当前任务进行中" in t for t in system_contents)  # active_task
         assert any("任务绑定提示" in t for t in system_contents)  # waiting_for
+
+
+# ------------------------------------------------------------------ Day 7 B2-1 契约（P1-2 / P2-16~18/21 / P3-35）
+
+
+def _turn(
+    user_text: str | None = "吃了",
+    assistant_delivered_text: str | None = None,
+    status: str = "interrupted",
+) -> SimpleNamespace:
+    """构造 TurnView 形状的轮次（history_service 的冻结 dataclass 字段子集）。"""
+    return SimpleNamespace(
+        user_text=user_text,
+        assistant_delivered_text=assistant_delivered_text,
+        status=status,
+    )
+
+
+class TestDay7NullSafety:
+    """P1-2：空送达/打断组合不崩，LLM 消息 content 永不为 None。"""
+
+    def test_interrupted_with_null_delivered_does_not_crash(self) -> None:
+        msgs = _history_messages_from_views([_turn()])
+        assert msgs[1]["role"] == "assistant"
+        # 空文本不拼打断标记，绝不抛 TypeError
+        assert msgs[1]["content"] == ""
+
+    def test_interrupted_with_text_appends_marker_once(self) -> None:
+        msgs = _history_messages_from_views(
+            [_turn(assistant_delivered_text="今天天气不错", status="interrupted")]
+        )
+        assert msgs[1]["content"].startswith("今天天气不错")
+        assert msgs[1]["content"].count("打断") == 1
+
+    def test_completed_keeps_delivered_without_marker(self) -> None:
+        msgs = _history_messages_from_views(
+            [_turn(assistant_delivered_text="睡了个好觉", status="completed")]
+        )
+        assert msgs[1]["content"] == "睡了个好觉"
+
+    def test_llm_messages_never_content_null(self) -> None:
+        # user_text / assistant_delivered_text 同时为 None 也不产生 None content
+        msgs = _history_messages_from_views(
+            [_turn(user_text=None, assistant_delivered_text=None, status="interrupted")]
+        )
+        assert all(isinstance(m["content"], str) for m in msgs)
+        assert all(m["content"] is not None for m in msgs)
+
+    def test_older_summary_handles_null_texts(self) -> None:
+        text = _older_summary_from_views([_turn(user_text=None)])
+        assert "长者说" in text
+
+
+class TestDay7GenericShortCircuit:
+    """P2-16：generic 轮短路 waiting_for 任务绑定。"""
+
+    async def test_generic_turn_skips_waiting_for_binding(
+        self, medication_waiting_snapshot: StateSnapshot
+    ) -> None:
+        identity = DialogueIdentity(source="generic", elder_id=None)
+        ctx = await build_turn_context(
+            identity=identity,
+            user_text="你好",
+            thread_id="t_gen_med",
+            state_snapshot=medication_waiting_snapshot,
+        )
+        assert not any("任务绑定提示" in m["content"] for m in ctx.messages)
+
+    async def test_personal_turn_keeps_waiting_for_binding(
+        self, medication_waiting_snapshot: StateSnapshot
+    ) -> None:
+        identity = DialogueIdentity(elder_id="e1", source="voice", display_name="X")
+        ctx = await build_turn_context(
+            identity=identity,
+            user_text="嗯",
+            thread_id="t_med_bind",
+            state_snapshot=medication_waiting_snapshot,
+        )
+        assert any("任务绑定提示" in m["content"] for m in ctx.messages)
+
+
+class TestDay7BudgetAccounting:
+    """P2-18：history_turns 与 waiting_for 计入 budget_used；token 口径可复算。"""
+
+    async def test_budget_counts_history_and_waiting_for(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        medication_waiting_snapshot: StateSnapshot,
+    ) -> None:
+        identity = DialogueIdentity(elder_id="e1", source="voice", display_name="X")
+
+        async def fake_read_turns(session=None, *, thread_id, elder_id=None, limit=8):
+            return holder["turns"]
+
+        holder: dict[str, list] = {"turns": []}
+        monkeypatch.setattr("app.services.history_service.read_turns", fake_read_turns)
+
+        # 基线：带同一 snapshot（active_task/waiting 层相同），仅历史为空（holder 为空）
+        baseline = await build_turn_context(
+            identity=identity,
+            user_text="你好",
+            thread_id="t_budget_base",
+            state_snapshot=medication_waiting_snapshot,
+        )
+        # 注入历史后再构建
+        holder["turns"] = [
+            _turn(user_text="昨晚睡得好吗", assistant_delivered_text="还不错", status="completed")
+        ]
+        ctx = await build_turn_context(
+            identity=identity,
+            user_text="嗯",
+            thread_id="t_budget_hist",
+            state_snapshot=medication_waiting_snapshot,
+        )
+
+        waiting_text = _assemble_waiting_for_binding(medication_waiting_snapshot)
+        history_msgs = _history_messages_from_views(holder["turns"])
+        expected = (
+            baseline.budget_used_tokens
+            # 基线历史读取为空：ctx 里 older_summary 层与历史消息两条都新增
+            + _estimate_tokens(_older_summary_from_views(holder["turns"]))
+            + sum(_estimate_tokens(m["content"]) for m in history_msgs)
+        )
+        assert waiting_text  # waiting_for 确实非空且已计入基线
+        assert ctx.budget_used_tokens == expected
+
+    def test_estimate_tokens_consistent(self) -> None:
+        # 口径可复算：max(1, len//2)（非空文本）
+        for text in ("a", "ab", "你好", "你好世界", "x" * 101):
+            assert _estimate_tokens(text) == max(1, len(text) // 2)
+
+
+class TestDay7MemoryDedup:
+    """P2-21：memories/facts 单次查询切分 + 跨层去重；P3-35：零记忆不误报 degraded。"""
+
+    @staticmethod
+    def _chunk(cid, importance, last_accessed=None) -> SimpleNamespace:
+        return SimpleNamespace(
+            chunk_id=cid,
+            content=f"记忆{cid}",
+            confidence=0.9,
+            importance=importance,
+            last_accessed=last_accessed,
+        )
+
+    def test_split_memory_rows_dedup_across_layers(self) -> None:
+        import datetime as _dt
+
+        rows = [
+            self._chunk("c1", 0.9, _dt.datetime(2026, 11, 9, 10, 0)),
+            self._chunk("c2", 0.8, _dt.datetime(2026, 11, 9, 11, 0)),
+            self._chunk("c3", 0.7, _dt.datetime(2026, 11, 9, 12, 0)),
+            self._chunk("c4", 0.6, _dt.datetime(2026, 11, 9, 13, 0)),
+        ]
+        cfg = ContextBuilderConfig(max_memories=2, max_authoritative_facts=1)
+        facts, memories = _split_memory_rows(rows, cfg)
+        # facts 按 importance 取前 1
+        assert [r.chunk_id for r in facts] == ["c1"]
+        # memories 从同一批行里取、跨层排除 facts 已占用的 chunk，按 last_accessed 最近优先
+        assert [r.chunk_id for r in memories] == ["c4", "c3"]
+        assert "c1" not in [r.chunk_id for r in memories]
+
+    def test_split_memory_rows_empty(self) -> None:
+        cfg = ContextBuilderConfig()
+        facts, memories = _split_memory_rows([], cfg)
+        assert facts == []
+        assert memories == []
+
+    async def test_zero_memory_success_not_degraded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        identity = DialogueIdentity(elder_id="e1", source="voice", display_name="X")
+
+        class _EmptySession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def execute(self, stmt):
+                class _R:
+                    def scalars(self):
+                        class _S:
+                            def all(self):
+                                return []
+
+                        return _S()
+
+                return _R()
+
+        monkeypatch.setattr("app.db.session_factory", lambda: _EmptySession())
+        ctx = await build_turn_context(identity=identity, user_text="你好", thread_id="t_zero_mem")
+        assert "authoritative_facts" not in ctx.degraded_layers
+        assert "relevant_memories" not in ctx.degraded_layers
+
+    async def test_memory_query_failure_marks_degraded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        identity = DialogueIdentity(elder_id="e1", source="voice", display_name="X")
+
+        class _BrokenSession:
+            async def __aenter__(self):
+                raise SQLAlchemyError("db down")
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr("app.db.session_factory", lambda: _BrokenSession())
+        ctx = await build_turn_context(
+            identity=identity, user_text="你好", thread_id="t_broken_mem"
+        )
+        assert "authoritative_facts" in ctx.degraded_layers
+        assert "relevant_memories" in ctx.degraded_layers
+
+
+class TestDay7HistorySingleRead:
+    """P2-21：每轮 read_turns 只调 1 次，摘要与历史共用同一批数据。"""
+
+    async def test_history_read_called_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        identity = DialogueIdentity(elder_id="e1", source="voice", display_name="X")
+        calls: list[int] = []
+        turns = [_turn(user_text="早上好", assistant_delivered_text="早上好呀", status="completed")]
+
+        async def counting_read_turns(session=None, *, thread_id, elder_id=None, limit=8):
+            calls.append(1)
+            return turns
+
+        monkeypatch.setattr("app.services.history_service.read_turns", counting_read_turns)
+        ctx = await build_turn_context(identity=identity, user_text="嗯", thread_id="t_once")
+        assert len(calls) == 1
+        # 摘要与历史都来自同一批数据
+        assert any("早上好呀" in m["content"] for m in ctx.messages)
+        assert any("长者说" in m["content"] for m in ctx.messages)
 
 
 __all__ = []

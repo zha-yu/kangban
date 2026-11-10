@@ -15,10 +15,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -234,7 +235,9 @@ async def insert_candidate(
         if existing is not None:
             if str(existing.object_value) == candidate.object_value:
                 # 值完全相同 → 幂等跳过
-                raise MemoryInsertSkipped(candidate.elder_id, candidate.subject, candidate.predicate)
+                raise MemoryInsertSkipped(
+                    candidate.elder_id, candidate.subject, candidate.predicate
+                )
             # 值不同 → 新插一条 + 打日志（不覆盖旧条目！）
             logger.info(
                 "memory_candidate_pending",
@@ -290,14 +293,15 @@ async def recall_active_chunks(
     limit: int = 5,
     min_importance: float | None = None,
     session: AsyncSession | None = None,
-) -> list[object]:
+) -> list[Any]:
     """召回：闸门② + 有效期过滤 → 返回 status='active' 的条目。
 
     任务卡 §3.3 第 4 条 + PRD FR-MEM-05 闸门②：
         WHERE elder_id=:runtime.elder_id
           AND status='active'
           AND (valid_to IS NULL OR valid_to > now())
-    Day 6 骨架：ORDER BY importance DESC；Day 7 接 pgvector 后替换为向量相似度排序。
+    Day 6 骨架：ORDER BY importance DESC；Day 8 接 pgvector 后替换为向量相似度排序，
+    届时把 `list[Any]` 收紧为 ORM 行类型。
     """
     from app.models.memory import MemoryChunk
 
@@ -369,11 +373,152 @@ def _validate_candidate(candidate: MemoryCandidate) -> None:
         raise MemoryValidationError("object_value must be non-empty")
 
 
+# ------------------------------------------------------------------ Day 7 B2-3：生产接线
+
+
+class MemoryExtractionPort(Protocol):
+    """B1 回合终态结算持有的记忆提取端口（总收口时由 stub 切换到真实现）。
+
+    B1 侧依赖此 Protocol 解耦：终态结算只调 `extract_after_turn`，
+    不感知模板匹配/入库细节；本日按裁决 B1 用 stub，Step 7 统一接真端口。
+    """
+
+    async def extract_after_turn(
+        self,
+        *,
+        elder_id: str | None,
+        thread_id: str,
+        turn_id: str,
+        user_text: str,
+        assistant_text: str,
+    ) -> int: ...
+
+
+# 后台任务引用集：create_task 的返回值必须持引用，否则可能被 GC（asyncio 文档明确警告）
+_BACKGROUND_TASKS: set[asyncio.Task[int]] = set()
+
+
+async def extract_after_turn(
+    *,
+    elder_id: str | None,
+    thread_id: str,
+    turn_id: str,
+    user_text: str,
+    assistant_text: str,
+) -> int:
+    """**单轮记忆提取生产入口**（B2-3）：回合结算后调用，提取 preference 候选并入库。
+
+    - generic / 无 elder_id → 直接返回 0（闸门②，不触发任何查询）；
+    - 返回**成功入库**的候选数（幂等跳过不计入）；
+    - 后台任务纪律：提取/入库失败只记日志（`logger.exception`），**不抛**——
+      记忆提取是有意为之的尽力而为，绝不让回合终态因它失败。
+    """
+    if not elder_id or not elder_id.strip():
+        return 0
+    try:
+        candidates = await extract_preference_candidates(
+            elder_id=elder_id,
+            is_generic=False,
+            turns=[
+                {
+                    "user": user_text or "",
+                    "assistant": assistant_text or "",
+                    "turn_id": turn_id,
+                }
+            ],
+        )
+    except Exception:  # 后台容错：有意吞掉一切提取异常
+        logger.exception(
+            "memory_extract_after_turn_failed",
+            extra={"thread_id": thread_id, "turn_id": turn_id},
+        )
+        return 0
+
+    inserted = 0
+    for candidate in candidates:
+        try:
+            await insert_candidate(candidate)
+            inserted += 1
+        except MemoryInsertSkipped:
+            # 同键值同 → 幂等跳过（不算失败，也不计入插入数）
+            pass
+        except Exception:  # 后台容错：单条失败不影响其余候选
+            logger.exception(
+                "memory_insert_after_turn_failed",
+                extra={
+                    "thread_id": thread_id,
+                    "turn_id": turn_id,
+                    "predicate": candidate.predicate,
+                },
+            )
+    return inserted
+
+
+def schedule_memory_extraction(
+    *,
+    elder_id: str | None,
+    thread_id: str,
+    turn_id: str,
+    user_text: str,
+    assistant_text: str,
+) -> None:
+    """**后台触发**记忆提取（B1 终态结算的调用入口）。
+
+    `asyncio.create_task` 立即返回，不阻塞首包（验收口径：<50ms）；
+    任务引用存入模块级集合防 GC，done 回调自动清理。
+    """
+    task = asyncio.get_running_loop().create_task(
+        extract_after_turn(
+            elder_id=elder_id,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            user_text=user_text,
+            assistant_text=assistant_text,
+        )
+    )
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+
+async def recall_for_turn(
+    *,
+    elder_id: str | None,
+    query: str,
+    limit: int = 5,
+) -> list[str]:
+    """**C1 交接契约**：`memory_recall` 工具的单轮召回入口。
+
+    签名冻结：`recall_for_turn(*, elder_id, query, limit=5) -> list[str]`；
+    返回 chunk 文本列表（C1 包成 `ToolResult(data={"notes": [...]})`）。
+
+    - 闸门②：generic / 无 elder_id → 空列表，不触发任何查询；
+    - 有效性：强制 `status='active'` + 有效期过滤（复用 `recall_active_chunks`）；
+    - `query` 本日不参与排序（pgvector 向量召回留后续迭代），仅作入参占位
+      保证 C1 联调签名稳定；
+    - 存储故障 → 空列表 + 日志（记忆召回是尽力而为，绝不让回合失败）。
+    """
+    if not elder_id or not elder_id.strip():
+        return []
+    try:
+        rows = await recall_active_chunks(elder_id=elder_id, is_generic=False, limit=limit)
+    except Exception:  # 召回容错：与 extract 后台纪律一致
+        logger.exception(
+            "memory_recall_for_turn_failed",
+            extra={"elder_id": elder_id, "query_len": len(query or "")},
+        )
+        return []
+    return [str(row.content) for row in rows if getattr(row, "content", None)]
+
+
 __all__ = [
     "MemoryCandidate",
+    "MemoryExtractionPort",
     "MemoryInsertSkipped",
     "MemoryValidationError",
+    "extract_after_turn",
     "extract_preference_candidates",
     "insert_candidate",
     "recall_active_chunks",
+    "recall_for_turn",
+    "schedule_memory_extraction",
 ]
