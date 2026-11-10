@@ -20,6 +20,7 @@
 
 | 计划 | 状态 |
 | --- | --- |
+| `docs/plans/day07/a2-延迟复测清单.md` | ❔ 待执行 |
 | `docs/plans/day07/d-推进计划-pad可靠性改绑联调.md` | 🚧 进行中 |
 | `docs/plans/day07/d-联调记录.md` | 🚧 进行中 |
 | `docs/plans/day07/dev-a-prompt-三级路由.md` | 📝 草稿 |
