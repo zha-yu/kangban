@@ -111,7 +111,9 @@ FRAME_BYTES: Final[int] = (
 )
 
 # ---------------------------- FunASR 2pass 协议口径 ----------------------------
-FUNASR_DEFAULT_URL: Final[str] = "wss://localhost:7002"  # 7001 已给 system-one（Laya sidecar），见 README §6.2
+FUNASR_DEFAULT_URL: Final[str] = (
+    "wss://localhost:7002"  # 7001 已给 system-one（Laya sidecar），见 README §6.2
+)
 # 为什么是 wss：FunASR runtime 镜像默认开 TLS 并内置自签证书（容器启动日志 "SSL is opened!"，
 # certfile ../../../ssl_key/server.crt）。用 ws:// 连它会直接被关掉，报 "did not receive a valid HTTP response"。
 # 自签证书要配 ASR_INSECURE=true 才连得上；正式环境换真证书并关掉该开关。

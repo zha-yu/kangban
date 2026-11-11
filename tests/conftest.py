@@ -115,9 +115,7 @@ async def db_engine(_test_db_bootstrap: bool) -> AsyncIterator[AsyncEngine]:
     回滚隔离，独立测试库零残留。引擎生命周期与模块事件循环严格同步（P-03 根治）。
     """
     if not _test_db_bootstrap:
-        pytest.skip(
-            f"PostgreSQL 不可达（{_test_database_url(get_settings())}），跳过数据库用例"
-        )
+        pytest.skip(f"PostgreSQL 不可达（{_test_database_url(get_settings())}），跳过数据库用例")
     engine = create_async_engine(_test_database_url(get_settings()), pool_pre_ping=True)
     try:
         yield engine

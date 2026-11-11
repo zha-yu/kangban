@@ -278,9 +278,7 @@ async def verify_session_identity(
     # 3. 无音频首轮（pad 刚上线、用户还没开口）→ 直接开 device 终态 thread
     #    信任设备绑定，后续 utterance 直接沿用当前 thread（静默复检已按 TD v1.9
     #    移除，会话内不再换人检测）。避免 pad 启动默认态不必要地多一次 identity_ask。
-    logger.info(
-        "无音频首轮，开 device thread（device=%s, elder=%s）", device_id, elder_id
-    )
+    logger.info("无音频首轮，开 device thread（device=%s, elder=%s）", device_id, elder_id)
     opened = await _open_thread(
         session,
         device_id=device_id,

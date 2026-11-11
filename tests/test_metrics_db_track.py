@@ -140,7 +140,9 @@ class TestElderIdFallback:
     _ELDER_ID = "22222222-2222-2222-2222-222222222222"
 
     def test_falls_back_to_context_identity(
-        self, stub: _StubRecorder, trace  # type: ignore[no-untyped-def]
+        self,
+        stub: _StubRecorder,
+        trace,  # type: ignore[no-untyped-def]
     ) -> None:
         from app.core.runtime_context import Identity, identity_scope
 
@@ -150,7 +152,9 @@ class TestElderIdFallback:
         assert stub.rows[0]["elder_id"] == self._ELDER_ID
 
     def test_explicit_elder_id_wins(
-        self, stub: _StubRecorder, trace  # type: ignore[no-untyped-def]
+        self,
+        stub: _StubRecorder,
+        trace,  # type: ignore[no-untyped-def]
     ) -> None:
         from app.core.runtime_context import Identity, identity_scope
 
@@ -160,7 +164,9 @@ class TestElderIdFallback:
         assert stub.rows[0]["elder_id"] == "elder-explicit"
 
     def test_staff_identity_keeps_none(
-        self, stub: _StubRecorder, trace  # type: ignore[no-untyped-def]
+        self,
+        stub: _StubRecorder,
+        trace,  # type: ignore[no-untyped-def]
     ) -> None:
         from app.core.runtime_context import Identity, identity_scope
 

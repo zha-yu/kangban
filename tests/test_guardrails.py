@@ -18,9 +18,9 @@ from app.agents import GuardrailDecision, Guardrails
 # 测试夹具：默认参数对齐 config.py 常量（AGENTS §7 / PRD FR-DLG-10）
 # ---------------------------------------------------------------------------
 
-MAX = 8           # max_tool_calls_per_turn
-WINDOW = 60       # tool_repeat_window_seconds
-THRESHOLD = 3     # tool_repeat_break_threshold
+MAX = 8  # max_tool_calls_per_turn
+WINDOW = 60  # tool_repeat_window_seconds
+THRESHOLD = 3  # tool_repeat_break_threshold
 
 
 @pytest.fixture
@@ -35,6 +35,7 @@ def gr() -> Guardrails:
 # ---------------------------------------------------------------------------
 # case 1：第 9 次调用被拒（MAX_TOOL_CALLS_PER_TURN=8）
 # ---------------------------------------------------------------------------
+
 
 def test_max_tool_calls_rejected_on_9th(gr: Guardrails) -> None:
     """同一轮内 8 次 Allow，第 9 次 Deny。"""
@@ -51,6 +52,7 @@ def test_max_tool_calls_rejected_on_9th(gr: Guardrails) -> None:
 # case 2：同 Tool 60s 内第 3 次熔断
 # ---------------------------------------------------------------------------
 
+
 def test_same_tool_breaker_3rd_within_window(gr: Guardrails) -> None:
     """同 tool_name 连续 3 次，第 3 次 Deny。"""
     for _ in range(2):
@@ -65,6 +67,7 @@ def test_same_tool_breaker_3rd_within_window(gr: Guardrails) -> None:
 # ---------------------------------------------------------------------------
 # case 3：窗口过期后计数复位
 # ---------------------------------------------------------------------------
+
 
 def test_breaker_resets_after_window_expires(gr: Guardrails) -> None:
     """熔断触发后，时间推进到窗口外，下一次又 Allow。"""
@@ -85,6 +88,7 @@ def test_breaker_resets_after_window_expires(gr: Guardrails) -> None:
 # ---------------------------------------------------------------------------
 # case 4：相同参数短路（不消耗预算）
 # ---------------------------------------------------------------------------
+
 
 def test_same_args_short_circuit_does_not_consume_budget(gr: Guardrails) -> None:
     """相同 tool_name + 相同 args 连续调用，第二次不消耗 _turn_total。
@@ -113,12 +117,15 @@ def test_same_args_short_circuit_does_not_consume_budget(gr: Guardrails) -> None
 # case 5：常量取值与 PRD / AGENTS §7 文字一致
 # ---------------------------------------------------------------------------
 
+
 def test_constant_values_match_prd() -> None:
     """构造参数断言硬约束值，防私自篡改（AGENTS §7 写死在常量里）。"""
     from app.core.config import get_settings
 
     s = get_settings()
-    assert s.max_tool_calls_per_turn == 8, "PRD FR-DLG-10 / AGENTS §7 写死 MAX_TOOL_CALLS_PER_TURN=8"
+    assert s.max_tool_calls_per_turn == 8, (
+        "PRD FR-DLG-10 / AGENTS §7 写死 MAX_TOOL_CALLS_PER_TURN=8"
+    )
     assert s.tool_repeat_window_seconds == 60, "AGENTS §7 写死窗口 60s"
     assert s.tool_repeat_break_threshold == 3, "AGENTS §7 写死熔断阈值 3"
 
@@ -126,6 +133,7 @@ def test_constant_values_match_prd() -> None:
 # ---------------------------------------------------------------------------
 # 附加：reset() 清空所有状态
 # ---------------------------------------------------------------------------
+
 
 def test_reset_clears_all_state(gr: Guardrails) -> None:
     gr.check("weather", args={"city": "北京"})
@@ -145,6 +153,7 @@ def test_reset_clears_all_state(gr: Guardrails) -> None:
 # T1（并发安全）：asyncio 协程并发 check（单线程 asyncio 下安全）
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_concurrent_checks_are_safe(gr: Guardrails) -> None:
     """多个协程并发调 check，计数仍正确（asyncio 单线程协程不会在
@@ -160,9 +169,7 @@ async def test_concurrent_checks_are_safe(gr: Guardrails) -> None:
 
     # Phase 1：5 个 weather 协程并发（不同 args 避免短路放行）
     # weather 前 2 次 Allow，第 3 次熔断 Deny，后续 2 次继续 Deny
-    weather_tasks = [
-        one_check("weather", args={"city": f"北京_{i}"}) for i in range(5)
-    ]
+    weather_tasks = [one_check("weather", args={"city": f"北京_{i}"}) for i in range(5)]
     weather_results = list(await asyncio.gather(*weather_tasks))
 
     # weather：前 2 次 Allow，后 3 次 Deny（熔断）
@@ -172,10 +179,7 @@ async def test_concurrent_checks_are_safe(gr: Guardrails) -> None:
     # Phase 2：weather 已熔断，但不同 tool_name 继续放行
     # 注意：熔断是 per-tool 的，所以 Phase 2 用不同 tool_name 避免各自也触发熔断
     phase2_tools = ["llm_search", "weather_query", "api_call"]
-    llm_tasks = [
-        one_check(name, args={"query": f"q{i}"})
-        for i, name in enumerate(phase2_tools)
-    ]
+    llm_tasks = [one_check(name, args={"query": f"q{i}"}) for i, name in enumerate(phase2_tools)]
     llm_results = list(await asyncio.gather(*llm_tasks))
 
     # 全部 Allow（每个 tool 只调了 1 次，未达熔断阈值）
@@ -185,14 +189,13 @@ async def test_concurrent_checks_are_safe(gr: Guardrails) -> None:
 
     # _turn_total = 2(weather 放行) + 3(Phase 2 放行) = 5
     # 熔断 Deny 的 weather 不扣预算
-    assert gr._turn_total == 5, (
-        f"_turn_total 应为 5，实际 {gr._turn_total}"
-    )
+    assert gr._turn_total == 5, f"_turn_total 应为 5，实际 {gr._turn_total}"
 
 
 # ---------------------------------------------------------------------------
 # T2（熔断不阻塞其他 tool）
 # ---------------------------------------------------------------------------
+
 
 def test_breaker_only_blocks_same_tool(gr: Guardrails) -> None:
     """weather 触发熔断后，llm_search 应该继续放行。"""
@@ -215,6 +218,7 @@ def test_breaker_only_blocks_same_tool(gr: Guardrails) -> None:
 # ---------------------------------------------------------------------------
 # T3（预算优先级高于熔断）
 # ---------------------------------------------------------------------------
+
 
 def test_budget_trumps_breaker(gr: Guardrails) -> None:
     """同一 turn 内预算先耗尽时，即使熔断条件也满足，应该返回预算拒而不是熔断拒。

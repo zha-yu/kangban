@@ -64,8 +64,12 @@ class MediaLibrary(Base):
         Text(), nullable=False, comment="类型：opera 戏曲 / movie 老电影（电影 P2）"
     )
     title: Mapped[str] = mapped_column(Text(), nullable=False, comment="标题")
-    genre: Mapped[str | None] = mapped_column(Text(), nullable=True, comment="剧种/类型（如 越剧/京剧/剧情）")
-    era: Mapped[str | None] = mapped_column(Text(), nullable=True, comment="年代（如 1950s/文革后/近代）")
+    genre: Mapped[str | None] = mapped_column(
+        Text(), nullable=True, comment="剧种/类型（如 越剧/京剧/剧情）"
+    )
+    era: Mapped[str | None] = mapped_column(
+        Text(), nullable=True, comment="年代（如 1950s/文革后/近代）"
+    )
     artist: Mapped[str | None] = mapped_column(Text(), nullable=True, comment="演员/主演")
     media_url: Mapped[str] = mapped_column(
         Text(),

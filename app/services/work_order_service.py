@@ -483,9 +483,7 @@ async def _load_transition_rows(
     return {k: tuple(v) for k, v in grouped.items()}
 
 
-async def list_work_orders(
-    session: AsyncSession, *, limit: int = 500
-) -> list[WorkOrderRow]:
+async def list_work_orders(session: AsyncSession, *, limit: int = 500) -> list[WorkOrderRow]:
     """看板列表（Mock 前端口径：一次返回全量，筛选/红档置顶在页面层做）。
 
     长者用 `OUTER JOIN`：长者被归档不该让工单在看板上消失（FR-ALT-02 全程留痕），
@@ -509,7 +507,9 @@ async def list_work_orders(
     transition_map = await _load_transition_rows(session, [o.order_id for o, _, _, _ in rows])
     return [
         WorkOrderRow(
-            order=order, elder_name=elder_name, room_no=room_no,
+            order=order,
+            elder_name=elder_name,
+            room_no=room_no,
             assignee_name=assignee_name,
             transitions=transition_map.get(order.order_id, ()),
         )
@@ -517,9 +517,7 @@ async def list_work_orders(
     ]
 
 
-async def get_work_order(
-    session: AsyncSession, *, order_id: uuid.UUID
-) -> WorkOrderRow | None:
+async def get_work_order(session: AsyncSession, *, order_id: uuid.UUID) -> WorkOrderRow | None:
     """单张工单（含全程流转）。查不到返回 None。"""
     from app.models.organization import Elder
     from app.models.staff import StaffAccount
@@ -540,7 +538,9 @@ async def get_work_order(
     order, elder_name, room_no, assignee_name = row
     transition_map = await _load_transition_rows(session, [order.order_id])
     return WorkOrderRow(
-        order=order, elder_name=elder_name, room_no=room_no,
+        order=order,
+        elder_name=elder_name,
+        room_no=room_no,
         assignee_name=assignee_name,
         transitions=transition_map.get(order.order_id, ()),
     )

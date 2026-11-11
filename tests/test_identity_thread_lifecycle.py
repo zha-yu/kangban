@@ -135,4 +135,3 @@ async def test_timeout_generic_closes_active_before_open() -> None:
     assert decision.thread_id is not None
     assert decision.session_seq == 0
     _assert_close_before_open(session)
-

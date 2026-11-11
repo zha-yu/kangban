@@ -68,48 +68,49 @@ SEVERITY_YELLOW: Final[str] = "yellow"
 SEVERITY_RED: Final[str] = "red"
 
 #: 红色阈值（单分量即判红，AC-21）
-SYSTOLIC_RED_UPPER: Final[int] = 180      # 收缩压 ≥180
-SYSTOLIC_RED_LOWER: Final[int] = 90       # 收缩压 ≤90（低血压）
-DIASTOLIC_RED_UPPER: Final[int] = 120     # 舒张压 ≥120
-DIASTOLIC_RED_LOWER: Final[int] = 60      # 舒张压 ≤60
+SYSTOLIC_RED_UPPER: Final[int] = 180  # 收缩压 ≥180
+SYSTOLIC_RED_LOWER: Final[int] = 90  # 收缩压 ≤90（低血压）
+DIASTOLIC_RED_UPPER: Final[int] = 120  # 舒张压 ≥120
+DIASTOLIC_RED_LOWER: Final[int] = 60  # 舒张压 ≤60
 
 #: 黄色阈值（AC-09 口径）
-SYSTOLIC_YELLOW_LOWER: Final[int] = 140   # 140–179 = 黄收缩压
-DIASTOLIC_YELLOW_LOWER: Final[int] = 90   # 90–119 = 黄舒张压
+SYSTOLIC_YELLOW_LOWER: Final[int] = 140  # 140–179 = 黄收缩压
+DIASTOLIC_YELLOW_LOWER: Final[int] = 90  # 90–119 = 黄舒张压
 
 #: 睡眠阈值
-SLEEP_YELLOW_HOURS: Final[float] = 5.0    # <5h = 黄
+SLEEP_YELLOW_HOURS: Final[float] = 5.0  # <5h = 黄
 
 #: 情绪阈值
-MOOD_YELLOW: Final[int] = 2               # mood_score ≤2 = 黄
+MOOD_YELLOW: Final[int] = 2  # mood_score ≤2 = 黄
 
 #: 正常范围上限（绿档）
 SYSTOLIC_GREEN_UPPER: Final[int] = 139
 DIASTOLIC_GREEN_UPPER: Final[int] = 89
-SLEEP_GREEN_UPPER: Final[float] = 12.0    # 睡眠 5–12h = 绿
+SLEEP_GREEN_UPPER: Final[float] = 12.0  # 睡眠 5–12h = 绿
 
 
 # ------------------------------------------------------------------ 返回值
+
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ComponentGrade:
     """单分量判定详情（AC-09/21 可追溯）。"""
 
-    field: str                    # systolic / diastolic / sleep_hours / mood_score
-    value: float | int | None     # 校验后的有效值（None 表示缺失/无效）
-    severity: str                 # green / yellow / red
-    reason: str                   # 简短可追溯原因（如 ">=180", "missing"）
+    field: str  # systolic / diastolic / sleep_hours / mood_score
+    value: float | int | None  # 校验后的有效值（None 表示缺失/无效）
+    severity: str  # green / yellow / red
+    reason: str  # 简短可追溯原因（如 ">=180", "missing"）
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class HealthGradeResult:
     """分级结果（grade_health 纯函数返回值）。"""
 
-    severity: str                          # 三值之一
-    rule_version: str                      # 写回 health_records
+    severity: str  # 三值之一
+    rule_version: str  # 写回 health_records
     components: tuple[ComponentGrade, ...]  # 四个分量详情
-    has_missing: bool                      # 是否有缺失字段
-    has_invalid: bool                      # 是否有无效数据（非数字/超范围等）
+    has_missing: bool  # 是否有缺失字段
+    has_invalid: bool  # 是否有无效数据（非数字/超范围等）
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -119,8 +120,8 @@ class HealthRecordRef:
     record_id: uuid.UUID
     severity: str
     version: int
-    risk_event_id: uuid.UUID | None   # 本次新建或升级的 risk_event
-    work_order_id: uuid.UUID | None   # 本次新建的工单（黄档建单；红档若走 safety_service 则为 None）
+    risk_event_id: uuid.UUID | None  # 本次新建或升级的 risk_event
+    work_order_id: uuid.UUID | None  # 本次新建的工单（黄档建单；红档若走 safety_service 则为 None）
 
 
 # ------------------------------------------------------------------ 纯函数分级（无 DB 依赖，签名 12:00 X1 冻结）
@@ -169,9 +170,13 @@ def _grade_sleep(sleep_hours: float | None) -> ComponentGrade:
     if valid is None:
         return ComponentGrade("sleep_hours", None, SEVERITY_YELLOW, "missing_or_invalid")
     if valid < SLEEP_YELLOW_HOURS:
-        return ComponentGrade("sleep_hours", round(valid, 1), SEVERITY_YELLOW, f"<{SLEEP_YELLOW_HOURS}h")
+        return ComponentGrade(
+            "sleep_hours", round(valid, 1), SEVERITY_YELLOW, f"<{SLEEP_YELLOW_HOURS}h"
+        )
     if valid > SLEEP_GREEN_UPPER:
-        return ComponentGrade("sleep_hours", round(valid, 1), SEVERITY_YELLOW, f">{SLEEP_GREEN_UPPER}h")
+        return ComponentGrade(
+            "sleep_hours", round(valid, 1), SEVERITY_YELLOW, f">{SLEEP_GREEN_UPPER}h"
+        )
     return ComponentGrade("sleep_hours", round(valid, 1), SEVERITY_GREEN, f"{valid}h")
 
 
@@ -253,9 +258,7 @@ async def _verify_staff_proxy(
         )
     )
     if result.scalar_one_or_none() is None:
-        raise PermissionError(
-            f"staff {operator_id} is not primary_care for elder {elder_id}"
-        )
+        raise PermissionError(f"staff {operator_id} is not primary_care for elder {elder_id}")
 
 
 # ------------------------------------------------------------------ 黄升红查询
@@ -363,7 +366,9 @@ async def create_health_record(
             risk_event_id = existing_yellow.event_id
             logger.info(
                 "yellow_to_red_upgrade event_id=%s elder_id=%s record_id=%s",
-                existing_yellow.event_id, elder_id, record.record_id,
+                existing_yellow.event_id,
+                elder_id,
+                record.record_id,
             )
             await session.flush()
         else:
@@ -398,7 +403,11 @@ async def create_health_record(
     logger.info(
         "health_record_created record_id=%s elder_id=%s severity=%s version=1 "
         "risk_event_id=%s work_order_id=%s",
-        record.record_id, elder_id, grade.severity, risk_event_id, work_order_id,
+        record.record_id,
+        elder_id,
+        grade.severity,
+        risk_event_id,
+        work_order_id,
     )
 
     return HealthRecordRef(
@@ -435,9 +444,7 @@ async def review_health_record(
     - 只改原 record.review_status = "confirmed"，不创建新版本。
     """
     old_record = (
-        await session.execute(
-            select(HealthRecord).where(HealthRecord.record_id == record_id)
-        )
+        await session.execute(select(HealthRecord).where(HealthRecord.record_id == record_id))
     ).scalar_one_or_none()
     if old_record is None:
         raise ValueError(f"health record {record_id} not found")
@@ -450,7 +457,8 @@ async def review_health_record(
         await session.flush()
         logger.info(
             "health_record_confirmed record_id=%s reviewer_id=%s",
-            record_id, reviewer_id,
+            record_id,
+            reviewer_id,
         )
         return HealthRecordRef(
             record_id=old_record.record_id,
@@ -524,8 +532,12 @@ async def review_health_record(
 
     logger.info(
         "health_record_corrected old_id=%s new_id=%s reviewer_id=%s severity_old=%s severity_new=%s version=%d",
-        old_record.record_id, new_record.record_id, reviewer_id,
-        old_record.severity, grade.severity, new_record.version,
+        old_record.record_id,
+        new_record.record_id,
+        reviewer_id,
+        old_record.severity,
+        grade.severity,
+        new_record.version,
     )
 
     return HealthRecordRef(
