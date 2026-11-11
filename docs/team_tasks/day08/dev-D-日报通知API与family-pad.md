@@ -1,4 +1,4 @@
-> 状态：未开始　｜　负责人：dev-D（全栈 · 日报通知 API、family/pad 与评测门禁）　｜　日期：2026-11-11（Day 8）　｜　版本：v1.2（v1.1＋D6 路由降级提示条转入；合并 develop fded21b）
+> 状态：进行中　｜　负责人：dev-D（全栈 · 日报通知 API、family/pad 与评测门禁）　｜　日期：2026-11-11（Day 8）　｜　版本：v1.2（v1.1＋D6 路由降级提示条转入；合并 develop fded21b）
 > 依据：docs/plans/day08/day-08-健康采集与三端后台.md v1.2 ｜ 对接点与全局节奏见同目录《day08-任务总览与DAG.md》
 
 # dev-D 个人任务书

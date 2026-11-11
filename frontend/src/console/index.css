@@ -1010,6 +1010,53 @@ body {
   font-size: 18px;
 }
 
+/* ---- 药单维护 · 服药时间选择器 ---- */
+.med-time-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.med-time-row .field-input {
+  flex: 1;
+}
+
+.med-time-remove {
+  flex-shrink: 0;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--color-ink);
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.med-time-remove:hover {
+  border-color: var(--color-brand);
+}
+
+.med-time-foot {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.med-time-add {
+  padding: 0;
+  font-size: 13px;
+  color: var(--color-brand);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.med-time-add:hover {
+  text-decoration: underline;
+}
+
 /* ---- 注册向导（task-08 F2） ---- */
 .wiz-card {
   max-width: 520px;

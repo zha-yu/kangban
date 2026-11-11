@@ -14,10 +14,78 @@ import {
 } from "../medication-api";
 
 /**
+ * 把用户常见的时间简写转成标准 5 段 cron（分 时 日 月 周）。
+ * 已满足 cron 格式（含 4+ 段）→ 原样返回；
+ * 不认识的输入 → 原样返回（交由后端严格校验兜底）。
+ *
+ * 支持的简写：
+ *   "8:00"          → "0 8 * * *"       每天 08:00
+ *   "08:30"         → "30 8 * * *"       每天 08:30
+ *   "8:00, 20:00"   → "0 8,20 * * *"     每天 08:00 和 20:00
+ *   "8:00,20:00"    → "0 8,20 * * *"     同上（去空格）
+ */
+function normalizeCron(raw: string): string {
+  const s = raw.trim();
+  if (!s) return s;
+
+  // 已是标准 cron（包含空格分隔的 5 段）→ 原样返回
+  if (/^\S+\s+\S+\s+\S+\s+\S+\s+\S+$/.test(s)) return s;
+
+  // 匹配 "HH:MM, HH:MM[, ...]" 或 "HH:MM,HH:MM"
+  const hhmmList = s
+    .split(/[,\uff0c]/) // 中英文逗号
+    .map((t) => t.trim())
+    .filter(Boolean);
+
+  if (hhmmList.length === 0) return s;
+
+  const parts: Array<{ hour: string; minute: string }> = [];
+  for (const t of hhmmList) {
+    const m = t.match(/^(\d{1,2}):(\d{1,2})$/);
+    if (!m) return s; // 任一子项不匹配 → 整体放弃转换，交给后端
+    const h = parseInt(m[1], 10);
+    const mi = parseInt(m[2], 10);
+    if (h < 0 || h > 23 || mi < 0 || mi > 59) return s;
+    parts.push({ hour: String(h), minute: String(mi) });
+  }
+
+  const minutes = parts.map((p) => p.minute).join(",");
+  const hours = parts.map((p) => p.hour).join(",");
+  return `${minutes} ${hours} * * *`;
+}
+
+/**
+ * 把「每天多次」cron（分 列表 时 列表 * * *，如 "0 8,20 * * *"）解析成
+ * HH:MM 列表，供时间选择器回填；不是该形态（如按周 cron）返回 null。
+ */
+function cronToTimes(cron: string): string[] | null {
+  const m = cron.match(/^(\d{1,2}(?:,\d{1,2})*)\s+(\d{1,2}(?:,\d{1,2})*)\s+\*\s+\*\s+\*$/);
+  if (!m) return null;
+  const minutes = m[1].split(",");
+  const hours = m[2].split(",");
+  if (minutes.length !== hours.length || minutes.length === 0) return null;
+  const times: string[] = [];
+  for (let i = 0; i < hours.length; i++) {
+    const h = Number(hours[i]);
+    const mi = Number(minutes[i]);
+    if (h > 23 || mi > 59) return null;
+    times.push(`${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}`);
+  }
+  return times;
+}
+
+/** 时间选择器值（HH:MM 列表）→ 标准 cron：["08:00","20:00"] → "0,0 8,20 * * *" */
+function timesToCron(times: string[]): string {
+  const hm = times.map((t) => t.split(":").map(Number));
+  return `${hm.map((p) => p[1]).join(",")} ${hm.map((p) => p[0]).join(",")} * * *`;
+}
+
+/**
  * 药单维护（task-12 F8，console 医生，Mock 先行，与护工只读页共享 store）。
  *
  * 口径：§4.5 医生增改停查（无删除语义）；AC-27 修改 = version+1（历史提醒
- * 保留提交时快照）；cron 文本录入 + cronToText 展示转换（f8 D3）；
+ * 保留提交时快照）；服药时间默认时间选择器（多时间点 → 每天 cron），按周等
+ * 复杂调度可切换 cron 文本录入；cronToText 展示转换（f8 D3）；
  * 教学演示数据，不构成真实处方。
  */
 
@@ -49,23 +117,62 @@ function PlanForm({
 }) {
   const [drugName, setDrugName] = useState(initial.drug_name);
   const [dose, setDose] = useState(initial.dose);
+  // 服药时间默认用时间选择器；编辑既有药单且 cron 不是「每天 HH:MM」形态
+  // （如按周调度）时退回 cron 文本编辑，避免丢信息
+  const initialTimes = cronToTimes(initial.schedule_cron);
+  const [useCron, setUseCron] = useState(initial.schedule_cron !== "" && initialTimes === null);
+  const [times, setTimes] = useState<string[]>(initialTimes ?? ["08:00"]);
   const [cron, setCron] = useState(initial.schedule_cron);
+  const [cronHint, setCronHint] = useState<string>("");
   const [startDate, setStartDate] = useState(initial.start_date);
   const [endDate, setEndDate] = useState(initial.end_date ?? "");
   const [error, setError] = useState<string | null>(null);
 
+  /** 失焦时自动把常见时间简写转成标准 cron，并给用户反馈 */
+  function handleCronBlur() {
+    const normalized = normalizeCron(cron);
+    if (normalized !== cron.trim()) {
+      setCron(normalized);
+      setCronHint(`已自动转成：${normalized}（${cronToText(normalized)}）`);
+    } else {
+      // 已经是标准 cron，给个预览
+      if (/^\S+\s+\S+\s+\S+\s+\S+\s+\S+$/.test(normalized)) {
+        setCronHint(`✓ ${cronToText(normalized)}`);
+      } else {
+        setCronHint("");
+      }
+    }
+  }
+
+  /** cron 文本 → 时间选择器：能解析则回填时间点，否则保留原时间列表 */
+  function switchToTimes() {
+    const parsed = cronToTimes(cron.trim());
+    if (parsed && parsed.length > 0) setTimes(parsed);
+    setUseCron(false);
+  }
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!drugName.trim() || !dose.trim() || !cron.trim() || !startDate) {
-      setError("药品名称、剂量、服药时间、开始日期均为必填");
-      return;
+    let cronValue: string;
+    if (useCron) {
+      if (!drugName.trim() || !dose.trim() || !cron.trim() || !startDate) {
+        setError("药品名称、剂量、服药时间、开始日期均为必填");
+        return;
+      }
+      cronValue = cron;
+    } else {
+      if (!drugName.trim() || !dose.trim() || times.length === 0 || times.some((t) => !t) || !startDate) {
+        setError("药品名称、剂量、服药时间、开始日期均为必填");
+        return;
+      }
+      cronValue = timesToCron(times);
     }
     onSubmit({
       elder_id: initial.elder_id,
       drug_name: drugName,
       dose,
-      schedule_cron: cron,
+      schedule_cron: cronValue,
       start_date: startDate,
       end_date: endDate || null,
     });
@@ -82,10 +189,56 @@ function PlanForm({
         <span className="field-label">剂量（必填）</span>
         <input className="field-input" type="text" value={dose} onChange={(e) => setDose(e.target.value)} placeholder="如：20mg 每日一片" />
       </label>
-      <label className="field">
-        <span className="field-label">服药时间 cron（必填）</span>
-        <input className="field-input" type="text" value={cron} onChange={(e) => setCron(e.target.value)} placeholder="如 0 8 * * *（每天 08:00）" />
-      </label>
+      <div className="field">
+        <span className="field-label">服药时间（必填）</span>
+        {useCron ? (
+          <>
+            <input
+              className="field-input"
+              type="text"
+              value={cron}
+              onChange={(e) => setCron(e.target.value)}
+              onBlur={handleCronBlur}
+              placeholder="如 0 8 * * *（每天 08:00）"
+            />
+            <small className="field-help">
+              支持标准 cron：<code>0 8 * * *</code>（每天 08:00）、<code>0 8 * * 1</code>（每周一 08:00）。
+              {cronHint && <span style={{ color: "#16a34a" }}>　{cronHint}</span>}
+            </small>
+            <button type="button" className="med-time-add" onClick={switchToTimes}>
+              改用时间选择
+            </button>
+          </>
+        ) : (
+          <>
+            {times.map((t, i) => (
+              <div key={i} className="med-time-row">
+                <input
+                  className="field-input"
+                  type="time"
+                  value={t}
+                  onChange={(e) => setTimes(times.map((x, j) => (j === i ? e.target.value : x)))}
+                  aria-label={`第 ${i + 1} 个服药时间`}
+                />
+                {times.length > 1 && (
+                  <button type="button" className="med-time-remove" onClick={() => setTimes(times.filter((_, j) => j !== i))}>
+                    删除
+                  </button>
+                )}
+              </div>
+            ))}
+            <div className="med-time-foot">
+              <button type="button" className="med-time-add" onClick={() => setTimes([...times, "20:00"])}>
+                ＋ 添加时间
+              </button>
+              <button type="button" className="med-time-add" onClick={() => setUseCron(true)}>
+                改用 cron 表达式
+              </button>
+            </div>
+            <small className="field-help">可添加多个时间点，每天按所选时间提醒：{times.filter(Boolean).join("、") || "（请选择时间）"}</small>
+          </>
+        )}
+      </div>
       <div className="hf-grid">
         <label className="field">
           <span className="field-label">开始日期（必填）</span>

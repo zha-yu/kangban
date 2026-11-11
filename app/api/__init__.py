@@ -19,6 +19,7 @@ from fastapi import APIRouter
 
 from app.api import (
     admin_org,
+    alerts,
     audio,
     auth,
     devices,
@@ -29,6 +30,7 @@ from app.api import (
     health_records,
     medication,
     pad,
+    reports,
     rooms,
     staff,
     voiceprints,
@@ -51,7 +53,9 @@ ROUTERS: tuple[tuple[APIRouter, str], ...] = (
     (admin_org.router, ""),  # 自带 /api/admin 前缀（房间/床位管理，计划 v1.5）
     (workorders.router, ""),  # 自带 /api/work-orders 前缀（f2-D1 console 看板，2026-11-10 提前件）
     (family.router, ""),  # 自带 /api/family 前缀（N1/N4 家属通知，Day 8 P8 提前件）
-    (health_records.router, ""),  # 自带 /api/health-records 前缀（C1 健康域，Day 8；文件名避让 /health 探针页）
+    (alerts.router, ""),  # 自带 /api 前缀（N-1/N-2/N-3 员工告警域，Q-D1 批准新增）
+    (reports.router, ""),  # 自带 /api/family 前缀（F2 家属日报详情，Day 8 D1）
+    (health_records.router, ""),  # 自带 /api/health-records 前缀（C1 健康域，Day 8）
     (medication.router, ""),  # 自带 /api/medication-plans 前缀（Day 8 dev-A H+1 药单管理 REST）
 )
 

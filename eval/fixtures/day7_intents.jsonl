@@ -88,7 +88,7 @@
 {"id": "d7-088", "group": "boundary", "text": "似乎心口发闷，也许是想多了", "gold_intent": "other", "is_sensitive": false, "note": "hedge", "media_status": "idle", "current_task": "none"}
 {"id": "d7-089", "group": "boundary", "text": "大概有点胸口疼吧，不太确定", "gold_intent": "other", "is_sensitive": false, "note": "hedge", "media_status": "idle", "current_task": "none"}
 {"id": "d7-090", "group": "boundary", "text": "是不是摔倒了，我也记不清了", "gold_intent": "other", "is_sensitive": false, "note": "hedge", "media_status": "idle", "current_task": "none"}
-{"id": "d7-091", "group": "ambiguous", "text": "那个东西你帮我弄一下", "gold_intent": "other", "is_sensitive": false, "note": "", "media_status": "idle", "current_task": "none"}
+{"id": "d7-091", "group": "ambiguous", "text": "那个东西你帮我弄一下", "gold_intent": "other", "is_sensitive": false, "note": "day07 L6#11 观察：此类模糊话曾被误标 opera（conf 0.18-0.37），行为正确（澄清/Agent）但标签有噪音；仅记录，不单独修，不据此改 gold", "media_status": "idle", "current_task": "none"}
 {"id": "d7-092", "group": "ambiguous", "text": "就那个，你知道的", "gold_intent": "other", "is_sensitive": false, "note": "", "media_status": "idle", "current_task": "none"}
 {"id": "d7-093", "group": "ambiguous", "text": "再来一次吧", "gold_intent": "other", "is_sensitive": false, "note": "", "media_status": "idle", "current_task": "none"}
 {"id": "d7-094", "group": "ambiguous", "text": "不太对劲", "gold_intent": "other", "is_sensitive": false, "note": "", "media_status": "idle", "current_task": "none"}

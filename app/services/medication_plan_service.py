@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------ 域异常
 
+
 class PlanError(ValueError):
     """药单域异常基类。"""
 
@@ -61,6 +62,7 @@ class PlanInvalidCron(PlanError):
 
 
 # ------------------------------------------------------------ 常量与数据类
+
 
 class PlanPermissionDenied(PlanError):
     """权限不足（内部使用，对外不直接抛——Service 层会转 HTTPException + 审计）。"""
@@ -84,6 +86,7 @@ class PlanRow:
 
 
 # ------------------------------------------------------------ 辅助：身份 / scope 解析
+
 
 def _uuid_staff_id() -> uuid.UUID | None:
     """从 runtime_context 取 staff_id 并转 UUID；无身份或非 staff 时返回 None。"""
@@ -124,7 +127,9 @@ async def _staff_has_relation(
     return row is not None
 
 
-async def _allowed_elder_ids_for_read(session: AsyncSession, *, staff_id: uuid.UUID) -> set[uuid.UUID]:
+async def _allowed_elder_ids_for_read(
+    session: AsyncSession, *, staff_id: uuid.UUID
+) -> set[uuid.UUID]:
     """该 staff 负责的所有 elder_id 集合（relation IN primary_care/doctor 都算）。"""
     rows = (
         (
@@ -142,6 +147,7 @@ async def _allowed_elder_ids_for_read(session: AsyncSession, *, staff_id: uuid.U
 
 
 # ------------------------------------------------------------ 辅助：审计
+
 
 async def _record_write_forbidden(
     session: AsyncSession,
@@ -192,9 +198,8 @@ async def _record_read_forbidden(
 
 # ------------------------------------------------------------ 辅助：双重门禁
 
-async def _assert_doctor_authorized(
-    session: AsyncSession, *, elder_id: uuid.UUID
-) -> uuid.UUID:
+
+async def _assert_doctor_authorized(session: AsyncSession, *, elder_id: uuid.UUID) -> uuid.UUID:
     """写操作双重门禁：role=doctor + 该 staff 是该长者的负责医生。
 
     通过则返回 staff_id（UUID）。不通过：写审计 + 抛 HTTPException(403)。
@@ -214,7 +219,9 @@ async def _assert_doctor_authorized(
         raise HTTPException(status_code=403, detail="药单管理仅负责医生可操作")
 
     # ② 数据范围门禁
-    if not await _staff_has_relation(session, staff_id=staff_id, elder_id=elder_id, relation=_WRITE_RELATION):
+    if not await _staff_has_relation(
+        session, staff_id=staff_id, elder_id=elder_id, relation=_WRITE_RELATION
+    ):
         await _record_write_forbidden(
             session,
             staff_id=staff_id,
@@ -230,6 +237,7 @@ async def _assert_doctor_authorized(
 
 # ------------------------------------------------------------ 辅助：cron / 日期校验
 
+
 def _validate_cron(expr: str) -> None:
     try:
         CronTrigger.from_crontab(expr, timezone="Asia/Shanghai")
@@ -243,6 +251,7 @@ def _validate_date_range(start_date: datetime.date, end_date: datetime.date | No
 
 
 # ------------------------------------------------------------ 辅助：JOIN 回填姓名 + scope 过滤查询
+
 
 async def _fetch_plan_rows(
     session: AsyncSession,
@@ -312,7 +321,11 @@ async def _fetch_plan_rows(
 
     # plan_id_filter → 先查 plan.elder_id 是否在允许集合里
     if plan_id_filter is not None:
-        plan = (await session.execute(select(MedicationPlan).where(MedicationPlan.plan_id == plan_id_filter))).scalar_one_or_none()
+        plan = (
+            await session.execute(
+                select(MedicationPlan).where(MedicationPlan.plan_id == plan_id_filter)
+            )
+        ).scalar_one_or_none()
         if plan is not None and plan.elder_id not in allowed_elder_ids:
             await _record_read_forbidden(
                 session,
@@ -333,6 +346,7 @@ async def _fetch_plan_rows(
 
 
 # ------------------------------------------------------------ 只读接口
+
 
 async def list_plans_by_elder(
     session: AsyncSession,
@@ -361,6 +375,7 @@ async def get_plan(session: AsyncSession, plan_id: uuid.UUID) -> PlanRow | None:
 
 
 # ------------------------------------------------------------ 写接口
+
 
 async def create_plan(
     session: AsyncSession,
@@ -420,7 +435,9 @@ async def create_plan(
     await session.flush()
 
     # ⑤ 回填 created_by_name（created_by 就是当前 staff_id，直接从 staff_accounts 查）
-    creator = (await session.execute(select(StaffAccount.name).where(StaffAccount.staff_id == created_by))).scalar_one_or_none()
+    creator = (
+        await session.execute(select(StaffAccount.name).where(StaffAccount.staff_id == created_by))
+    ).scalar_one_or_none()
     return PlanRow(plan=new_plan, created_by_name=creator)
 
 
@@ -441,7 +458,9 @@ async def update_plan(
     会自动建新事件（唯一键已改为三列），不再触发 MedicationConflict。
     """
     # ① 先查 plan（拿 elder_id 用于双重门禁 + 后续校验 + 审计 before 快照）
-    plan_row = await _fetch_plan_rows(session, plan_id_filter=plan_id, include_stopped=True, scope_check=False)
+    plan_row = await _fetch_plan_rows(
+        session, plan_id_filter=plan_id, include_stopped=True, scope_check=False
+    )
     if not plan_row:
         raise PlanNotFound(f"药单不存在: {plan_id}")
     plan = plan_row[0].plan
@@ -514,7 +533,9 @@ async def stop_plan(
 ) -> PlanRow:
     """停用药单。version+1。无删除语义。已停用不可重复停。"""
     # ① 先查 plan
-    plan_row = await _fetch_plan_rows(session, plan_id_filter=plan_id, include_stopped=True, scope_check=False)
+    plan_row = await _fetch_plan_rows(
+        session, plan_id_filter=plan_id, include_stopped=True, scope_check=False
+    )
     if not plan_row:
         raise PlanNotFound(f"药单不存在: {plan_id}")
     plan = plan_row[0].plan

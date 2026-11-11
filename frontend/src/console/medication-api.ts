@@ -52,13 +52,16 @@ export const PLAN_STATUS_LABELS: Record<PlanStatus, string> = {
   stopped: "已停用",
 };
 
-/** 最小 cron 转换：仅支持「每天 HH:MM」（分 时 * * *），其余原样返回（f6 D3） */
+/** 最小 cron 转换：仅支持「每天 HH:MM[, HH:MM...]」（分 列表 时 列表 * * *），其余原样返回（f6 D3） */
 export function cronToText(cron: string): string {
-  const m = cron.match(/^(\d{1,2})\s+(\d{1,2})\s+\*\s+\*\s+\*$/);
+  const m = cron.match(/^(\d{1,2}(?:,\d{1,2})*)\s+(\d{1,2}(?:,\d{1,2})*)\s+\*\s+\*\s+\*$/);
   if (!m) return cron;
-  const minute = m[1].padStart(2, "0");
-  const hour = m[2].padStart(2, "0");
-  return `每天 ${hour}:${minute}`;
+  const minutes = m[1].split(",");
+  const hours = m[2].split(",");
+  if (minutes.length !== hours.length) return cron;
+  if (hours.some((h) => Number(h) > 23) || minutes.some((mi) => Number(mi) > 59)) return cron;
+  const times = hours.map((h, i) => `${h.padStart(2, "0")}:${minutes[i].padStart(2, "0")}`);
+  return `每天 ${times.join("、")}`;
 }
 
 // ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@ import { BigSubtitle } from "./components/BigSubtitle";
 import { StatusBadge } from "./components/StatusBadge";
 import { SosButton } from "./components/SosButton";
 import { HoldToTalk } from "./components/HoldToTalk";
+import { OperaDemoPanel } from "./components/OperaDemoPanel";
 import { IdentityConfirm } from "./components/IdentityConfirm";
 import { TaskPanel } from "./components/TaskPanel";
 import { ChatTranscript, type ChatMessage } from "./components/ChatTranscript";
@@ -87,6 +88,11 @@ function MainScreen({
       import.meta.env.DEV &&
       (new URLSearchParams(window.location.search).has("sos") ||
         new URLSearchParams(window.location.search).get("demo") === "sos"),
+  );
+
+  // D4 单端调试入口（?demo=opera，仅 DEV）：WS 帧形状未定（Q-D4），先验七动作状态机
+  const [operaDemo] = useState(
+    () => import.meta.env.DEV && new URLSearchParams(window.location.search).get("demo") === "opera",
   );
 
   // v1.5：任务命令（与传输解耦）。后端适配器落地后只需往任务总线 emit，
@@ -400,7 +406,9 @@ function MainScreen({
       <main
         className={`flex min-h-0 flex-1 items-center justify-center overflow-hidden ${twoColumn ? "gap-8 px-8 pt-6" : "gap-16 px-12"}`}
       >
-        {sosOpen ? (
+        {operaDemo ? (
+          <OperaDemoPanel />
+        ) : sosOpen ? (
           // 结果态只占中部：顶栏 SOS（active）、大字幕区、操作区高度都在原位
           <div className="flex h-full w-full items-center justify-center">
             <SosResult onExit={() => setSosOpen(false)} />
