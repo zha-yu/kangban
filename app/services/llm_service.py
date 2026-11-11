@@ -168,9 +168,7 @@ class LLMService:
                     "total_attempts": total_attempts,
                     "error_type": error_type,
                     "status_code": status_code,
-                    "elapsed_ms": round(
-                        (asyncio.get_running_loop().time() - started) * 1000, 1
-                    ),
+                    "elapsed_ms": round((asyncio.get_running_loop().time() - started) * 1000, 1),
                 },
             )
             if not transient or attempt >= total_attempts:

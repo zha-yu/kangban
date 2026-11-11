@@ -201,9 +201,7 @@ async def test_transition_injects_actor_and_ignores_forged_id(
     assert ack["actor_id"] != str(forged)  # 前端伪造值被丢弃
 
 
-async def test_transition_resolve_requires_note(
-    app_with_session, client: AsyncClient
-) -> None:
+async def test_transition_resolve_requires_note(app_with_session, client: AsyncClient) -> None:
     _, session = app_with_session
     account = await _seed_staff(session)
     order = await _seed_work_order(session)
@@ -216,9 +214,7 @@ async def test_transition_resolve_requires_note(
     assert resp.status_code == 422
 
 
-async def test_red_close_requires_actual_handled_at(
-    app_with_session, client: AsyncClient
-) -> None:
+async def test_red_close_requires_actual_handled_at(app_with_session, client: AsyncClient) -> None:
     _, session = app_with_session
     account = await _seed_staff(session)
     order = await _seed_work_order(session, severity="red")
@@ -266,9 +262,7 @@ async def test_family_notifications_requires_guardian_kind(
     assert resp.status_code == 401  # 拿错凭证体系：kind 不符走 401（auth.py 口径）
 
 
-async def test_family_notifications_scoped_to_self(
-    app_with_session, client: AsyncClient
-) -> None:
+async def test_family_notifications_scoped_to_self(app_with_session, client: AsyncClient) -> None:
     _, session = app_with_session
     mine = await _seed_guardian(session)
     other = await _seed_guardian(session, name="家属乙")
@@ -283,7 +277,9 @@ async def test_family_notifications_scoped_to_self(
     assert resp.status_code == 200
     body = resp.json()
     assert body["total"] == 2
-    assert all(item["read_at"] is not None or item["status"] == "generated" for item in body["items"])
+    assert all(
+        item["read_at"] is not None or item["status"] == "generated" for item in body["items"]
+    )
 
     resp = await client.get(
         "/api/family/notifications?unread_only=true",
@@ -314,9 +310,7 @@ async def test_mark_read_idempotent(app_with_session, client: AsyncClient) -> No
     assert second.json()["read_at"] == read_at  # 幂等：返回原 read_at
 
 
-async def test_mark_read_other_guardian_is_404(
-    app_with_session, client: AsyncClient
-) -> None:
+async def test_mark_read_other_guardian_is_404(app_with_session, client: AsyncClient) -> None:
     _, session = app_with_session
     mine = await _seed_guardian(session)
     other = await _seed_guardian(session, name="家属乙")

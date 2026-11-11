@@ -211,7 +211,7 @@ class SystemOneClient:
         try:
             http = await self._http()
             response = await http.post(
-                 f"{self._base_url}/v1/decide", json=payload, timeout=budget_s
+                f"{self._base_url}/v1/decide", json=payload, timeout=budget_s
             )
         except (httpx.TimeoutException, TimeoutError):
             breaker.record_failure()
