@@ -325,8 +325,8 @@ async def test_mark_read_is_idempotent_and_keeps_status(
     assert notification.read_at == stamp, "幂等：不得刷新 read_at"
 
 
-async def test_mark_read_foreign_is_404(app_with_session, client: AsyncClient) -> None:
-    """不属于自己的通知 → 404（与不存在同口径，不泄露存在性）。"""
+async def test_mark_read_foreign_is_403_audited(app_with_session, client: AsyncClient) -> None:
+    """不属于自己的通知 → 403+审计（R-D10 后 service 抛 Forbidden；不存在仍 404）。"""
     _, session = app_with_session
     owner = await _seed_staff(session, "护工-收件人2")
     intruder = await _seed_staff(session, "护工-路人2")
@@ -337,5 +337,27 @@ async def test_mark_read_foreign_is_404(app_with_session, client: AsyncClient) -
         headers={"Authorization": f"Bearer {_staff_token(intruder.staff_id)}"},
     )
     assert resp.status_code == 403, resp.text
+    assert resp.json()["code"] == "SCOPE_FORBIDDEN"
     await session.refresh(notification)
     assert notification.read_at is None
+
+
+async def test_list_acknowledged_by_name_filled(app_with_session, client: AsyncClient) -> None:
+    """R-D12 收口：N-1 的 acknowledged_by_name 为契约 JOIN 展示字段，确认后须出真名。"""
+    _, session = app_with_session
+    me = await _seed_staff(session, "姓名展示测试护工")
+    notification = await _seed_notification(session, staff_id=me.staff_id)
+    headers = {"Authorization": f"Bearer {_staff_token(me.staff_id)}"}
+
+    ack = await client.post(
+        f"/api/notifications/{notification.notification_id}/acknowledge", headers=headers
+    )
+    assert ack.status_code == 200, ack.text
+
+    resp = await client.get("/api/notifications", headers=headers)
+    assert resp.status_code == 200, resp.text
+    item = next(
+        i for i in resp.json()["items"] if i["notification_id"] == str(notification.notification_id)
+    )
+    assert item["acknowledged_by"] == str(me.staff_id)
+    assert item["acknowledged_by_name"] == "姓名展示测试护工"
