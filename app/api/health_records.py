@@ -180,8 +180,11 @@ async def submit_health_record(
 ) -> HealthRecordCreated:
     """[编号 H-2｜契约 §3.3] 护工/医生/管理员代填五项健康指标。
 
-    - severity 由服务端分级引擎计算（green/yellow/red，红档同步触发通知，
-      dedupe_key 口径见计划 S2 与 dev-A 的 X2 对齐结论）；
+    - severity 由服务端分级引擎计算（green/yellow/red，红档同步触发通知）；
+      红档 dedupe_key 按 dev-A A3 落库口径：`risk_event:{event_id}:staff` /
+      `risk_event:{event_id}:guardian` / 升级 `risk_event:{event_id}:escalated`
+      —— 锚点是 event_id 而非 elder_id+日期（AC-12：同一事件不建第二
+      risk_event；同日两次独立红档各自成事件，按日期去重会吞第二条）；
     - 操作者身份从 `runtime_context` 注入，不收客户端 `operator_id`；
     - 长者负责范围过滤在服务层（护工仅可代填名下长者）。
     """

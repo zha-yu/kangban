@@ -1,4 +1,4 @@
-> 状态：草稿（待主理人确认后执行）　｜　版本：v1.2　｜　日期：2026-11-11
+> 状态：执行中　｜　版本：v1.3　｜　日期：2026-11-11
 > 关联：docs/team_tasks/day08/dev-C-健康域API与console.md（任务卡 v1.1）
 > 上游依据：PRD v3.0（验收：FR-HLT-01~09、FR-RPT-01/02、FR-CON-03/04/06、AC-09/10/11/21/22/25/32/34/37/38）｜技术设计文档 v2.1（实现：§3.4/§3.5 表定义、§7.2 健康子图）｜docs/plans/day08/day-08-健康采集与三端后台.md v1.2（H0–H16 任务线）｜docs/接口契约_照护台业务数据.md v0.1（C1 字段口径，B1 冻结后为准）
 > 变更记录见文末
@@ -224,12 +224,12 @@ grep -rn "session\.add(\|from app.models" app/scheduler/        # 零命中（C 
 | R6 | C2 与 A3 dedupe_key 口径不一致导致重复通知 | S2 双向对齐后落 docstring 双留痕；测试断言通知数=1 |
 | R7 | 超载 | C 包无先裁项；仅 O1 溢出池按 17:00 规则整体顺延 Day 9 并留痕 |
 
-## 8. 待确认项处置（2026-11-11 主理人逐条回应后回填）
+## 8. 待确认项处置（2026-11-11 主理人逐条回应后回填；v1.3 收口三项）
 
-1. **Q-1 契约缺口裁决**：**裁决人 = 主理人**（契约 v0.1 Q-1 责任人即主理人）；裁决「补列」后由 **dev-A** 在 0017 迁移/ORM 落列（A1 写域），**dev-B** 随契约冻结版留痕改版。主理人尚未给出「补列/不补」结论前，C1 复核端点该两字段留桩注释，不阻塞其余端点（R3 缓解不变）。
-2. **健康域 REST 端点编号**：**确认人 = dev-B**（B1 契约冻结牵头人），09:15 契约评审会后随冻结版契约发布编号清单；C1 骨架按编号落 docstring。
+1. **Q-1 契约缺口裁决（✅ 已收口）**：主理人已裁决「**补列**」；dev-B 核实契约 §5 建议随 TD 修订补列（AC-22 复核留痕承载），落列归 **dev-A**（0017 迁移/ORM），留痕归 **dev-B**。C1 复核端点已按补列口径落响应模型（review_note/superseded_reason，服务层接入前恒 None）。
+2. **健康域 REST 端点编号（✅ 已收口）**：dev-B 核实契约既有前缀惯例 W/N/H/M/R，健康域新端点按惯例分配 **H 前缀**，属 B1 Step 1 冻结时正常落实，无需额外裁决；C1 docstring 编号占位待冻结版回填。
 3. **R5 处置（✅ 已裁决 2026-11-11）**：若 14:30 CP2 时 dev-D 的 D1 未就绪，C3 告警中心**允许**按冻结契约先开发 + Mock 桩联调 + D1 就绪后切真。
-4. **四态枚举来源（v1.2 修正后口径，09:15 评审四方复核）**：alerts-api 是 console 告警中心，实际消费《**接口契约_照护台业务数据**》§3.2 通知中心端点（N-1/N-3）——**字段口径以此契约冻结版为准：`generated/pending/delivered/acknowledged/failed` 五值**（比 X7 四态表述多一个 failed）；AC-23/X7 状态机作**流转语义**参照（N-3：仅 delivered 可确认、跳步 409；pending 30s×3 失败→failed）。《接口契约_家属端数据》R2 枚举同源（同一 notifications 表）但家属侧无 ack 端点（S-03），**不能**作 console 告警中心的字段依据。09:15 评审会需 dev-A（状态机实现）/dev-B（契约冻结）/dev-D（家属侧消费）/主理人四方把「契约五值 ↔ X7 四态」对齐成一张流转表；不一致走契约 §6 留痕，前端不私改。
+4. **通知状态枚举（✅ 已收口，dev-B 核实与计划 v1.2 口径一致）**：TD §3.5 `notifications.status` = `generated/pending/delivered/acknowledged/failed` **5 值**（failed 为 TD 定义的终态：pending 每 30s 重试、3 次失败置 failed）为事实基线；PRD AC-23 四态为正常链路流转口径，**两者不冲突**。dev-A 的 H7 按 TD 会置 failed；dev-C 前端按 **5 值枚举**开发、正常链路只见 4 态。09:15 评审会主理人确认后即为冻结口径。
 
 ## 9. 边界与禁区（红线复核）
 
@@ -244,6 +244,7 @@ grep -rn "session\.add(\|from app.models" app/scheduler/        # 零命中（C 
 | --- | --- | --- | --- |
 | 2026-11-11 | S0 启动核查 | 基线六项实测：①迁移止 0016，0017/0018 不存在 ✅；②health/report/media 三 service 缺失 ✅；③console 三页仍 Mock（health-api/review-api/alerts-api 均内存 Mock 层）✅；④**照护台契约仍 v0.1 待冻结、家属端契约仍 v1.0 草案**（B1 冻结版未落盘）；⑤09:15 四态枚举对齐结论待主理人转达 | 契约冻结版未就位，按 R2 回退：C1 骨架以 v0.1 为底稿先行，字段以冻结版复核 |
 | 2026-11-11 | S1 C1 骨架段 | 主理人裁决回填：Q-1「补列」（复核端点带 review_note/superseded_reason 透传）、编号沿用 v0.1 草案占位。交付：①`app/api/health_records.py`（7 端点：H-2 提交/R-1 队列/趋势/R-2 详情/R-2b 版本链/R-3 确认/R-4 纠错，Pydantic extra=forbid + 五项指标任一非空校验，处理器 NotImplementedError 桩）；②`app/api/__init__.py` ROUTERS 追加挂载行；③`tests/test_health_api_records.py`（401 门禁 4 例 + 家属主体 401 + 422 校验 2 例 + 范围越权 2 例 skip 带 S3 原因）。自检全绿：ruff check/format ✅、create_app 启动 + OpenAPI 7 条路由注册 ✅、新测试 7 passed/2 skipped ✅、全量回归 1198 passed/2 skipped ✅ | 家属主体访问员工端点为 **401**（auth.py `_require_kind` 既有口径），任务卡「403」表述按代码现状落 401，S3 转正时补审计断言；FastAPI 新版路由包 `_IncludedRouter`，路由核查用 OpenAPI paths 而非 app.routes |
+| 2026-11-11 | S2 X2 口径对齐 | dev-A 回传 A3 Step 3.1 **落库基准**口径（截图转达），X2 收口：①红档通知 dedupe_key 三段式——护工侧 `risk_event:{event_id}:staff`、家属侧 `risk_event:{event_id}:guardian`（notify_service 已逐家属幂等）、升级 `risk_event:{event_id}:escalated`（AC-12：同一事件不建第二 risk_event）；②锚点=event_id，**否决 C 原草案** `health_red:{elder_id}:{date}`（同日两次独立红档会被日期去重吞掉第二条）；③notifications 表 (dedupe_key,target_id) 唯一索引（0011）兜底；④C2 日报侧对齐同款三段式 `daily_report:{report_id}:update`（A3 已预留）；⑤H7 置 failed 与 5 值 CHECK 约束对齐（X7 四态系任务书疏漏）。口径已落 `app/api/health_records.py` H-2 docstring 双留痕 | 原草案有误，采纳 A 口径；S3 测试断言：同一 risk_event 重复触发通知数=1，两次独立红档通知数=2 |
 
 ## 修订记录
 
@@ -252,3 +253,4 @@ grep -rn "session\.add(\|from app.models" app/scheduler/        # 零命中（C 
 | v1.0 | 2026-11-11 | 首版：依据任务卡 v1.1 + 全局计划 v1.2 + 契约 v0.1 + 代码现状实测（迁移止 0016、健康/日报/媒体三 service 缺、console 三页 Mock、health.py 为探针页）编制；C1–C4/C3/H12/O1 六项拆解 + S0–S8 分步确认制 + 交接清单 + 4 项待确认 |
 | v1.1 | 2026-11-11 | 主理人逐条回应回填：R5 裁决落地（D1 延迟允许 Mock 桩先行切真后置）；§8-1 Q-1 裁决人=主理人、落列=dev-A、留痕=dev-B；§8-2 端点编号确认人=dev-B（09:15 评审会）；§8-4 四态枚举按推荐口径执行（冻结契约为准、X7 作参照），09:15 评审会 dev-A/B/D 四方当场复核；交接清单补一行 |
 | v1.2 | 2026-11-11 | 主理人追问后修正 §8-4 口径：核对两份契约正文，alerts-api（console 告警中心）实际消费《接口契约_照护台业务数据》§3.2 通知中心端点——字段口径改为**照护台契约五值（含 failed）为准**，AC-23/X7 状态机作流转语义参照；《家属端数据》契约 R2 同源但家属侧无 ack 端点，不作 console 字段依据（v1.1 的「家属端契约为准」系误判，已改）；同步修正 §6 交接行、S6 AlertsPage 展示口径 |
+| v1.3 | 2026-11-11 | dev-B 三项核实结论回传（主理人截图转达），§8 收口：①Q-1 主理人已裁决「补列」；②H 前缀编号属 B1 Step 1 正常落实，无需额外裁决；③通知状态枚举 dev-B 核实与 v1.2 修正口径一致——TD §3.5 五值（failed 为终态，pending 30s×3 重试）为事实基线，AC-23 四态为正常链路口径，不冲突；状态改「执行中」 |
