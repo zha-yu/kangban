@@ -109,6 +109,8 @@ tmp/
 scratch/
 spikes/**/out/
 spikes/**/output/
+# 声纹互测原始录音（AGENTS 禁区 10/11：不入库，可随时删除）
+spikes/voiceprint/samples/
 
 # ---------- 10. 补丁残留 ----------
 *.orig

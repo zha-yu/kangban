@@ -220,9 +220,11 @@ class Settings(BaseSettings):
     tool_repeat_break_threshold: int = 3
     medication_reminder_attempts: int = 4
     medication_attempt_wait_seconds: int = 60
-    # 主理人裁决 2026-11-07：0.85 → 0.55（CAM++ 教师口径）。依据 spikes/voiceprint/ 实测
-    # 同人 cosine 0.517–0.568，0.85 阈值必误拒；PRD §3.2 已随 v2.8 修订。运行时经 Settings 可调。
-    voiceprint_similarity_threshold: float = 0.55
+    # 主理人裁决 2026-11-11：0.55 → 0.62（Day 8 Step 9 首轮真人互测实测定稿，PRD v3.1）。
+    # 实测（3 人 9 段，eval/reports/声纹调优报告.md）：同人 0.6664–0.8399、异人 0.2165–0.6512，
+    # 0.55 档误识 5/27（FAR 18.5%）；0.62 档 FAR 3.7% / FRR 0，误识由三档级联主动确认兜底。
+    # 沿革：0.85 → 0.55（v2.8，2026-11-07 CAM++ 教师口径）→ 0.62（v3.1）。运行时经 Settings 可调。
+    voiceprint_similarity_threshold: float = 0.62
 
     # ---------------------------- Day 5 · 三档慢响应阈值（真正并行 watchdog，见 dev-b 计划 v3.1） ----------------------------
     # 语义：provider **还在跑但超过这个时间** 就先发 slow 提示，不等 provider 返回；
