@@ -15,7 +15,7 @@
 
 **红阶段（Step 2）约定**：业务出口（persist / 建单 / 双通知）注入桩函数，
 validate 用图内 Pydantic 结构化（自足、不依赖 A2）；**唯独 grade 走默认真
-引擎引用**——在 A2 的 `health_service.grade_health_record`（X1 分级引擎）
+引擎引用**——在 A2 的 `health_service.grade_health`（X1 分级引擎）
 交付前，全部用例应红于同一红因（health_service 未交付 / X1 未接入），
 CP1 接线后转绿（Step 4 只补 grade 相关断言细节，用例不变）。
 

@@ -49,10 +49,13 @@ from typing import Final, Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.health import HealthRecord
 from app.models.medication import RiskEvent
+from app.models.organization import Bed, Elder, Room
 from app.models.relation import ElderStaffAssignment
+from app.models.staff import StaffAccount
 from app.services.work_order_service import open_work_order, resolve_primary_care_staff
 
 logger = logging.getLogger(__name__)
@@ -549,6 +552,162 @@ async def review_health_record(
     )
 
 
+# ------------------------------------------------------------------ 查询（dev-C · S3 联调段增量）
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class HealthRecordRow:
+    """复核视图行：记录本体 + JOIN 展示字段（契约 §3.5 / D-4「JOIN 展示字段服务端拼」）。
+
+    口径偏差登记（计划 §10，待 dev-B 契约勘误）：
+    - 契约 161 行 `reviewed_at` 引注「TD health_records.reviewed_at」，但 TD 17 列
+      **无 `reviewed_at`**（dev-A 0017 按 TD 落列正确）→ 展示层以 None 透传；
+    - 契约 169 行 chain「同 elder_id + 同 recorded_at」与 R-4「新行 recorded_at=纠错时刻、
+      superseded_by 指向新行」自相矛盾 → 按 R-4/AC-22 口径以 `superseded_by` 链接。
+    """
+
+    record: HealthRecord
+    elder_name: str
+    room_no: str | None
+    bed_no: str | None
+    operator_name: str | None
+    reviewer_name: str | None
+
+
+def _view_select() -> object:
+    """复核视图统一取数：记录 + 长者姓名 + 操作/复核人姓名。
+
+    只 join 实际取列的表（操作/复核人姓名）；床位定位由 `_attach_location`
+    二段批量补齐——不得把 Room/Bed 塞进本查询，否则无 join 条件即笛卡尔积。
+    """
+    operator = aliased(StaffAccount)
+    reviewer = aliased(StaffAccount)
+    return (
+        select(HealthRecord, Elder.name, operator.name, reviewer.name)
+        .join(Elder, Elder.elder_id == HealthRecord.elder_id)
+        .outerjoin(operator, operator.staff_id == HealthRecord.operator_id)
+        .outerjoin(reviewer, reviewer.staff_id == HealthRecord.reviewed_by)
+    )
+
+
+async def _attach_location(session: AsyncSession, rows: list[tuple]) -> list[HealthRecordRow]:
+    """床位定位（beds.elder_id 反查 + rooms 房号）批量补齐，无床位记录时字段为 None。"""
+    if not rows:
+        return []
+    elder_ids = {r[0].elder_id for r in rows}
+    locations = await session.execute(
+        select(Bed.elder_id, Bed.bed_no, Room.room_no)
+        .join(Room, Room.room_id == Bed.room_id)
+        .where(Bed.elder_id.in_(elder_ids))
+    )
+    bed_by_elder: dict[uuid.UUID, tuple[str | None, str | None]] = {
+        elder_id: (bed_no, room_no) for elder_id, bed_no, room_no in locations.all()
+    }
+    return [
+        HealthRecordRow(
+            record=r[0],
+            elder_name=r[1],
+            room_no=bed_by_elder.get(r[0].elder_id, (None, None))[1],
+            bed_no=bed_by_elder.get(r[0].elder_id, (None, None))[0],
+            operator_name=r[2],
+            reviewer_name=r[3],
+        )
+        for r in rows
+    ]
+
+
+async def list_pending_reviews(session: AsyncSession, *, role: str) -> list[HealthRecordRow]:
+    """复核队列（R-1）：pending 记录，recorded_at 倒序。
+
+    范围口径（任务卡 C1①）：红档仅 doctor/admin 可见——care_worker 视图过滤掉
+    red 档（黄/绿档护工可复核；绿档无需复核但 historical pending 不会是绿）。
+    """
+    stmt = _view_select().where(HealthRecord.review_status == "pending")
+    if role == "care_worker":
+        stmt = stmt.where(HealthRecord.severity != "red")
+    stmt = stmt.order_by(HealthRecord.recorded_at.desc())
+    result = await session.execute(stmt)
+    return await _attach_location(session, list(result.all()))
+
+
+async def get_record_row(session: AsyncSession, *, record_id: uuid.UUID) -> HealthRecordRow | None:
+    """单条记录详情（R-2）：不存在返回 None（API 层同口径 404）。"""
+    result = await session.execute(_view_select().where(HealthRecord.record_id == record_id))
+    first = result.first()
+    if first is None:
+        return None
+    rows = await _attach_location(session, [first])
+    return rows[0]
+
+
+async def get_record_chain(session: AsyncSession, *, record_id: uuid.UUID) -> list[HealthRecordRow]:
+    """版本链（R-2b）：沿 superseded_by 双向收集同链记录，version 升序。
+
+    链接口径：纠错创建新行（version+1，superseded_by 指向新行）——AC-22
+    「原值保留可查」；契约 169 行「同 recorded_at」与 R-4 矛盾，不采纳（见
+    HealthRecordRow docstring 偏差登记）。
+    """
+    anchor = await session.get(HealthRecord, record_id)
+    if anchor is None:
+        return []
+
+    ids = [anchor.record_id]
+    # 向最新方向走
+    cursor = anchor
+    while cursor.superseded_by is not None:
+        cursor = (
+            await session.execute(
+                select(HealthRecord).where(HealthRecord.record_id == cursor.superseded_by)
+            )
+        ).scalar_one()
+        ids.append(cursor.record_id)
+    # 向最早方向走
+    back = anchor
+    while True:
+        prev = (
+            await session.execute(
+                select(HealthRecord).where(HealthRecord.superseded_by == back.record_id)
+            )
+        ).scalar_one_or_none()
+        if prev is None:
+            break
+        ids.append(prev.record_id)
+        back = prev
+
+    result = await session.execute(
+        _view_select().where(HealthRecord.record_id.in_(ids)).order_by(HealthRecord.version.asc())
+    )
+    return await _attach_location(session, list(result.all()))
+
+
+async def get_health_trend(
+    session: AsyncSession, *, elder_id: uuid.UUID, days: int = 14
+) -> list[HealthRecord] | None:
+    """近 N 天指标序列（医生趋势 / O1 前端数据源）。
+
+    - 仅取**当前版本**（superseded_by IS NULL，被纠错取代的旧值不进图）；
+    - recorded_at 升序返回，窗口含边界（now-days 起至今）；
+    - 长者不存在返回 None（与详情 404 同口径）；存在但无数据返回空列表。
+    """
+    elder = (
+        await session.execute(select(Elder.elder_id).where(Elder.elder_id == elder_id))
+    ).scalar_one_or_none()
+    if elder is None:
+        return None
+
+    since = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)
+    result = await session.execute(
+        select(HealthRecord)
+        .where(
+            HealthRecord.elder_id == elder_id,
+            HealthRecord.recorded_at >= since,
+            HealthRecord.superseded_by.is_(None),
+        )
+        .order_by(HealthRecord.recorded_at.asc())
+    )
+    return list(result.scalars().all())
+
+
 __all__ = [
     "RULE_VERSION",
     "SEVERITY_GREEN",
@@ -557,7 +716,12 @@ __all__ = [
     "ComponentGrade",
     "HealthGradeResult",
     "HealthRecordRef",
+    "HealthRecordRow",
     "create_health_record",
+    "get_health_trend",
+    "get_record_chain",
+    "get_record_row",
     "grade_health",
+    "list_pending_reviews",
     "review_health_record",
 ]
