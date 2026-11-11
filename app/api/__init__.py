@@ -28,6 +28,7 @@ from app.api import (
     guardians,
     health,
     health_records,
+    medication,
     pad,
     reports,
     rooms,
@@ -54,10 +55,8 @@ ROUTERS: tuple[tuple[APIRouter, str], ...] = (
     (family.router, ""),  # 自带 /api/family 前缀（N1/N4 家属通知，Day 8 P8 提前件）
     (alerts.router, ""),  # 自带 /api 前缀（N-1/N-2/N-3 员工告警域，Q-D1 批准新增）
     (reports.router, ""),  # 自带 /api/family 前缀（F2 家属日报详情，Day 8 D1）
-    (
-        health_records.router,
-        "",
-    ),  # 自带 /api/health-records 前缀（C1 健康域，Day 8；文件名避让 /health 探针页）
+    (health_records.router, ""),  # 自带 /api/health-records 前缀（C1 健康域，Day 8）
+    (medication.router, ""),  # 自带 /api/medication-plans 前缀（Day 8 dev-A H+1 药单管理 REST）
 )
 
 __all__ = ["ROUTERS"]

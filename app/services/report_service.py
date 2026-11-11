@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.health import HealthRecord
 from app.models.medication import MedicationEvent, RiskEvent
+from app.models.organization import Elder
 from app.models.relation import ElderGuardian
 from app.models.report import DailyReport
 from app.services.notify_service import (
@@ -406,23 +407,47 @@ async def _guardian_active_elder_ids(
     return list(result.scalars().all())
 
 
+async def list_bound_elders_for_guardian(
+    session: AsyncSession, *, guardian_id: uuid.UUID
+) -> list[tuple[uuid.UUID, str, str]]:
+    """监护人绑定长者清单（契约 F0 首页长者卡片）：[(elder_id, name, relation)]。
+
+    仅 status='active'；unbound 不出（AC-24 解绑保痕但对家属不可见）。
+    """
+    result = await session.execute(
+        select(Elder.elder_id, Elder.name, ElderGuardian.relation)
+        .join(Elder, Elder.elder_id == ElderGuardian.elder_id)
+        .where(
+            ElderGuardian.guardian_id == guardian_id,
+            ElderGuardian.status == "active",
+        )
+        .order_by(Elder.name.asc())
+    )
+    return [(row[0], row[1], row[2]) for row in result.all()]
+
+
 async def list_reports_for_guardian(
     session: AsyncSession,
     *,
     guardian_id: uuid.UUID,
+    elder_id: uuid.UUID | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[DailyReport], int]:
     """家属日报列表（契约 F1）：绑定范围过滤 + 每日只出最大版本（S-07）+ 分页作用在去重后。
 
     - 范围： elder_guardians status='active'；无绑定返回 ([], 0)（S-08，200 空列表）；
+    - elder_id 可选：契约 F1 按长者路径（/api/family/elders/{elder_id}/reports）。
+      过滤进**去重子查询内部**（外层过滤后再分页会错 total/页）；指定长者不在
+      绑定范围同样返回 ([], 0)（越权分流由 API 层按 F0 绑定清单裁决）；
     - 去重： 同一 (elder_id, report_date) 仅 version 最大者，report_date 倒序；
     - 分页： S-10——page≥1、page_size∈[1,100]（服务端钳制兜底，入参校验在 API 层），
       作用在去重后的行集上；total = 去重后总行数（与 page 无关）。
     """
     elder_ids = await _guardian_active_elder_ids(session, guardian_id=guardian_id)
-    if not elder_ids:
+    if not elder_ids or (elder_id is not None and elder_id not in elder_ids):
         return [], 0
+    scoped_ids = [elder_id] if elder_id is not None else elder_ids
     page = max(1, page)
     page_size = min(max(1, page_size), _PAGE_SIZE_MAX)
 
@@ -432,7 +457,7 @@ async def list_reports_for_guardian(
             DailyReport.report_date,
             func.max(DailyReport.version).label("max_version"),
         )
-        .where(DailyReport.elder_id.in_(elder_ids))
+        .where(DailyReport.elder_id.in_(scoped_ids))
         .group_by(DailyReport.elder_id, DailyReport.report_date)
         .subquery()
     )
@@ -518,6 +543,7 @@ __all__ = [
     "generate_daily_report",
     "get_daily_report",
     "get_report_detail_for_guardian",
+    "list_bound_elders_for_guardian",
     "list_daily_report_versions",
     "list_reports_for_guardian",
 ]
