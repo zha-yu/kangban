@@ -6,8 +6,8 @@
  * 业务规则依据：PRD FR-HLT-03/04（P0）/ AC-21（单分量红档）/ AC-22（补录追加不覆盖、
  * 原值保留可查、纠错=追加新版本）。
  *
- * - USE_MOCK 开关（Day 8 S6a）：后端 health_service（A2）交付前默认 Mock 内存层，
- *   设 `VITE_USE_MOCK_API=0` 切真实接口；导出签名不变，页面层不感知。
+ * - USE_MOCK 开关（Day 8 S6a → S6 翻转）：默认真实接口（R-1/R-2/R-2b/R-3/R-4），
+ *   仅显式 `VITE_USE_MOCK_API=1` 回退 Mock 内存层；导出签名不变，页面层不感知。
  * - 队列 = review_status=pending 的黄/红档记录，红档置顶（f7 D2，真实模式
  *   排序由服务端 R-1 保证，页面层不再排序）；
  * - 纠错 = 生成新版本（version+1、severity 服务端重算、reviewed_by 留痕），

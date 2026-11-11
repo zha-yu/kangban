@@ -4,9 +4,8 @@
  * 字段口径唯一依据：docs/接口契约_照护台业务数据.md §3.3（H-1 复用 E7 / H-2 提交）。
  * 业务规则依据：PRD FR-HLT-06（P1）/ §4.6 分级阈值 / AC-32（代填边界）。
  *
- * - USE_MOCK 开关（Day 8 S6a）：后端 health_service（A2）交付前默认 Mock；
- *   设 `VITE_USE_MOCK_API=0` 切真实接口（401 自动续期复用 api.ts authedFetch）；
- *   后端 CP2 联调通过后默认值翻转为真实接口（S6 联调段登记）。
+ * - USE_MOCK 开关（Day 8 S6a → S6 翻转）：默认真实接口（契约 H-2，401 自动续期
+ *   复用 api.ts authedFetch）；仅显式 `VITE_USE_MOCK_API=1` 回退 Mock 模拟。
  * - 负责长者候选**复用真实 E7**（服务端范围过滤保证只出现负责长者，AC-32）；
  *   Mock 模式同样走真实 E7。
  * - severity/follow_up 一律服务端写入；classifyHealthRecord 仅 Mock 模式模拟。

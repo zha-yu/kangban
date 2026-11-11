@@ -1,14 +1,17 @@
 import { useEffect, useState } from "react";
+import type { Principal } from "../api";
 import { getRecordChain, listPendingReviews, confirmReview, correctReview, type CorrectInput, type ReviewRecord } from "../review-api";
 import { TrendChart } from "../TrendChart";
 
 /**
- * 健康记录复核队列（task-11 F7，console 医生，Mock 先行）。
+ * 健康记录复核队列（task-11 F7 → Day 8 S6 切真）。
  *
- * 口径：FR-HLT-03/04 / AC-21/22——队列 = pending 黄/红档，红档置顶（f7 D2）；
- * 确认 → confirmed + 复核人留痕；纠错 → 新版本（version+1、severity 重算）+
- * 原记录 corrected + superseded_by 指向，原值保留可查（版本链）；
- * review_note 为 Mock 自裁字段（表无此列，f7 D4 留痕）。
+ * 口径：FR-HLT-03/04 / AC-21/22——队列 = pending 黄/红档，红档置顶（f7 D2，
+ * 排序由服务端 R-1 保证）；确认 → confirmed + reviewed_by 服务端 JWT 留痕；
+ * 纠错 → 新版本（version+1、severity 服务端重算）+ 原记录 corrected +
+ * superseded_by 指向，原值保留可查（版本链 R-2b）；review_note/superseded_reason
+ * 为 Q-1 补列真实字段（0017 迁移）。复核人展示名取登录态 principal（真实模式下
+ * confirmReview/correctReview 的 reviewerName 入参仅兼容签名，服务端 JWT 注入）。
  */
 
 const SEVERITY_BADGE: Record<ReviewRecord["severity"], string> = {
@@ -88,7 +91,7 @@ function ChainView({ recordId, onClose }: { recordId: string; onClose: () => voi
   );
 }
 
-export function ReviewQueuePage() {
+export function ReviewQueuePage({ principal }: { principal: Principal }) {
   const [queue, setQueue] = useState<ReviewRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -104,8 +107,8 @@ export function ReviewQueuePage() {
   const [note, setNote] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
 
-  // 演示复核人（真实接口后由登录态注入）
-  const REVIEWER = "演示·钱医生";
+  // 复核人展示名（登录态；真实接口的复核留痕由服务端 JWT 注入，前端传入仅 Mock 模式使用）
+  const REVIEWER = principal.name;
 
   function refresh() {
     listPendingReviews()
@@ -177,8 +180,8 @@ export function ReviewQueuePage() {
   return (
     <div className="rv-page">
       <p className="ntf-note">
-        复核口径：黄档人工复核、红档紧急处理；确认无误或纠错后退出队列。纠错生成新版本并保留原始值可查（补录追加不覆盖）。
-        复核备注为前端演示字段，正式落库方案待后端定稿。
+        复核口径：黄档人工复核、红档紧急处理；确认无误或纠错后退出队列。纠错生成新版本并保留原始值可查（补录追加不覆盖），
+        复核备注（review_note）随复核落库留痕。
       </p>
 
       {error && <p className="wo-load-error">{error}</p>}

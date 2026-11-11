@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ApiError, USE_MOCK_API } from "../api";
+import { ApiError, USE_MOCK_API, type Principal } from "../api";
 import type { ElderListItem } from "../elders-api";
 import {
   SOURCE_LABELS,
@@ -11,11 +11,12 @@ import {
 } from "../health-api";
 
 /**
- * 健康采集代填表（task-09 F5，console，提交 Mock + 长者下拉真实 E7）。
+ * 健康采集代填表（task-09 F5 → Day 8 S6 切真）。
  *
  * 口径：FR-HLT-06 / AC-32——5 字段代填，来源 staff_scheduled/staff_active；
- * 阈值常量按 PRD §4.6（红：收缩压≥180 或 舒张压≥120 单分量即红；黄档见 health-api.ts）；
- * 分级结果由 Mock 模拟、正式以后端规则引擎为准（f5 D3）；补录追加不覆盖（AC-22）。
+ * 分级（severity/follow_up/rule_version）一律服务端写入（H-2），前端阈值常量
+ * 仅作提交前即时提示参考；补录追加不覆盖（AC-22）；代填非负责长者 403+审计。
+ * 结果行展示「来源=代填 + 操作者（登录态 principal，AC-32）」。
  */
 
 const MOOD_OPTIONS = [
@@ -46,7 +47,7 @@ const TIME_FMT = new Intl.DateTimeFormat("zh-CN", {
   minute: "2-digit",
 });
 
-export function HealthFormPage() {
+export function HealthFormPage({ principal }: { principal: Principal }) {
   const [elders, setElders] = useState<ElderListItem[] | null>(null);
   const [elderId, setElderId] = useState("");
   const [source, setSource] = useState<StaffRecordSource>("staff_scheduled");
@@ -112,8 +113,9 @@ export function HealthFormPage() {
     setBusy(true);
     try {
       setResult(await submitHealthRecord({ elder_id: elderId, source, ...fields }));
-    } catch {
-      setError("提交失败，请稍后重试");
+    } catch (err) {
+      // 服务端 detail 为用户语言文案（403 越权 / 422 校验 / 网络异常），不回显内部细节
+      setError(err instanceof ApiError ? err.message : "提交失败，请稍后重试");
     } finally {
       setBusy(false);
     }
@@ -205,8 +207,8 @@ export function HealthFormPage() {
             <span className="badge badge-neutral">规则版本 {result.rule_version}</span>
           </div>
           <p className="hf-result-line">
-            {selectedElder?.name ?? "长者"} · {SOURCE_LABELS[source]} ·{" "}
-            {TIME_FMT.format(new Date(result.recorded_at))}
+            {selectedElder?.name ?? "长者"} · 来源：{SOURCE_LABELS[source]} · 代填人：
+            {principal.name} · {TIME_FMT.format(new Date(result.recorded_at))}
             {USE_MOCK_API ? "（Mock 提交，未落库）" : ""}
           </p>
           <p className="hf-result-followup">{result.follow_up}</p>

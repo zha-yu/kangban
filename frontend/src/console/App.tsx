@@ -98,7 +98,7 @@ export default function App() {
           ) : careView === "alerts" ? (
             <AlertsPage principal={principal} />
           ) : careView === "health-form" ? (
-            <HealthFormPage />
+            <HealthFormPage principal={principal} />
           ) : careView === "medication" ? (
             <MedicationPage />
           ) : (
@@ -115,7 +115,7 @@ export default function App() {
           onLogout={handleLogout}
           onNavigate={(key) => setDoctorView(key as DoctorView)}
         >
-          {doctorView === "medication-edit" ? <MedicationEditPage /> : <ReviewQueuePage />}
+          {doctorView === "medication-edit" ? <MedicationEditPage /> : <ReviewQueuePage principal={principal} />}
         </AppLayout>
       );
     }

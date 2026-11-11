@@ -7,8 +7,8 @@
  * acknowledged 严格顺序；只有客户端回执算送达、只有人工操作算确认；送达≠确认、
  * 确认≠工单完成）+ 裁决 B5（P0 只做「落库 + 演示卡片」，webpush 归 P1）。
  *
- * - USE_MOCK 开关（Day 8 S6a）：后端通知接口（dev-A H6/H7）交付前默认 Mock
- *   内存层，设 `VITE_USE_MOCK_API=0` 切真实接口；导出签名不变，页面层不感知。
+ * - USE_MOCK 开关（Day 8 S6a → S6 翻转）：默认真实接口（N-1/N-2/N-3），
+ *   仅显式 `VITE_USE_MOCK_API=1` 回退 Mock 内存层；导出签名不变，页面层不感知。
  * - 状态枚举按 dev-B 核实口径（v1.3 收口）：契约 §3.4 五值（failed 为
  *   pending 30s×3 重试终态，TD §3.5）；正常链路只见四态，页面仍展示 failed。
  * - 真实模式下 actor 入参仅兼容签名——确认人身份由服务端 JWT 注入；
