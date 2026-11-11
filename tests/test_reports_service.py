@@ -301,6 +301,16 @@ async def test_list_reports_for_guardian_scope_dedupe_and_paging(
     assert [r.report_id for r in rows_p1] == [ref_d2_v2.report_id]
     assert [r.report_id for r in rows_p2] == [ref_d1.report_id]
 
+    # elder_id 过滤（契约 F1 按长者路径）：只出该长者、total 随之缩小；未绑定长者 → ([], 0)
+    rows_a, total_a = await report_service.list_reports_for_guardian(
+        session, guardian_id=world.guardian_id, elder_id=world.elder_id
+    )
+    assert total_a == 2
+    assert all(r.elder_id == world.elder_id for r in rows_a)
+    assert await report_service.list_reports_for_guardian(
+        session, guardian_id=world.guardian_id, elder_id=other.elder_id
+    ) == ([], 0)
+
     # 无绑定家属 → ([], 0)（S-08：200 空列表，不是 403）
     stranger = GuardianAccount(name="家属-F1无绑定", phone="13800000002", password_hash="x")
     session.add(stranger)
@@ -379,4 +389,40 @@ async def test_get_report_detail_for_guardian_assembles_and_gates(
         await report_service.get_report_detail_for_guardian(
             session, guardian_id=world.guardian_id, report_id=ref_other.report_id
         )
+    await session.rollback()
+
+
+async def test_list_bound_elders_for_guardian_f0(world: ReportWorld, db_conn) -> None:
+    """F0：active 绑定出 (elder_id, name, relation)；unbound 不出（AC-24）；无绑定空列表。"""
+    session = AsyncSession(db_conn)
+    # 同一监护人另绑一个 unbound 长者 → 不可见
+    hidden = Elder(name="长者-F0已解绑", status="active")
+    session.add(hidden)
+    await session.flush()
+    session.add(
+        ElderGuardian(
+            elder_id=hidden.elder_id,
+            guardian_id=world.guardian_id,
+            relation="family",
+            status="unbound",
+        )
+    )
+    await session.flush()
+
+    rows = await report_service.list_bound_elders_for_guardian(
+        session, guardian_id=world.guardian_id
+    )
+    assert len(rows) == 1
+    elder_id, name, relation = rows[0]
+    assert elder_id == world.elder_id and relation == "family" and "日报S4" in name
+
+    stranger = GuardianAccount(name="家属-F0无绑定", phone="13800000003", password_hash="x")
+    session.add(stranger)
+    await session.flush()
+    assert (
+        await report_service.list_bound_elders_for_guardian(
+            session, guardian_id=stranger.guardian_id
+        )
+        == []
+    )
     await session.rollback()
