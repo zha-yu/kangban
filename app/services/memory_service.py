@@ -20,10 +20,11 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Literal, Protocol
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger("app.services.memory_service")
@@ -55,8 +56,21 @@ _JUDGE_SYSTEM_PROMPT = (
     "none=不矛盾，可以共存（如对同类不同项的偏好）。"
 )
 
+# --- Day 8 Step 7 B5：90 天衰减 + 每周归并（FR-MEM-07，裁决④ 双接口）---
+
+#: 衰减判定：最后召回时间（无则取创建时间）早于 90 天前即衰减（满 90 天整即触发，`<=` 边界）
+_DECAY_INACTIVE_DAYS = 90
+
+#: 单次衰减系数：importance × 0.5，周维护 job 每次执行渐进减半
+_DECAY_FACTOR = 0.5
+
+#: importance 衰减下限（列类型 numeric(3,2)）：到达后不再变化，重复执行幂等收敛
+_DECAY_FLOOR = Decimal("0.10")
+
+#: 归并判定：同长者同谓词下内容相似度 > 0.9 视为高度相似重复记忆（FR-MEM-07「高度相似」）
+_CONSOLIDATION_SIMILARITY_THRESHOLD = 0.9
+
 # 技术债（后续迭代补）：
-#   - 90 天衰减归并（APScheduler 任务，Day 8 Step 7 B5 收尾）
 #   - 删除流水（deleted 状态不是真删除）
 #   - pgvector 向量召回（替换 ORDER BY importance DESC）
 #   - embedding 生成（可空 vector(1536)，接入后 _text_similarity 占位实现
@@ -516,6 +530,176 @@ async def recall_active_chunks(
     return list(rows)
 
 
+# ------------------------------------------------------------------ 衰减与归并（Day 8 Step 7 B5，FR-MEM-07，裁决④ 方案 A）
+
+
+def _apply_decay(rows: list[Any], *, now: datetime) -> list[dict[str, Any]]:
+    """对满 90 天未召回的条目执行一次 importance 减半（原地改行，不提交）。
+
+    衰减语义：**不改状态、不删内容**——只降 importance，衰减条目在召回排序
+    （importance DESC）中自然沉底（TD §3.4「冷热分层依据」）；召回闸门
+    （status=active + 有效期）语义不变。importance 到达下限 0.10 后不再变化，
+    重复执行幂等收敛。
+    """
+    decayed: list[dict[str, Any]] = []
+    for row in rows:
+        current = Decimal(str(row.importance))
+        if current <= _DECAY_FLOOR:
+            continue  # 已到下限：收敛，重复执行不再产生变更
+        target = max(
+            _DECAY_FLOOR,
+            (current * Decimal(str(_DECAY_FACTOR))).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            ),
+        )
+        row.importance = target
+        row.updated_at = now
+        record: dict[str, Any] = {
+            "chunk_id": str(row.chunk_id),
+            "elder_id": str(row.elder_id),
+            "importance_before": float(current),
+            "importance_after": float(target),
+        }
+        decayed.append(record)
+        logger.info("memory_decay_applied", extra=record)
+    return decayed
+
+
+async def decay_stale(
+    *, now: datetime | None = None, session: AsyncSession | None = None
+) -> list[dict[str, Any]]:
+    """**90 天衰减**（FR-MEM-07，裁决④ 接口①）：周维护 job 每次执行时对
+    满足「最后召回（`last_accessed`，无则取 `created_at`）早于 90 天前」的
+    active 条目 importance 减半（下限 0.10）。
+
+    事务边界：调用方注入 session 则由调用方控制提交（与 `insert_candidate`
+    同形）；未注入则自开会话并自行提交（memory_jobs 走此路径，scheduler 零写库）。
+
+    Returns:
+        衰减条目记录列表（chunk_id / elder_id / importance 前后值），
+        供 job 层日志汇总与测试断言。
+    """
+    from app.models.memory import MemoryChunk
+
+    now_dt = now or datetime.now(UTC)
+    cutoff = now_dt - timedelta(days=_DECAY_INACTIVE_DAYS)
+    stmt = (
+        select(MemoryChunk)
+        .where(
+            MemoryChunk.status == "active",
+            func.coalesce(MemoryChunk.last_accessed, MemoryChunk.created_at) <= cutoff,
+        )
+        .order_by(MemoryChunk.elder_id, MemoryChunk.chunk_id)
+    )
+
+    if session is None:
+        from app.db import session_factory
+
+        async with session_factory() as own:
+            rows = (await own.execute(stmt)).scalars().all()
+            decayed = _apply_decay(list(rows), now=now_dt)
+            await own.commit()
+    else:
+        rows = (await session.execute(stmt)).scalars().all()
+        decayed = _apply_decay(list(rows), now=now_dt)
+    return decayed
+
+
+def _pick_keeper(left: Any, right: Any) -> tuple[Any, Any]:
+    """归并保留侧选择：importance 高者保留；并列取创建时间新者；再并列取左（查询序稳定）。"""
+    left_importance = Decimal(str(left.importance))
+    right_importance = Decimal(str(right.importance))
+    if left_importance != right_importance:
+        return (left, right) if left_importance > right_importance else (right, left)
+    epoch = datetime.min.replace(tzinfo=UTC)
+    left_created = left.created_at or epoch
+    right_created = right.created_at or epoch
+    if left_created != right_created:
+        return (left, right) if left_created > right_created else (right, left)
+    return left, right
+
+
+def _consolidate_rows(rows: list[Any], *, now: datetime) -> list[dict[str, Any]]:
+    """对同 (elder_id, predicate) 分组内两两高度相似（>0.9）的 active 条目执行归并。
+
+    归并语义（FR-MEM-07，TD §3.6 迁移批次明确「记忆衰减归并不新增表」）：
+    保留 importance 高（并列取新）的一条生效；另一条标 `superseded` +
+    `valid_to` 收口退出召回，两版本均保留；保留条 `supersedes_id` 指向被
+    归并条（既有指针不覆盖，保持原版本链）。**归并记录** = 结构化日志
+    `memory_consolidated` + `supersedes_id` 链 + 本函数返回值（job 层汇总日志）。
+    """
+    groups: dict[tuple[str, str], list[Any]] = {}
+    for row in rows:
+        groups.setdefault((str(row.elder_id), str(row.predicate)), []).append(row)
+
+    records: list[dict[str, Any]] = []
+    for elder_key, predicate_key in sorted(groups):
+        members = groups[(elder_key, predicate_key)]
+        if len(members) < 2:
+            continue
+        for i in range(len(members)):
+            for j in range(i + 1, len(members)):
+                left, right = members[i], members[j]
+                if left.status != "active" or right.status != "active":
+                    continue  # 本轮已被归并的条目不再参与后续配对
+                similarity = _text_similarity(str(left.content), str(right.content))
+                if similarity <= _CONSOLIDATION_SIMILARITY_THRESHOLD:
+                    continue
+                keeper, merged = _pick_keeper(left, right)
+                merged.status = "superseded"
+                merged.valid_to = now
+                merged.updated_at = now
+                if keeper.supersedes_id is None:
+                    keeper.supersedes_id = merged.chunk_id
+                keeper.updated_at = now
+                record: dict[str, Any] = {
+                    "kept_chunk_id": str(keeper.chunk_id),
+                    "merged_chunk_id": str(merged.chunk_id),
+                    "elder_id": elder_key,
+                    "predicate": predicate_key,
+                    "similarity": round(similarity, 3),
+                }
+                records.append(record)
+                logger.info("memory_consolidated", extra=record)
+    return records
+
+
+async def consolidate_similar(
+    *, now: datetime | None = None, session: AsyncSession | None = None
+) -> list[dict[str, Any]]:
+    """**每周归并**（FR-MEM-07，裁决④ 接口②）：对同长者同谓词下内容高度
+    相似（相似度 >0.9，复用 `_text_similarity`）的重复记忆执行归并，输出
+    归并记录（保留条生效、重复条 superseded、两版本均保留）。
+
+    事务边界与 `decay_stale` 一致：注入 session 由调用方提交，否则自开自提
+    （memory_jobs 走后者）。状态条件扫描天然幂等：归并后旧条目退出 active，
+    重复执行不产生重复变更。
+
+    Returns:
+        归并记录列表（kept/merged chunk_id、similarity 等）。
+    """
+    from app.models.memory import MemoryChunk
+
+    now_dt = now or datetime.now(UTC)
+    stmt = (
+        select(MemoryChunk)
+        .where(MemoryChunk.status == "active")
+        .order_by(MemoryChunk.elder_id, MemoryChunk.predicate, MemoryChunk.chunk_id)
+    )
+
+    if session is None:
+        from app.db import session_factory
+
+        async with session_factory() as own:
+            rows = (await own.execute(stmt)).scalars().all()
+            records = _consolidate_rows(list(rows), now=now_dt)
+            await own.commit()
+    else:
+        rows = (await session.execute(stmt)).scalars().all()
+        records = _consolidate_rows(list(rows), now=now_dt)
+    return records
+
+
 # ------------------------------------------------------------------ 内部
 
 
@@ -696,6 +880,8 @@ __all__ = [
     "MemoryExtractionPort",
     "MemoryInsertSkipped",
     "MemoryValidationError",
+    "consolidate_similar",
+    "decay_stale",
     "extract_after_turn",
     "extract_preference_candidates",
     "insert_candidate",
