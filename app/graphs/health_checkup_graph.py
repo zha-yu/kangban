@@ -25,9 +25,9 @@ START → collect（5 问 interrupt 循环：收缩压/舒张压/睡眠/情绪/�
    与用药子图「间隔由 scheduler 决定」同一口径）；进程重启后 `get_state`
    仍能读回「问到第几问」。
 2. **分级阈值不进图**（技术设计 §7.2「分级规则在代码不在 prompt」）：
-   `grade` 节点只调用可替换的引擎引用（缺省 lazy import A2 的
-   `health_service.grade_health`，即 X1 分级纯函数）；图内没有任何
-   红/黄/绿数值。引擎输出非法 level 时直接抛错，绝不让图静默按绿处理。
+   `grade` 节点只调用可替换的引擎引用（缺省映射 A2 交付的 X1 冻结纯函数
+   `health_service.grade_health`，g1）；图内没有任何红/黄/绿数值。
+   引擎输出非法 level 时直接抛错，绝不让图静默按绿处理。
 3. **结构化校验在图内做结构层**（Pydantic，字段边界与 0017 迁移的 CHECK
    约束同源：血压 0–300 / 睡眠 0–24 / 情绪 1–5）；口语归一与「收缩压>舒张压」
    这类跨字段语义校验归 A2（`validate_fn` 可注入替换），图不重复实现。
@@ -95,6 +95,7 @@ class HealthCheckState(TypedDict, total=False):
 
     source: str  # 入口来源（四值之一；AC-34 双入口）
     elder_id: str
+    operator_id: str  # staff_* 代填入口的操作护工（AC-32 越权校验；voice 入口不传）
     graph_thread_id: str
     answers: dict[str, Any]  # 逐问原始回答（问题键 → 值；未答的问题不在 dict 里）
     attempts: dict[str, int]  # 逐问已问次数（无效重问一次的上限判断）
@@ -115,12 +116,10 @@ class HealthCheckState(TypedDict, total=False):
 
 
 def _default_grade(record: dict[str, Any]) -> dict[str, Any]:
-    """X1 分级引擎引用（A2 纯函数 ``health_service.grade_health``）。
+    """X1 分级引擎引用（A2 已交付：同步纯函数 `grade_health`，冻结签名 g1）。
 
-    适配口径：入参 5 字段 record dict → 引擎 keyword-only 5 参；
-    出参 ``{"level": severity, "reasons": [...], "rule_version": str}``
-    （reasons 仅收非绿分量，绿档=[]，决策依据可回溯 AC-09/21）。
-    引擎签名/阈值变更**只改本函数**，图结构与阈值位置不动。
+    映射：HealthGradeResult → ``{"level", "reasons", "rule_version"}``；
+    阈值全部在引擎（PRD §4.6 / AC-21 单分量判红），图内零阈值。
     """
     from app.services.health_service import grade_health
 
@@ -133,37 +132,164 @@ def _default_grade(record: dict[str, Any]) -> dict[str, Any]:
     )
     return {
         "level": result.severity,
-        "reasons": [f"{c.field}: {c.reason}" for c in result.components if c.severity != "green"],
+        "reasons": [f"{c.field}={c.value}:{c.severity}({c.reason})" for c in result.components],
         "rule_version": result.rule_version,
     }
 
 
-async def _default_persist(session: Any, state: HealthCheckState) -> dict[str, Any]:
-    """落库 health_records（含 graph_thread_id 回指、review_status、处置时间）。"""
-    from app.services.health_service import persist_record  # A2 交付后生效
+def _record_fields(state: HealthCheckState) -> dict[str, Any]:
+    """从 state.record 提取 create_health_record 的 5+1 字段入参。"""
+    record = dict(state.get("record") or {})
+    return {
+        "systolic": record.get("systolic"),
+        "diastolic": record.get("diastolic"),
+        "sleep_hours": record.get("sleep_hours"),
+        "mood_score": record.get("mood_score"),
+        "mood_note": record.get("mood_note"),
+        "complaint": record.get("complaint"),
+    }
 
-    return await persist_record(session, state)
+
+async def _default_persist(session: Any, state: HealthCheckState) -> dict[str, Any]:
+    """落库/收口出口（A2 内聚口径）。
+
+    - 绿/红档（order_ref 无 record_id）→ ``create_health_record``：
+      绿档仅写记录；红档写记录 + risk_event（红工单由 dev-C safety_service 接管）。
+    - 黄档（create_yellow_order 首过已落 v1，review_status=pending）→
+      ``review_health_record(action="confirm")`` 收口复核状态（AC-22 复核留痕）。
+    """
+    from app.services.health_service import create_health_record, review_health_record
+
+    order_ref = dict(state.get("order_ref") or {})
+    if order_ref.get("record_id"):
+        hitl = dict(state.get("hitl_result") or {})
+        reviewer = _uuid(hitl["reviewer_id"]) if hitl.get("reviewer_id") else None
+        await review_health_record(
+            session,
+            record_id=_uuid(order_ref["record_id"]),
+            reviewer_id=reviewer,
+            action="confirm",
+            review_note=hitl.get("review_note"),
+        )
+        return {
+            "record_id": str(order_ref["record_id"]),
+            "severity": str(order_ref.get("severity") or ""),
+            "version": order_ref.get("version"),
+            "review_status": "confirmed",
+            "work_order_id": order_ref.get("work_order_id"),
+        }
+
+    ref = await create_health_record(
+        session,
+        elder_id=_uuid(state["elder_id"]),
+        source=state["source"],
+        operator_id=_uuid(state["operator_id"]) if state.get("operator_id") else None,
+        graph_thread_id=state.get("graph_thread_id"),
+        **_record_fields(state),
+    )
+    return {
+        "record_id": str(ref.record_id),
+        "severity": ref.severity,
+        "version": ref.version,
+        "risk_event_id": str(ref.risk_event_id) if ref.risk_event_id else None,
+        "work_order_id": str(ref.work_order_id) if ref.work_order_id else None,
+    }
 
 
 async def _default_create_yellow_order(session: Any, state: HealthCheckState) -> dict[str, Any]:
-    """黄档：创建工单 + 黄色复核任务（通知护工，AC-09）。"""
-    from app.services import work_order_service
+    """黄档「建单+复核任务」（A2 内聚口径，H9）。
 
-    return await work_order_service.open_yellow_review(session, state)
+    - 首过（order_ref 无 record_id）→ ``create_health_record``：一次落 v1 记录
+      （review_status=pending 即黄色复核任务）+ risk_event + 黄工单。
+    - 纠错重分级回环二过（order_ref.record_id 已存在）→
+      ``review_health_record(action="correct", corrected_values=state.record)``：
+      X1 引擎内部重分级 + 版本链（v2, superseded_reason="review_correction"）
+      + 黄升红升级（AC-22 服务侧口径），不重复建 v1。
+    """
+    from app.services.health_service import create_health_record, review_health_record
+
+    order_ref = dict(state.get("order_ref") or {})
+    if order_ref.get("record_id"):
+        hitl = dict(state.get("hitl_result") or {})
+        reviewer = _uuid(hitl["reviewer_id"]) if hitl.get("reviewer_id") else None
+        ref = await review_health_record(
+            session,
+            record_id=_uuid(order_ref["record_id"]),
+            reviewer_id=reviewer,
+            action="correct",
+            corrected_values=dict(state.get("record") or {}),
+            review_note=hitl.get("review_note"),
+        )
+        return {
+            **order_ref,
+            "record_id": str(ref.record_id),
+            "severity": ref.severity,
+            "version": ref.version,
+            "corrected": True,
+        }
+
+    ref = await create_health_record(
+        session,
+        elder_id=_uuid(state["elder_id"]),
+        source=state["source"],
+        operator_id=_uuid(state["operator_id"]) if state.get("operator_id") else None,
+        graph_thread_id=state.get("graph_thread_id"),
+        **_record_fields(state),
+    )
+    return {
+        "record_id": str(ref.record_id),
+        "severity": ref.severity,
+        "version": ref.version,
+        "risk_event_id": str(ref.risk_event_id) if ref.risk_event_id else None,
+        "work_order_id": str(ref.work_order_id) if ref.work_order_id else None,
+    }
 
 
 async def _default_notify_red(session: Any, state: HealthCheckState) -> dict[str, Any]:
-    """红档：紧急通知护工 + 监护人双通知（AC-38）。"""
-    from app.services import notify_service
+    """红档双通知出口（AC-38）：notify_service 尚未交付（dev-C）。
 
-    return await notify_service.notify_red_event(session, state)
+    缺省实现**显式降级**：log warning + degraded 标记返回，绝不假装已通知；
+    dev-C 交付后仅替换本函数。
+    """
+    logger.warning(
+        "notify_service_unavailable_degraded",
+        extra={"elder_id": state.get("elder_id"), "thread": state.get("graph_thread_id")},
+    )
+    return {
+        "delivered": False,
+        "degraded": True,
+        "channels": [],
+        "note": "notify_service 尚未交付（dev-C），护工+监护人双通知待接入",
+    }
 
 
 async def _default_create_red_order(session: Any, state: HealthCheckState) -> dict[str, Any]:
-    """红档：创建紧急工单（看板红档置顶）。"""
-    from app.services import work_order_service
+    """红档紧急工单。
 
-    return await work_order_service.open_emergency(session, state)
+    A2 的 create_health_record 只建红 risk_event 不建红单（其注释口径：红档走
+    safety_service，dev-C 未交付）。过渡期用通用出口 ``open_work_order`` 兜底
+    （dedupe_token 绑定 thread_id 幂等，Step 6 集成时裁决是否切换 safety_service）。
+    """
+    from app.services.work_order_service import open_work_order
+
+    order_ref = dict(state.get("order_ref") or {})
+    if order_ref.get("work_order_id"):
+        return order_ref  # 重分级回环重入：不重复建单
+
+    ref = await open_work_order(
+        session,
+        elder_id=_uuid(state["elder_id"]),
+        order_type="health_alert",
+        severity="red",
+        dedupe_token=f"health_graph:{state.get('graph_thread_id')}:red",
+        event_id=_uuid(order_ref["risk_event_id"]) if order_ref.get("risk_event_id") else None,
+        assignee_id=None,  # 未分派是真实状态（work_order_service §open_work_order 口径）
+    )
+    return {
+        "order_id": str(ref.order_id),
+        "order_no": getattr(ref, "order_no", None),
+        "severity": "red",
+    }
 
 
 # ---------------------------------------------------------------- 节点辅助
@@ -441,12 +567,14 @@ async def start_health_checkup(
     source: str,
     thread_id: str | None = None,
     initial_answers: dict[str, Any] | None = None,
+    operator_id: uuid.UUID | str | None = None,
 ) -> dict[str, Any]:
     """首轮启动。代填入口可带 `initial_answers` 直接跳过语音 5 问（AC-32 同一张图）。
 
     `source` 必须是四值枚举之一；`thread_id` 缺省按 scheduled/active 口径派生
-    （scheduled 同日幂等；active 一次一事）。跑到第一个阻塞点（问话或 HITL）
-    返回（返回里带 `__interrupt__`）。
+    （scheduled 同日幂等；active 一次一事）。`operator_id` 是 staff_* 代填入口
+    的操作护工（create_health_record 越权校验要求），voice 入口不传。
+    跑到第一个阻塞点（问话或 HITL）返回（返回里带 `__interrupt__`）。
     """
     if source not in SOURCE_VALUES:
         raise ValueError(f"unknown source: {source!r}; expected one of {SOURCE_VALUES}")
@@ -458,6 +586,8 @@ async def start_health_checkup(
         "attempts": {},
         "graph_thread_id": tid,
     }
+    if operator_id is not None:
+        state["operator_id"] = str(operator_id)
     result: dict[str, Any] = await graph.ainvoke(state, graph_config(tid))
     return result
 
