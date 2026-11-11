@@ -47,7 +47,7 @@ import logging
 import uuid
 from typing import Final, Literal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -56,7 +56,11 @@ from app.models.medication import RiskEvent
 from app.models.organization import Bed, Elder, Room
 from app.models.relation import ElderStaffAssignment
 from app.models.staff import StaffAccount
-from app.services.work_order_service import open_work_order, resolve_primary_care_staff
+from app.services.work_order_service import (
+    WorkOrderRef,
+    open_work_order,
+    resolve_primary_care_staff,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -708,6 +712,65 @@ async def get_health_trend(
     return list(result.scalars().all())
 
 
+# ------------------------------------------------------------------ 调度域查询与漏采派单（B3 · Day 8）
+# 三个入口只服务 app/scheduler/health_jobs.py 的 tick 驱动链；写库仍只经
+# open_work_order（工单唯一建单口 A12），本文件不加第二条建单路径。
+
+
+async def list_active_elder_ids(session: AsyncSession) -> list[uuid.UUID]:
+    """全部 active 长者（19:00 触发 / 20:00 漏采判定的扫描面）。"""
+    return list(
+        (await session.execute(select(Elder.elder_id).where(Elder.status == "active"))).scalars()
+    )
+
+
+async def list_elder_ids_with_records_on(
+    session: AsyncSession, *, day: datetime.date
+) -> set[uuid.UUID]:
+    """指定**上海日期**已有健康记录的长者集合（FR-HLT-08 漏采判定）。
+
+    `recorded_at` 是 UTC timestamptz：先转 `Asia/Shanghai` 再取 date，
+    与 report_service 的日窗口口径一致——漏采是按长者所在地「那一天」算的。
+    """
+    rows = await session.execute(
+        select(HealthRecord.elder_id).where(
+            func.date(func.timezone("Asia/Shanghai", HealthRecord.recorded_at)) == day
+        )
+    )
+    return set(rows.scalars())
+
+
+async def create_missed_collection_order(
+    session: AsyncSession, *, elder_id: uuid.UUID, day: datetime.date
+) -> WorkOrderRef:
+    """漏采工单（FR-HLT-08）：窗口结束无任何记录 → `collection_missed` 派负责护工。
+
+    - severity 固定 `yellow`：漏采不是急症，判红会稀释真红（与漏服同口径）；
+    - 幂等 token `collection_missed:<elder_id>:<day>`：同日重跑 tick 必撞同一
+      确定性单号返回原单（created=False），不重复派单；
+    - 指派人 = 责任护工（`primary_care`），没配则 None（「未分派」是真实状态，
+      不做 fallback，与 work_order_service 口径一致）。
+    """
+    assignee = await resolve_primary_care_staff(session, elder_id=elder_id)
+    ref = await open_work_order(
+        session,
+        elder_id=elder_id,
+        order_type="collection_missed",
+        severity="yellow",
+        dedupe_token=f"collection_missed:{elder_id}:{day:%Y%m%d}",
+        assignee_id=assignee,
+    )
+    logger.info(
+        "missed_collection_order elder_id=%s day=%s order_no=%s created=%s assignee=%s",
+        elder_id,
+        day,
+        ref.order_no,
+        ref.created,
+        assignee,
+    )
+    return ref
+
+
 __all__ = [
     "RULE_VERSION",
     "SEVERITY_GREEN",
@@ -718,10 +781,13 @@ __all__ = [
     "HealthRecordRef",
     "HealthRecordRow",
     "create_health_record",
+    "create_missed_collection_order",
     "get_health_trend",
     "get_record_chain",
     "get_record_row",
     "grade_health",
+    "list_active_elder_ids",
+    "list_elder_ids_with_records_on",
     "list_pending_reviews",
     "review_health_record",
 ]

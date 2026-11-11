@@ -646,6 +646,61 @@ def now_iso_utc() -> str:
     return datetime.datetime.now(datetime.UTC).isoformat()
 
 
+@dataclass(frozen=True, slots=True)
+class RetryScanResult:
+    """一轮 30s 重试扫描的结果（AC-23 前半，scheduler 证据留存）。"""
+
+    delivered: int  # 本轮 Mock 推送成功 → delivered 的条数
+    failed: int  # 重试耗尽（retry_count ≥ MAX_RETRIES）置 failed 的条数
+    remaining_pending: int  # 仍处 pending（等待下一轮）的条数
+
+
+async def retry_pending_notifications(
+    session: AsyncSession, *, now: datetime.datetime
+) -> RetryScanResult:
+    """调度驱动入口（AC-23 前半）：pending 每 30s 重试，3 次失败 → failed。
+
+    内部先跑 ``scan_pending_notifications``（超限者已置 failed），其余 pending
+    逐条 **Mock 推送成功 → delivered + sent_at**（retry_count += 1 记尝试次数）。
+    真实渠道接入后只替换「推送」这一步：失败就不置 delivered，留在 pending
+    让下一轮再试——状态机迁移本身不变。
+    """
+    pending = await scan_pending_notifications(session, now=now)
+    delivered = 0
+    for notification in pending:
+        notification.retry_count += 1
+        notification.status = _STATUS_DELIVERED
+        notification.sent_at = now
+        delivered += 1
+    if pending:
+        await session.flush()
+
+    failed = int(
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(Notification)
+                .where(
+                    Notification.status == _STATUS_FAILED,
+                    Notification.sent_at.is_(None),
+                )
+            )
+        ).scalar_one()
+    )
+    remaining = int(
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(Notification)
+                .where(Notification.status == _STATUS_PENDING)
+            )
+        ).scalar_one()
+    )
+    if delivered or failed:
+        logger.info("notification_retry_scan delivered=%d failed=%d", delivered, failed)
+    return RetryScanResult(delivered=delivered, failed=failed, remaining_pending=remaining)
+
+
 __all__ = [
     "ESCALATION_WINDOW_MIN",
     "MAX_RETRIES",
@@ -658,12 +713,14 @@ __all__ = [
     "NotificationPayloadError",
     "NotificationRef",
     "NotificationTargetNotFound",
+    "RetryScanResult",
     "acknowledge_notification",
     "escalate_red_event",
     "list_guardian_notifications",
     "mark_guardian_notification_read",
     "mark_notification_delivered",
     "mark_notification_sent",
+    "retry_pending_notifications",
     "scan_escalations",
     "scan_pending_notifications",
     "send_guardian_notifications",
