@@ -41,7 +41,7 @@ CASES: dict[str, tuple[str, str]] = {
 def test_ruleset_is_capped_and_versioned() -> None:
     assert len(RULESET) <= 10, "规则层超过 10 条就变成第二个分类器了（会没人 review）"
     assert len(RULESET) == len({rule.rule_id for rule in RULESET}), "rule_id 必须唯一"
-    assert RULESET_VERSION == "r1"
+    assert RULESET_VERSION == "r2"
 
 
 def test_every_rule_has_positive_and_negative_case() -> None:
@@ -103,14 +103,24 @@ def test_extract_city_returns_none_when_absent() -> None:
     assert extract_city("杭州冷不冷") == "杭州"
 
 
-def test_playback_rules_are_agent_because_media_not_ready() -> None:
-    """播放控制本日没有媒体库：识别出来但只能下沉 Agent（不假装工具存在）。"""
-    for text in ("暂停一下", "换一段", "再大声点", "再放一遍"):
+def test_playback_rules_are_direct_tool_to_play_opera() -> None:
+    """Day 8 A5：播放控制 8 条规则从 capability_not_ready 降级升级为直连 play_opera。
+
+    等 B4 Tool 注册后经 ToolExecutor 调通；骨架先行，规则层已就位。
+    """
+    expected = {
+        "暂停一下": ("R-01", "pause"),
+        "换一段": ("R-05", "next"),
+        "再大声点": ("R-06", "volume_up"),
+        "再放一遍": ("R-08", "repeat"),
+    }
+    for text, (rule_id, action) in expected.items():
         hit = match_rule(text)
         assert hit is not None
-        assert hit.action == "agent"
-        assert hit.reason == "capability_not_ready"
-        assert hit.tool_name is None
+        assert hit.rule_id == rule_id
+        assert hit.action == "tool"
+        assert hit.tool_name == "play_opera"
+        assert hit.tool_args == {"action": action}
 
 
 def test_empty_text_matches_nothing() -> None:
