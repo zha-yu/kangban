@@ -22,10 +22,13 @@ from app.models.conversation import (
 )
 from app.models.decision import DecisionLog
 from app.models.guardian import GuardianAccount
+from app.models.health import HealthRecord
+from app.models.media import MediaHistory, MediaLibrary
 from app.models.metrics import Metric
 from app.models.notifications import Notification
 from app.models.organization import Bed, Device, Elder, Persona, Room
 from app.models.relation import ElderGuardian, ElderStaffAssignment
+from app.models.report import DailyReport
 from app.models.staff import StaffAccount, StaffToken
 from app.models.voiceprint import Voiceprint
 
@@ -37,12 +40,16 @@ __all__ = [
     "ConversationEvent",
     "ConversationThread",
     "ConversationTurn",
+    "DailyReport",
     "DecisionLog",
     "Device",
     "Elder",
     "ElderGuardian",
     "ElderStaffAssignment",
     "GuardianAccount",
+    "HealthRecord",
+    "MediaHistory",
+    "MediaLibrary",
     "Metric",
     "Notification",
     "Persona",

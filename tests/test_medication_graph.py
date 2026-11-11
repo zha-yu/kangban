@@ -431,9 +431,7 @@ async def test_all_devices_offline_yields_notification_failed(
 
     reason = (
         await session.execute(
-            select(MedicationEvent.failure_reason).where(
-                MedicationEvent.reminder_id == reminder_id
-            )
+            select(MedicationEvent.failure_reason).where(MedicationEvent.reminder_id == reminder_id)
         )
     ).scalar_one()
     assert reason == "offline", "归因写 offline（failure_reason 白名单内，无新增值/无迁移）"

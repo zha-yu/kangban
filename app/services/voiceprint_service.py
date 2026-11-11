@@ -276,9 +276,7 @@ async def delete_all_for_elder(
     deleted = (
         (
             await session.execute(
-                delete(Voiceprint)
-                .where(Voiceprint.elder_id == elder_id)
-                .returning(Voiceprint.id)
+                delete(Voiceprint).where(Voiceprint.elder_id == elder_id).returning(Voiceprint.id)
             )
         )
         .scalars()

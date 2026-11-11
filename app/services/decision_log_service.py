@@ -174,13 +174,17 @@ async def was_clarified(
 async def last_decision(session: AsyncSession, thread_id: str) -> Any | None:
     """最近一条日志（联调/排障用；不参与路由决策）。"""
     return (
-        await session.execute(
-            sa.select(DecisionLog)
-            .where(DecisionLog.thread_id == thread_id)
-            .order_by(DecisionLog.created_at.desc())
-            .limit(1)
+        (
+            await session.execute(
+                sa.select(DecisionLog)
+                .where(DecisionLog.thread_id == thread_id)
+                .order_by(DecisionLog.created_at.desc())
+                .limit(1)
+            )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
 
 
 __all__ = [

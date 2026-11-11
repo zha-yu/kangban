@@ -124,9 +124,7 @@ async def test_decide_fast_5xx_returns_degraded() -> None:
 async def test_decide_fast_invalid_schema_returns_degraded() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         # intent 不在七类里 → 响应 schema 不合规，必须降级而不是把脏值塞给路由
-        return httpx.Response(
-            200, json=_ok_payload("r-1", intent="not_an_intent", confidence=1.7)
-        )
+        return httpx.Response(200, json=_ok_payload("r-1", intent="not_an_intent", confidence=1.7))
 
     client = SystemOneClient(_settings(), transport=httpx.MockTransport(handler))
     result = await client.decide_fast("随便说点什么")

@@ -83,7 +83,13 @@ def build_server() -> tuple[MCPServer, WeatherService]:
 
     @server.tool(name="get_weather", description=TOOL_DESCRIPTION)
     async def get_weather(city: str) -> dict[str, Any]:
-        """查询城市当前天气；失败返回 {"ok": false, ...}，不抛异常、不编造数据。"""
+        """查询城市当前天气；失败返回 {"ok": false, ...}，不抛异常、不编造数据。
+
+        MCP 2.x streamable-http（带 json_response）客户端可能把 arguments dict
+        直接作为第一个参数传入（非 unpack 形态），此处统一解包防御。
+        """
+        if isinstance(city, dict):
+            city = city.get("city", "")
         return await service.fetch_city(city)
 
     return server, service
