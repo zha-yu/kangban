@@ -64,6 +64,18 @@ class GuardianNotificationNotFound(NotificationError):
     """通知不存在或不属于当前监护人 → 404，不泄露存在性（越权同口径）。"""
 
 
+class NotificationNotFound(NotificationError):
+    """通知不存在（按 id 查不到）→ 404。"""
+
+
+class NotificationIllegalTransition(NotificationError):
+    """非法状态迁移（如 generated → delivered 跳过 pending）→ 409。"""
+
+
+class NotificationForbidden(NotificationError):
+    """归属校验失败（acknowler 不是通知 target_id）→ 403。"""
+
+
 @dataclass(frozen=True, slots=True)
 class NotificationRef:
     """一次通知落库的结果引用（created=False 表示幂等复用既有记录）。"""
@@ -416,14 +428,12 @@ _STATUS_TRANSITIONS: dict[str, frozenset[str]] = {
     _STATUS_GENERATED: frozenset({_STATUS_PENDING}),
     _STATUS_PENDING: frozenset({_STATUS_DELIVERED, _STATUS_FAILED}),
     _STATUS_DELIVERED: frozenset({_STATUS_ACKNOWLEDGED}),
-    _STATUS_ACKNOWLEDGED: frozenset(),   # 终态
-    _STATUS_FAILED: frozenset(),          # 失败终态
+    _STATUS_ACKNOWLEDGED: frozenset(),  # 终态
+    _STATUS_FAILED: frozenset(),  # 失败终态
 }
 
 
-async def mark_notification_sent(
-    session: AsyncSession, *, notification_id: uuid.UUID
-) -> None:
+async def mark_notification_sent(session: AsyncSession, *, notification_id: uuid.UUID) -> None:
     """generated → pending（客户端已收到推送、等回执）。"""
     notification = (
         await session.execute(
@@ -431,16 +441,14 @@ async def mark_notification_sent(
         )
     ).scalar_one_or_none()
     if notification is None:
-        raise NotificationError(f"notification {notification_id} not found")
+        raise NotificationNotFound(f"notification {notification_id} not found")
     _require_transition(notification.status, _STATUS_PENDING)
     notification.status = _STATUS_PENDING
     notification.sent_at = datetime.datetime.now(datetime.UTC)
     await session.flush()
 
 
-async def mark_notification_delivered(
-    session: AsyncSession, *, notification_id: uuid.UUID
-) -> None:
+async def mark_notification_delivered(session: AsyncSession, *, notification_id: uuid.UUID) -> None:
     """pending → delivered（客户端回执，AC-23）。"""
     notification = (
         await session.execute(
@@ -448,12 +456,13 @@ async def mark_notification_delivered(
         )
     ).scalar_one_or_none()
     if notification is None:
-        raise NotificationError(f"notification {notification_id} not found")
+        raise NotificationNotFound(f"notification {notification_id} not found")
     _require_transition(notification.status, _STATUS_DELIVERED)
     notification.status = _STATUS_DELIVERED
     await session.flush()
     logger.info(
-        "notification_delivered notification_id=%s", notification_id,
+        "notification_delivered notification_id=%s",
+        notification_id,
     )
 
 
@@ -465,6 +474,9 @@ async def acknowledge_notification(
 ) -> None:
     """delivered → acknowledged（人工确认，AC-23）。
 
+    **归属校验**：acknowledger_id 必须等于 notification.target_id。
+    任何持有效工牌的人不能确认别人的通知（R-D10 安全修复）。
+
     幂等：已确认直接返回，不报错。
     """
     notification = (
@@ -473,7 +485,12 @@ async def acknowledge_notification(
         )
     ).scalar_one_or_none()
     if notification is None:
-        raise NotificationError(f"notification {notification_id} not found")
+        raise NotificationNotFound(f"notification {notification_id} not found")
+    if notification.target_id != acknowledger_id:
+        raise NotificationForbidden(
+            f"acknowledger {acknowledger_id} does not own notification {notification_id} "
+            f"(target_type={notification.target_type}, target_id={notification.target_id})"
+        )
     if notification.status == _STATUS_ACKNOWLEDGED:
         return  # 幂等
     _require_transition(notification.status, _STATUS_ACKNOWLEDGED)
@@ -483,16 +500,15 @@ async def acknowledge_notification(
     await session.flush()
     logger.info(
         "notification_acknowledged notification_id=%s acknowledger=%s",
-        notification_id, acknowledger_id,
+        notification_id,
+        acknowledger_id,
     )
 
 
 def _require_transition(current: str, target: str) -> None:
     allowed = _STATUS_TRANSITIONS.get(current, frozenset())
     if target not in allowed:
-        raise NotificationError(
-            f"illegal notification transition: {current} → {target}"
-        )
+        raise NotificationError(f"illegal notification transition: {current} → {target}")
 
 
 # ------------------------------------------------------------------ 扫描函数（APScheduler 驱动）
@@ -531,7 +547,10 @@ async def scan_pending_notifications(
         n.status = _STATUS_FAILED
         logger.warning(
             "notification_failed_exhausted notification_id=%s target_type=%s type=%s retries=%d",
-            n.notification_id, n.target_type, n.type, n.retry_count,
+            n.notification_id,
+            n.target_type,
+            n.type,
+            n.retry_count,
         )
     if exhausted:
         await session.flush()
@@ -567,9 +586,7 @@ async def scan_escalations(
     return [r.event_id for r in rows]
 
 
-async def escalate_red_event(
-    session: AsyncSession, *, event_id: uuid.UUID
-) -> None:
+async def escalate_red_event(session: AsyncSession, *, event_id: uuid.UUID) -> None:
     """红色事件 2 分钟无人确认 → risk_events.status=escalated + 升级通知。
 
     AC-12：只改原事件 status，不建第二个 risk_event / work_order。
@@ -579,12 +596,10 @@ async def escalate_red_event(
     from app.models.medication import RiskEvent
 
     event = (
-        await session.execute(
-            select(RiskEvent).where(RiskEvent.event_id == event_id)
-        )
+        await session.execute(select(RiskEvent).where(RiskEvent.event_id == event_id))
     ).scalar_one_or_none()
     if event is None:
-        raise NotificationError(f"risk_event {event_id} not found")
+        raise NotificationNotFound(f"risk_event {event_id} not found")
     if event.severity != "red":
         logger.info("escalation skipped: event %s severity=%s", event_id, event.severity)
         return
@@ -596,7 +611,10 @@ async def escalate_red_event(
     await session.flush()
     logger.warning(
         "red_event_escalated event_id=%s elder_id=%s source_type=%s source_id=%s",
-        event_id, event.elder_id, event.source_type, event.source_id,
+        event_id,
+        event.elder_id,
+        event.source_type,
+        event.source_id,
     )
 
     # 升级通知：给负责护工（已生成过 staff 通知，但这是 escalation 专属）
@@ -632,6 +650,9 @@ __all__ = [
     "RETRY_INTERVAL_S",
     "GuardianNotificationNotFound",
     "NotificationError",
+    "NotificationForbidden",
+    "NotificationIllegalTransition",
+    "NotificationNotFound",
     "NotificationPayloadError",
     "NotificationRef",
     "NotificationTargetNotFound",
