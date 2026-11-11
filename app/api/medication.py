@@ -76,7 +76,9 @@ class PlanCreateIn(BaseModel):
     elder_id: uuid.UUID = Field(..., description="长者 ID")
     drug_name: str = Field(..., min_length=1, max_length=200, description="药品名")
     dose: str = Field(..., min_length=1, max_length=200, description="剂量")
-    schedule_cron: str = Field(..., min_length=1, max_length=200, description="cron 表达式（Asia/Shanghai）")
+    schedule_cron: str = Field(
+        ..., min_length=1, max_length=200, description="cron 表达式（Asia/Shanghai）"
+    )
     start_date: datetime.date = Field(..., description="开始日期")
     end_date: datetime.date | None = Field(default=None, description="结束日期（None = 永久）")
 
