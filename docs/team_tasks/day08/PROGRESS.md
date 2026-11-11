@@ -18,7 +18,7 @@
 | --- | --- |
 | `docs/plans/day08/adhoc-20261111-route_degraded契约冻结.md` | 🔒 已冻结 |
 | `docs/plans/day08/adhoc-20261111-声纹互测录音指南.md` | 🔒 已冻结 |
-| `docs/plans/day08/d-推进计划-日报通知与三端.md` | 🚧 进行中（S0–S7/S10 完成；D3 骨架完成；S6 卡 C 侧窗口、S8 卡演练、S9 卡 CP4、D6 卡 B 置位） |
+| `docs/plans/day08/d-推进计划-日报通知与三端.md` | 🚧 进行中（S0–S7/S10 完成；D1 三偏差收口；D3 骨架完成；S8 卡演练、S9 卡 CP4、D6 卡 B 置位） |
 | `docs/plans/day08/day-08-健康采集与三端后台.md` | 📝 草稿（待主理人确认后执行） |
 | `docs/plans/day08/dev-a-数据分级规则层.md` | 📝 草稿 |
 | `docs/plans/day08/dev-a-药单管理后端接口.md` | 📝 草稿 |
