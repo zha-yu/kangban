@@ -26,7 +26,7 @@ START → collect（5 问 interrupt 循环：收缩压/舒张压/睡眠/情绪/�
    仍能读回「问到第几问」。
 2. **分级阈值不进图**（技术设计 §7.2「分级规则在代码不在 prompt」）：
    `grade` 节点只调用可替换的引擎引用（缺省 lazy import A2 的
-   `health_service.grade_health_record`，即 X1 分级纯函数）；图内没有任何
+   `health_service.grade_health`，即 X1 分级纯函数）；图内没有任何
    红/黄/绿数值。引擎输出非法 level 时直接抛错，绝不让图静默按绿处理。
 3. **结构化校验在图内做结构层**（Pydantic，字段边界与 0017 迁移的 CHECK
    约束同源：血压 0–300 / 睡眠 0–24 / 情绪 1–5）；口语归一与「收缩压>舒张压」
@@ -115,15 +115,27 @@ class HealthCheckState(TypedDict, total=False):
 
 
 def _default_grade(record: dict[str, Any]) -> dict[str, Any]:
-    """X1 分级引擎引用（A2 纯函数，签名 12:00 CP1 以 docstring 冻结）。
+    """X1 分级引擎引用（A2 纯函数 ``health_service.grade_health``）。
 
-    预告口径：入参 5 字段 record dict；出参
-    ``{"level": "green|yellow|red", "reasons": [...], "rule_version": "..."}``。
-    Step 4 接真实签名时**只改本函数**，图结构与阈值位置不动。
+    适配口径：入参 5 字段 record dict → 引擎 keyword-only 5 参；
+    出参 ``{"level": severity, "reasons": [...], "rule_version": str}``
+    （reasons 仅收非绿分量，绿档=[]，决策依据可回溯 AC-09/21）。
+    引擎签名/阈值变更**只改本函数**，图结构与阈值位置不动。
     """
-    from app.services.health_service import grade_health_record  # A2 交付后生效（X1）
+    from app.services.health_service import grade_health
 
-    return grade_health_record(record)
+    result = grade_health(
+        systolic=record.get("systolic"),
+        diastolic=record.get("diastolic"),
+        sleep_hours=record.get("sleep_hours"),
+        mood_score=record.get("mood_score"),
+        complaint=record.get("complaint"),
+    )
+    return {
+        "level": result.severity,
+        "reasons": [f"{c.field}: {c.reason}" for c in result.components if c.severity != "green"],
+        "rule_version": result.rule_version,
+    }
 
 
 async def _default_persist(session: Any, state: HealthCheckState) -> dict[str, Any]:
