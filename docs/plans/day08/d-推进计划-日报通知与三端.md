@@ -56,9 +56,9 @@
 | S6 | CP2 与 C 互测 | ⛔ 阻塞 | 依赖 S2/S4 |
 | S7 | D2 family 切真＋375px | ⛔ 阻塞 | 依赖 D1 真端点（Mock 开关仍在 `USE_MOCK=true`） |
 | S8 | X5/X7 演练（家属侧证据） | ⛔ 阻塞 | 依赖 S7 |
-| S9 | D4 pad 戏曲播放 | ⛔ 阻塞 | 卡 **dev-C**（`media_service`）＋**dev-B**（`play_opera`＋种子素材），且 Q-D4 帧形状未定 |
+| S9 | D4 pad 戏曲播放 | 🚧 部分完成 | ✅ 播放器＋七动作状态机（`?demo=opera` 单端可演）；⛔ WS 接线卡 Q-D4 帧形状、素材与 `play_opera` 卡 dev-B（B4） |
 | S10 | 报告定稿＋pre-push 接线 | ✅ 已完成 | 钩子只做机制自检（`--self-check`），真门禁不进钩子；正向 exit=0、反向 exit=1 双验证 |
-| S11 | 四件套全绿＋文档回填 | 未开始 | 前置：上游 9 条红灯清零 |
+| S11 | 四件套全绿＋文档回填 | 🚧 部分完成 | ✅ 完成定义对证据表已回填（§11）；⛔ 四件套全绿待 C2 读函数与 A 的归属校验 |
 | S12 | 条件项（D3 SOS / D6 提示条） | ⛔ 阻塞 | D3 卡 **A3 入口＋Q-D7 撤销函数**；D6 方向已裁「加字段」，卡 **dev-B 契约冻结** |
 
 ---
@@ -460,6 +460,33 @@ uv run python scripts/update_progress.py --check-plans
 | 2026-11-11 | **更正：日报读函数归属** | 前几轮把 D1 的「日报读服务」误记成 dev-A 的 `daily_report_service`，实为 **dev-C 的 C2 交付物 `app/services/report_service.py`**（家属侧读函数）。依据三处原文：① D 卡 D1 前置「B1；A1（DailyReport 模型）；**C2（联调段）**」；② C 卡 C2 交付物与写域均含 `report_service.py`；③ 本计划 §J-C2「dev-C → D：report_service 家属侧读函数签名」、§R-D1「C2 读函数/A3 staff 函数晚到」。**A1 只负责 ORM＋0017/0018 迁移，且已交付**；名字也应为 `report_service`（此前写作 `daily_report_service` 亦属笔误） | 已同步修正 §0.4 速览 S2/S4 行、S1 行、合并红灯行的归属与函数名；此前给用户的汇报口径作废，以此行为准。**错因**：写速览表时凭"日报=数据"的直觉归到 A，未回查 D 卡前置与 §J-C2 已写明的 C 归属——违反了「先查文档再下结论」的自定纪律 |
 | 2026-11-11 | **S2 部分交付：alerts.py N-3（CP-D2 补）** | 新建 `app/api/alerts.py`（prefix `/api`，`ContractAPIRoute`，编号 N-3）：`POST /api/notifications/{id}/acknowledge`，员工身份从 `current_staff` 注入、操作人取 `staff.staff_id`（不收客户端 actor），`delivered → acknowledged` 写 `acknowledged_by/at`，跳步 409 `CONFLICT`、不存在 404 `NOT_FOUND`、非员工主体 401、幂等不刷时间戳。`app/api/__init__.py` ROUTERS 追加一行。新建 `tests/test_alerts_api.py` **8 用例全绿**（401 无凭证／401 家属主体／200 确认＋幂等／409×3 跳步／404／422 uuid 错）。相邻域回归 `test_security + test_auth_api + test_api_workorders_family` 241 passed | **两处缺口已登记（R-D10/R-D11）**：① `notify_service.acknowledge_notification()` 不校验 target 归属 → 任何员工可确认他人通知，**api 层补不了**（不许拼查询、无员工侧读函数），需 A 侧加参；补齐前该端点仅教学演示，不得对外。② `NotificationError` 一个异常两种语义，api 只能靠消息前缀分流，已请 A 拆 typed exception。**N-1/N-2 仍未实现**：摆空壳会给人「接口在但永远 500」的假象，故不摆 |
 | 2026-11-11 | **合并 C/A/B 更新＋全量回绿（15:55）** | `git merge origin/develop`（`e7c5061`，含 C4 `media_service`＋C2 `report_service`＋C1 health_records API＋A 的 `grade_health` 适配＋B 的规则断言修正）；冲突仅 `app/api/__init__.py` 的 ROUTERS 尾部（两侧各加一行）→ 两行都保留（`alerts` + `health_records`）。**全量 pytest：1273 passed / 0 failed（243s）**——此前 9 条 A/B 侧红灯全部清零。迁移 head 仍 `0018_day8_media` | **C2 到货但不完整**：`report_service` 现有 `generate_daily_report`＋`get_daily_report(elder_id, report_date)`＋`list_daily_report_versions(elder_id, report_date)`，**缺 F1 分页列表、缺按 report_id 的详情、缺家属绑定区分异常** → F1/F2 仍不能落地，已写交接 J-C2b（含三个精确签名与两个异常）。`media_service` 到货完整（list/search/get/playback_url/start/finish/history/seed），但 `static/media/opera/` 与 `play_opera` 注册仍无（B4 未交付）→ D4 只能做前端播放器，接线等 Q-D4 帧形状 |
+| 2026-11-11 | **S9 部分交付：pad 戏曲播放器（CP-D9 前端段）** | 新建 `frontend/src/pad/audio/opera-player.ts`：契约 §6.3 七动作状态机（idle→loading→playing⇄paused→ended），非法动作返回 `ignored`/`needs_track` 而非抛异常；`duckForSpeech()/resumeAfterSpeech()` 承担 barge-in 互斥（只恢复「被压住的」，用户自己按的暂停不被顶开）；`next_track` 要求外部给段（不猜下一段）、不取数、不写 `media_history`、不碰 `protocol.ts`。新建 `OperaDemoPanel.tsx`＋App `?demo=opera`（仅 DEV）作为单端演示载体；演示音源 `frontend/public/media/opera/demo-tone.wav`（3 秒五声音阶，96KB，不占 B4 的 `static/media/opera`）。**验证**：tsc exit=0、`pnpm build` ✓、node 假 `Audio` 跑 16 步行为序列（pause@idle ignored／load ok／同曲重复 ignored／pause+resume／音量到顶 ignored／duck 后 resume 被拒／resumeAfterSpeech 复播／next_track needs_track→ok／stop→idle）**全部符合预期，0 error** | WS 接线未做：Q-D4 帧形状未定，接 `protocol.ts` 需先经 A 对齐＋B 留痕。素材与 `play_opera` 仍未交付（B4）。**演示面板是临时载体**，Q-D4 落地后应整块删除、改为真实帧驱动 |
+| 2026-11-11 | **S11 部分交付：完成定义对证据表（CP-D11 文档段）** | 新增计划 **§11**：PRD Day 8 完成定义中 D 相关项逐条对证据（命令＋数字或文件＋行号）。有实证据 4 项：N-3 主体隔离（401×2 用例）、AC-23 状态机（delivered/跳步 409/幂等 5 用例）、AC-37 播放器（16 步行为序列＋build）、FR-TC-09（四步篡改验证＋七层归因＋15 条回流＋基线锁）；待上游 4 项：AC-13/18（C2 读函数）、AC-38 演练、375px（D2）、N-3 归属校验（R-D10）。每项状态只用 ✅/🚧/⛔，⛔ 必写卡谁 | 四件套未全绿：`ruff`/`pytest`/`tsc`/`build` 当前全绿，但「完成定义全绿」还差上游 4 项，故 S11 记「部分完成」而非完成 |
+
+---
+
+## 11. 完成定义对证据（H12 用；2026-11-11 16:10 回填）
+
+> 只写**能拿出来的东西**：命令＋数字，或文件路径＋行号。拿不出证据的写「待上游」，不写「已完成」。
+> PRD Day 8 完成定义为「AC-09~11、21、22 通过；后台权限隔离生效；红色事件 2 分钟内通知护工与监护人，未确认自动升级」——D 相关的是其中「后台权限隔离」与三端可见性。
+
+| 项 | 判据 | 证据 | 状态 |
+| --- | --- | --- | --- |
+| 后台权限隔离（N-3 主体） | 非员工主体不得确认通知 | `test_alerts_api.py::test_acknowledge_requires_auth`（401）／`::test_acknowledge_rejects_guardian_subject`（401 家属） | ✅ |
+| 后台权限隔离（N-3 归属） | 员工不得确认他人通知 | **无**：`notify_service.acknowledge_notification` 不校验 target（R-D10） | ⛔ 待 A 加参 |
+| AC-23 通知状态机 | 仅 delivered 可确认、跳步 409、幂等 | `test_alerts_api.py` 中 `::test_acknowledge_delivered_then_idempotent`＋`::test_acknowledge_before_delivered_is_conflict[generated/pending/failed]`（3 参数化） | ✅ |
+| AC-13/18 家属日报范围 | 家属只见绑定长者；越权 403+审计 | **无**：F1/F2 未实现（缺 C2 读函数，J-C2b） | ⛔ 待 C |
+| AC-38 双通知（家属侧） | 红色事件 → 家属可见一条 is_mock 通知 | N1 接口已交付（提前件），但 X5/X7 演练未做（卡 D1） | ⛔ 待演练 |
+| AC-37 戏曲（pad 侧） | 七动作可控、可打断 | `frontend/src/pad/audio/opera-player.ts`＋`OperaDemoPanel.tsx`（`?demo=opera`）；node 假件跑通 7 动作＋duck/resume 全序列（16 步断言，0 error）；`tsc --noEmit` exit=0；`pnpm build` ✓ | 🚧 播放器绿，WS 未接（Q-D4） |
+| FR-TC-09 门禁拦截 | 人为调坏规则层 → 门禁 EXIT≠0 | `eval/reports/day8_frtc09_intercept.md`（PASS→FAIL→还原→PASS 四步）＋ `day8_frtc09_{before,tampered,after}.md` | ✅ |
+| FR-TC-09 分层归因 | 报告含七层归因表 | `eval/reports/day8_eval_baseline.md` §3（ASR/召回/LLM/Tool 如实标「无数据」） | ✅ |
+| FR-TC-09 bad case 回流 | 失败项落盘有记录 | `eval/fixtures/badcase_backlog.jsonl`（15 条，run_id `20261111-145521`） | ✅ |
+| 评测基线不回退 | 各项 ≥ 首跑锁 | `eval/reports/day8_baseline_lock.json`（41/50、20/20、25/30、19/20）；gate B 门 PASS | ✅ |
+| 375px 家属端无障碍 | 无横向滚动、正文 ≥16px | **无**：D2 卡 D1 真端点 | ⛔ 待 D1 |
+| 全量回归 | `pytest` 零失败 | 1273 passed / 0 failed（2026-11-11 15:55，合并 `e7c5061` 后） | ✅ |
+| 前端编译 | `tsc --noEmit` ＋ `build` | 双绿（16:10） | ✅ |
+
+**诚实结论**：D 的完成定义项里，**门禁/通知状态机/戏曲播放器/回归** 四项有实证据；**家属日报、375px、双通知演练、N-3 归属校验** 四项被上游卡住，其中 R-D10 是安全口子，必须在对外演示前补掉。
 
 ---
 
