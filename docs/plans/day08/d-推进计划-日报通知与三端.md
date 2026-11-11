@@ -57,8 +57,8 @@
 | S7 | D2 family 切真＋375px | ⛔ 阻塞 | 依赖 D1 真端点（Mock 开关仍在 `USE_MOCK=true`） |
 | S8 | X5/X7 演练（家属侧证据） | ⛔ 阻塞 | 依赖 S7 |
 | S9 | D4 pad 戏曲播放 | ⛔ 阻塞 | 卡 **dev-C**（`media_service`）＋**dev-B**（`play_opera`＋种子素材），且 Q-D4 帧形状未定 |
-| S10 | 报告定稿＋pre-push 接线 | 未开始 | R1② 可按裁剪顺延 |
-| S11 | 四件套全绿＋文档回填 | 未开始 | — |
+| S10 | 报告定稿＋pre-push 接线 | ✅ 已完成 | 钩子只做机制自检（`--self-check`），真门禁不进钩子；正向 exit=0、反向 exit=1 双验证 |
+| S11 | 四件套全绿＋文档回填 | 未开始 | 前置：上游 9 条红灯清零 |
 | S12 | 条件项（D3 SOS / D6 提示条） | ⛔ 阻塞 | D3 卡 **A3 入口＋Q-D7 撤销函数**；D6 方向已裁「加字段」，卡 **dev-B 契约冻结** |
 
 ---
@@ -452,6 +452,7 @@ uv run python scripts/update_progress.py --check-plans
 | 2026-11-11 | **S5 eval_gate 本体＋首份基线（CP-D5）** | ① 新建 `tests/eval_gate.py`（import 复用 `eval_router` 的 `load_fixtures/evaluate/Summary`，不复制实现；四道门 A 敏感≥95%／B 各项≥锁内基线／C 行为场景测试全绿／D 无新增误杀）；② **首份基线（local 进程内真权重）**：普通 **41/50（82.0%）**、敏感 **20/20（100%）**、边界 **25/30**、模糊 **19/20**、二次轮 19/20，p50 **239ms** p95 **290ms**，四层 rule=37/system_one=83/agent=0/fallback=0；③ 锁 `eval/reports/day8_baseline_lock.json` 首次写入（含 metrics＋failing_ids 15 条＋fixtures sha256＋模型/阈值/命令）；④ 报告 `eval/reports/day8_eval_baseline.md`（四门判定＋七层归因表，ASR/召回/LLM/Tool 如实标「无数据」）；⑤ 回流 `eval/fixtures/badcase_backlog.jsonl` 15 条（run_id 20261111-145521）；⑥ **跑分对照 day07**：普通 40→41（+1，与 q2 附记 41/50 一致）、敏感 20/20 持平、边界 16/20→25/30（既有 4 条误判仍在，新增 10 条只多 1 条误判）、模糊 19/20 持平 | **FR-TC-09 拦截验证未按原方案成立**：`SYSTEM_ONE_CONFIDENCE_THRESHOLD` 取 0.30 / 0.85 / 0.99 三档，四次跑指标**完全一致**（41/50、20/20、25/30）——查 `decision.py:435` 后确认该阈值只切 `clarify↔agent`，**不影响 intent 标签**，而四道门对这两种动作等价；`rules.py` 又是精确模式匹配、无可调阈值。故「人为调低规则层阈值」在当前实现**不可观测**，归因回 dev-B（X9）明确 PRD FR-TC-09 指的是哪个阈值；拦截链路本身已用 `--provider mock` 证明有效（敏感 90%＜95% → A/B/D 三门前拦，exit=1，证据 `eval/reports/day8_intercept_check_mock.md`）。**torch 处理**：jev 环境已含 torch＋项目依赖，`--provider local` 直接可跑，故**未新建 `spikes/torch-spike`、未装任何包、未碰主 `.venv`**（比装 250MB 更轻，且同样合规）——需主理人追认此替代 |
 | 2026-11-11 | **FR-TC-09 拦截验证（按 X9 附加4 裁决 A 重做）** | 按 `dev-b-day08` §5 附加4「篡改关键词模式表」执行四步：① 基线 `eval/reports/day8_frtc09_before.md` **PASS/EXIT=0**（普通 41/50、敏感 20/20、边界 25/30、模糊 19/20）；② 临时把 `safety.py` 的 `CHEST_PARTS` 清空（部位词表）；③ 复跑 `day8_frtc09_tampered.md` **FAIL/EXIT=1**（边界 25→24，新增误杀 `d7-081`、`d7-084`）；④ `git checkout -- app/router/safety.py` 还原，`git status` 仅剩证据文件；⑤ 正式门禁 `day8_frtc09_after.md` **PASS/EXIT=0**。归档 `eval/reports/day8_frtc09_intercept.md`（四步命令＋三组数字对照＋纪律声明）；mock 拦截证据保留为「安全拦截」维度补充、不替代本验收 | **重要观察**：拦截来自 **B/D 门**而非 A 门——篡改后敏感召回仍 20/20，因为 G1 分类器把 20 条全覆盖了，**「漏拦」方向在本固定集不可观测**；掉下来的是「他人主体」边界用例（原靠规则层兜住、词表一空就落分类器误判敏感）→ 误杀方向。登记为 fixture 结构性缺口（缺「只有规则层能拦」的用例），后续补集；不改门禁线、不改分母 |
 | 2026-11-11 | **合并 A/B 更新后的上游红灯登记** | `git merge origin/develop`（A `3ab75f4`、B `efd3bc3`）后全量 pytest：**9 failed / 1226 passed**，全部落在 A/B 侧：① `test_health_graph.py` 6 条 `ImportError: cannot import name 'grade_health_record'`（`app/graphs/health_checkup_graph.py:124` 仍用旧名，A 侧新函数名为 `grade_health`）；② `test_router_rules.py` 2 条（`RULESET_VERSION` r1→r2、播放类规则 action 改直连后旧断言未同步）；③ `test_router_decision.py` 1 条（同因）。**D 侧文件零失败**；已在群里告知 A/B，未擅自改 graphs/rules | 迁移已随之升到 head `0018_day8_media`（daily_reports/health_records/media 四表就位）；日报读服务仍缺，S2/S4 继续卡 A |
+| 2026-11-11 | **S10 pre-push 接线＋回流核对（CP-D10）** | ① `tests/eval_gate.py` 增 `--self-check`：只验「基线 110 条（50/20/20/20）＋六类边界各 ≥5 ＋ id 全局唯一 ＋ 文本子集可加载」，**不跑模型、不写锁、不做达标判定**；② `.githooks/pre-push` 末尾接该自检（排在 `--check`、`--check-plans` 之后），失败即中止推送；③ 正向验证 `sh .githooks/pre-push` → `HOOK_EXIT=0`；④ 反向验证：把边界集打掉「越权」整类后 `--self-check` → **EXIT=1**，报「边界类 scope 只有 0 条（要求 ≥5）」；⑤ 回流核对：`badcase_backlog.jsonl` 15 条、单一 run_id `20261111-145521`，归因层 分类器 11 / 规则层 4，分组 normal 9 / boundary 5 / ambiguous 1 | **真门禁不进钩子**（R1② 裁决留痕）：真基线需 torch ＋ ~60s ＋ 依赖 jev 环境，塞进 pre-push 会把全员堵在推送前，钩子环境无 torch 时只能「静默通过」，比不跑更糟。故钩子只做机制自检；达标判定留在本地/S10 报告。**上游红灯仍在**：9 条 A/B 侧失败未修，H12 未绿 |
 
 ---
 

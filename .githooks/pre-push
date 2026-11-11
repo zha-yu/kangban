@@ -1,10 +1,10 @@
 #!/bin/sh
-# 推送前校验：看板不过期 + 计划索引与文件头一致
+# 推送前校验：看板不过期 + 计划索引与文件头一致 + 评测样本可加载
 #
 # 启用方式与 pre-commit 共用一次配置：
 #     git config core.hooksPath .githooks
 #
-# 校验失败即中止推送，避免把过期看板或不一致的索引带到远端。
+# 校验失败即中止推送，避免把过期看板、不一致的索引或改坏的评测样本带到远端。
 
 set -e
 
@@ -29,6 +29,16 @@ fi
 
 if ! "$py" "$root/scripts/update_progress.py" --check-plans; then
     echo "[pre-push] 计划索引校验未通过，已中止推送" >&2
+    exit 1
+fi
+
+# 评测门禁的**机制自检**（R1② 裁决，2026-11-11 主理人批准）：
+# 只验 fixtures 还能被正确加载（基线 110 条、六类边界各 ≥5、id 唯一），
+# 不跑模型、不写锁、不做达标判定。为什么不在这里跑真门禁：它要 torch 与
+# ~60s，本机 provider 还依赖 jev 环境，塞进 pre-push 会把所有人堵在推送前，
+# 且钩子里的环境不一定有 torch —— 那样只能"静默通过"，比不跑更糟。
+if ! "$py" "$root/tests/eval_gate.py" --self-check; then
+    echo "[pre-push] 评测样本自检未通过（fixtures 被改坏或边界缺类），已中止推送" >&2
     exit 1
 fi
 

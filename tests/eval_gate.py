@@ -414,6 +414,61 @@ def append_backlog(path: Path, run_id: str, bad_cases: list[Row]) -> int:
     return len(bad_cases)
 
 
+def self_check(fixtures: Path, boundary: Path) -> int:
+    """pre-push 用的机制自检：**不跑模型、不写锁、不做判定**。
+
+    它只回答一个问题：「样本还能被这道门禁正确加载吗」。答案是 no 时，
+    说明 fixtures 被改坏了或六类边界缺类，钩子应当拦住推送——这与「跑分
+    达不达标」是两件事，后者需要 torch 与 ~60s，不能塞进 pre-push。
+    """
+    problems: list[str] = []
+    try:
+        base = load_fixtures(fixtures)
+    except Exception as exc:
+        print(f"[gate] 自检失败：基线集加载异常 {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    try:
+        btext = load_boundary_text(boundary)
+        raw_boundary = [
+            json.loads(line)
+            for line in boundary.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    except Exception as exc:
+        print(f"[gate] 自检失败：边界集加载异常 {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+    by_group = Counter(r.group for r in base)
+    if len(base) != 110 or by_group.get("normal") != 50 or by_group.get("sensitive") != 20:
+        problems.append(
+            f"基线集应为 110 条（普通 50/敏感 20），实际 {len(base)} 条 {dict(by_group)}"
+        )
+
+    classes = Counter(r.get("boundary_class") for r in raw_boundary)
+    need = ("negation", "multi_intent", "timeout", "barge_in", "duplicate", "scope")
+    for name in need:
+        if classes.get(name, 0) < 5:
+            problems.append(f"边界类 {name} 只有 {classes.get(name, 0)} 条（要求 ≥5）")
+    if not btext:
+        problems.append("boundary_v1 里没有可进文本路由的子集（group=boundary）")
+
+    ids = [r.id for r in base] + [r.get("id", "") for r in raw_boundary]
+    if len(ids) != len(set(ids)):
+        dup = [i for i, c in Counter(ids).items() if c > 1 and i]
+        problems.append(f"id 重复：{dup[:5]}")
+
+    if problems:
+        print("[gate] 自检未通过：", file=sys.stderr)
+        for p in problems:
+            print(f"  - {p}", file=sys.stderr)
+        return 1
+    print(
+        f"[gate] 自检通过：基线 {len(base)} 条（{dict(by_group)}）＋边界 {len(raw_boundary)} 条"
+        f"（{len(need)} 类各 ≥5），id 唯一，文本子集 {len(btext)} 条"
+    )
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Day 8 评测门禁（FR-TC-09）：只读阈值，不改评测实现")
     ap.add_argument("--fixtures", default=str(ROOT / "eval/fixtures/day7_intents.jsonl"))
@@ -437,7 +492,15 @@ def main() -> int:
         default=os.environ.get("EVAL_GATE_TEST_PYTHON", str(ROOT / ".venv/Scripts/python.exe")),
         help="跑场景测试的解释器（默认项目 .venv）",
     )
+    ap.add_argument(
+        "--self-check",
+        action="store_true",
+        help="机制自检：只验样本可加载、六类齐、id 唯一；不跑模型、不写锁（pre-push 用）",
+    )
     args = ap.parse_args()
+
+    if args.self_check:
+        return self_check(Path(args.fixtures), Path(args.boundary))
 
     if args.provider == "mock" and not args.allow_mock:
         print(
