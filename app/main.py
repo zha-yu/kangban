@@ -59,6 +59,7 @@ from app.db import session_factory
 from app.mcp_client import MCPClient
 from app.router.decision import Router
 from app.router.safety import SafetyDecision
+from app.scheduler.health_jobs import install_health_scheduler  # Day 8 B3：健康域调度接线
 from app.scheduler.medication_jobs import install_scheduler  # Day 7 C2：用药到点调度接线
 from app.services import (
     history_service,
@@ -871,11 +872,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     await medication_scheduler.start()
 
+    # Day 8 B3：健康域调度接线——install_health_scheduler 同款手动 start/stop
+    # （FastAPI lifespan 与 @app.on_event 互斥）；四类 tick + 窗口内面板帧补推
+    # 共用本 loop，投递经 app/audio/signaling.deliver（进程内注册表，单 worker 约束）。
+    health_scheduler = install_health_scheduler(
+        app,
+        session_factory=session_factory,
+        checkpointer_dsn=settings.langgraph_checkpoint_database_url,
+        checkpointer_schema=settings.langgraph_checkpoint_schema,
+        timezone_name=settings.scheduler_timezone,
+    )
+    await health_scheduler.start()
+
     logger.info("application starting", extra={"app_env": settings.app_env})
     try:
         yield
     finally:
         await medication_scheduler.stop()
+        await health_scheduler.stop()
         signaling.set_dialogue_final_handler(None)
         signaling.set_identity_confirm_handler(None)
         signaling.set_identity_timeout_handler(None)

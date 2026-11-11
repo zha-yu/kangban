@@ -7,19 +7,21 @@
  * 只在点呼叫 / 唤醒词命中时建连，**尚无自动接听外呼的能力**，主路径未落地。
  *
  * 因此本模块不绑定任何传输：前端只消费「任务命令」，由未来的适配器把不同来源
- * 翻译成同一条命令。当前唯一真实来源是开发态切换条（source="dev"），
- * 后端没有任何任务端点，界面不得暗示已送达。
+ * 翻译成同一条命令。真实来源（Day 8 起）：信令 WS 下行 task_command 帧
+ * （kind=medication|health，day08/contracts.md §C-1）+ 开发态切换条（source="dev"）。
  *
- * 三条待接适配器（均**尚未实现**，需先冻结后端契约）：
- *  1. C2 信令 WS 新增任务下行帧 → SignalSocket 收到后 emitPadTask(open)；
- *     注意 frontend/src/pad/protocol.ts 的 parseServerSignal 会丢弃未知 type，
- *     必须先按团队契约流程冻结消息类型并同步 protocol.ts，不能在此私自加。
+ * 已接适配器：
+ *  1. C2 信令 WS task_command 下行帧 → App.tsx onTaskCommand → emitPadTask(open)；
+ *     用药（Day 7 L6#9）与健康采集（Day 8 §C-1）同帧类型不同 kind。
+ *
+ * 仍待接（需先冻结后端契约）：
  *  2. REST 轮询 GET /api/pad/tasks → 拉到新任务 emitPadTask(open)。延迟与常驻轮询
- *     成本都高于 WS，仅作离线补单兜底，不作为首选。
+ *     成本都高于 WS，仅作离线补单兜底，不作为首选（离线补推已由后端调度 tick 覆盖）。
  *  3. 反向外呼 auth_ok 携带 task 扩展 → 与 1 同属 C2 契约，等主路径落地后合并。
  *
- * 回程（同样待接）：卡片渲染成功 → card_rendered；播报完成 → tts_finished。
- * 前端已留 MedicationCard.onRendered 幂等回调，本批不伪造请求。
+ * 回程（答案提交已接，回执待接）：健康采集答案 → POST /api/pad/health-records
+ * （§P-1，health-client.ts）；卡片渲染成功 → card_rendered、播报完成 → tts_finished
+ * 仍仅留回调，本批不伪造请求。
  */
 import {
   MOCK_CANDIDATES,

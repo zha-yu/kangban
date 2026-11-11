@@ -71,6 +71,8 @@ export interface HealthQuestion {
   hint: string;
   /** number = 数字输入兜底；choice = 选项按钮兜底 */
   kind: "number" | "choice";
+  /** 数字题允许小数（仅 sleep_hours——后端 sleep_hours 为 float 0–24；血压为整数） */
+  decimal?: boolean;
   /** 采集中数字单位（拼进答案展示值） */
   unit?: string;
   /** choice 型的选项集 */
@@ -97,6 +99,7 @@ export const HEALTH_QUESTIONS: HealthQuestion[] = [
     label: "昨晚睡了几个小时？",
     hint: "大概说一个数就行，比如「六个多小时」",
     kind: "number",
+    decimal: true,
     unit: "小时",
   },
   {

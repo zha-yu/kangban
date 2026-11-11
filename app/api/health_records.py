@@ -29,7 +29,7 @@ from app.api.elders import ContractAPIRoute
 from app.core.auth import require_roles
 from app.core.runtime_context import Identity
 from app.db import get_session
-from app.services import audit_log_service, health_service
+from app.services import audit_log_service, health_service, task_dispatch_service
 
 router = APIRouter(
     prefix="/api/health-records",
@@ -217,6 +217,26 @@ class HealthRecordCreated(BaseModel):
     follow_up: str
 
 
+class HealthDispatchRequest(BaseModel):
+    """H-3 请求体：仅 elder_id；触发方与操作者身份服务端注入。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    elder_id: UUID
+
+
+class HealthDispatchResponse(BaseModel):
+    """H-3 响应体：投递回执三态 + 绑定设备数（§C-1 / TD-1 口径）。
+
+    - `voice_dispatched`：至少一台绑定设备把帧收进了发送队列；
+    - `device_offline`：有绑定设备但全部离线（pad 上线后调度 tick 窗口内自动补推）；
+    - `no_bound_device`：没绑设备——运维缺口，不算本轮失败。
+    """
+
+    status: Literal["voice_dispatched", "device_offline", "no_bound_device"]
+    device_count: int
+
+
 class HealthRecordView(BaseModel):
     """R-1/R-2 复核队列/详情/版本链视图（契约 §3.5 全列 + JOIN 展示字段）。
 
@@ -321,6 +341,46 @@ async def submit_health_record(
         recorded_at=row.record.recorded_at,
         follow_up=_FOLLOW_UP[ref.severity],
     )
+
+
+@router.post(
+    "/dispatch",
+    response_model=HealthDispatchResponse,
+    status_code=200,
+    summary="[H-3] 推送健康采集面板（护工/医生/管理员补启动；投递三态）",
+)
+async def dispatch_health_collection(
+    body: HealthDispatchRequest,
+    identity: Annotated[Identity, Depends(_record_writer)],
+    session: _Session,
+) -> HealthDispatchResponse:
+    """[编号 H-3｜契约 v1.4 §3.3] 把「打开健康采集面板」的 task_command 帧
+    推到长者绑定设备（护工补启动 / 医生补测同一入口）。
+
+    - AC-32 范围过滤：care_worker 仅可对自己名下（primary_care）长者操作，
+      越权 403 + 审计（沿 H-2 惯例）；doctor/admin 不限名下范围；
+    - 投递经信令 WS（§C-1），taskId 按日固定，pad 端幂等不重启面板；
+    - 离线不失败：device_offline 由调度 tick 在采集窗口内每分钟补推。
+    """
+    try:
+        status, device_count = await task_dispatch_service.push_health_collection_task(
+            session,
+            elder_id=body.elder_id,
+            source="staff",
+            operator_id=UUID(identity.staff_id),
+            operator_role=identity.role,
+        )
+    except PermissionError as exc:
+        await _audit_denial(
+            session,
+            identity,
+            action="health_dispatch_denied",
+            resource_type="elder",
+            resource_id=body.elder_id,
+            reason="not_primary_care",
+        )
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return HealthDispatchResponse(status=status, device_count=device_count)
 
 
 @router.get(

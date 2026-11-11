@@ -27,9 +27,9 @@ const NAV_BY_ROLE: Record<string, NavItem[]> = {
   ],
   doctor: [
     { key: "review-queue", label: "复核队列", enabled: true }, // task-11 交付（Mock）
-    { key: "trend", label: "健康趋势", enabled: false },
+    // { key: "trend", label: "健康趋势", enabled: false },
     { key: "medication-edit", label: "药单维护", enabled: true }, // task-12 交付（Mock）
-    { key: "drug-questions", label: "药品疑问", enabled: false },
+    // { key: "drug-questions", label: "药品疑问", enabled: false },
   ],
   admin: [
     { key: "users", label: "用户与角色", enabled: true }, // Day 5 D-1 交付（真实端点 E12/E15/E13）
