@@ -6,13 +6,14 @@
 - 404：report_id 不存在；
 - 403 + 审计：日报所属长者不在绑定范围。
 
-**F1 列表暂不在本文件**：契约路径是 `/api/family/elders/{elder_id}/reports`，
-而 `report_service.list_reports_for_guardian()` 只提供跨长者全量分页、没有 elder
-过滤参数，api 里过滤会把分页算错——已提 J-C2c，参数到位后补 `test_list_*`。
+- F0：绑定长者清单三字段裁剪；未绑定返回空数组（不是 404）；
+- F1：按长者列表（每日期只出最新版、`report_date` 倒序、`summary_preview` 截 80 字）；
+  不在绑定范围 → 403 + 审计。
 """
 
 from __future__ import annotations
 
+import datetime
 import uuid
 from collections.abc import AsyncIterator
 
@@ -188,3 +189,115 @@ async def test_report_detail_out_of_scope_is_403_and_audited(
     assert len(rows) == 1, "403 必须落一条审计"
     assert rows[0].actor_type == "guardian"
     assert rows[0].actor_id == guardian.guardian_id
+
+
+# ------------------------------------------------------------------ F0 / F1
+
+
+async def test_list_bound_elders_three_fields_only(app_with_session, client: AsyncClient) -> None:
+    """F0 只出 elder_id/name/relation（最小披露 S-05）；未绑定返回空数组。"""
+    _, session = app_with_session
+    elder = await _seed_elder(session, "长者-F0")
+    guardian = await _seed_guardian(session, "家属-F0")
+    session.add(
+        ElderGuardian(
+            elder_id=elder.elder_id,
+            guardian_id=guardian.guardian_id,
+            relation="女儿",
+            status="active",
+        )
+    )
+    await session.flush()
+
+    resp = await client.get(
+        "/api/family/elders",
+        headers={"Authorization": f"Bearer {_guardian_token(guardian.guardian_id)}"},
+    )
+    assert resp.status_code == 200, resp.text
+    items = resp.json()["items"]
+    assert len(items) == 1
+    assert set(items[0]) == {"elder_id", "name", "relation"}
+    assert items[0]["relation"] == "女儿"
+
+
+async def test_list_bound_elders_empty_for_unbound(app_with_session, client: AsyncClient) -> None:
+    _, session = app_with_session
+    guardian = await _seed_guardian(session, "家属-无绑定")
+    resp = await client.get(
+        "/api/family/elders",
+        headers={"Authorization": f"Bearer {_guardian_token(guardian.guardian_id)}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["items"] == []
+
+
+async def test_list_reports_only_latest_version_and_preview(
+    app_with_session, client: AsyncClient
+) -> None:
+    """同一天两个版本 → 列表只出 v2；预览截 80 字。"""
+    _, session = app_with_session
+    elder = await _seed_elder(session, "长者-F1")
+    guardian = await _seed_guardian(session, "家属-F1")
+    session.add(
+        ElderGuardian(
+            elder_id=elder.elder_id,
+            guardian_id=guardian.guardian_id,
+            relation="儿子",
+            status="active",
+        )
+    )
+    await session.flush()
+    day = datetime.date(2026, 11, 11)
+    await report_service.generate_daily_report(session, elder_id=elder.elder_id, report_date=day)
+    await report_service.generate_daily_report(
+        session, elder_id=elder.elder_id, report_date=day, regenerate=True
+    )
+
+    resp = await client.get(
+        f"/api/family/elders/{elder.elder_id}/reports",
+        headers={"Authorization": f"Bearer {_guardian_token(guardian.guardian_id)}"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total"] == 1, "同一 report_date 只出最新版（S-07）"
+    assert body["items"][0]["version"] == 2
+    assert len(body["items"][0]["summary_preview"]) <= 80
+
+
+async def test_list_reports_out_of_scope_is_403_and_audited(
+    app_with_session, client: AsyncClient
+) -> None:
+    _, session = app_with_session
+    mine = await _seed_elder(session, "长者-F1-我")
+    other = await _seed_elder(session, "长者-F1-他人")
+    guardian = await _seed_guardian(session, "家属-F1-越权")
+    session.add(
+        ElderGuardian(
+            elder_id=mine.elder_id,
+            guardian_id=guardian.guardian_id,
+            relation="女儿",
+            status="active",
+        )
+    )
+    await session.flush()
+
+    resp = await client.get(
+        f"/api/family/elders/{other.elder_id}/reports",
+        headers={"Authorization": f"Bearer {_guardian_token(guardian.guardian_id)}"},
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["code"] == "SCOPE_FORBIDDEN"
+
+    rows = (
+        (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "daily_report_list_forbidden",
+                    AuditLog.resource_id == other.elder_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1, "越权列表必须落审计"

@@ -3,15 +3,13 @@
 ## 范围
 
 契约《家属端数据》v1.2 §4：
-- **F2 已实现**：`GET /api/family/reports/{report_id}` —— 详情（任意版本可查，F3 复用本端点）。
-- **F1 列表未实现**：契约路径是 `/api/family/elders/{elder_id}/reports`（**按长者**），
-  而 `report_service.list_reports_for_guardian()` 目前只提供**跨长者**的全量分页，
-  没有 `elder_id` 过滤参数。在 api 里「先全量取再按 elder 过滤」会把分页算错
-  （`page_size` 截断发生在过滤之前），所以不这么干；已提 J-C2c 请 C 加一个
-  `elder_id: uuid.UUID | None = None` 参数，到位即接。
-- **F0 绑定长者列表未实现**：同理，`report_service` 只有私有的
-  `_guardian_active_elder_ids()`（只给 id、没有 `name`/`relation`），没有可直接
-  调用的「绑定长者（含展示名）」函数。已一并写入 J-C2c。
+- **F0**：`GET /api/family/elders` —— 绑定长者清单（切换器数据源，三字段裁剪）。
+- **F1**：`GET /api/family/elders/{elder_id}/reports` —— 按长者的日报列表。
+- **F2**：`GET /api/family/reports/{report_id}` —— 详情（任意版本可查，F3 复用本端点）。
+
+F1 的越权裁决在 **api 层按 F0 绑定清单**判：`list_reports_for_guardian()` 对不在
+绑定范围的 `elder_id` 返回空集（它的 docstring 明确「越权分流由 API 层裁决」），
+所以这里先查绑定清单，不在清单就 403+审计，在清单才取列表。
 
 ## 分层与口径
 
@@ -29,7 +27,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -125,6 +123,107 @@ async def _forbidden(session: AsyncSession, guardian: Identity, report_id: uuid.
         detail={"reason": "elder_not_bound"},
     )
     return _error_response(403, "SCOPE_FORBIDDEN", "report is outside your scope")
+
+
+class BoundElderOut(BaseModel):
+    """F0 单条：三字段裁剪（契约 S-05 最小披露）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    elder_id: uuid.UUID
+    name: str
+    relation: str
+
+
+class ReportSummaryOut(BaseModel):
+    """F1 列表项（契约 §4 F1）。`summary_preview` 截 80 字（S-06）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    report_id: uuid.UUID
+    elder_id: uuid.UUID
+    report_date: str
+    version: int
+    status: str
+    summary_preview: str
+    audio_url: str | None
+    pushed_at: str | None
+
+
+_PREVIEW_LIMIT = 80
+
+
+@router.get("/elders", response_model=dict)
+async def list_bound_elders(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    guardian: Annotated[Identity, Depends(current_guardian)],
+) -> dict[str, object]:
+    """F0：我绑定的长者（未绑定返回空数组，不是 404——S-08）。"""
+    rows = await report_service.list_bound_elders_for_guardian(
+        session, guardian_id=uuid.UUID(guardian.guardian_id)
+    )
+    return {
+        "items": [
+            BoundElderOut(elder_id=elder_id, name=name, relation=relation)
+            for elder_id, name, relation in rows
+        ]
+    }
+
+
+async def _list_forbidden(session: AsyncSession, guardian: Identity, elder_id: uuid.UUID):
+    """F1 越权：403 + 审计（契约 §4 F1「403 elder 不在绑定范围（审计）」）。"""
+    await record_audit(
+        session,
+        actor_type="guardian",
+        actor_id=uuid.UUID(guardian.guardian_id),
+        action="daily_report_list_forbidden",
+        resource_type="elder",
+        resource_id=elder_id,
+        detail={"reason": "elder_not_bound"},
+    )
+    return _error_response(403, "SCOPE_FORBIDDEN", "elder is outside your scope")
+
+
+@router.get("/elders/{elder_id}/reports", response_model=dict)
+async def list_reports(
+    elder_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    guardian: Annotated[Identity, Depends(current_guardian)],
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+):
+    """F1：某个长者的日报列表（每日期只出最新版 S-07，`report_date` 倒序）。"""
+    guardian_id = uuid.UUID(guardian.guardian_id)
+    bound = await report_service.list_bound_elders_for_guardian(session, guardian_id=guardian_id)
+    if elder_id not in {row[0] for row in bound}:
+        # 未绑定（含根本没有绑定关系）一律 403，不泄露该长者是否有日报
+        return await _list_forbidden(session, guardian, elder_id)
+
+    rows, total = await report_service.list_reports_for_guardian(
+        session,
+        guardian_id=guardian_id,
+        elder_id=elder_id,
+        page=page,
+        page_size=page_size,
+    )
+    return {
+        "items": [
+            ReportSummaryOut(
+                report_id=row.report_id,
+                elder_id=row.elder_id,
+                report_date=row.report_date.isoformat(),
+                version=int(row.version),
+                status=row.status,
+                summary_preview=row.summary_text[:_PREVIEW_LIMIT],
+                audio_url=row.audio_url,
+                pushed_at=_iso(row.pushed_at),
+            )
+            for row in rows
+        ],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 @router.get("/reports/{report_id}", response_model=ReportDetailOut)
