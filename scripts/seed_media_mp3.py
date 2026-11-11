@@ -6,6 +6,14 @@
 用法::
 
     uv run python scripts/seed_media_mp3.py <mp3目录> [--manifest 清单.json] [--dry-run]
+    uv run python scripts/seed_media_mp3.py --backfill 清单.json [--dry-run]   # 只回填元数据，无需 mp3
+
+回填模式（``--backfill``）::
+
+    按 manifest 的 title 对账已有行（精确优先、唯一子串次之），只更新条目里
+    **显式提供**的字段（genre/era/artist/duration/copyright_status）——
+    未提供的列保持原值，media_url/文件一律不动。用于给「没带 manifest
+    就跑过种子」的库补 genre/era（剧种点播靠 genre 命中）。
 
 流程（每个 mp3 文件独立处理）：
 
@@ -84,7 +92,7 @@ class ManifestEntry:
     era: str | None
     artist: str | None
     duration: int | None
-    copyright_status: str
+    copyright_status: str | None  # None = 清单未写；种子路径回退 teacher_authorized，回填路径跳过
 
 
 def _norm(title: str) -> str:
@@ -115,8 +123,10 @@ def _mp3_duration_seconds(path: Path) -> int | None:
         off = 0
         if data[:3] == b"ID3" and len(data) >= 10:  # 跳过 ID3v2 标签（syncsafe 编码长度）
             off = 10 + (
-                (data[6] & 0x7F) << 21 | (data[7] & 0x7F) << 14
-                | (data[8] & 0x7F) << 7 | (data[9] & 0x7F)
+                (data[6] & 0x7F) << 21
+                | (data[7] & 0x7F) << 14
+                | (data[8] & 0x7F) << 7
+                | (data[9] & 0x7F)
             )
         n = len(data)
         while off < n - 4:  # 找帧同步字 0xFFEx
@@ -166,7 +176,7 @@ def _load_manifest(path: Path | None) -> dict[str, ManifestEntry]:
             era=item.get("era"),
             artist=item.get("artist"),
             duration=item.get("duration"),
-            copyright_status=item.get("copyright_status", "teacher_authorized"),
+            copyright_status=item.get("copyright_status"),  # 未写即 None，各路径自行回退/跳过
         )
     return entries
 
@@ -212,7 +222,12 @@ async def run(
             artist, title = _parse_stem(src.stem)
             row, fuzzy = await _match_row(session, title)
             if row is None and len(fuzzy) > 1:
-                log.error("✗ %s：对账命中 %d 行，拒绝猜测 → %s", title, len(fuzzy), [r.title for r in fuzzy])
+                log.error(
+                    "✗ %s：对账命中 %d 行，拒绝猜测 → %s",
+                    title,
+                    len(fuzzy),
+                    [r.title for r in fuzzy],
+                )
                 continue
             entry = manifest.get(title)
             if row is None:
@@ -227,11 +242,14 @@ async def run(
                                 "era": entry.era if entry else None,
                                 "artist": (entry.artist if entry and entry.artist else artist),
                                 "duration": (
-                                    entry.duration if entry and entry.duration is not None
+                                    entry.duration
+                                    if entry and entry.duration is not None
                                     else durations.get(src)
                                 ),
                                 "copyright_status": (
-                                    entry.copyright_status if entry else "teacher_authorized"
+                                    entry.copyright_status or "teacher_authorized"
+                                    if entry
+                                    else "teacher_authorized"
                                 ),
                                 "ext": "mp3",
                             }
@@ -241,7 +259,9 @@ async def run(
                 else:
                     log.info(
                         "… %s（artist=%s, duration=%ss）：将种子新行（dry-run 不落库）",
-                        title, artist or "NULL", durations.get(src) or "?",
+                        title,
+                        artist or "NULL",
+                        durations.get(src) or "?",
                     )
                     continue
             pending_writes = True
@@ -250,7 +270,12 @@ async def run(
                 # 复用这种行时拆开修正——仅当行标题本身可拆出 artist 才动，避免误伤
                 legacy_artist, legacy_title = _parse_stem(row.title)
                 if legacy_artist is not None and legacy_title:
-                    log.info("↻ %s：旧行标题修复 → title=%s, artist=%s", row.title, legacy_title, legacy_artist)
+                    log.info(
+                        "↻ %s：旧行标题修复 → title=%s, artist=%s",
+                        row.title,
+                        legacy_title,
+                        legacy_artist,
+                    )
                     if not dry_run:
                         row.title, row.artist = legacy_title, legacy_artist
             if row.media_url.endswith(".wav"):
@@ -259,7 +284,9 @@ async def run(
                 if not dry_run:
                     row.media_url = media_service.stable_media_url(row.media_id, ext="mp3")
             if row.duration is None:  # 元数据回填：manifest 优先，其次自动解析值
-                fill = entry.duration if entry and entry.duration is not None else durations.get(src)
+                fill = (
+                    entry.duration if entry and entry.duration is not None else durations.get(src)
+                )
                 if fill is not None:
                     log.info("↻ %s：回填 duration=%ss（原缺失）", row.title, fill)
                     if not dry_run:
@@ -272,7 +299,10 @@ async def run(
             )
             log.info(
                 "✓ %s（artist=%s）→ %s%s",
-                title, row.artist or "NULL", planned_url, "（dry-run 未落库）" if dry_run else "",
+                title,
+                row.artist or "NULL",
+                planned_url,
+                "（dry-run 未落库）" if dry_run else "",
             )
             results.append((row.title, planned_url, dest))
 
@@ -288,22 +318,82 @@ async def run(
         log.info("%s\n    %s\n    → %s", title, url, dest or "(未复制)")
     wav_rows = sum(1 for _, u, _ in results if u.endswith(".wav"))
     if wav_rows:
-        log.warning("\n注意：%d 行 media_url 仍为 .wav（多为对账失败跳过），对应文件未归位。", wav_rows)
+        log.warning(
+            "\n注意：%d 行 media_url 仍为 .wav（多为对账失败跳过），对应文件未归位。", wav_rows
+        )
+
+
+async def run_backfill(manifest: dict[str, ManifestEntry], dry_run: bool) -> None:
+    """回填模式：按 manifest 对账已有行，只更新显式提供的元数据字段。"""
+    log.info("回填模式：manifest %d 条\n", len(manifest))
+    updated = missing = ambiguous = 0
+
+    async with session_factory() as session:
+        for title, entry in sorted(manifest.items()):
+            row, fuzzy = await _match_row(session, title)
+            if row is None and len(fuzzy) > 1:
+                log.error(
+                    "✗ %s：命中 %d 行，拒绝猜测 → %s", title, len(fuzzy), [r.title for r in fuzzy]
+                )
+                ambiguous += 1
+                continue
+            if row is None:
+                log.warning("✗ %s：库里没有这行（先跑种子模式归位），跳过", title)
+                missing += 1
+                continue
+            changes: list[str] = []
+            for field in ("genre", "era", "artist", "duration", "copyright_status"):
+                value = getattr(entry, field)
+                if value is None or value == getattr(row, field):
+                    continue
+                changes.append(f"{field}: {getattr(row, field)!r} → {value!r}")
+                if not dry_run:
+                    setattr(row, field, value)
+            if changes:
+                updated += 1
+                log.info("↻ %s：%s", row.title, "；".join(changes))
+            else:
+                log.info("＝ %s：无变化", row.title)
+
+        if dry_run:
+            log.info("\n[dry-run] 未写库；去掉 --dry-run 正式回填。")
+            return
+        if updated:
+            await session.commit()
+            log.info("\n已提交：更新 %d 行（缺失 %d，歧义 %d）。", updated, missing, ambiguous)
+        else:
+            log.info("\n没有可更新的行（缺失 %d，歧义 %d）。", missing, ambiguous)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("source_dir", type=Path, help="mp3 素材目录")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "source_dir",
+        type=Path,
+        nargs="?",
+        default=None,
+        help="mp3 素材目录（--backfill 模式不需要）",
+    )
     parser.add_argument("--manifest", type=Path, default=None, help="元数据清单 JSON（可选）")
+    parser.add_argument(
+        "--backfill", action="store_true", help="回填模式：只按 manifest 更新已有行元数据，不动文件"
+    )
     parser.add_argument("--dry-run", action="store_true", help="只对账打印，不写库不复制")
     args = parser.parse_args()
-    if not args.source_dir.is_dir():
+    manifest = _load_manifest(args.manifest)
+    if args.backfill:
+        if not manifest:
+            raise SystemExit("--backfill 需要 --manifest 清单.json")
+        asyncio.run(run_backfill(manifest, args.dry_run))
+        return
+    if args.source_dir is None or not args.source_dir.is_dir():
         raise SystemExit(f"目录不存在：{args.source_dir}")
     files = sorted(args.source_dir.glob("*.mp3"))  # 阻塞扫描放 async 外（ASYNC240）
     if not files:
         raise SystemExit(f"{args.source_dir} 下没有 mp3 文件")
     durations = {p: _mp3_duration_seconds(p) for p in files}  # 同上，阻塞 I/O 放 async 外
-    manifest = _load_manifest(args.manifest)
     try:
         asyncio.run(run(files, durations, manifest, args.dry_run))
     except ValueError as exc:
