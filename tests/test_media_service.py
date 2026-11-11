@@ -3,8 +3,9 @@
 覆盖口径（任务卡 C4 + 计划 S5）：
 - 列表 / 按剧种（genre）剧目（title）搜索（X8 口径② 检索词匹配
   title/genre/era/artist）；
-- media_url 只产 X8 冻结稳定路径 `/static/media/opera/<media_id>.wav`
-  （口径①：种子行强制回填、get_playback_url 逐字等于模板）；
+- media_url 只产 X8 冻结稳定路径 `/static/media/opera/<media_id>.<ext>`
+  （口径①：种子行强制回填、get_playback_url 逐字等于模板；契约 §6.1 v1.3
+  扩展名放开，ext ∈ wav|mp3 由落库值决定，默认 wav，越界拒绝）；
 - history 写入含播放时长→完播率（FR-CON-06 P1：截断 [0,1]、无 duration 不猜）；
 - 目标不存在：长者/媒体/历史行缺 → ValueError（失败分类「如实告知不编造」）。
 """
@@ -103,6 +104,37 @@ async def test_seed_forces_stable_media_url(world: MediaWorld, db_conn) -> None:
     assert len(rows) == len(_OPERA_SEEDS)
     for row in rows:
         assert row.media_url == f"/static/media/opera/{row.media_id}.wav"
+    await session.rollback()
+
+
+async def test_seed_media_url_ext_param_and_reject_invalid(world: MediaWorld, db_conn) -> None:
+    """契约 §6.1 v1.3：ext 由落库值决定（默认 wav，值域 wav|mp3），越界拒绝。"""
+    session = AsyncSession(db_conn)
+    rows = await media_service.seed_media_library(
+        session,
+        [
+            {
+                "type": "opera",
+                "title": "mp3素材测试",
+                "genre": "越剧",
+                "copyright_status": "public_domain",
+                "ext": "mp3",
+            }
+        ],
+    )
+    assert rows[0].media_url == f"/static/media/opera/{rows[0].media_id}.mp3"
+    with pytest.raises(ValueError, match="ext"):
+        await media_service.seed_media_library(
+            session,
+            [
+                {
+                    "type": "opera",
+                    "title": "坏扩展名",
+                    "copyright_status": "public_domain",
+                    "ext": "flac",
+                }
+            ],
+        )
     await session.rollback()
 
 

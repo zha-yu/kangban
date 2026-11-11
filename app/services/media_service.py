@@ -5,11 +5,14 @@
 :func:`finish_playback`；B4 play_opera Tool、A5 规则直连、D4 pad 播放一律
 只经本文件取数/写 history，不直连 ORM——TD §3.4 + FR-CON-06 P1）。
 
-X8 冻结口径（《接口契约_照护台业务数据》§6.1，2026-11-11 冻结）：
-- media_url **只产**稳定路径 ``/static/media/opera/<media_id>.wav``，
-  nginx 静态托管、浏览器（pad）直连、不经后端转发；
-- 热替换前提：素材文件可整目录替换而 media_id 与行不变——本服务不提供
-  media_url 改写口，替换素材只更新 duration 等元数据。
+X8 冻结口径（《接口契约_照护台业务数据》§6.1，2026-11-11 冻结；同日 v1.3
+扩展名放开，依据 docs/plans/adhoc-20261111-媒体素材格式扩展名.md）：
+- media_url **只产**稳定路径 ``/static/media/opera/<media_id>.<ext>``，
+  ext ∈ wav|mp3 由种子行落库值决定（默认 wav），nginx 静态托管、
+  浏览器（pad）直连、不经后端转发；
+- 「稳定」语义：路径随 media_id 一次落库，行不变 URL 不变。本服务不提供
+  media_url 改写口，热替换只更新 duration 等元数据；素材换格式（wav→mp3）
+  时重灌该行 media_url（一条 UPDATE），仍零代码改动。
 
 能力面（任务卡 C4）：列表 / 按剧种（genre）剧目（title）搜索 /
 取播放 URL / media_history 写入（播放时长→完播率）。
@@ -32,8 +35,11 @@ from app.models.media import MediaHistory, MediaLibrary
 
 logger = logging.getLogger(__name__)
 
-#: X8 口径① 冻结稳定路径（契约 §6.1；opera 种子 type=opera，movie 归 P2）
-MEDIA_URL_TEMPLATE: Final = "/static/media/opera/{media_id}.wav"
+#: X8 口径① 冻结稳定路径（契约 §6.1 v1.3；opera 种子 type=opera，movie 归 P2）
+MEDIA_URL_TEMPLATE: Final = "/static/media/opera/{media_id}.{ext}"
+
+#: 稳定路径扩展名值域（契约 §6.1 v1.3：由落库值决定，防自由放任，第三种格式再扩）
+MEDIA_EXTS: Final = ("wav", "mp3")
 
 #: media_library.type 两值（0018 CHECK ck_media_library_type 同源）
 MEDIA_TYPES: Final = ("opera", "movie")
@@ -44,9 +50,14 @@ MEDIA_TYPES: Final = ("opera", "movie")
 COPYRIGHT_STATUSES: Final = ("teacher_authorized", "public_domain")
 
 
-def stable_media_url(media_id: uuid.UUID) -> str:
-    """按 X8 口径① 拼稳定播放路径（唯一拼 URL 处，测试逐字断言）。"""
-    return MEDIA_URL_TEMPLATE.format(media_id=media_id)
+def stable_media_url(media_id: uuid.UUID, ext: str = "wav") -> str:
+    """按 X8 口径① 拼稳定播放路径（唯一拼 URL 处，测试逐字断言）。
+
+    ext 值域 wav|mp3（契约 §6.1 v1.3），越界即拒绝——参数错不静默纠偏。
+    """
+    if ext not in MEDIA_EXTS:
+        raise ValueError(f"ext 必须为 {MEDIA_EXTS}，收到 {ext!r}")
+    return MEDIA_URL_TEMPLATE.format(media_id=media_id, ext=ext)
 
 
 # ---------- 种子数据（media_library 唯一写库入口） ----------
@@ -63,6 +74,9 @@ def _validate_seed_item(item: Mapping[str, Any]) -> dict[str, Any]:
     copyright_status = item.get("copyright_status")
     if copyright_status not in COPYRIGHT_STATUSES:
         raise ValueError(f"copyright_status 必须为 {COPYRIGHT_STATUSES}，收到 {copyright_status!r}")
+    ext = item.get("ext", "wav")
+    if ext not in MEDIA_EXTS:
+        raise ValueError(f"ext 必须为 {MEDIA_EXTS}，收到 {ext!r}")
     return {
         "type": media_type,
         "title": title,
@@ -71,6 +85,7 @@ def _validate_seed_item(item: Mapping[str, Any]) -> dict[str, Any]:
         "artist": item.get("artist"),
         "duration": item.get("duration"),
         "copyright_status": copyright_status,
+        "ext": ext,
     }
 
 
@@ -79,17 +94,22 @@ async def seed_media_library(
 ) -> list[MediaLibrary]:
     """批量写入种子媒体行（media_id 服务端生成，media_url 强制稳定路径）。
 
+    种子项可带 ``ext``（默认 ``"wav"``，值域 wav|mp3）决定素材扩展名。
+
     Returns:
-        落库后的 ORM 行列表（含生成的 media_id，调用方据此生成 wav 素材文件名）。
+        落库后的 ORM 行列表（含生成的 media_id，调用方据此按落库扩展名生成素材文件）。
 
     Raises:
-        ValueError: type/title/copyright_status 不在 0018 CHECK 值域。
+        ValueError: type/title/copyright_status/ext 不在值域。
     """
     rows: list[MediaLibrary] = []
     for item in items:
         fields = _validate_seed_item(item)
         media_id = uuid.uuid4()  # 客户端生成：media_url 稳定路径在 INSERT 前即可拼好
-        row = MediaLibrary(media_id=media_id, media_url=stable_media_url(media_id), **fields)
+        ext = fields.pop("ext")
+        row = MediaLibrary(
+            media_id=media_id, media_url=stable_media_url(media_id, ext=ext), **fields
+        )
         session.add(row)
         rows.append(row)
     await session.flush()
@@ -256,6 +276,7 @@ async def list_media_history(
 
 __all__ = [
     "COPYRIGHT_STATUSES",
+    "MEDIA_EXTS",
     "MEDIA_TYPES",
     "MEDIA_URL_TEMPLATE",
     "finish_playback",
