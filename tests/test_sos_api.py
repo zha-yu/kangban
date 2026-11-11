@@ -28,6 +28,7 @@ from app.core.security import sha256_hex, sign_device_session, sign_staff_access
 from app.core.trace import TraceIdMiddleware
 from app.db import get_session
 from app.models import Device, Elder, Room
+from app.models.audit import AuditLog
 from app.models.medication import RiskEvent, WorkOrder
 
 # 测试专用密钥：只为本地用例签发令牌，不是任何环境的真实配置。
@@ -221,3 +222,82 @@ async def test_sos_creates_event_and_order_then_idempotent(
     )
     assert len(events) == 1, "连续点击不得重复建事件"
     assert len(orders) == 1, "连续点击不得重复建工单"
+
+
+async def test_sos_correction_keeps_event_open_and_audited(
+    client: AsyncClient, db: AsyncConnection, seeded: None
+) -> None:
+    """AC-26：红色事件只能追加「说错了」，事件保持 open 并写审计。"""
+    token = _device_token(DEVICE_BOUND, SECRET_BOUND)
+    created = await client.post("/api/pad/sos", headers=_bearer(token))
+    event_id = created.json()["event_id"]
+
+    response = await client.post(f"/api/pad/sos/{event_id}/correction", headers=_bearer(token))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["event_id"] == event_id
+    assert body["status"] == "open", "追加说明不得改变事件状态"
+    assert body["note"] == "刚才说错了"
+
+    audits = (
+        (
+            await db.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "sos_correction_appended",
+                    AuditLog.resource_id == uuid.UUID(event_id),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(audits) == 1
+
+
+async def test_sos_correction_unbound_device_is_403(client: AsyncClient, seeded: None) -> None:
+    token = _device_token(DEVICE_UNBOUND, SECRET_UNBOUND)
+    response = await client.post(f"/api/pad/sos/{uuid.uuid4()}/correction", headers=_bearer(token))
+    assert response.status_code == 403
+    assert response.json()["code"] == "device_not_bound"
+
+
+async def test_sos_correction_foreign_event_is_404(
+    client: AsyncClient, db: AsyncConnection, seeded: None
+) -> None:
+    """他人长者的事件：与「不存在」同口径 404，防枚举。"""
+    other_elder = uuid.UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeee99")
+    await db.execute(
+        Elder.__table__.insert().values(elder_id=other_elder, name="SOS他人长者", status="active")
+    )
+    foreign_event = uuid.uuid4()
+    await db.execute(
+        RiskEvent.__table__.insert().values(
+            event_id=foreign_event,
+            elder_id=other_elder,
+            type="sos",
+            severity="red",
+            status="open",
+        )
+    )
+
+    token = _device_token(DEVICE_BOUND, SECRET_BOUND)
+    response = await client.post(f"/api/pad/sos/{foreign_event}/correction", headers=_bearer(token))
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == "NOT_FOUND"
+
+
+async def test_sos_correction_closed_event_is_409(
+    client: AsyncClient, db: AsyncConnection, seeded: None
+) -> None:
+    token = _device_token(DEVICE_BOUND, SECRET_BOUND)
+    created = await client.post("/api/pad/sos", headers=_bearer(token))
+    event_id = uuid.UUID(created.json()["event_id"])
+    await db.execute(
+        RiskEvent.__table__.update()
+        .where(RiskEvent.__table__.c.event_id == event_id)
+        .values(status="closed")
+    )
+
+    response = await client.post(f"/api/pad/sos/{event_id}/correction", headers=_bearer(token))
+    assert response.status_code == 409
+    assert response.json()["code"] == "CONFLICT"

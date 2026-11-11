@@ -30,6 +30,7 @@ from app.api import (
     health_records,
     medication,
     pad,
+    pad_undo,
     reports,
     rooms,
     sos,
@@ -59,6 +60,7 @@ ROUTERS: tuple[tuple[APIRouter, str], ...] = (
     (health_records.router, ""),  # 自带 /api/health-records 前缀（C1 健康域，Day 8）
     (medication.router, ""),  # 自带 /api/medication-plans 前缀（Day 8 dev-A H+1 药单管理 REST）
     (sos.router, ""),  # 自带 /api/pad 前缀（D3 SOS 一键求助，Day 8 骨架接线）
+    (pad_undo.router, ""),  # 自带 /api/pad 前缀（D3 普通确认撤销，FR-UI-08/AC-26）
 )
 
 __all__ = ["ROUTERS"]

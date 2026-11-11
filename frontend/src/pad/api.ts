@@ -96,6 +96,22 @@ export async function triggerSos(token: string): Promise<SosTriggerResult> {
   return (await res.json()) as SosTriggerResult;
 }
 
+/** POST /api/pad/sos/{id}/correction：红色事件不能撤销，只追加「说错了」说明。 */
+export async function appendSosCorrection(token: string, eventId: string): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`/api/pad/sos/${encodeURIComponent(eventId)}/correction`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch {
+    throw new SosRequestError("network");
+  }
+  if (!res.ok) {
+    throw new SosRequestError(res.status === 409 ? "closed" : "failed");
+  }
+}
+
 /* ---------- mock 自测：无后端时验证三类错误 UI（?mock=1 启用） ---------- */
 
 export const MOCK_ENABLED =

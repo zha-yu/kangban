@@ -16,7 +16,7 @@ import { TaskPanel } from "./components/TaskPanel";
 import { ChatTranscript, type ChatMessage } from "./components/ChatTranscript";
 import { LoginPage } from "./pages/LoginPage";
 import { SosResult, type SosStatus } from "./pages/SosResult";
-import { triggerSos } from "./api";
+import { triggerSos, appendSosCorrection } from "./api";
 import { DemoSwitcher } from "./pages/DemoSwitcher";
 import type { TaskKind } from "./tasks";
 import {
@@ -94,6 +94,8 @@ function MainScreen({
   const [sosOpen, setSosOpen] = useState(SOS_DEV_DIRECT);
   // D3 接线：点击即 POST /api/pad/sos；发送中/成功/失败三态由结果页呈现
   const [sosStatus, setSosStatus] = useState<SosStatus>(SOS_DEV_DIRECT ? "sent" : "sending");
+  // D3/AC-26：红色事件只能追加「说错了」说明，需要记住本次事件 id
+  const [sosEventId, setSosEventId] = useState<string | null>(null);
 
   // D4 单端调试入口（?demo=opera，仅 DEV）：WS 帧形状未定（Q-D4），先验七动作状态机
   const [operaDemo] = useState(
@@ -175,12 +177,25 @@ function MainScreen({
       return;
     }
     try {
-      await triggerSos(token);
+      const result = await triggerSos(token);
+      setSosEventId(result.event_id);
       setSosStatus("sent");
     } catch {
       setSosStatus("failed");
     }
   }, []);
+
+  /** AC-26：红色事件不能撤销，只能追加「说错了」说明；事件保持 open。 */
+  const appendCorrection = useCallback(async (): Promise<boolean> => {
+    const token = loadSession()?.access_token;
+    if (!token || !sosEventId) return false;
+    try {
+      await appendSosCorrection(token, sosEventId);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [sosEventId]);
 
   const openSos = useCallback(() => {
     setPickerOpen(false);
@@ -463,6 +478,7 @@ function MainScreen({
             <SosResult
               status={sosStatus}
               onRetry={() => void requestSos()}
+              onCorrection={sosEventId ? appendCorrection : undefined}
               onExit={() => setSosOpen(false)}
             />
           </div>

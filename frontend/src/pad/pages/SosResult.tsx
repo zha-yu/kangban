@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 import { StatusBadge } from "../components/StatusBadge";
 import { TaskShell } from "../components/TaskShell";
 
@@ -8,19 +10,33 @@ export type SosStatus = "sending" | "sent" | "failed";
  * SOS 求助结果态（FR-ALT-06、S5 演示主线）。
  *
  * 点击常显按钮即调 `POST /api/pad/sos` 生成敏感事件 + 护工工单，不经过语音路由；
- * 结果页只做告知，不提供「撤销」入口——红色事件不能由长者一键撤销（FR-UI-08）。
+ * 结果页只做告知，不提供「撤销」入口——红色事件不能由长者一键撤销（FR-UI-08），
+ * 只允许追加「说错了」补充说明，事件保持 open（AC-26）。
  */
 export function SosResult({
   status,
   onRetry,
+  onCorrection,
   onExit,
 }: {
   status: SosStatus;
   onRetry: () => void;
+  /** 追加「说错了」说明；未拿到 event_id（如 ?sos=1 直达）时不传，按钮隐藏。 */
+  onCorrection?: () => Promise<boolean>;
   onExit: () => void;
 }) {
   const sending = status === "sending";
   const failed = status === "failed";
+  const [corrected, setCorrected] = useState(false);
+  const [correcting, setCorrecting] = useState(false);
+
+  async function handleCorrection() {
+    if (!onCorrection || correcting) return;
+    setCorrecting(true);
+    const ok = await onCorrection();
+    setCorrecting(false);
+    if (ok) setCorrected(true);
+  }
 
   return (
     <TaskShell
@@ -90,6 +106,21 @@ export function SosResult({
         <p className="mt-8 text-xl text-ink-muted">
           如果情况有变化，可以直接告诉赶来的工作人员。
         </p>
+      )}
+      {!sending && !failed && onCorrection && (
+        <div className="mt-4">
+          {corrected ? (
+            <p className="text-xl text-ink-muted">已记录您的补充说明，工作人员会来核实。</p>
+          ) : (
+            <button
+              type="button"
+              onClick={() => void handleCorrection()}
+              className="h-16 rounded-2xl border border-line bg-surface px-6 text-2xl text-ink-muted active:bg-surface-sunken"
+            >
+              {correcting ? "正在提交…" : "我说错了（补充说明）"}
+            </button>
+          )}
+        </div>
       )}
       {/* 技术设计文档 §1.2 第 2 条：SOS 不替代急救，文案必须明确「非急救通道」 */}
       <p className="mt-4 text-xl font-semibold text-ink">

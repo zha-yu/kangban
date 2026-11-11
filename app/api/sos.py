@@ -34,6 +34,7 @@ from app.core.auth import current_device
 from app.core.runtime_context import Identity
 from app.db import get_session
 from app.services import sos_service
+from app.services.sos_service import SosCorrectionNotAllowed, SosEventNotFound
 
 router = APIRouter(prefix="/api/pad", tags=["pad"], route_class=ContractAPIRoute)
 
@@ -46,6 +47,16 @@ class SosTriggerResponse(BaseModel):
     event_id: uuid.UUID
     order_id: uuid.UUID | None
     created: bool
+
+
+class SosCorrectionResponse(BaseModel):
+    """红色事件「说错了」补充说明结果：事件保持原状态。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: uuid.UUID
+    status: str
+    note: str
 
 
 @router.post(
@@ -70,6 +81,35 @@ async def trigger_sos(
         order_id=result.order_id,
         created=result.created,
     )
+
+
+@router.post(
+    "/sos/{event_id}/correction",
+    response_model=SosCorrectionResponse,
+    summary="红色事件追加「说错了」说明（事件保持 open，不提供一键撤销）",
+)
+async def append_sos_correction(
+    event_id: uuid.UUID,
+    identity: Annotated[Identity, Depends(current_device)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> SosCorrectionResponse | JSONResponse:
+    """FR-UI-08 / AC-26：红色事件不能由长者一键撤销，只追加说明等工作人员核实。"""
+
+    if identity.elder_id is None:
+        return _error_response(403, "device_not_bound", "device is not bound to an elder")
+
+    try:
+        event = await sos_service.append_correction(
+            session,
+            elder_id=uuid.UUID(identity.elder_id),
+            event_id=event_id,
+            device_id=identity.device_id,
+        )
+    except SosEventNotFound as exc:
+        return _error_response(404, "NOT_FOUND", str(exc))
+    except SosCorrectionNotAllowed as exc:
+        return _error_response(409, "CONFLICT", str(exc))
+    return SosCorrectionResponse(event_id=event.event_id, status=event.status, note="刚才说错了")
 
 
 __all__ = ["router"]
