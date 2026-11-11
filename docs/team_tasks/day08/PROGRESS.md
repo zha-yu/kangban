@@ -17,6 +17,7 @@
 | 计划 | 状态 |
 | --- | --- |
 | `docs/plans/day08/adhoc-20261111-route_degraded契约冻结.md` | 🔒 已冻结 |
+| `docs/plans/day08/adhoc-20261111-三档身份级联演示脚本.md` | 🔒 已冻结 |
 | `docs/plans/day08/adhoc-20261111-声纹互测录音指南.md` | 🔒 已冻结 |
 | `docs/plans/day08/d-推进计划-日报通知与三端.md` | 🚧 进行中（S0–S5/S7/S10 已完成；S6 卡 C 侧互测窗口、S8 卡全队演练、S9 卡 WS 帧形状、S12 条件项） |
 | `docs/plans/day08/day-08-健康采集与三端后台.md` | 📝 草稿（待主理人确认后执行） |
