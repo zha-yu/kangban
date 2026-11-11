@@ -128,6 +128,9 @@ async def append_correction(
                 select(RiskEvent).where(
                     RiskEvent.event_id == event_id,
                     RiskEvent.elder_id == elder_id,
+                    # 本端点只服务 sos 事件：其他红事件（health_alert/med_risk/…）
+                    # 即便属于本长者也不接受「说错了」，按不存在返回（防跨语义误用）
+                    RiskEvent.type == "sos",
                 )
             )
         )

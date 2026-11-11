@@ -1,4 +1,4 @@
-> 状态：进行中（S0–S7/S10 完成；D1 三偏差收口；**D3 触发＋撤销边界完成；D4 七动作与帧形状冻结完成**；剩演练/验证窗口；S8 卡演练、S9 卡 CP4、D6 卡 B 置位）　｜　版本：v2.1　｜　日期：2026-11-11
+> 状态：进行中（S0–S7/S10 完成；D1 三偏差收口；**D3 触发＋撤销边界完成；D4 七动作与帧形状冻结完成；D6 服务端 route_degraded 置位完成**；剩演练/验证窗口；S8 卡演练、S9 卡 CP4、D6 e2e 联调）　｜　版本：v2.2　｜　日期：2026-11-11
 > 关联：docs/team_tasks/day08/dev-D-日报通知API与family-pad.md（v1.2，本计划的任务来源）｜docs/plans/day08/day-08-健康采集与三端后台.md（v1.2，全量上游计划）｜docs/team_tasks/day08/day08-任务总览与DAG.md（v1.1，对接点 X1–X9 与全局节奏）
 > 上游依据：PRD line 405/409–412（FR-RPT-01~04 验收）、line 401（FR-ALT-06）、line 254（FR-UI-08）、line 294–297（FR-CON-03/04/06）、line 459（FR-TC-09）、line 381–391（通知状态机）、line 495/500/505/507/508/519/520（AC-13/18/23/25/26/37/38）、line 94–95（媒体分发/家属无障碍）、line 527–538（固定测试集）、line 576（Day 8 完成定义）｜技术设计文档 line 653–665（daily_reports）、line 667–684（notifications）、line 633–651（media 两表）、line 686–702（decision_logs）、line 1144–1164（Day 8 实现口径）
 > 变更记录见文末
@@ -59,7 +59,7 @@
 | S9 | D4 pad 戏曲播放 | 🚧 部分完成 | ✅ pad live 接线＋七动作＋duck/barge-in；**服务端七动作路径已修**（schema 支持 action、executor 分支、companion 下发 media_control；executor 3 例＋companion 2 例绿）；15 首 mp3 本地＋DB；⛔ CP4 联演窗口＋契约 §6.2 入参留痕 |
 | S10 | 报告定稿＋pre-push 接线 | ✅ 已完成 | 钩子只做机制自检（`--self-check`），真门禁不进钩子；正向 exit=0、反向 exit=1 双验证 |
 | S11 | 四件套全绿＋文档回填 | 🚧 部分完成 | 四件套复跑全绿（1333 passed／ruff／tsc／build）；⛔ 完成定义证据链待 S6 C 侧/S8/S9 CP4 |
-| S12 | 条件项（D3 SOS / D6 提示条） | 🚧 部分完成 | **D3 四件已接**：触发（`POST /api/pad/sos`）＋红事件追加说明（`POST /api/pad/sos/{id}/correction`）＋普通确认撤销（`POST /api/pad/medication-events/{id}/revoke`，10 秒窗口）＋pad 三态结果页/「我说错了」入口；24 用例绿（service 7＋API 11＋撤销 6）。⛔ 仅剩 30 秒看板红色置顶联演窗口；D6 pad 增量完成，⛔ 服务端置位待 B＋e2e 待联调 |
+| S12 | 条件项（D3 SOS / D6 提示条） | 🚧 部分完成 | **D3 四件已接**：触发（`POST /api/pad/sos`）＋红事件追加说明（`POST /api/pad/sos/{id}/correction`）＋普通确认撤销（`POST /api/pad/medication-events/{id}/revoke`，10 秒窗口）＋pad 三态结果页/「我说错了」入口；24 用例绿（service 7＋API 11＋撤销 6）。⛔ 仅剩 30 秒看板红色置顶联演窗口；**D6 pad 增量＋服务端置位完成**（turn/response 逐段恒下发、legacy 与用药触达恒 false；+2 集成用例），⛔ e2e（杀 sidecar）联调窗口 |
 
 ---
 
@@ -586,3 +586,4 @@ uv run python scripts/update_progress.py --check-plans
 | v1.9 | 2026-11-11 | **修复七动作执行路径**（跨域代改留痕）：`play_opera` schema 支持 `query`/`action` 二选一；executor 增控制分支（repeat→replay、next→next_track 带下一段、interrupt 不下发帧）；companion 新增 `on_media_control` sink、main 装配 `media_control`；新增 executor 3 例＋companion 2 例；全量 **1348 passed / 0 failed**。残项：契约 §6.2 入参需 B 留痕；`next` 当前曲目为进程内记忆 |
 | v2.0 | 2026-11-11 | **修复撤销边界（Q-D7）**：`medication_service.revoke_taken_report`（仅 taken_reported、10 秒窗口、恢复 waiting_confirm、审计）＋`sos_service.append_correction`（红事件只追加「说错了」、保持 open、审计）；新增 `POST /api/pad/medication-events/{id}/revoke` 与 `POST /api/pad/sos/{id}/correction`；pad 结果页加「我说错了」入口；新增/扩充 24 例用例（service 7＋API 11＋撤销 6）；§11 补 AC-26 证据。残项：撤销/说明接口为自裁口径，待 dev-B 契约留痕；AC-26 联演待窗口 |
 | v2.1 | 2026-11-11 | **Q-D11 帧冻结＋四项契约留痕**：照护台契约 v1.5（§6.2 play_opera 入参 query/action 二选一、§6.5 新增 media 帧形状并否决 `stream_id`/`media_info`、§3.2 N-3 幂等口径）；day08 contracts v1.1（§P-2 撤销/说明端点冻结、§6 route_degraded 引用登记）；`adhoc-20261111-ws-media-control-frame.md` 标「已废弃」；计划 §9 Q-D10/Q-D11、§12.1 #5/#7/#9 同步。代码零改动（D 实现与冻结口径一致） |
+| v2.2 | 2026-11-11 | **D6 服务端置位完成（跨 B 写域代改留痕）**：`turn_service._is_route_degraded`（仅 fallback＋action=agent＋生成未降级为真）→ `response_service` 逐段恒下发 `route_degraded`；`main.py` legacy 出口与 `medication_confirmation_graph` 触达帧恒 `false`；`signaling.TtsTextMsg` 与 `dialogue_service.TtsTextMsgV2` 同步声明；新增 turn_service 集成用例 1 例＋response/dialogue/signaling 形状断言 3 处。**D3 复核收口**：`append_correction` 增 `type='sos'` 过滤（非 sos 红事件按 404），补 service 用例 1 例。day08 contracts §6 状态回填 v1.2（口径零变更）。残项：D6 e2e（杀 sidecar）与 AC-26 联演待窗口 |

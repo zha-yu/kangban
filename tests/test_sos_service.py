@@ -177,6 +177,22 @@ async def test_append_correction_foreign_event_not_found(
         )
 
 
+async def test_append_correction_non_sos_event_not_found(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    """非 sos 红事件不走本端点（契约 §5.2 只服务 sos 事件，按不存在处理）。"""
+    event = RiskEvent(
+        elder_id=seeded["elder_id"], type="health_alert", severity="red", status="open"
+    )
+    session.add(event)
+    await session.flush()
+
+    with pytest.raises(sos_service.SosEventNotFound):
+        await sos_service.append_correction(
+            session, elder_id=seeded["elder_id"], event_id=event.event_id
+        )
+
+
 async def test_append_correction_closed_event_rejected(
     session: AsyncSession, seeded: dict[str, Any]
 ) -> None:

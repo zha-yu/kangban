@@ -110,7 +110,10 @@
 
 字段名、类型、恒下发、与 `degraded` 正交等口径以
 `docs/plans/day08/adhoc-20261111-route_degraded契约冻结.md` v1.0 为准，本契约不重复定义。
-消费方 dev-D（`protocol.ts`/`realtime.ts` 已实现）；产出方 dev-B（服务端置位待实现）。
+消费方 dev-D（`protocol.ts`/`realtime.ts` 已实现）；产出方 dev-B **已实现**：
+`turn_service._is_route_degraded` 按轮内路由结论判定 → `response_service` 逐段恒下发
+（显式 true/false）；`app/main.py` legacy 出口与用药触达帧不经路由层，恒 `false`；
+wire 侧 `app/audio/signaling.py` 的 `TtsTextMsg` 已同步声明该字段。
 
 ## 修订记录
 
@@ -118,3 +121,4 @@
 | --- | --- | --- |
 | v1.0 | 2026-11-11 | 首版冻结：§C-1 task_command kind=health 帧扩展（含离线补推、幂等键、单 worker 约束）；§P-1 pad 答案回传端点（source 服务端判定自裁口径）；§3 调度装配留痕；§4 开放问题 O-1/O-2。配套实现：app/services/task_dispatch_service.py、app/api/pad.py、app/api/health_records.py H-3、health_jobs 第五 tick、pad 前端 protocol/health-client/HealthCheckup 接入 |
 | v1.1 | 2026-11-11 | **新增 §5 §P-2 pad 撤销/补充说明端点**（D3 · Q-D7）：`POST /api/pad/medication-events/{id}/revoke`（仅已服自报、10 秒窗口、404 防枚举、审计）与 `POST /api/pad/sos/{id}/correction`（红事件只追加「说错了」、status 不变、审计）；**新增 §6 引用登记** `tts_text.route_degraded`（口径以 adhoc 冻结文 v1.0 为准，D6 消费/B 产出）。依据 PRD FR-UI-08 / AC-26；实现见 app/services/{medication_service,sos_service}.py、app/api/{pad_undo,sos}.py、pad SosResult 与 24 例测试 |
+| v1.2 | 2026-11-11 | **§6 产出方状态回填（口径零变更）**：`tts_text.route_degraded` 服务端置位已实现（turn_service 判定 + response_service 逐段恒下发；legacy 出口与用药触达恒 false；signaling.TtsTextMsg 同步声明）。**§5.2 收口**：`append_correction` 增加 `type='sos'` 过滤——非 sos 红事件即便属于本长者亦按 404 处理（防跨语义误用），补 1 例 service 测试。字段名/类型/恒下发/正交关系均未改动 |
