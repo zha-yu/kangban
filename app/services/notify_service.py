@@ -25,6 +25,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.core.context import get_trace_id
 from app.models.notifications import Notification
 from app.models.relation import ElderGuardian
 
@@ -271,20 +272,41 @@ async def mark_guardian_notification_read(
 ) -> datetime.datetime:
     """标记已读（N4：只写 `read_at`，不动 `status`）。
 
-    幂等：已读直接返回原 `read_at`。找不到或**不属于当前监护人**一律
-    抛 `GuardianNotificationNotFound`（越权与不存在同口径，不泄露存在性）。
+    幂等：已读直接返回原 `read_at`。
+
+    **越权审计（Q-D2 冻结契约）**：
+    - 按 notification_id 单独查 → 不存在抛 `GuardianNotificationNotFound`（404）
+    - 归属不匹配（target_id != guardian_id）→ 打审计结构化日志 + 抛 `NotificationForbidden`（403）
+    - 不再用复合查询掩盖越权（原先统一 404）——归属错误属于安全事件要留痕
     """
+    # Step 1：只查存在性（不泄露归属）
     notification = (
         await session.execute(
-            select(Notification).where(
-                Notification.notification_id == notification_id,
-                Notification.target_type == _TYPE_GUARDIAN,
-                Notification.target_id == guardian_id,
-            )
+            select(Notification).where(Notification.notification_id == notification_id)
         )
     ).scalar_one_or_none()
     if notification is None:
         raise GuardianNotificationNotFound("通知不存在")
+
+    # Step 2：归属校验（归属不匹配 = 越权，403 + 审计）
+    if notification.target_type != _TYPE_GUARDIAN or notification.target_id != guardian_id:
+        logger.warning(
+            "guardian_notification_read_forbidden",
+            extra={
+                "audit_action": "notification_read_denied",
+                "actor_type": "guardian",
+                "actor_id": str(guardian_id),
+                "resource_type": "notification",
+                "resource_id": str(notification_id),
+                "actual_target_type": notification.target_type,
+                "actual_target_id": str(notification.target_id),
+                "trace_id": get_trace_id(),
+            },
+        )
+        raise NotificationForbidden(
+            f"guardian {guardian_id} does not own notification {notification_id} "
+            f"(target_type={notification.target_type}, target_id={notification.target_id})"
+        )
     if notification.read_at is not None:
         return notification.read_at
     notification.read_at = datetime.datetime.now(datetime.UTC)
@@ -338,20 +360,40 @@ async def mark_staff_notification_read(
 ) -> datetime.datetime:
     """员工侧标记已读（N-2：只写 `read_at`，不动 `status`）。
 
-    幂等：已读直接返回原 `read_at`。找不到或**不属于当前员工**一律
-    抛 `StaffNotificationNotFound`（越权与不存在同口径，不泄露存在性）。
+    幂等：已读直接返回原 `read_at`。
+
+    **越权审计（Q-D2 冻结契约）**：
+    - 按 notification_id 单独查 → 不存在抛 `StaffNotificationNotFound`（404）
+    - 归属不匹配（target_id != staff_id）→ 打审计结构化日志 + 抛 `NotificationForbidden`（403）
     """
+    # Step 1：只查存在性
     notification = (
         await session.execute(
-            select(Notification).where(
-                Notification.notification_id == notification_id,
-                Notification.target_type == _TYPE_STAFF,
-                Notification.target_id == staff_id,
-            )
+            select(Notification).where(Notification.notification_id == notification_id)
         )
     ).scalar_one_or_none()
     if notification is None:
         raise StaffNotificationNotFound("通知不存在")
+
+    # Step 2：归属校验（归属不匹配 = 越权，403 + 审计）
+    if notification.target_type != _TYPE_STAFF or notification.target_id != staff_id:
+        logger.warning(
+            "staff_notification_read_forbidden",
+            extra={
+                "audit_action": "notification_read_denied",
+                "actor_type": "staff",
+                "actor_id": str(staff_id),
+                "resource_type": "notification",
+                "resource_id": str(notification_id),
+                "actual_target_type": notification.target_type,
+                "actual_target_id": str(notification.target_id),
+                "trace_id": get_trace_id(),
+            },
+        )
+        raise NotificationForbidden(
+            f"staff {staff_id} does not own notification {notification_id} "
+            f"(target_type={notification.target_type}, target_id={notification.target_id})"
+        )
     if notification.read_at is not None:
         return notification.read_at
     notification.read_at = datetime.datetime.now(datetime.UTC)

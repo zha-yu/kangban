@@ -17,6 +17,7 @@
 | 文件 | 一句话场景 | 状态 | 最后更新 |
 | --- | --- | --- | --- |
 | [adhoc-20261111-媒体素材格式扩展名.md](./adhoc-20261111-媒体素材格式扩展名.md) | X8 契约修订（v1.1 已评审通过并落地）：§6.1 稳定路径扩展名放开为「media_url 落库值决定（wav/mp3）」——真素材 mp3 免转码（体积 1/10），B4/A5/D4/nginx 零改动，仅 C4 `stable_media_url` 加 ext 参数（默认 wav，越界拒绝）；契约 §7 v1.3 留痕，否决 mp3 挂 .wav 名（MIME 不符）与强制转码方案 | 已冻结 | 2026-11-11 |
+| [adhoc-20261111-ws-media-control-frame.md](./adhoc-20261111-ws-media-control-frame.md) | Q-D4 WS 帧形状冻结：media_control 七动作枚举（pause/resume/stop/next/volume_up/volume_down/repeat）+ media_info 资源元数据 + interrupt 走 WebRTC 下行 TTS 通道不进 WS；B B4 play_opera Tool 注册按此帧 shape 发，D pad 播放器按此收 | 草稿 | 2026-11-11 |
 | [day08/dev-c-evidence-x8-media.md](./day08/dev-c-evidence-x8-media.md) | X8 媒体域证据存档（CP4·AC-37 media_service 侧）：种子 5 行稳定路径、列表/检索（含空命中不编造）、播放 URL 与冻结模板逐字断言；一次性脚本直调 media_service 原样 tee，无手工修饰 | 已完成 | 2026-11-11 |
 | [day08/dev-c-day08-工作推进计划.md](./day08/dev-c-day08-工作推进计划.md) | Day 8 dev-C 个人推进计划 v1.3：C1 健康域 REST（骨架先行+CP1 联调，命名避让 /health 探针页）+ C2 report_service（dedupe_key X2 双向对齐、禁读 memory_chunks）+ C4 media_service（X8 稳定路径、唯一写库层）+ C3 console 三页切真（CP2 后）+ H12 门禁参与 + O1 溢出池；S0–S8 分步确认制、10 项交接清单；§8 主理人回应已回填（R5 裁决落地 / Q-1 归主理人裁·dev-A 落列 / 端点编号归 dev-B / 通知状态枚举按 v1.2 修正口径：照护台契约 §3.2 五值为准、AC-23/X7 作流转语义参照）；§10 执行记录 S2–S7 已回填 | 执行中 | 2026-11-11 |
 | [adhoc-20261109-汇报材料收口.md](./adhoc-20261109-汇报材料收口.md) | Day 6 汇报稿、通信流程图与源码注释对齐：澄清回复音频的 WebRTC 写轨路径、用药主动语音尽力出口、文本投递回执语义与当前工作区状态 | 已废弃（文件已删除） | 2026-11-09 |
