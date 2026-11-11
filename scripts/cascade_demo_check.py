@@ -18,7 +18,8 @@ import uuid
 from pathlib import Path
 
 from app.db import session_factory
-from app.services import identity_service, voiceprint_service as vs
+from app.services import identity_service
+from app.services import voiceprint_service as vs
 
 DEVICE_A = uuid.UUID("34b268ea-aece-4b4a-8017-d26c5c8285c0")  # 绑定 张桂芬
 ELDER_A = uuid.UUID("11111111-1111-4111-8111-111111111102")  # 张桂芬
@@ -36,7 +37,10 @@ async def register_samples(session) -> None:
     for idx in (1, 2, 3):
         raw = (SAMPLES / f"test1_{idx}.wav").read_bytes()
         status = await vs.register_sample(
-            session=session, elder_id=ELDER_A, sample_index=idx, audio_bytes=raw  # type: ignore[arg-type]
+            session=session,
+            elder_id=ELDER_A,
+            sample_index=idx,
+            audio_bytes=raw,  # type: ignore[arg-type]
         )
         await session.commit()
         print(f"  注册 test1_{idx}.wav → version={status.version} status={status.status}")
@@ -48,19 +52,27 @@ async def run() -> None:
         await register_samples(session)
 
         banner("幕1 · 无音频首轮 → 期望 source=device")
-        d1 = await identity_service.verify_session_identity(session, device_id=DEVICE_A, audio_bytes=None)
+        d1 = await identity_service.verify_session_identity(
+            session, device_id=DEVICE_A, audio_bytes=None
+        )
         await session.commit()
         print(f"  source={d1.source} elder={d1.elder_id} thread={d1.thread_id}")
 
         banner("幕2 · 本人音频 → 期望 source=voice，score ≥ 0.62")
         audio_a = (SAMPLES / "test1_3.wav").read_bytes()
-        d2 = await identity_service.verify_session_identity(session, device_id=DEVICE_A, audio_bytes=audio_a)
+        d2 = await identity_service.verify_session_identity(
+            session, device_id=DEVICE_A, audio_bytes=audio_a
+        )
         await session.commit()
-        print(f"  source={d2.source} score={d2.confidence} elder={d2.elder_id} thread={d2.thread_id}")
+        print(
+            f"  source={d2.source} score={d2.confidence} elder={d2.elder_id} thread={d2.thread_id}"
+        )
 
         banner("幕3 · 第三者音频（test3）→ 期望 confirm/low_confidence，无 thread")
         audio_c = (SAMPLES / "test3_1.wav").read_bytes()
-        d3 = await identity_service.verify_session_identity(session, device_id=DEVICE_A, audio_bytes=audio_c)
+        d3 = await identity_service.verify_session_identity(
+            session, device_id=DEVICE_A, audio_bytes=audio_c
+        )
         await session.commit()
         print(f"  source={d3.source} reason={d3.reason} thread={d3.thread_id}")
 
@@ -77,7 +89,7 @@ async def run() -> None:
         banner("库内留痕：conversation_threads 最近 4 行")
         from sqlalchemy import select
 
-        from app.models.conversation import ConversationThread  # noqa: PLC0415
+        from app.models.conversation import ConversationThread
 
         rows = (
             await session.execute(
