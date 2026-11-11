@@ -356,7 +356,7 @@ flowchart LR
 | J-X9 | 14:00 | dev-B | B→D | B2 桩测试绿证据＋day7_intents.jsonl＋六类边界定义＋评测口径；D 复跑基线后回传结果，**失败归因回 B，D 不改 rules.py/阈值** |
 | J-X4 | 14:30 CP2 | dev-C | D↔C | D 提供日报/通知域 REST 联调环境+测试账号；C3 alerts-api.ts 消费 D1 端点；互测 X3/X4，字段差异走契约 §6 |
 | J-X5/X7 | 15:30 | dev-A（状态机口径）+全员演练 | A→D | 四态枚举口径（AC-23）；演练中 D 留家属通知侧证据（N1 截图+SQL，AC-38 家属半） |
-| J-X8 | 16:00 CP4 | dev-B（Tool/素材）+dev-C（media_service）+dev-A（规则直连） | B/C→D | 照护台 §6 四件已冻结（§6.1 路径/§6.2 schema/§6.3 七动作/§6.4 种子）；**WS 帧形状与 A 对齐**（Q-D4）；history 写入归 C4（Tool 不写）；D4 只消费不私改；四方各留 AC-37 证据 |
+| J-X8 | 16:00 CP4 | dev-B（Tool/素材）+dev-C（media_service）+dev-A（规则直连） | B/C→D | 照护台 §6 四件已冻结（§6.1 路径/§6.2 schema/§6.3 七动作/§6.4 种子）；**WS 帧形状与 A 对齐**（Q-D4）；history 写入归 C4（Tool 不写）；D4 只消费不私改；四方各留 AC-37 证据。**16:25 追加**：B4 将素材由 wav 改为 mp3（体积 1/4），而 §6.1 冻结路径写死 `.wav` → 请 dev-B 在 §6.1 留痕（建议把 `media_url` 定为不限定扩展名、由 `media_library` 行存实际文件名）；D 的 pad 播放器**不感知扩展名，零改动** |
 | J-D3 | D3 启动时 | dev-C | D↔C | SOS 30 秒看板红色置顶联演（C 留看板截图，D 留 pad+SQL 证据） |
 | J-D6 | 裁决后 | 主理人→D；若加字段需 B 契约冻结 | — | 裁决结论；分支①的契约变更留痕 |
 | J-C2b | **已到货后追加（2026-11-11 15:55）** | dev-C | C→D | `report_service` 已交付生成侧＋`get_daily_report(elder_id, report_date)`／`list_daily_report_versions(elder_id, report_date)`，但 **F1/F2 需要的三个能力仍缺**，请补：① `list_reports_for_guardian(session, *, guardian_id, page, page_size) -> tuple[list[DailyReport], int]`——JOIN `elder_guardians`（`status='active'`）过滤，`report_date` 倒序，**同一 `report_date` 只出 `version` 最大者**（契约 S-07），分页作用于去重后的行；② `get_report_detail_for_guardian(session, *, guardian_id, report_id) -> tuple[DailyReport, str, list[dict]]`——返回日报行＋`health_summary`＋`attention_events`（契约自裁 S-09 的 JOIN 组装，字段形状见 §4 F2）；③ 两个异常 `GuardianReportNotFound` / `GuardianReportForbidden`（**区分「不存在」与「不是我的」**，前者 404、后者 403+审计，契约 §4/§5）。补齐前 D 侧不写查询、不摆空壳 |
@@ -426,8 +426,8 @@ uv run python scripts/update_progress.py --check-plans
 | R-D7 | opera 与播报/触达互斥口径缺失 | 复用既有 stopPlayback/interrupt 机制；优先级口径随 X8，未定提评审，不自裁 |
 | R-D8 | SOS 类别映射无 sos、撤销函数无承载 | D3 前置核对（S12a），缺则整项顺延留痕；不修改 safety_service/medication_service |
 | R-D9 | pre-push 接 eval_gate 后推送被环境差异误拦 | 门禁失败输出可读归因；环境缺失时按 R-D3 处置；接线本身是 R1② 可裁项 |
-| R-D10 | **N-3 确认端点缺归属校验**：`notify_service.acknowledge_notification()` 只按 id 查，不校验 `target_type/target_id`，任何持牌员工可确认他人通知 | 已登记在 `app/api/alerts.py` 模块 docstring 与测试文件头；**api 层无法补**（不许拼查询、无员工侧读函数）→ 请 A 侧给该函数加 `target_type/target_id` 参数或新增带归属校验的函数；补齐后补 `test_acknowledge_foreign_403`。**补齐前该端点仅教学演示，不得对外** |
-| R-D11 | `NotificationError` 一个异常承载「不存在/非法流转」两种语义，api 只能靠消息前缀分流（`alerts.py::_map_notification_error`） | 已登记请 A 拆 typed exception（`NotificationNotFound` / `IllegalTransition`）；拆分后改 `isinstance`，删掉字符串判断 |
+| R-D10 | ~~N-3 缺归属校验~~ **已修复（2026-11-11 16:20，A 侧）** | A 在 `acknowledge_notification` 内加 `notification.target_id != acknowledger_id → NotificationForbidden`。D 侧已补 `test_acknowledge_foreign_notification_is_403_and_audited`（403 + 状态不变 + 审计一条）。**但引出回归**：`Identity.staff_id` 是 `str`、`target_id` 是 `uuid.UUID`，直接 `!=` 恒真 → 所有员工 403；D 在 api 边界 `uuid.UUID(staff.staff_id)` 归一化挡住，**请 A 在 service 侧也归一化**（否则 scheduler 等其他调用方同样踩坑） |
+| R-D11 | ~~`NotificationError` 一异常两语义~~ **已修复（A 侧）** | A 拆出 `NotificationNotFound` / `NotificationIllegalTransition` / `NotificationForbidden`；D 侧 `alerts.py` 已改 `isinstance` 判定、删掉消息前缀判断。**残项**：`_require_transition` 仍抛基类 `NotificationError`（未用 `NotificationIllegalTransition`），D 暂以「其余 NotificationError → 409」兜住，**请 A 收尾** |
 
 ## 9. 待确认项（执行前需回应；未决不擅自定）
 
@@ -462,6 +462,8 @@ uv run python scripts/update_progress.py --check-plans
 | 2026-11-11 | **合并 C/A/B 更新＋全量回绿（15:55）** | `git merge origin/develop`（`e7c5061`，含 C4 `media_service`＋C2 `report_service`＋C1 health_records API＋A 的 `grade_health` 适配＋B 的规则断言修正）；冲突仅 `app/api/__init__.py` 的 ROUTERS 尾部（两侧各加一行）→ 两行都保留（`alerts` + `health_records`）。**全量 pytest：1273 passed / 0 failed（243s）**——此前 9 条 A/B 侧红灯全部清零。迁移 head 仍 `0018_day8_media` | **C2 到货但不完整**：`report_service` 现有 `generate_daily_report`＋`get_daily_report(elder_id, report_date)`＋`list_daily_report_versions(elder_id, report_date)`，**缺 F1 分页列表、缺按 report_id 的详情、缺家属绑定区分异常** → F1/F2 仍不能落地，已写交接 J-C2b（含三个精确签名与两个异常）。`media_service` 到货完整（list/search/get/playback_url/start/finish/history/seed），但 `static/media/opera/` 与 `play_opera` 注册仍无（B4 未交付）→ D4 只能做前端播放器，接线等 Q-D4 帧形状 |
 | 2026-11-11 | **S9 部分交付：pad 戏曲播放器（CP-D9 前端段）** | 新建 `frontend/src/pad/audio/opera-player.ts`：契约 §6.3 七动作状态机（idle→loading→playing⇄paused→ended），非法动作返回 `ignored`/`needs_track` 而非抛异常；`duckForSpeech()/resumeAfterSpeech()` 承担 barge-in 互斥（只恢复「被压住的」，用户自己按的暂停不被顶开）；`next_track` 要求外部给段（不猜下一段）、不取数、不写 `media_history`、不碰 `protocol.ts`。新建 `OperaDemoPanel.tsx`＋App `?demo=opera`（仅 DEV）作为单端演示载体；演示音源 `frontend/public/media/opera/demo-tone.wav`（3 秒五声音阶，96KB，不占 B4 的 `static/media/opera`）。**验证**：tsc exit=0、`pnpm build` ✓、node 假 `Audio` 跑 16 步行为序列（pause@idle ignored／load ok／同曲重复 ignored／pause+resume／音量到顶 ignored／duck 后 resume 被拒／resumeAfterSpeech 复播／next_track needs_track→ok／stop→idle）**全部符合预期，0 error** | WS 接线未做：Q-D4 帧形状未定，接 `protocol.ts` 需先经 A 对齐＋B 留痕。素材与 `play_opera` 仍未交付（B4）。**演示面板是临时载体**，Q-D4 落地后应整块删除、改为真实帧驱动 |
 | 2026-11-11 | **S11 部分交付：完成定义对证据表（CP-D11 文档段）** | 新增计划 **§11**：PRD Day 8 完成定义中 D 相关项逐条对证据（命令＋数字或文件＋行号）。有实证据 4 项：N-3 主体隔离（401×2 用例）、AC-23 状态机（delivered/跳步 409/幂等 5 用例）、AC-37 播放器（16 步行为序列＋build）、FR-TC-09（四步篡改验证＋七层归因＋15 条回流＋基线锁）；待上游 4 项：AC-13/18（C2 读函数）、AC-38 演练、375px（D2）、N-3 归属校验（R-D10）。每项状态只用 ✅/🚧/⛔，⛔ 必写卡谁 | 四件套未全绿：`ruff`/`pytest`/`tsc`/`build` 当前全绿，但「完成定义全绿」还差上游 4 项，故 S11 记「部分完成」而非完成 |
+| 2026-11-11 | **合并 develop `ff3591c`＋R-D10 回归修复（16:30）** | 合并 `ff3591c`（C 的 X8 媒体证据＋S7 门禁回填、A 的 notify_service typed exception 与归属校验）；冲突仅 `docs/plans/README.md` 索引（取远端，含新增证据文件行）。**A 侧两项已修**：`acknowledge_notification` 加 `target_id != acknowledger_id → NotificationForbidden`；拆出 `NotificationNotFound/IllegalTransition/Forbidden`。D 侧 `alerts.py` 改为 `isinstance` 判定（删掉消息前缀 hack）、新增 403＋审计分支（`record_audit` 只 flush，正常 return 让 `get_session` 提交），`tests/test_alerts_api.py` **9 passed**（新增越权用例：403 + 状态不变 + 审计恰好一条） | **发现并挡住一个 A 侧回归**：`Identity.staff_id` 是 `str`、`notifications.target_id` 是 `uuid.UUID`，A 直接 `!=` 比较恒真 → **所有员工确认都 403**（我 4 条老用例第一时间变红）。D 在 api 边界 `uuid.UUID(staff.staff_id)` 归一化修复；**service 侧仍需 A 归一化**，否则 scheduler 等调用方同样踩坑。另：`_require_transition` 仍抛基类 `NotificationError`，D 暂以「其余 → 409」兜住 |
+| 2026-11-11 | **素材改 mp3（16:25）** | 用户告知 B4 媒体播放改 mp3（wav 体积过大）。核对：**pad 播放器不感知扩展名**（只用 `mediaUrl` 字符串），代码零改动；`?demo=opera` 演示音已转 mp3（96KB→25KB，`frontend/public/media/opera/demo-tone.mp3`），wav 删除；`tsc --noEmit` exit=0 | **契约 §6.1 仍写死 `.wav`**（冻结口径），扩展名变更须 dev-B 在 §6 留痕，已写入 J-X8 追加：建议 `media_url` 不限定扩展名、实际文件名由 `media_library` 行承载。D 不改契约 |
 
 ---
 
@@ -487,6 +489,42 @@ uv run python scripts/update_progress.py --check-plans
 | 前端编译 | `tsc --noEmit` ＋ `build` | 双绿（16:10） | ✅ |
 
 **诚实结论**：D 的完成定义项里，**门禁/通知状态机/戏曲播放器/回归** 四项有实证据；**家属日报、375px、双通知演练、N-3 归属校验** 四项被上游卡住，其中 R-D10 是安全口子，必须在对外演示前补掉。
+
+---
+
+## 12. 未到货清单（2026-11-11 16:35 逐项回代码核对）
+
+> 判定方式：不看聊天记录，只看 `grep` / `ls` 的结果。每条都写「文件:行」或「全仓无」。
+> 用途：H12 交接时逐条对账，谁欠什么一目了然。
+
+### 12.1 仍缺（会挡住 D 的活）
+
+| # | 缺什么 | 归属 | 需要的确切东西 | 挡住谁 | 核对证据 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 日报**家属侧读函数** | **C2 · dev-C** | `list_reports_for_guardian(guardian_id,page,page_size)`；`get_report_detail_for_guardian(guardian_id,report_id)`；`GuardianReportNotFound/Forbidden` 两个异常（J-C2b） | S4 收口、S6 互测、S7 D2 切真、F1/F2 全部 | `app/services/report_service.py` 只有 `generate_daily_report` / `get_daily_report(elder_id,report_date)` / `list_daily_report_versions`，**无家属维度、无 report_id 查询、无区分异常** |
+| 2 | 员工侧通知**读/已读函数** | **A3 · dev-A** | `list_staff_notifications(staff_id,page,page_size,unread_only)`；`mark_staff_notification_read(staff_id,notification_id)`（J-A3b） | alerts 域 N-1/N-2（C3 告警中心依赖） | `app/services/notify_service.py` 有 guardian 版 list/read、有 staff 写/确认/扫描，**无 `list_staff_*` / `mark_staff_*`** |
+| 3 | `play_opera` **Tool 注册与实现** | **B4 · dev-B** | ToolSpec + executor（入参 `{query}`、返回 §6.2 结构）；`media_history` 由 C4 写 | S9 的 WS 接线、AC-37 端到端 | `rules.py` 已把 R-01~R-08 的 `tool_name` 指向 `play_opera`（4 处），但 `app/` 内**无对应实现/注册**（`tool_impls.py` 无命中） |
+| 4 | 戏曲**种子素材** | **B4 · dev-B** | `static/media/opera/` 20–30 条（§6.4），现口径为 mp3 | 同上；D 只能用仓库内演示音自测 | `ls static/media/opera` → **目录不存在** |
+| 5 | **WS 帧形状** | **A→B**（Q-D4） | `opera_control`（或同义）的 type/字段/动作枚举，冻结后 D 才改 `protocol.ts` | S9 协议接入 | `frontend/src/pad/protocol.ts` 白名单无 opera 类；`task_command` 仅 `kind:"medication"` |
+| 6 | **SOS 事件链入口 + 撤销函数** | **A3 / Q-D7** | `escalate_safety_event` 支持 `sos` 类别（现映射表 5 类无 sos）；撤销 service 函数 | D3 整项 | `app/services/safety_service.py:107-113` 的 `_ORDER_TYPE_BY_CATEGORY` 只有 chest_pain/breathing/stroke/fall/self_harm；`app/api/` 无 sos 端点 |
+| 7 | `route_degraded` **字段冻结** | **dev-B** | 字段名/类型/出现时机（Q-D5 已裁「加字段」） | D6 | `protocol.ts` 无该字段（未冻结，D 不动协议） |
+
+### 12.2 已到货（可直接消费，避免重复催）
+
+| 项 | 归属 | 现状 |
+| --- | --- | --- |
+| `daily_reports`/`health_records`/`media_*` ORM ＋ 0017/0018 迁移 | A1 · dev-A | ✅ DB head `0018_day8_media` |
+| `report_service` **生成侧**（含固定声明、四类用药、dedupe 通知） | C2 · dev-C | ✅ `generate_daily_report` |
+| `media_service`（唯一写库层） | C4 · dev-C | ✅ list/search/get/`get_playback_url`/start/finish/history/seed，稳定路径函数 `stable_media_url` |
+| `notify_service` staff 写/确认/扫描/升级 | A3 · dev-A | ✅ `send_staff_notifications`/`acknowledge_notification`/`scan_*`/`escalate_red_event` |
+| notify typed exceptions | A3 · dev-A | ✅ `NotificationNotFound`/`IllegalTransition`/`Forbidden`（残项：`_require_transition` 仍抛基类） |
+| rules R-01~R-08 直连 | A5 · dev-A | ✅ `RULESET_VERSION=r2`（旧断言已由 B 同步） |
+| 员工确认端点 N-3 | **D** | ✅ `app/api/alerts.py`，9 用例（含 403＋审计） |
+
+### 12.3 两个「已修但需回归」的点（给 A 收尾）
+
+1. **service 侧 uuid 归一化**（R-D10 回归）：`Identity.staff_id` 为 `str`、`target_id` 为 `uuid.UUID`，直接比较恒不等；D 已在 api 边界 `uuid.UUID(...)` 兜住，但 scheduler 等直调方仍会踩。
+2. **`_require_transition` 改抛 `NotificationIllegalTransition`**：现在抛基类，D 靠「其余 `NotificationError` → 409」兜住，语义上不够干净。
 
 ---
 

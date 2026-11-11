@@ -7,10 +7,8 @@
 - 404：通知不存在；
 - 幂等：已确认再确认一次仍 200，`acknowledged_at` 不被覆盖。
 
-**未覆盖（已知缺口，见 app/api/alerts.py 模块 docstring 与计划 §10）**：
-「员工 A 确认员工 B 的通知」这条越权用例**当前无法写**——`notify_service.
-acknowledge_notification()` 不校验 target 归属，api 层又不能拼查询。等 A 侧
-补 `target_type/target_id` 校验后，本文件补 `test_acknowledge_foreign_403`。
+- 403 + 审计：员工 A 确认员工 B 的通知 → `SCOPE_FORBIDDEN`，且 `audit_logs`
+  落一条 `notification_acknowledge_forbidden`（R-D10 修复后的回归口）。
 """
 
 from __future__ import annotations
@@ -28,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import sign_staff_access
 from app.db import get_session
 from app.main import create_app
+from app.models.audit import AuditLog
 from app.models.guardian import GuardianAccount
 from app.models.notifications import Notification
 from app.models.staff import StaffAccount
@@ -185,3 +184,42 @@ async def test_acknowledge_bad_uuid_is_422(app_with_session, client: AsyncClient
         headers={"Authorization": f"Bearer {_staff_token(staff.staff_id)}"},
     )
     assert resp.status_code in (400, 422), resp.text
+
+
+async def test_acknowledge_foreign_notification_is_403_and_audited(
+    app_with_session, client: AsyncClient
+) -> None:
+    """R-D10 回归：员工只能确认发给自己的通知；越权 403 且必须留审计。"""
+    from sqlalchemy import select
+
+    _, session = app_with_session
+    owner = await _seed_staff(session, "护工-收件人")
+    intruder = await _seed_staff(session, "护工-路人")
+    notification = await _seed_notification(session, staff_id=owner.staff_id)
+
+    resp = await client.post(
+        f"/api/notifications/{notification.notification_id}/acknowledge",
+        headers={"Authorization": f"Bearer {_staff_token(intruder.staff_id)}"},
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["code"] == "SCOPE_FORBIDDEN"
+
+    await session.refresh(notification)
+    assert notification.status == "delivered", "越权请求不得改动通知状态"
+    assert notification.acknowledged_by is None
+
+    rows = (
+        (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "notification_acknowledge_forbidden",
+                    AuditLog.resource_id == notification.notification_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1, "403 必须落一条审计（照护台契约 §2）"
+    assert rows[0].actor_type == "staff"
+    assert rows[0].actor_id == intruder.staff_id

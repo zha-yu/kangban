@@ -20,27 +20,27 @@
   员工侧读/已读函数尚未交付（归 A3，`notify_service` 增量在 A 写域）。
   骨架不先摆出来——摆了就是给人一个「接口在但永远 500」的假象。
 
-## 归属校验缺口（登记，未擅自改 service）
+## 归属校验（R-D10，2026-11-11 16:20 已由 A 侧修复）
 
-`notify_service.acknowledge_notification()` 目前**只按 notification_id 查**，
-不校验该通知的 `target_type/target_id` 是否等于当前员工。也就是说：
-任何持有效工牌的员工，都能确认**别人**的通知。
+`notify_service.acknowledge_notification()` 现在会校验 `notification.target_id
+== acknowledger_id`，不匹配抛 `NotificationForbidden`。本文件据此返回 **403
+`SCOPE_FORBIDDEN` 并写一条审计**（照护台契约 §2「服务端兜底 403+审计」）。
 
-本文件**不能**在 api 层补这个校验——`app/api` 不许拼查询，员工侧也没有可用的
-读函数。故此处如实登记为缺口，等 A 侧给 `acknowledge_notification` 增加
-`target_type` / `target_id` 参数（或提供带归属校验的新函数）。
-**在补齐前，本端点不应用于真实环境**，仅教学演示，且已记入计划 §10 与
-`R-D10`。
+审计写法：`record_audit()` 只 `add + flush` 不 commit，由 `get_session` 在请求
+成功路径统一提交——所以这里必须**正常 return 403 响应**，不能 raise（raise 会走
+异常路径回滚，审计就没了）。
 
-另外：`NotificationError` 同时承载「不存在」与「非法流转」两种语义，只能靠
-消息前缀区分（见 `_map_notification_error`）。这是脆的，已登记请 A 侧补
-typed exception（`NotificationNotFound` / `IllegalTransition`）。
+## 异常映射
+
+A 侧已补 typed exception：`NotificationNotFound`（404）／`NotificationForbidden`
+（403）／其余 `NotificationError`（本端点内只剩非法流转，409）。不再靠消息前缀
+猜语义——R-D11 的脆点已消。
 """
 
 from __future__ import annotations
 
 import uuid
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict
@@ -51,7 +51,12 @@ from app.core.auth import current_staff
 from app.core.runtime_context import Identity
 from app.db import get_session
 from app.services import notify_service
-from app.services.notify_service import NotificationError
+from app.services.audit_log_service import record_audit
+from app.services.notify_service import (
+    NotificationError,
+    NotificationForbidden,
+    NotificationNotFound,
+)
 
 router = APIRouter(
     prefix="/api",
@@ -70,22 +75,23 @@ class AcknowledgeOut(BaseModel):
     acknowledged_by: uuid.UUID
 
 
-def _map_notification_error(exc: NotificationError, notification_id: uuid.UUID) -> Any:
-    """`NotificationError` → 契约错误体。
-
-    - `illegal notification transition: X → acknowledged` → **409 CONFLICT**（契约 N-3「禁止跳步」）；
-    - `notification ... not found` → **404 NOT_FOUND**；
-    - 其余（服务层自身异常）原样抛出，不伪装成业务错误。
-
-    靠消息前缀分流是权宜——`notify_service` 目前只抛一个 `NotificationError`。
-    已登记请 A 侧拆成两个 typed exception，届时本函数改成 `isinstance` 判断。
-    """
-    message = str(exc)
-    if message.startswith("illegal notification transition"):
-        return _error_response(409, "CONFLICT", f"notification {notification_id} 状态不允许确认")
-    if "not found" in message:
-        return _error_response(404, "NOT_FOUND", "notification not found")
-    raise exc
+async def _forbidden_response(
+    session: AsyncSession,
+    staff_id: uuid.UUID,
+    notification_id: uuid.UUID,
+    exc: NotificationForbidden,
+):
+    """403 + 审计。审计与业务同事务，正常 return 让 `get_session` 提交。"""
+    await record_audit(
+        session,
+        actor_type="staff",
+        actor_id=staff_id,
+        action="notification_acknowledge_forbidden",
+        resource_type="notification",
+        resource_id=notification_id,
+        detail={"reason": "not_target_owner"},
+    )
+    return _error_response(403, "SCOPE_FORBIDDEN", "notification is not yours")
 
 
 @router.post("/notifications/{notification_id}/acknowledge", response_model=None)
@@ -99,16 +105,25 @@ async def acknowledge_notification(
     操作人一律取 `staff.staff_id`，**不接受客户端传 actor**（AGENTS §4 红线 9）。
     幂等：已确认的通知再确认一次返回 200，不重复写审计/时间戳（服务层短路）。
     """
+    # `Identity.staff_id` 是字符串，而 `notifications.target_id` 是 uuid 列：
+    # service 现在用 `!=` 直接比较两者，不归一化就会「永远不相等」→ 所有员工 403。
+    # 这里在 api 边界做一次类型收口（身份解析本来就是 api 的活）。
+    acknowledger_id = uuid.UUID(staff.staff_id)
     try:
         await notify_service.acknowledge_notification(
             session,
             notification_id=notification_id,
-            acknowledger_id=staff.staff_id,
+            acknowledger_id=acknowledger_id,
         )
-    except NotificationError as exc:
-        return _map_notification_error(exc, notification_id)
+    except NotificationForbidden as exc:
+        return await _forbidden_response(session, acknowledger_id, notification_id, exc)
+    except NotificationNotFound:
+        return _error_response(404, "NOT_FOUND", "notification not found")
+    except NotificationError:
+        # 本端点内剩下的只有「非法流转」（generated/pending/failed → acknowledged）
+        return _error_response(409, "CONFLICT", f"notification {notification_id} 状态不允许确认")
     return AcknowledgeOut(
         notification_id=notification_id,
         status="acknowledged",
-        acknowledged_by=staff.staff_id,
+        acknowledged_by=acknowledger_id,
     )

@@ -19,11 +19,11 @@ import {
   type OperaTrack,
 } from "../audio/opera-player";
 
-/** 演示音源：3 秒五声音阶琶音，随仓库入库（不占 B4 的 static/media/opera） */
+/** 演示音源：3 秒五声音阶琶音（mp3，25KB），随仓库入库（不占 B4 的 static/media/opera） */
 const DEMO_TRACK: OperaTrack = {
   mediaId: "demo-0000-0000-0000-000000000001",
   title: "演示曲·五声音阶（3 秒）",
-  mediaUrl: "/media/opera/demo-tone.wav",
+  mediaUrl: "/media/opera/demo-tone.mp3",
   durationSec: 3,
 };
 

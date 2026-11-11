@@ -10,7 +10,9 @@
  * ## 它不管什么
  *
  * - **不取数据**：`media_url` 由调用方给（后端 `media_service.get_playback_url`
- *   产出的 X8 稳定路径 `/static/media/opera/<media_id>.wav`），本类只负责播。
+ *   产出的稳定路径），本类只负责播——**不感知扩展名**：浏览器 `<audio>` 对
+ *   wav/mp3 一视同仁，所以 2026-11-11 B4 把素材从 wav 换成 mp3 时本类零改动。
+ *   （契约 §6.1 目前仍写死 `.wav`，扩展名口径待 dev-B 在 §6 留痕，见 J-X8 追加。）
  * - **不写 history**：`media_history` 归 C4 `media_service`，pad 与 Tool 都不写
  *   （契约 §6.2 末句）。
  * - **不认 WS 帧**：帧形状未定（Q-D4），所以这里没有 `protocol.ts` 依赖。等 A 定
