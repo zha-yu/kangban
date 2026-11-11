@@ -16,6 +16,7 @@
 
 | 计划 | 状态 |
 | --- | --- |
+| `docs/plans/day08/adhoc-20261111-声纹互测录音指南.md` | 🔒 已冻结 |
 | `docs/plans/day08/day-08-健康采集与三端后台.md` | 📝 草稿（待主理人确认后执行） |
 | `docs/plans/day08/dev-a-数据分级规则层.md` | 📝 草稿 |
 | `docs/plans/day08/dev-a-药单管理后端接口.md` | 📝 草稿 |

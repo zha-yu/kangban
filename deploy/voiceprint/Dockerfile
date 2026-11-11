@@ -4,12 +4,8 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# 安装系统依赖（numpy 等需要）
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
-
-# Python 依赖
+# Python 依赖（sherpa-onnx / numpy / fastapi 均有预编译 wheel，无需 gcc；
+# 原 apt 安装 gcc 在镜像源不稳时会 502 卡死构建，2026-11-11 移除）
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

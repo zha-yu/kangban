@@ -16,6 +16,7 @@
 
 | 文件 | 一句话场景 | 状态 | 最后更新 |
 | --- | --- | --- | --- |
+| [day08/adhoc-20261111-声纹互测录音指南.md](./day08/adhoc-20261111-声纹互测录音指南.md) | Step 9/O3 现场录音操作指南（现场人员版，无代码门槛）：标准流程（record_samples.py 交互录音）、备用 m4a/mp3 转换入口、录音要点（分段重录/人名代号一致/每段≥5s）、自查清单与 FAQ；隐私口径（samples/ 不入库可随时删除、不涉真实长者） | 已冻结 | 2026-11-11 |
 | [adhoc-20261111-媒体素材格式扩展名.md](./adhoc-20261111-媒体素材格式扩展名.md) | X8 契约修订（v1.1 已评审通过并落地）：§6.1 稳定路径扩展名放开为「media_url 落库值决定（wav/mp3）」——真素材 mp3 免转码（体积 1/10），B4/A5/D4/nginx 零改动，仅 C4 `stable_media_url` 加 ext 参数（默认 wav，越界拒绝）；契约 §7 v1.3 留痕，否决 mp3 挂 .wav 名（MIME 不符）与强制转码方案 | 已冻结 | 2026-11-11 |
 | [day08/dev-c-evidence-x8-media.md](./day08/dev-c-evidence-x8-media.md) | X8 媒体域证据存档（CP4·AC-37 media_service 侧）：种子 5 行稳定路径、列表/检索（含空命中不编造）、播放 URL 与冻结模板逐字断言；一次性脚本直调 media_service 原样 tee，无手工修饰 | 已完成 | 2026-11-11 |
 | [day08/dev-c-day08-工作推进计划.md](./day08/dev-c-day08-工作推进计划.md) | Day 8 dev-C 个人推进计划 v1.3：C1 健康域 REST（骨架先行+CP1 联调，命名避让 /health 探针页）+ C2 report_service（dedupe_key X2 双向对齐、禁读 memory_chunks）+ C4 media_service（X8 稳定路径、唯一写库层）+ C3 console 三页切真（CP2 后）+ H12 门禁参与 + O1 溢出池；S0–S8 分步确认制、10 项交接清单；§8 主理人回应已回填（R5 裁决落地 / Q-1 归主理人裁·dev-A 落列 / 端点编号归 dev-B / 通知状态枚举按 v1.2 修正口径：照护台契约 §3.2 五值为准、AC-23/X7 作流转语义参照）；§10 执行记录 S2–S7 已回填 | 执行中 | 2026-11-11 |
