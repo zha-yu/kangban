@@ -107,7 +107,9 @@ async def seed_media_library(
         fields = _validate_seed_item(item)
         media_id = uuid.uuid4()  # 客户端生成：media_url 稳定路径在 INSERT 前即可拼好
         ext = fields.pop("ext")
-        row = MediaLibrary(media_id=media_id, media_url=stable_media_url(media_id, ext=ext), **fields)
+        row = MediaLibrary(
+            media_id=media_id, media_url=stable_media_url(media_id, ext=ext), **fields
+        )
         session.add(row)
         rows.append(row)
     await session.flush()
