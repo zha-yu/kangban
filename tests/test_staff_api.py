@@ -475,9 +475,7 @@ async def test_reassign_unknown_elder_404(client: AsyncClient) -> None:
     assert resp.json()["code"] == "NOT_FOUND"
 
 
-async def test_reassign_success_add_new(
-    client: AsyncClient, seeded: AsyncConnection
-) -> None:
+async def test_reassign_success_add_new(client: AsyncClient, seeded: AsyncConnection) -> None:
     """CAREWORKER_ID 当前无 assignment → PUT [ELDER_ID] → added=[ELDER_ID]。"""
     resp = await client.put(
         f"/api/staff/{CAREWORKER_ID}/elders",
@@ -497,9 +495,7 @@ async def test_reassign_success_add_new(
     rows = (
         (
             await session.execute(
-                select(ElderStaffAssignment).where(
-                    ElderStaffAssignment.staff_id == CAREWORKER_ID
-                )
+                select(ElderStaffAssignment).where(ElderStaffAssignment.staff_id == CAREWORKER_ID)
             )
         )
         .scalars()
@@ -510,9 +506,7 @@ async def test_reassign_success_add_new(
     assert rows[0].relation == "primary_care"
 
 
-async def test_reassign_success_diff_remove(
-    client: AsyncClient, seeded: AsyncConnection
-) -> None:
+async def test_reassign_success_diff_remove(client: AsyncClient, seeded: AsyncConnection) -> None:
     """已有 [ELDER_A, ELDER_B] → 只留 [ELDER_B] → removed=[ELDER_A]。
 
     关键前置：ELDER_A 必须有至少一位其他 primary_care，否则移 CAREWORKER_ID 会触发 409。
@@ -583,17 +577,13 @@ async def test_reassign_success_diff_remove(
     assert rows == [elder_b.elder_id]
 
 
-async def test_reassign_primary_care_gap_409(
-    client: AsyncClient, seeded: AsyncConnection
-) -> None:
+async def test_reassign_primary_care_gap_409(client: AsyncClient, seeded: AsyncConnection) -> None:
     """CAREWORKER_ID 是 ELDER_ID 唯一的 primary_care → 清空绑定 → 409 CONFLICT。"""
     sess = AsyncSession(
         bind=seeded, expire_on_commit=False, join_transaction_mode="create_savepoint"
     )
     sess.add(
-        ElderStaffAssignment(
-            elder_id=ELDER_ID, staff_id=CAREWORKER_ID, relation="primary_care"
-        )
+        ElderStaffAssignment(elder_id=ELDER_ID, staff_id=CAREWORKER_ID, relation="primary_care")
     )
     await sess.commit()
     await sess.close()

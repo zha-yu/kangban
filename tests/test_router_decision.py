@@ -237,7 +237,9 @@ async def test_out_of_domain_uses_its_own_clarify_text() -> None:
         )
     )
 
-    decision = await router.decide("帮我写一段 Python 爬虫", thread_id="th-1", runtime=FakeRuntime())
+    decision = await router.decide(
+        "帮我写一段 Python 爬虫", thread_id="th-1", runtime=FakeRuntime()
+    )
 
     assert decision.action == "clarify"
     assert decision.clarify_text == CLARIFY_TEXT_OUT_OF_DOMAIN
@@ -288,7 +290,9 @@ async def test_shadow_sensitive_escalates_without_agent_or_tool() -> None:
     )
 
     # 刻意选用规则层接不住的说法（"冷不冷"会被 R-09 接走，那样测不到 G1）
-    decision = await router.decide("明天出门用不用加件外套", thread_id="th-1", runtime=FakeRuntime())
+    decision = await router.decide(
+        "明天出门用不用加件外套", thread_id="th-1", runtime=FakeRuntime()
+    )
 
     assert decision.action == "escalate"
     assert decision.is_sensitive is True
@@ -341,7 +345,9 @@ async def test_multi_intent_same_intent_merges_to_one_action() -> None:
 async def test_multi_intent_different_intents_goes_agent() -> None:
     router, _, _ = _router()
 
-    decision = await router.decide("换一段戏，顺便问问今天天气", thread_id="th-1", runtime=FakeRuntime())
+    decision = await router.decide(
+        "换一段戏，顺便问问今天天气", thread_id="th-1", runtime=FakeRuntime()
+    )
 
     assert decision.multi_intent is True
     assert decision.action == "agent"
@@ -400,5 +406,11 @@ def test_decision_module_has_no_db_http_or_executor_import() -> None:
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module)
 
-    forbidden = ("httpx", "app.models", "app.services.tool_executor", "app.mcp_client", "sqlalchemy")
+    forbidden = (
+        "httpx",
+        "app.models",
+        "app.services.tool_executor",
+        "app.mcp_client",
+        "sqlalchemy",
+    )
     assert not [name for name in imported if name.startswith(forbidden)], sorted(imported)

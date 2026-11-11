@@ -9,14 +9,16 @@
 2. 对话结束后**异步**跑（不阻塞主链，调用方 `asyncio.create_task()` 触发）
 3. 入库前三条硬校验：无 source_turn_ids → 拒；generic 身份 → 拒；sensitivity=health/family → 拒
 4. 同 (elder_id, subject, predicate) 已有 active 条目 → 值同跳过，值不同**新插一条** + 打日志
-   （**不得**静默覆盖旧条目；冲突判定留给 Day 7）
+   （**不得**静默覆盖旧条目；Day 8 B5 已补冲突检测）
 5. 召回强制闸门② elder_id + status=active + 有效期过滤
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
@@ -33,13 +35,32 @@ _ALLOWED_SENSITIVITIES: frozenset[str] = frozenset({"normal", "private"})
 _BLOCKED_SENSITIVITIES: frozenset[str] = frozenset({"health", "family"})
 _ALLOWED_SOURCES: frozenset[str] = frozenset({"elder_explicit", "caregiver_report"})
 
-# 技术债（Day 7 补）：
-#   - 冲突五关系判定（supersedes / conflicts_with / disputed 等）
-#   - 状态迁移 superseded / disputed（目前只写 active）
-#   - 90 天衰减归并（APScheduler 任务）
+# --- Day 8 B5 冲突检测常量（计划 Step 3 / TD §3.4 FR-MEM-03）---
+
+#: 相似度阈值：新候选与存量同键条目相似度 > 0.9 才进入语义矛盾判定（LLM 调用），
+#: ≤ 0.9 视为可共存偏好（如既喜欢越剧又喜欢京剧），照 Day 6 语义双 active 并存。
+_CONFLICT_SIMILARITY_THRESHOLD = 0.9
+
+#: 语义矛盾判定允许的关系取值（TD 口径；none = 不矛盾可共存）
+_CONFLICT_RELATIONS: frozenset[str] = frozenset(
+    {"supersedes", "disputed", "conflicts_with", "none"}
+)
+
+_JUDGE_SYSTEM_PROMPT = (
+    "你是长者长期记忆治理助手。输入同一长者同一偏好维度的旧记忆与新陈述，"
+    "判断二者的关系，只输出 JSON，不要输出其他内容："
+    '{"relation": "supersedes|disputed|conflicts_with|none"}。'
+    "supersedes=新陈述明确推翻旧偏好（如「不喜欢X了」），旧记忆应被替代；"
+    "disputed=两条矛盾且无法判断谁对；conflicts_with=矛盾但需人工复核；"
+    "none=不矛盾，可以共存（如对同类不同项的偏好）。"
+)
+
+# 技术债（后续迭代补）：
+#   - 90 天衰减归并（APScheduler 任务，Day 8 Step 7 B5 收尾）
 #   - 删除流水（deleted 状态不是真删除）
 #   - pgvector 向量召回（替换 ORDER BY importance DESC）
-#   - embedding 生成（可空 vector(1536)，Day 7 接 embedding 模型）
+#   - embedding 生成（可空 vector(1536)，接入后 _text_similarity 占位实现
+#     替换为向量余弦相似度，阈值口径不变）
 
 
 # ------------------------------------------------------------------ 异常
@@ -194,13 +215,94 @@ async def extract_preference_candidates(
     return deduped
 
 
+# ------------------------------------------------------------------ 冲突检测（Day 8 B5，计划 Step 3）
+
+
+def _text_similarity(a: str, b: str) -> float:
+    """文本相似度占位实现（difflib 序列匹配 + 否定词归一）。
+
+    pgvector 向量召回落地后替换为 embedding 余弦相似度，阈值口径不变。
+    归一化剥掉否定词（不/没/别）再比对：「长者喜欢越剧」vs「长者不喜欢越剧了」
+    是同一对象的正反陈述，应得高相似度从而触发语义矛盾判定；「越剧」vs「京剧」
+    是不同对象，相似度低于阈值走可共存路径。
+    """
+    from difflib import SequenceMatcher
+
+    negations = ("不", "没", "别")
+    a_norm = "".join(ch for ch in " ".join(a.split()) if ch not in negations)
+    b_norm = "".join(ch for ch in " ".join(b.split()) if ch not in negations)
+    if not a_norm or not b_norm:
+        return 0.0
+    return SequenceMatcher(None, a_norm, b_norm).ratio()
+
+
+_LLM_INSTANCE: Any = None
+
+
+def _get_llm() -> Any:
+    """统一 LLM 适配器懒加载单例（无 key 时 LLMService 自身 degraded=True → R7 降级）。"""
+    global _LLM_INSTANCE
+    if _LLM_INSTANCE is None:
+        from app.core.config import get_settings
+        from app.services.llm_service import LLMService
+
+        _LLM_INSTANCE = LLMService(get_settings())
+    return _LLM_INSTANCE
+
+
+async def _judge_conflict_relation(old_content: str, new_content: str) -> str | None:
+    """经统一 LLM 适配器判定新旧记忆关系（计划 R7 语义矛盾判定）。
+
+    返回 supersedes / disputed / conflicts_with / none；LLM 异常、降级
+    （degraded）或输出解析失败一律返回 None——调用方走 R7 降级：
+    保留双版本人工复核，不阻塞写入。
+    """
+    llm = _get_llm()
+    try:
+        reply = await llm.chat(
+            [
+                {"role": "system", "content": _JUDGE_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"旧记忆：{old_content}\n新陈述：{new_content}",
+                },
+            ]
+        )
+    except Exception:  # 适配器任何异常都归入降级路径
+        logger.exception(
+            "memory_conflict_judge_failed",
+            extra={"old": old_content[:50], "new": new_content[:50]},
+        )
+        return None
+    if getattr(reply, "degraded", True):
+        return None
+    try:
+        relation = str(json.loads(reply.text).get("relation") or "").strip()
+    except (ValueError, AttributeError, TypeError):
+        return None
+    return relation if relation in _CONFLICT_RELATIONS else None
+
+
+def _normalize_sensitivity(sensitivity: str) -> str:
+    """落库边界归一：ORM CHECK 枚举只有 private/health/family（TD §3.4）。
+
+    服务层默认 "normal" 是 Day 6 骨架历史口径（Day 6/7 单测全程 monkeypatch
+    未触真库，契约错位从未暴露）；落库前归一为 private。服务层校验保持放行
+    "normal"，不动既有调用方。
+    """
+    return "private" if sensitivity == "normal" else sensitivity
+
+
 async def insert_candidate(
     candidate: MemoryCandidate, session: AsyncSession | None = None
 ) -> dict[str, str]:
-    """单条候选入库（先校验、再查重、再 insert）。
+    """单条候选入库（先校验、再查重、再做冲突检测、再 insert）。
 
     任务卡 §3.3 第 2 条三条硬校验 + 第 3 条同键 diff 处理。
-    **不做**冲突判定（superseded/disputed）—— Day 7 补。
+    Day 8 B5 冲突检测：值不同时先比相似度——≤0.9 可共存双 active；>0.9 交
+    LLM 语义判定（计划 R7）：supersedes→旧值让位（superseded）+ 新值生效；
+    disputed/conflicts_with→旧值 disputed + 新值 pending_review 人工复核；
+    LLM 失败/降级→保留双版本、新值 pending_review，**不阻塞写入**。
     """
     from app.models.memory import MemoryChunk
 
@@ -232,43 +334,120 @@ async def insert_candidate(
             .first()
         )
 
+        # --- 冲突检测（Day 8 B5）：新内容与旧条目同维度但值不同 ---
+        new_content = candidate.fact or f"{candidate.predicate}={candidate.object_value}"
+        new_status = "active"
+        supersedes_id: uuid.UUID | None = None
+        conflicts_with_id: uuid.UUID | None = None
+        link_back_conflict = False
+
         if existing is not None:
             if str(existing.object_value) == candidate.object_value:
                 # 值完全相同 → 幂等跳过
                 raise MemoryInsertSkipped(
                     candidate.elder_id, candidate.subject, candidate.predicate
                 )
-            # 值不同 → 新插一条 + 打日志（不覆盖旧条目！）
-            logger.info(
-                "memory_candidate_pending",
-                extra={
-                    "elder_id": candidate.elder_id,
-                    "subject": candidate.subject,
-                    "predicate": candidate.predicate,
-                    "old_value": str(existing.object_value),
-                    "new_value": candidate.object_value,
-                    "note": "conflict judgment deferred to Day 7",
-                },
-            )
+            similarity = _text_similarity(new_content, str(existing.content))
+            if similarity <= _CONFLICT_SIMILARITY_THRESHOLD:
+                # 可共存偏好（如既喜欢越剧又喜欢京剧）：照 Day 6 语义双 active 并存
+                logger.info(
+                    "memory_candidate_coexist_low_similarity",
+                    extra={
+                        "elder_id": candidate.elder_id,
+                        "predicate": candidate.predicate,
+                        "old_value": str(existing.object_value),
+                        "new_value": candidate.object_value,
+                        "similarity": round(similarity, 3),
+                    },
+                )
+            else:
+                relation = await _judge_conflict_relation(str(existing.content), new_content)
+                now = datetime.now(UTC)
+                if relation == "supersedes":
+                    # 旧值让位：superseded + valid_to 收口；新值 active + supersedes_id
+                    # （当前生效值唯一、两版本均保留——FR-MEM-03）
+                    existing.status = "superseded"
+                    existing.valid_to = now
+                    existing.updated_at = now
+                    supersedes_id = existing.chunk_id
+                    logger.info(
+                        "memory_superseded",
+                        extra={
+                            "elder_id": candidate.elder_id,
+                            "old_chunk_id": str(existing.chunk_id),
+                            "old_value": str(existing.object_value),
+                            "new_value": candidate.object_value,
+                        },
+                    )
+                elif relation in ("disputed", "conflicts_with"):
+                    # 语义矛盾但无法定谁对：旧值 disputed（退出召回），
+                    # 新值 pending_review 等人工复核，两版本均保留
+                    existing.status = "disputed"
+                    existing.updated_at = now
+                    conflicts_with_id = existing.chunk_id
+                    new_status = "pending_review"
+                    link_back_conflict = True
+                    logger.info(
+                        "memory_disputed_pending_review",
+                        extra={
+                            "elder_id": candidate.elder_id,
+                            "old_chunk_id": str(existing.chunk_id),
+                            "relation": relation,
+                            "new_value": candidate.object_value,
+                        },
+                    )
+                elif relation == "none":
+                    # LLM 判不矛盾：可共存，新插 active，旧条目不动
+                    logger.info(
+                        "memory_candidate_coexist_judged",
+                        extra={
+                            "elder_id": candidate.elder_id,
+                            "old_value": str(existing.object_value),
+                            "new_value": candidate.object_value,
+                        },
+                    )
+                else:
+                    # R7 降级：LLM 失败/降级/解析失败（relation is None）
+                    # 保留双版本人工复核，不阻塞写入；旧条目保持 active
+                    conflicts_with_id = existing.chunk_id
+                    new_status = "pending_review"
+                    logger.warning(
+                        "memory_conflict_review_deferred",
+                        extra={
+                            "elder_id": candidate.elder_id,
+                            "old_chunk_id": str(existing.chunk_id),
+                            "old_value": str(existing.object_value),
+                            "new_value": candidate.object_value,
+                        },
+                    )
 
         chunk = MemoryChunk(
             elder_id=candidate.elder_id,
             subject=candidate.subject,
             predicate=candidate.predicate,
             object_value=candidate.object_value,
-            category=candidate.category,
             polarity=candidate.polarity,
-            content=candidate.fact or f"{candidate.predicate}={candidate.object_value}",
+            content=new_content,
             confidence=candidate.confidence,
-            sensitivity=candidate.sensitivity,
+            sensitivity=_normalize_sensitivity(candidate.sensitivity),
+            # category 是可见性字段（TD §3.4：默认 private，本版无 shared），
+            # 不是 Day 6 服务层的域类别（preference）——域维度由 predicate 表达，
+            # 透传 candidate.category 会撞 ck_memory_chunks_category CHECK
+            category="private",
             source_type=candidate.source_type,
             source_turn_ids=candidate.source_turn_ids,
-            status="active",
+            status=new_status,
+            supersedes_id=supersedes_id,
+            conflicts_with_id=conflicts_with_id,
             valid_from=candidate.valid_from or datetime.now(UTC),
-            embedding=None,  # Day 7 接 pgvector 后填充
+            embedding=None,  # pgvector 接入后填充
         )
         session.add(chunk)
         await session.flush()
+        if link_back_conflict:
+            # 双向冲突指针：新条目落库后回填旧条目的 conflicts_with_id
+            existing.conflicts_with_id = chunk.chunk_id  # type: ignore[union-attr]
+            await session.flush()
         logger.info(
             "memory_chunk_inserted",
             extra={"chunk_id": str(chunk.chunk_id), "elder_id": candidate.elder_id},
@@ -300,6 +479,8 @@ async def recall_active_chunks(
         WHERE elder_id=:runtime.elder_id
           AND status='active'
           AND (valid_to IS NULL OR valid_to > now())
+    status='active' 闸门天然排除 superseded / disputed / deleted / pending_review，
+    旧值退出、人工复核未决、软删条目均不进召回（Day 8 B5 回归测试固化）。
     Day 6 骨架：ORDER BY importance DESC；Day 8 接 pgvector 后替换为向量相似度排序，
     届时把 `list[Any]` 收紧为 ORM 行类型。
     """

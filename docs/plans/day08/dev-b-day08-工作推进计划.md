@@ -1,6 +1,6 @@
 # dev-B Day 8 工作推进计划 · 健康子图、调度、MCP 与记忆治理收尾
 
-> 状态：进行中（Step 0 已裁决，2026-11-11）　｜　版本：v1.1　｜　日期：2026-11-11
+> 状态：进行中（Step 0 已裁决，2026-11-11）　｜　版本：v1.2　｜　日期：2026-11-11
 > 负责人：dev-B　｜　性质：**执行计划文档（本文件不含任何业务代码，本轮未修改任何代码文件）**
 > 任务来源：`docs/team_tasks/day08/dev-B-后端子图调度与MCP.md` v1.1（B1–B5 + H12 参与，O3 溢出池）｜`docs/team_tasks/day08/day08-任务总览与DAG.md` v1.1（对接点 X1/X5/X6/X8/X9、当日节奏）
 > 上游依据（事实只引这几份）：`docs/康伴3D数字人_PRD.md` v3.0（AC-09/10/11/21/22/23/32/34/38/12/39、FR-MEM-03/05/06/07、FR-CON-03/04、FR-VPR-04）｜`docs/康伴3D数字人_技术设计文档.md` v2.1（§7.2 健康子图、§3.4/§3.5 表定义、§3.6 迁移批次）｜`docs/plans/day08/day-08-健康采集与三端后台.md` v1.2（H0–H16 拆解、§6 命令级自检、§7 R1 顺延顺位）
@@ -321,6 +321,7 @@ grep -rn "from app.graphs" app/api/ app/audio/                    # 零横向 im
 | 附加1 | dev-C 转达 · Q-1 两列 | **补列**：`health_records.review_note` / `superseded_reason` 随 TD 修订记录补列；dev-A 落列，dev-B 在契约 §6 留痕（Step 1 落实） |
 | 附加2 | dev-C 转达 · 通知状态枚举 | **照 TD 原文 5 值冻结**（generated/pending/delivered/acknowledged/failed）；X7 四态 = AC-23 正常链路流转口径，`failed` 为 TD 定义的终态（pending 30s 重试 3 次失败置 failed）；dev-C 前端按 5 值枚举开发、正常链路只见 4 态（Step 1 落实） |
 | 附加3 | dev-C 转达 · H 前缀编号 | 健康域新端点照 W/N/H/M/R 惯例分配 H 前缀（Step 1 正常工作项，无需额外裁决） |
+| 附加4 | dev-D 转达 · X9 FR-TC-09「规则层阈值」口径（2026-11-11 午后裁决） | **选项 A**：PRD 验收句原文不动，dev-D 验证手段改为「**人为篡改 rules.py/safety.py 关键词模式表**后跑门禁可被拦截」。事实依据：① L0 规则层（safety.py/rules.py）纯正则精确匹配，无置信度数值（AGENTS §6「规则层不存在降级」，无阈值可调）；② `SYSTEM_ONE_CONFIDENCE_THRESHOLD`(0.85) 属 L1→L2 升级闸，仅决定 clarify/agent，门禁四道门对二者等价放行，且 fixtures 无边界置信度用例——dev-D 实测调 0.30/0.99 指标不变，归因成立；③ 篡改点=**safety.py 急症词表**（胸痛/呼吸困难/中风/跌倒/轻生 + 否定窗口）或 rules.py 固定意图 patterns，调坏后固定测试集安全用例拦截率下降→门禁 EXIT=1→还原。dev-D 的 mock provider 敏感召回拦截证据（EXIT=1，day8_intercept_check_mock.md）作为「安全拦截」维度补充归档，不替代本验收 |
 | 备注 | tool_registry/tool_executor 写锁 | 总览 §2 已声明归属 dev-B，day07 dev-C 写锁已释放（2026-11-11 核验）；X1 签名冻结形式需主理人与 dev-A 口头对齐（A2 docstring 冻结，B2 只调函数不改阈值） |
 
 ## 6. 超载顺延与风险
@@ -340,3 +341,4 @@ grep -rn "from app.graphs" app/api/ app/audio/                    # 零横向 im
 | --- | --- | --- |
 | v1.0 | 2026-11-11 | 首版：依据 team_tasks/day08 v1.1 分工（B1–B5 + H12 + O3）与 plans/day08 v1.2 拆解编制；2026-11-11 代码现状实测（graphs/scheduler/tool_registry/memory_service/mock-operations/static 五项基线）写入 §0-5；Step 0–9 逐步确认制；含 X1/X5/X6/X8/X9 交接矩阵与 5 项待裁决 |
 | v1.1 | 2026-11-11 | Step 0 站会裁决收口：§5 新增裁决记录表（①–⑤ 逐项确认 + dev-C 转达三项附加裁决：Q-1 补列、通知状态照 TD 5 值冻结、H 前缀照惯例）；状态行草稿→进行中 |
+| v1.2 | 2026-11-11 | X9 裁决登记（§5 附加4）：FR-TC-09「人为调低规则层阈值」按字面在当前实现不可观测（规则层无置信度阈值、0.85 属 L1 升级闸且门禁对 clarify/agent 等价、fixtures 无边界置信度用例——dev-D 实测 0.30/0.99 指标不变），主理人裁决**选项 A**：PRD 原文不动，验证手段改为篡改 rules.py/safety.py 关键词模式表后跑门禁；dev-D mock 拦截证据补充归档。另：同日 B1 范围内完成契约 v1.1 两处勘误（reviewed_at 引注笔误删字段、R-2 版本链冻结为 superseded_by 串联，D-11/D-12 登记、Q-3 待裁决），见契约文档修订记录 |

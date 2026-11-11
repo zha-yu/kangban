@@ -159,9 +159,7 @@ def test_verify_voice_match(device_id, elder_id, sample_audio, monkeypatch):
     monkeypatch.setattr(vs, "cosine_compare_against_elder", fake_compare)
 
     decision = asyncio.run(
-        isvc.verify_session_identity(
-            sess, device_id=device_id, audio_bytes=sample_audio
-        )
+        isvc.verify_session_identity(sess, device_id=device_id, audio_bytes=sample_audio)
     )
 
     assert decision.source == "voice"
@@ -191,9 +189,7 @@ def test_verify_low_confidence_to_confirm(device_id, elder_id, sample_audio, mon
     monkeypatch.setattr(vs, "cosine_compare_against_elder", fake_compare)
 
     decision = asyncio.run(
-        isvc.verify_session_identity(
-            sess, device_id=device_id, audio_bytes=sample_audio
-        )
+        isvc.verify_session_identity(sess, device_id=device_id, audio_bytes=sample_audio)
     )
 
     assert decision.source == "confirm"
@@ -221,9 +217,7 @@ def test_verify_vp_unavailable(device_id, elder_id, sample_audio, monkeypatch):
     monkeypatch.setattr(vs, "cosine_compare_against_elder", fake_compare)
 
     decision = asyncio.run(
-        isvc.verify_session_identity(
-            sess, device_id=device_id, audio_bytes=sample_audio
-        )
+        isvc.verify_session_identity(sess, device_id=device_id, audio_bytes=sample_audio)
     )
 
     assert decision.source == "confirm"
@@ -312,9 +306,7 @@ def test_open_thread_from_confirm(device_id, elder_id, monkeypatch):
 # ============================================================
 
 
-def test_open_thread_confirm_elder_mismatch(
-    device_id, elder_id, elder_id_b, monkeypatch
-):
+def test_open_thread_confirm_elder_mismatch(device_id, elder_id, elder_id_b, monkeypatch):
     sess = FakeSession()
     sess.push(None)  # _close_active_thread
     # generic 不走 Elder.update → call queue 到此为止
@@ -344,17 +336,13 @@ def test_validate_thread_belongs_to_device(device_id, elder_id, monkeypatch):
     sess.push(legitimate)  # 合法 thread_id
 
     result = asyncio.run(
-        isvc.validate_thread_belongs_to_device(
-            sess, thread_id="real-123", device_id=device_id
-        )
+        isvc.validate_thread_belongs_to_device(sess, thread_id="real-123", device_id=device_id)
     )
     assert result is True
 
     sess.push(None)  # 伪造 thread_id → 查不到
 
     result = asyncio.run(
-        isvc.validate_thread_belongs_to_device(
-            sess, thread_id="fake-xyz", device_id=device_id
-        )
+        isvc.validate_thread_belongs_to_device(sess, thread_id="fake-xyz", device_id=device_id)
     )
     assert result is False

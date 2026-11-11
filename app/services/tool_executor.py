@@ -48,6 +48,12 @@ logger = logging.getLogger(__name__)
 #: 模型不得自报的身份字段：出现在 args 里一律丢弃并审计
 IDENTITY_KEYS: frozenset[str] = frozenset({"elder_id", "thread_id", "device_id"})
 
+#: 受管服务对象参数（Day 8 B4 / AC-39）：工具 schema 声明了该参数时，
+#: 执行链步骤 1.5 一律以运行时身份的 `elder_id` 注入覆盖——
+#: 模型传了别的长者 → 越权拒绝 + 审计；没传 → 注入；`runtime.elder_id`
+#: 为 None（staff/guardian 身份）→ 拒绝（宁可不做，不可做错对象）。
+SUBJECT_ELDER_KEY = "subject_elder_id"
+
 ToolStatus = Literal["succeeded", "failed", "denied"]
 ErrorClass = Literal["bad_args", "not_found", "transient", "forbidden"]
 
@@ -246,6 +252,41 @@ class ToolExecutor:
                 detail={"tool_name": tool_name, "dropped_keys": dropped},
             )
             logger.warning("tool_identity_override_attempt tool=%s keys=%s", tool_name, dropped)
+
+        # 1.5) 服务对象注入（AC-39）：schema 声明 subject_elder_id 的工具，
+        # 服务对象只认运行时身份；模型试图指定别的长者 → 越权拒绝 + 审计
+        if SUBJECT_ELDER_KEY in (spec.parameters_schema.get("properties") or {}):
+            context_elder = getattr(runtime, "elder_id", None)
+            claimed = cleaned.get(SUBJECT_ELDER_KEY)
+            if context_elder is None:
+                await self._audit(
+                    runtime,
+                    action="tool_subject_context_missing",
+                    detail={"tool_name": tool_name, "claimed": claimed},
+                )
+                logger.warning("tool_subject_context_missing tool=%s", tool_name)
+                return ToolResult(
+                    status="denied",
+                    error_class="forbidden",
+                    message=MESSAGES["forbidden"],
+                )
+            if claimed is not None and str(claimed) != context_elder:
+                await self._audit(
+                    runtime,
+                    action="tool_cross_elder_attempt",
+                    detail={
+                        "tool_name": tool_name,
+                        "claimed": str(claimed),
+                        "context": context_elder,
+                    },
+                )
+                logger.warning("tool_cross_elder_attempt tool=%s claimed=%s", tool_name, claimed)
+                return ToolResult(
+                    status="denied",
+                    error_class="forbidden",
+                    message=MESSAGES["forbidden"],
+                )
+            cleaned[SUBJECT_ELDER_KEY] = context_elder
 
         # 2) 护栏：预算优先于熔断，熔断优先于同参短路（判定顺序在 Guardrails 内）
         if self._guardrails is not None:
@@ -543,6 +584,7 @@ class ToolExecutor:
 __all__ = [
     "IDENTITY_KEYS",
     "MESSAGES",
+    "SUBJECT_ELDER_KEY",
     "ToolArgumentError",
     "ToolError",
     "ToolExecutor",

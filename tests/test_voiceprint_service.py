@@ -117,9 +117,7 @@ def _db_session(conn: AsyncConnection) -> AsyncSession:
 
 async def _seed_elder(conn: AsyncConnection) -> None:
     """voiceprints.elder_id 的外键目标；占位姓名，不写真实长者数据（AGENTS §4.3）。"""
-    await conn.execute(
-        Elder.__table__.insert().values(elder_id=ELDER_UUID, name="测试长者")
-    )
+    await conn.execute(Elder.__table__.insert().values(elder_id=ELDER_UUID, name="测试长者"))
 
 
 def _emb_onehot(index: int) -> np.ndarray:
@@ -159,9 +157,7 @@ def test_encrypt_rejects_non_finite_embedding(vp_env: Settings) -> None:
             encrypt_embedding(emb)
 
 
-def test_decrypt_rejects_wrong_key(
-    vp_env: Settings, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_decrypt_rejects_wrong_key(vp_env: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
     ciphertext = encrypt_embedding(_emb_onehot(0))
     # 换一把 key：解密必须失败，而不是解出乱码（否则会比出一个随机 cosine）
     monkeypatch.setenv("VOICEPRINT_FERNET_KEY", Fernet.generate_key().decode("ascii"))
@@ -268,9 +264,7 @@ async def test_extract_malformed_response_maps_to_unavailable(
 async def test_extract_wrong_dimension_maps_to_unavailable(
     vp_env: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _patch_http(
-        monkeypatch, lambda req: httpx.Response(200, json={"embedding": [1.0, 2.0]})
-    )
+    _patch_http(monkeypatch, lambda req: httpx.Response(200, json={"embedding": [1.0, 2.0]}))
     with pytest.raises(VoiceprintExtractUnavailable, match="维度"):
         await extract_embedding_from_container(b"audio")
 
@@ -278,9 +272,7 @@ async def test_extract_wrong_dimension_maps_to_unavailable(
 async def test_extract_zero_norm_maps_to_unavailable(
     vp_env: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _patch_http(
-        monkeypatch, lambda req: httpx.Response(200, json={"embedding": [0.0] * DIM})
-    )
+    _patch_http(monkeypatch, lambda req: httpx.Response(200, json={"embedding": [0.0] * DIM}))
     with pytest.raises(VoiceprintExtractUnavailable):
         await extract_embedding_from_container(b"audio")
 
@@ -345,10 +337,10 @@ async def test_register_failure_leaves_no_row(
         with pytest.raises(VoiceprintExtractUnavailable):
             await register_sample(session, ELDER_UUID, 1, b"wav-1")
         count = (
-            await session.execute(
-                select(Voiceprint).where(Voiceprint.elder_id == ELDER_UUID)
-            )
-        ).scalars().all()
+            (await session.execute(select(Voiceprint).where(Voiceprint.elder_id == ELDER_UUID)))
+            .scalars()
+            .all()
+        )
         assert count == []
 
 
@@ -366,15 +358,11 @@ async def test_register_stores_ciphertext_and_discards_raw_audio(
     async with _db_session(vp_db) as session:
         await register_sample(session, ELDER_UUID, 1, raw_audio)
         row = (
-            await session.execute(
-                select(Voiceprint).where(Voiceprint.elder_id == ELDER_UUID)
-            )
+            await session.execute(select(Voiceprint).where(Voiceprint.elder_id == ELDER_UUID))
         ).scalar_one()
         assert row.embedding != _emb_onehot(5).tobytes(), "库内必须是 Fernet 密文"
         assert raw_audio not in row.embedding
-        np.testing.assert_allclose(
-            decrypt_embedding(row.embedding), _emb_onehot(5), atol=1e-6
-        )
+        np.testing.assert_allclose(decrypt_embedding(row.embedding), _emb_onehot(5), atol=1e-6)
 
     after = set(os.listdir(tmp))
     assert after == before, f"注册过程不得产生临时文件，多出：{after - before}"
@@ -435,16 +423,12 @@ async def test_cosine_different_speaker_misses(
     await _seed_elder(vp_db)
     register_emb = _emb_onehot(0)
     query_emb = _emb_onehot(1)
-    monkeypatch.setattr(
-        vs, "extract_embedding_from_container", _mock_extract(register_emb)
-    )
+    monkeypatch.setattr(vs, "extract_embedding_from_container", _mock_extract(register_emb))
 
     async with _db_session(vp_db) as session:
         await register_sample(session, ELDER_UUID, 1, b"enroll")
         # 比对阶段的「新音频」提取结果与注册不同
-        monkeypatch.setattr(
-            vs, "extract_embedding_from_container", _mock_extract(query_emb)
-        )
+        monkeypatch.setattr(vs, "extract_embedding_from_container", _mock_extract(query_emb))
         result = await cosine_compare_against_elder(session, ELDER_UUID, b"query")
 
     assert result.matched is False

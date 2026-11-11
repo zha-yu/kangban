@@ -328,9 +328,7 @@ async def test_bind_disabled_guardian_returns_409(
         bind=seeded, expire_on_commit=False, join_transaction_mode="create_savepoint"
     )
     row = (
-        await session.execute(
-            select(GuardianAccount).where(GuardianAccount.guardian_id == G4)
-        )
+        await session.execute(select(GuardianAccount).where(GuardianAccount.guardian_id == G4))
     ).scalar_one()
     row.status = "disabled"
     await session.commit()

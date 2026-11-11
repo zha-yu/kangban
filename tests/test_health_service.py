@@ -40,61 +40,45 @@ class TestGradeHealthPure:
 
     def test_red_diastolic_only_125(self) -> None:
         """AC-21：舒张压 125，收缩压正常 → red。"""
-        r = grade_health(
-            systolic=130, diastolic=125, sleep_hours=7.0, mood_score=4, complaint=None
-        )
+        r = grade_health(systolic=130, diastolic=125, sleep_hours=7.0, mood_score=4, complaint=None)
         assert r.severity == SEVERITY_RED
 
     def test_red_hypotension_systolic_88(self) -> None:
         """低血压：收缩压 ≤90 → red。"""
-        r = grade_health(
-            systolic=88, diastolic=55, sleep_hours=7.0, mood_score=4, complaint=None
-        )
+        r = grade_health(systolic=88, diastolic=55, sleep_hours=7.0, mood_score=4, complaint=None)
         assert r.severity == SEVERITY_RED
 
     def test_red_hypotension_diastolic_55(self) -> None:
         """低血压：舒张压 ≤60 → red。"""
-        r = grade_health(
-            systolic=120, diastolic=55, sleep_hours=7.0, mood_score=4, complaint=None
-        )
+        r = grade_health(systolic=120, diastolic=55, sleep_hours=7.0, mood_score=4, complaint=None)
         assert r.severity == SEVERITY_RED
 
     # --- AC-09 黄档 ---
 
     def test_yellow_systolic_165_85(self) -> None:
         """AC-09：收缩压 165（140-179）、舒张压正常 → yellow。"""
-        r = grade_health(
-            systolic=165, diastolic=85, sleep_hours=7.0, mood_score=4, complaint=None
-        )
+        r = grade_health(systolic=165, diastolic=85, sleep_hours=7.0, mood_score=4, complaint=None)
         assert r.severity == SEVERITY_YELLOW
         assert r.components[0].severity == SEVERITY_YELLOW
 
     def test_yellow_diastolic_100(self) -> None:
         """AC-09：舒张压 100（90-119）→ yellow。"""
-        r = grade_health(
-            systolic=120, diastolic=100, sleep_hours=7.0, mood_score=4, complaint=None
-        )
+        r = grade_health(systolic=120, diastolic=100, sleep_hours=7.0, mood_score=4, complaint=None)
         assert r.severity == SEVERITY_YELLOW
 
     def test_yellow_sleep_4h(self) -> None:
         """AC-09：睡眠 <5h → yellow。"""
-        r = grade_health(
-            systolic=120, diastolic=80, sleep_hours=4.0, mood_score=5, complaint=None
-        )
+        r = grade_health(systolic=120, diastolic=80, sleep_hours=4.0, mood_score=5, complaint=None)
         assert r.severity == SEVERITY_YELLOW
 
     def test_yellow_mood_score_2(self) -> None:
         """AC-09：mood_score ≤2 → yellow。"""
-        r = grade_health(
-            systolic=120, diastolic=80, sleep_hours=7.0, mood_score=2, complaint=None
-        )
+        r = grade_health(systolic=120, diastolic=80, sleep_hours=7.0, mood_score=2, complaint=None)
         assert r.severity == SEVERITY_YELLOW
 
     def test_yellow_systolic_165_diastolic_105_two_yellow_components(self) -> None:
         """多个黄分量 → 整体仍黄（黄 < 红，不取最高则漏判）。"""
-        r = grade_health(
-            systolic=165, diastolic=105, sleep_hours=7.0, mood_score=4, complaint=None
-        )
+        r = grade_health(systolic=165, diastolic=105, sleep_hours=7.0, mood_score=4, complaint=None)
         assert r.severity == SEVERITY_YELLOW
         assert all(c.severity != SEVERITY_RED for c in r.components)
 
@@ -102,26 +86,20 @@ class TestGradeHealthPure:
 
     def test_green_normal_120_80(self) -> None:
         """正常值 → green。"""
-        r = grade_health(
-            systolic=120, diastolic=80, sleep_hours=7.5, mood_score=5, complaint=None
-        )
+        r = grade_health(systolic=120, diastolic=80, sleep_hours=7.5, mood_score=5, complaint=None)
         assert r.severity == SEVERITY_GREEN
         assert not r.has_missing
 
     def test_green_boundary_139_89(self) -> None:
         """绿档边界：systolic=139 / diastolic=89 → green。"""
-        r = grade_health(
-            systolic=139, diastolic=89, sleep_hours=5.0, mood_score=3, complaint=None
-        )
+        r = grade_health(systolic=139, diastolic=89, sleep_hours=5.0, mood_score=3, complaint=None)
         assert r.severity == SEVERITY_GREEN
 
     # --- 缺失数据 ---
 
     def test_yellow_missing_systolic(self) -> None:
         """任一字段缺失 → yellow。"""
-        r = grade_health(
-            systolic=None, diastolic=80, sleep_hours=7.0, mood_score=4, complaint=None
-        )
+        r = grade_health(systolic=None, diastolic=80, sleep_hours=7.0, mood_score=4, complaint=None)
         assert r.severity == SEVERITY_YELLOW
         assert r.has_missing is True
 
@@ -145,17 +123,13 @@ class TestGradeHealthPure:
 
     def test_invalid_systolic_350(self) -> None:
         """收缩压 350 超范围 → 标缺失 → yellow。"""
-        r = grade_health(
-            systolic=350, diastolic=80, sleep_hours=7.0, mood_score=4, complaint=None
-        )
+        r = grade_health(systolic=350, diastolic=80, sleep_hours=7.0, mood_score=4, complaint=None)
         assert r.severity == SEVERITY_YELLOW
         assert r.components[0].value is None  # 无效 → 置 None
 
     def test_invalid_sleep_25h(self) -> None:
         """睡眠 25h 超范围 → 标缺失 → yellow。"""
-        r = grade_health(
-            systolic=120, diastolic=80, sleep_hours=25.0, mood_score=4, complaint=None
-        )
+        r = grade_health(systolic=120, diastolic=80, sleep_hours=25.0, mood_score=4, complaint=None)
         assert r.severity == SEVERITY_YELLOW
 
 
@@ -204,9 +178,7 @@ async def session(db_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
 async def seeded(session: AsyncSession) -> dict[str, Any]:
     """一位长者 + 一位 primary_care 护工（代填场景用）。"""
     elder = Elder(name="张桂芬", status="active")
-    worker = StaffAccount(
-        name="李护工", role="care_worker", password_hash="x" * 32
-    )
+    worker = StaffAccount(name="李护工", role="care_worker", password_hash="x" * 32)
     session.add_all([elder, worker])
     await session.flush()
 
@@ -249,9 +221,7 @@ async def test_create_yellow_health_record_builds_work_order_and_risk_event(
 
     # 查 risk_event
     event = (
-        await session.execute(
-            select(RiskEvent).where(RiskEvent.event_id == ref.risk_event_id)
-        )
+        await session.execute(select(RiskEvent).where(RiskEvent.event_id == ref.risk_event_id))
     ).scalar_one_or_none()
     assert event is not None
     assert event.severity == "yellow"
@@ -260,9 +230,7 @@ async def test_create_yellow_health_record_builds_work_order_and_risk_event(
 
     # 查 work_order
     order = (
-        await session.execute(
-            select(WorkOrder).where(WorkOrder.order_id == ref.work_order_id)
-        )
+        await session.execute(select(WorkOrder).where(WorkOrder.order_id == ref.work_order_id))
     ).scalar_one_or_none()
     assert order is not None
     assert order.severity == "yellow"
@@ -360,9 +328,7 @@ async def test_yellow_to_red_upgrade_no_second_risk_event(
 
     # 验证原事件已升级
     event = (
-        await session.execute(
-            select(RiskEvent).where(RiskEvent.event_id == first_event_id)
-        )
+        await session.execute(select(RiskEvent).where(RiskEvent.event_id == first_event_id))
     ).scalar_one_or_none()
     assert event is not None
     assert event.severity == "red"
@@ -372,14 +338,10 @@ async def test_yellow_to_red_upgrade_no_second_risk_event(
 # ------------------------------------------------------------------ AC-32 代填越权
 
 
-async def test_staff_proxy_unauthorized_403(
-    session: AsyncSession, seeded: dict[str, Any]
-) -> None:
+async def test_staff_proxy_unauthorized_403(session: AsyncSession, seeded: dict[str, Any]) -> None:
     """AC-32：非负责护工代填 → PermissionError。"""
     # 造一个不是 primary_care 的护工
-    other_worker = StaffAccount(
-        name="王护工", role="care_worker", password_hash="x" * 32
-    )
+    other_worker = StaffAccount(name="王护工", role="care_worker", password_hash="x" * 32)
     session.add(other_worker)
     await session.flush()
 
@@ -398,9 +360,7 @@ async def test_staff_proxy_unauthorized_403(
         )
 
 
-async def test_staff_proxy_authorized(
-    session: AsyncSession, seeded: dict[str, Any]
-) -> None:
+async def test_staff_proxy_authorized(session: AsyncSession, seeded: dict[str, Any]) -> None:
     """AC-32：负责护工代填 → 正常通过。"""
     ref = await health_service.create_health_record(
         session,
@@ -470,9 +430,7 @@ async def test_review_confirm_does_not_create_new_version(
     assert reviewed.version == 1
 
     rec = (
-        await session.execute(
-            select(HealthRecord).where(HealthRecord.record_id == first.record_id)
-        )
+        await session.execute(select(HealthRecord).where(HealthRecord.record_id == first.record_id))
     ).scalar_one_or_none()
     assert rec is not None
     assert rec.review_status == "confirmed"
@@ -514,9 +472,7 @@ async def test_review_correct_creates_new_version_chain(
 
     # 原记录标记为被取代
     old = (
-        await session.execute(
-            select(HealthRecord).where(HealthRecord.record_id == first.record_id)
-        )
+        await session.execute(select(HealthRecord).where(HealthRecord.record_id == first.record_id))
     ).scalar_one_or_none()
     assert old is not None
     assert old.review_status == "corrected"
@@ -554,9 +510,7 @@ async def test_create_health_record_version_defaults_to_1(
     await session.flush()
 
     rec = (
-        await session.execute(
-            select(HealthRecord).where(HealthRecord.record_id == ref.record_id)
-        )
+        await session.execute(select(HealthRecord).where(HealthRecord.record_id == ref.record_id))
     ).scalar_one_or_none()
     assert rec is not None
     assert rec.version == 1
@@ -565,9 +519,7 @@ async def test_create_health_record_version_defaults_to_1(
     assert rec.review_status == "pending"
 
 
-async def test_rule_version_always_written(
-    session: AsyncSession, seeded: dict[str, Any]
-) -> None:
+async def test_rule_version_always_written(session: AsyncSession, seeded: dict[str, Any]) -> None:
     """rule_version 恒写（改阈值必 +1 可追溯）。"""
     ref = await health_service.create_health_record(
         session,
@@ -584,9 +536,7 @@ async def test_rule_version_always_written(
     await session.flush()
 
     rec = (
-        await session.execute(
-            select(HealthRecord).where(HealthRecord.record_id == ref.record_id)
-        )
+        await session.execute(select(HealthRecord).where(HealthRecord.record_id == ref.record_id))
     ).scalar_one_or_none()
     assert rec is not None
     assert rec.rule_version == RULE_VERSION

@@ -126,6 +126,4 @@ async def mark_notification_read(
         from fastapi import HTTPException
 
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return NotificationReadOut(
-        notification_id=notification_id, read_at=_iso(read_at) or ""
-    )
+    return NotificationReadOut(notification_id=notification_id, read_at=_iso(read_at) or "")

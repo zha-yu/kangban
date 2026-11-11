@@ -78,7 +78,9 @@ class DailyReport(Base):
         Text(), nullable=False, comment="日报状态：normal/away_notice"
     )
     summary_text: Mapped[str] = mapped_column(
-        Text(), nullable=False, comment="日报摘要文本（结构化 JSON 存 medication_stats，本字段是家属可读文本）"
+        Text(),
+        nullable=False,
+        comment="日报摘要文本（结构化 JSON 存 medication_stats，本字段是家属可读文本）",
     )
     medication_stats: Mapped[dict | None] = mapped_column(
         JSONB(), nullable=True, comment="当日用药结构化统计（四类：按时/漏服/待提醒/未录入）"

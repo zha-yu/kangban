@@ -79,9 +79,7 @@ class HealthRecord(Base):
         ),
         # --- 枚举 CHECK ---
         CheckConstraint(_in_clause("source", _SOURCES), name="ck_health_records_source"),
-        CheckConstraint(
-            _in_clause("severity", _SEVERITIES), name="ck_health_records_severity"
-        ),
+        CheckConstraint(_in_clause("severity", _SEVERITIES), name="ck_health_records_severity"),
         CheckConstraint(
             _in_clause("review_status", _REVIEW_STATUSES),
             name="ck_health_records_review_status",
@@ -129,16 +127,24 @@ class HealthRecord(Base):
 
     # --- 来源 ---
     source: Mapped[str] = mapped_column(
-        Text(), nullable=False, comment="采集来源：voice_scheduled/voice_active/staff_scheduled/staff_active"
+        Text(),
+        nullable=False,
+        comment="采集来源：voice_scheduled/voice_active/staff_scheduled/staff_active",
     )
 
     # --- 健康数据字段（可空 = 未采集/无效） ---
-    systolic: Mapped[int | None] = mapped_column(Integer(), nullable=True, comment="收缩压（mmHg，0–300）")
-    diastolic: Mapped[int | None] = mapped_column(Integer(), nullable=True, comment="舒张压（mmHg，0–300）")
+    systolic: Mapped[int | None] = mapped_column(
+        Integer(), nullable=True, comment="收缩压（mmHg，0–300）"
+    )
+    diastolic: Mapped[int | None] = mapped_column(
+        Integer(), nullable=True, comment="舒张压（mmHg，0–300）"
+    )
     sleep_hours: Mapped[float | None] = mapped_column(
         Numeric(3, 1), nullable=True, comment="睡眠时长（小时，0.0–24.0；≤1 位小数）"
     )
-    mood_score: Mapped[int | None] = mapped_column(Integer(), nullable=True, comment="情绪自评（1–5，5 最好）")
+    mood_score: Mapped[int | None] = mapped_column(
+        Integer(), nullable=True, comment="情绪自评（1–5，5 最好）"
+    )
     mood_note: Mapped[str | None] = mapped_column(Text(), nullable=True, comment="情绪备注")
     complaint: Mapped[str | None] = mapped_column(Text(), nullable=True, comment="主诉")
 
