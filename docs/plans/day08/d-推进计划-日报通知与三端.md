@@ -1,4 +1,4 @@
-> 状态：进行中（执行轮 S0/S1/S3/S5 已完成，S2/S4/S6–S9/S12 卡上游交付）　｜　版本：v1.2　｜　日期：2026-11-11
+> 状态：进行中（S0–S5/S7/S10 已完成；S6 卡 C 侧互测窗口、S8 卡全队演练、S9 卡 WS 帧形状、S12 条件项）　｜　版本：v1.3　｜　日期：2026-11-11
 > 关联：docs/team_tasks/day08/dev-D-日报通知API与family-pad.md（v1.2，本计划的任务来源）｜docs/plans/day08/day-08-健康采集与三端后台.md（v1.2，全量上游计划）｜docs/team_tasks/day08/day08-任务总览与DAG.md（v1.1，对接点 X1–X9 与全局节奏）
 > 上游依据：PRD line 405/409–412（FR-RPT-01~04 验收）、line 401（FR-ALT-06）、line 254（FR-UI-08）、line 294–297（FR-CON-03/04/06）、line 459（FR-TC-09）、line 381–391（通知状态机）、line 495/500/505/507/508/519/520（AC-13/18/23/25/26/37/38）、line 94–95（媒体分发/家属无障碍）、line 527–538（固定测试集）、line 576（Day 8 完成定义）｜技术设计文档 line 653–665（daily_reports）、line 667–684（notifications）、line 633–651（media 两表）、line 686–702（decision_logs）、line 1144–1164（Day 8 实现口径）
 > 变更记录见文末
@@ -49,16 +49,16 @@
 | --- | --- | --- | --- |
 | S0 | 环境核验 | ✅ 已完成 | pytest 1191 passed、head=0016、tsc 零错；R-D3 评测环境缺口登记 |
 | S1 | 冻结版核对＋B1 三议程 | ✅ 已完成 | 契约 v1.2/v1.0 齐备；Q-D1 已批、Q-D5 已裁、Q-D4 仍待 A |
-| S2 | D1 骨架（reports/alerts） | 🚧 部分完成 | ✅ `app/api/alerts.py` N-3 已交付（8 用例绿）；⛔ 剩 N-1/N-2 卡 **dev-A**（`notify_service` 无员工侧读/已读函数）；⛔ `reports.py` 卡 **dev-C**（C2 `report_service` 读函数） |
+| S2 | D1 骨架（reports/alerts） | ✅ 已完成 | reports.py F0/F1/F2 接真 C2 读函数（49f697c/cc64a25）；alerts.py N-1/N-2/N-3 接真 A staff 函数（0935e10/516de49）；D 子集 19 passed |
 | S3 | D5 fixtures 固化 | ✅ 已完成 | 基线 110 条不动；`boundary_v1.jsonl` 30 条六类各 5 |
 | S5 | eval_gate 本体＋首份基线 | ✅ 已完成 | 四门 PASS（41/50、20/20、25/30、19/20）；锁＋报告＋回流 15 条；FR-TC-09 按 X9 附加4 篡改词表验证通过 |
-| S4 | D1 联调（桩换真） | ⛔ 阻塞 | 同 S2（C2 读函数）；另需 CP1 的 staff 三签名（A3 已交付写/确认函数，读函数仍缺） |
-| S6 | CP2 与 C 互测 | ⛔ 阻塞 | 依赖 S2/S4 |
-| S7 | D2 family 切真＋375px | ⛔ 阻塞 | 依赖 D1 真端点（Mock 开关仍在 `USE_MOCK=true`） |
-| S8 | X5/X7 演练（家属侧证据） | ⛔ 阻塞 | 依赖 S7 |
+| S4 | D1 联调（桩换真） | 🚧 部分完成 | 桩换真＋403+审计/幂等/409/四键/401 断言绿；尾项 N4 仍 404（Q-D2 卡 A guardian 侧区分函数或评审决定）；C 侧互测归 S6 |
+| S6 | CP2 与 C 互测 | 🚧 部分完成 | D 侧真测联调完成（8001 新后端 API 断言＋浏览器真实数据走查）；⛔ 卡 **dev-C** CP2 互测窗口（C3 消费 D1 端点） |
+| S7 | D2 family 切真＋375px | ✅ 已完成 | S-11 三条件满足：USE_MOCK/NOTIFICATIONS_LIVE 与 Mock 数据/实现同提交删除；375 真实数据断言 list=375/detail=360/notif=375、overflowEls=0；截图本地证据 eval/artifacts/family-375-real-data.png（gitignore 不入库，同 day05 口径） |
+| S8 | X5/X7 演练（家属侧证据） | ⛔ 阻塞 | D 侧证据就绪；卡全队 15:30 X5/X7 演练窗口 |
 | S9 | D4 pad 戏曲播放 | 🚧 部分完成 | ✅ 播放器＋七动作状态机（`?demo=opera` 单端可演）；⛔ WS 接线卡 Q-D4 帧形状、素材与 `play_opera` 卡 dev-B（B4） |
 | S10 | 报告定稿＋pre-push 接线 | ✅ 已完成 | 钩子只做机制自检（`--self-check`），真门禁不进钩子；正向 exit=0、反向 exit=1 双验证 |
-| S11 | 四件套全绿＋文档回填 | 🚧 部分完成 | ✅ 完成定义对证据表已回填（§11）；⛔ 四件套全绿待 C2 读函数与 A 的归属校验 |
+| S11 | 四件套全绿＋文档回填 | 🚧 部分完成 | 四件套复跑全绿（1330 passed／ruff check+format／tsc／build）；⛔ 完成定义证据链待 S6 C 侧/S8/S9 |
 | S12 | 条件项（D3 SOS / D6 提示条） | ⛔ 阻塞 | D3 卡 **A3 入口＋Q-D7 撤销函数**；D6 方向已裁「加字段」，卡 **dev-B 契约冻结** |
 
 ---
@@ -351,7 +351,7 @@ flowchart LR
 | --- | --- | --- | --- | --- |
 | J-B1 | 09:15–10:00 | dev-B（契约冻结牵头） | D→B→全员 | 冻结已落地（家属端 v1.2/照护台 v1.0，4046d94）；D 提剩余三议程 Q-D1/Q-D2/Q-D4；枚举对齐留痕确认 |
 | J-A1 | 11:30 | dev-A | A→D | DailyReport/HealthRecord ORM 字段（0017 迁移+models），D1 类型对齐 |
-| J-C2 | 12:00 CP1 后 | dev-C | C→D | report_service **家属侧读函数签名**（范围过滤列表/详情 JOIN 组装/绑定校验 403+审计）；X2 dedupe_key 口径告知（D 只消费）；D→C 反馈 F2 组装字段需求（health_summary/attention_events） |
+| J-C2 | 12:00 CP1 后 | dev-C | C→D | report_service **家属侧读函数签名**（范围过滤列表/详情 JOIN 组装/绑定校验 403+审计）；X2 dedupe_key 口径告知（D 只消费）；D→C 反馈 F2 组装字段需求（health_summary/attention_events）＋**Q-D9 report_ready payload 按 S-02 三键组装** |
 | J-A3 | 12:00 CP1（D1）/D3 启动前 | dev-A | A→D | ① `send_staff_notifications(elder_id, ntype, payload, dedupe_key, channel)`＋NotificationRef 签名冻结；② N-1/N-2/N-3 读/已读/确认函数签名；③ **N4 越权 403+审计所需的「不存在/不属于」区分函数**（Q-D2）；④ **SOS 事件链入口**（escalate_safety_event 类别映射无 sos，需扩展或新函数）；⑤ 撤销 service 函数归属（Q-D7）；⑥ 09:30 前环境自核结论（pytest 基础+alembic current，回传 B） |
 | J-X9 | 14:00 | dev-B | B→D | B2 桩测试绿证据＋day7_intents.jsonl＋六类边界定义＋评测口径；D 复跑基线后回传结果，**失败归因回 B，D 不改 rules.py/阈值** |
 | J-X4 | 14:30 CP2 | dev-C | D↔C | D 提供日报/通知域 REST 联调环境+测试账号；C3 alerts-api.ts 消费 D1 端点；互测 X3/X4，字段差异走契约 §6 |
@@ -441,6 +441,7 @@ uv run python scripts/update_progress.py --check-plans
 | Q-D5 | **已决（2026-11-11 14:20 主理人裁决）**：D6 走「协议加字段」分支——`tts_text` 增独立标记字段（`route_degraded`），fallback 轮 pad 显示「网络慢，正在换种方式回答」，正常轮不显示 | 主理人 | 方向已定，但**字段名/类型须先过契约冻结（dev-B 走留痕）**，冻结后 D 才改 `protocol.ts`（含 `parseServerSignal` 白名单）并做逐字段校对；未冻结前 D6 不写码，不入今日完成定义 |
 | Q-D6 | 本机评测环境：Chinese-Jev 权重与 jev python 是否可用 | dev-A（S0 核验后） | 缺则借环境或 sidecar HTTP；mock 不入基线 |
 | Q-D7 | FR-UI-08 撤销的 service 函数归属（medication_service/safety 追加说明均不在 D 写域） | dev-A/dev-B（D3 启动前） | A/B 提供函数，D 只做 API 边界+pad+测试；未就绪 D3 顺延 |
+| Q-D9 | **report_ready 通知 payload 键不符契约 S-02**：后端落 `{title,body,summary_text}`，契约冻结家属侧 `{elder_name,event_brief,report_id}` → 家属通知卡片空、无日报跳转（实测发现） | dev-C（report_service._notify_daily_report 组装） | 按 S-02 三键组装（可保留额外键，前端忽略未知键）；D 前端不改 |
 
 ## 10. 执行记录（执行时逐条回填）
 
@@ -449,6 +450,9 @@ uv run python scripts/update_progress.py --check-plans
 | 2026-11-11 | 计划编制 v1.0 | 落盘+索引登记+看板刷新；--check/--check-plans 通过 | 无 |
 | 2026-11-11 | 冻结回传回填 v1.1 | 登记家属端 v1.2 冻结回传、手动重发走扫描重试、staff 签名 12:00 冻结、X8 §6.1/6.2 指引 | 当时磁盘未落地，登记 Q-D8 |
 | 2026-11-11 | 拉取 origin/develop（ad9f854/4046d94）核对 | 家属端 v1.2/照护台 v1.0 冻结留痕落地；X8 四件入 §6（七动作映射）；Q-1 补列/Q-2 服务端推导已决；Q-D8 关闭；stash→ff merge→pop 解决 README 索引冲突，看板重生成，校验通过 | Q-D4 收窄为帧形状对齐；Q-D2 方向已定差 service 函数 |
+| 2026-11-11 | P0-3 四件套复跑＋lint 清零 | 1330 passed／ruff check+format 全绿／tsc／build；跨域仅 lint/format 归一（notify_service `__all__` 排序、medication 两文件格式化，无语义改动，提交留痕）；eval_gate 修 GBK 控制台编码崩溃 | gate 全量复跑暴露 R-D3：fast+shadow 并发撞 sidecar 195ms 预算→503→熔断全降级（21/50 裸跑分）；噪声跑污染的报告/backlog 已 restore，锁未动（41/50）；归因环境/A，不改阈值与门禁线 |
+| 2026-11-11 | 拉取 origin/develop 679ff0a | merge（非 ff，D 提交未入 develop）；README 索引冲突解决（dev-b v1.3 行＋D 行并存）；play_opera 执行器补绑（11979fb）/媒体种子脚本更新入基线 | D4 Tool 依赖解除，WS 帧形状仍待 A |
+| 2026-11-11 | D2 切真＋S-11 Mock 删除 | 8001 新后端＋5174 临时 vite（临时配置/种子页验完即删，含 token 种子页已删）；API 断言全过：F0 仅绑定长者/F1 最新版/F2 四键+声明+audio null/越权 403 SCOPE_FORBIDDEN+审计 daily_report_list_forbidden/N4 幂等/401；浏览器真实数据走查（切换器王桂花、v2 日报、通知模拟推送标识、已读落库）；375 真实数据断言 list=375/detail=360/notif=375 overflowEls=0；截图本地证据 eval/artifacts/family-375-real-data.png（不入库） | 新缺口 Q-D9：report_ready payload 键不符 S-02（卡 C）；N4 404 尾项 Q-D2 不变 |
 | 2026-11-11 | **S0 环境核验（CP-D0）** | 分支 `feature-ywd`（ad9f854），`core.hooksPath=.githooks` 生效（pre-commit/pre-push 在位，pre-push 暂无 eval_gate＝预期）；`uv sync` 159 包已对齐 3.12；postgres/redis 容器 healthy；`alembic current`＝`0016_decision_logs (head)`；**`uv run pytest -q`＝1191 passed / 0 failed（182s）→ 当日分母**；`pnpm exec tsc --noEmit` exit=0；看板 `--check`＋`--check-plans` 双绿 | **R-D3 触发（评测环境缺口）**：local provider 不可用（venv 无 torch、无 jev 包，权重 D:/models/laya/multilingual 在位 629MB）；sidecar :7001 在线（model_loaded=true / laya:multilingual:q2）但**单次推理实测 720–860ms ≫ HARD_DEADLINE 195ms → 稳定 503 `{"status":"timeout"}`**，eval_router `--provider sidecar` 复跑得 6×503 后熔断 180×breaker_open，普通 21/50、敏感 17/20、四层 fallback=74——**该数字为降级态，不得当基线**。Q-D6 需向 dev-A 借环境/排查 sidecar 性能 |
 | 2026-11-11 | **S1 冻结版核对＋B1 三议程（CP-D1）** | 磁盘冻结版核对通过：家属端 **v1.2**（`接口契约_家属端数据.md` 315 行）／照护台 **v1.0**（254 行）均标「已冻结」；F0/F1/F2/F3/N1/N4 编号齐备，§6.1–§6.4 四件齐备。代码现状核对：① `app/api/family.py` 已实现 N1/N4（131 行，ContractAPIRoute）；② **`daily_reports`/`media_library`/`media_history` 三表在 models 与 DB 全缺**（DB public 27 表含 alembic_version，迁移 head 仍 0016）→ A1 未交付；③ **无 `report_service`（C2 交付物，归 dev-C）、无 `media_service`（C4）**；`notify_service` 仅监护人侧 3 函数（send/list/mark_read），staff 侧 N-1/N-2/N-3 与 `send_staff_notifications` 全缺；④ 全仓无 SOS 端点、无 `play_opera` 注册、无 `static/media/opera/` 目录；⑤ `protocol.ts` 12 类白名单无 opera 类型，`task_command` 仅 `kind:"medication"` 单成员 → **§6.2 未覆盖 pad WS 帧形状，Q-D4 未决成立** | 三议程结论：**Q-D1 建议新文件 `app/api/alerts.py`（prefix `/api`，ContractAPIRoute，号沿用 N-1/N-2/N-3）→ 需主理人批准写域扩一行**；**Q-D2 归 dev-A**（只差区分异常；审计可由 api 侧 catch 后调 `record_audit`＋正常返回 403 让 `get_session` 收口提交，无需 A 另开事务）；**Q-D4 归 dev-A→B**（建议 `type:"opera_control"`＋7 值 action＋media 子集，未对齐前种子 URL 单端调试）。**新增阻塞**：A1/C4/B4/A3 四项前置今日全未落地，D1/D4/D3 均无法起步，建议按「S3 fixtures 先行」调序 |
 | 2026-11-11 | **裁决落定（主理人 14:20）** | ① **Q-D1 批准**新增 `app/api/alerts.py`（写域扩一行已回填 §1）；② **Q-D5 裁决「加字段」**：`tts_text` 增独立标记字段，fallback 轮 pad 显示「网络慢，正在换种方式回答」，正常轮不显示——**但字段名/类型须先过契约冻结（dev-B）**，未冻结前 D6 不写码，不入今日完成定义；③ **调序**：S2/S3 互换，先做 fixtures（零前置） | D6 由「阻塞待裁决」转为「待契约冻结」；新增交接 J-B2：请 dev-B 冻结 `route_degraded` 字段（名/型/出现时机） |
@@ -556,3 +560,4 @@ uv run python scripts/update_progress.py --check-plans
 | v1.0 | 2026-11-11 | 首版：通读 PRD v3.0/TD v2.1/两份契约/day08 任务卡 v1.2 与全量计划 v1.2/day05 切换层说明/day07 联调记录与基线后编制；代码现状基线 14 项本机实测（含 N4 404 差异、safety 类别映射无 sos、protocol 无 opera 类型、staff 告警端点未实现四处缺口）；S0–S12 分步确认制（CP-D0～CP-D12）；D6 按用户确认「尚未裁决」登记为阻塞项；联调交接 11 项、待确认 7 项、风险 9 项；AI 执行提示词按用户要求仅在对话中输出、不落盘 |
 | v1.1 | 2026-11-11 | 回填聊天回传冻结结论：家属端 v1.2（5 值+is_mock/failed 可展示/N4 只写 read_at）、手动重发走 scan_pending_notifications 不建端点、staff 写侧签名 12:00 CP1 冻结、X8 指照护台 §6.1/6.2；登记 Q-D8（磁盘留痕待 B）；S1/S2/S4/S9 与交接表同步 |
 | v1.2 | 2026-11-11 | 拉取 origin/develop 4046d94 核对：两份契约冻结留痕已落地（Q-D8 关闭）；X8 四件入照护台 §6（§6.2 play_opera schema、§6.3 七动作 WS 映射、§6.4 种子规范）；Q-1 补列/Q-2 服务端推导已决入基线；Q-D3 标记已决；Q-D2 方向定（403+审计）差 A 的区分函数；Q-D4 收窄为 WS 帧形状对齐；S1 议程收窄三项、S9 按 §6.2/§6.3 建状态机；风险 R-D2 解除、R-D6 收窄；执行记录补三行 |
+| v1.3 | 2026-11-11 | 执行轮回填：S2/S7 完成、S4/S6/S11 部分完成（尾项与卡点写明）；四件套复跑 1330 passed 全绿；跨域 lint/format 归一留痕；eval_gate GBK 编码修复；R-D3 根因实证（fast+shadow 并发 195ms 503 熔断）噪声产物已恢复；D2 切真＋S-11 Mock 删除＋375 真实数据断言与截图归档；新登记 Q-D9（report_ready payload 键不符 S-02，卡 C）；merge 679ff0a（play_opera 执行器补绑） |
