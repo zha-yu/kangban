@@ -349,18 +349,16 @@ async def test_device_session_success(ac: httpx.AsyncClient, seeded_db: dict[str
     assert cur_body["id"] == str(seeded_db["device_id"])
 
 
-async def test_device_session_wrong_secret_401(
+async def test_device_session_without_secret_success(
     ac: httpx.AsyncClient, seeded_db: dict[str, Any]
 ) -> None:
+    """2026-11-11 裁决：取消设备密钥校验，不带 device_secret 也应换证成功。"""
     resp = await ac.post(
         "/api/device-sessions",
-        json={
-            "device_id": str(seeded_db["device_id"]),
-            "device_secret": "wrong-secret",
-        },
+        json={"device_id": str(seeded_db["device_id"])},
     )
-    assert resp.status_code == 401
-    assert resp.json()["code"] == "TOKEN_INVALID"
+    assert resp.status_code == 200
+    assert resp.json()["device"]["id"] == str(seeded_db["device_id"])
 
 
 # ---------------------------------------------------------------------------
