@@ -177,9 +177,7 @@ async def decide(request: SystemOneRequest) -> Any:
             fut.exception()  # 消费异常，避免 "Task exception was never retrieved"
         semaphore.release()
 
-    inference = asyncio.create_task(
-        backend.score(state=request.state, questions=request.questions)
-    )
+    inference = asyncio.create_task(backend.score(state=request.state, questions=request.questions))
     inference.add_done_callback(_release)
     try:
         answers = await asyncio.wait_for(asyncio.shield(inference), timeout=HARD_DEADLINE_S)

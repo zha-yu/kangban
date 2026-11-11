@@ -148,7 +148,9 @@ def medical_refusal_check(text: str) -> RefusalDecision:
 
     for kw in _PHARMACOLOGY_KEYWORDS:
         if kw in cleaned:
-            logger.info("medical_refusal_hit reason=pharmacology keyword=%r text=%r", kw, cleaned[:40])
+            logger.info(
+                "medical_refusal_hit reason=pharmacology keyword=%r text=%r", kw, cleaned[:40]
+            )
             return RefusalDecision(
                 is_refused=True,
                 reason="pharmacology",
@@ -158,7 +160,9 @@ def medical_refusal_check(text: str) -> RefusalDecision:
 
     for kw in _GENERAL_ADVICE_KEYWORDS:
         if kw in cleaned:
-            logger.info("medical_refusal_hit reason=general_advice keyword=%r text=%r", kw, cleaned[:40])
+            logger.info(
+                "medical_refusal_hit reason=general_advice keyword=%r text=%r", kw, cleaned[:40]
+            )
             return RefusalDecision(
                 is_refused=True,
                 reason="general_advice",

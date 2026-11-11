@@ -236,7 +236,9 @@ def test_medical_refusal_does_not_block_normal_queries() -> None:
     ]
     for utterance in cases:
         decision = medical_refusal_check(utterance)
-        assert not decision.is_refused, f"should NOT refuse: {utterance!r} (matched={decision.matched_keyword})"
+        assert not decision.is_refused, (
+            f"should NOT refuse: {utterance!r} (matched={decision.matched_keyword})"
+        )
 
 
 def test_medical_refusal_text_has_no_diagnostic_terms() -> None:

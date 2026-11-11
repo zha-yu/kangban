@@ -26,6 +26,7 @@ from app.main import get_settings
 # 共用 fixture：捕获 signaling.deliver 的所有调用
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def deliver_records() -> list[ErrorMsg]:
     """返回 list：每条是 signaling.deliver() 收到的 message dict。
@@ -38,6 +39,7 @@ def deliver_records() -> list[ErrorMsg]:
 # ---------------------------------------------------------------------------
 # 辅助：在 main.py / webrtc.py 外面直接跑 watchdog 逻辑
 # ---------------------------------------------------------------------------
+
 
 async def _run_asr_pipeline(
     provider_latency_ms: int,
@@ -72,11 +74,14 @@ async def _run_asr_pipeline(
         await asyncio.sleep(degrade_threshold_ms / 1000)
         if not _state["slow_degraded"]:
             _state["slow_degraded"] = True
-            _fake_deliver("device-test", {
-                "type": "error",
-                "code": "asr_slow",
-                "message": _ERROR_TALKBACK["asr_slow"],
-            })
+            _fake_deliver(
+                "device-test",
+                {
+                    "type": "error",
+                    "code": "asr_slow",
+                    "message": _ERROR_TALKBACK["asr_slow"],
+                },
+            )
 
     # 让 MockASRProvider 的 stream 直接被 await
     with patch("app.audio.webrtc._deliver", side_effect=_fake_deliver):
@@ -106,19 +111,19 @@ async def _run_asr_pipeline(
 # B2-5 测试 1：慢响应只发一次（>threshold 只收到 1 条 asr_slow）
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_asr_slow_sent_once_when_over_threshold() -> None:
     """provider 慢（2500ms > 2000ms threshold）→ slow 只发 1 次（不重复）。"""
     records = await _run_asr_pipeline(provider_latency_ms=2500, degrade_threshold_ms=2000)
     slow_msgs = [m for m in records if m.get("code") == "asr_slow"]
-    assert len(slow_msgs) == 1, (
-        f"asr_slow 应只发 1 次，实际 {len(slow_msgs)} 次：{slow_msgs}"
-    )
+    assert len(slow_msgs) == 1, f"asr_slow 应只发 1 次，实际 {len(slow_msgs)} 次：{slow_msgs}"
 
 
 # ---------------------------------------------------------------------------
 # B2-5 测试 2：provider 最终成功 → FINAL 正常到达，无额外异常
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_asr_provider_success_after_slow_returns_final() -> None:
@@ -133,6 +138,7 @@ async def test_asr_provider_success_after_slow_returns_final() -> None:
 # ---------------------------------------------------------------------------
 # B2-5 测试 3：下一轮请求不继承上一轮的 slow 状态
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_next_request_does_not_inherit_slow_state() -> None:
@@ -151,19 +157,19 @@ async def test_next_request_does_not_inherit_slow_state() -> None:
 # B2-5 测试 4：provider 直接成功（无慢）→ 不发 slow
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_asr_no_slow_when_fast() -> None:
     """provider 快（500ms < 2000ms threshold）→ 不发 slow。"""
     records = await _run_asr_pipeline(provider_latency_ms=500, degrade_threshold_ms=2000)
     slow_msgs = [m for m in records if m.get("code") == "asr_slow"]
-    assert len(slow_msgs) == 0, (
-        f"provider 快时不应发 slow，实际 {len(slow_msgs)} 次：{slow_msgs}"
-    )
+    assert len(slow_msgs) == 0, f"provider 快时不应发 slow，实际 {len(slow_msgs)} 次：{slow_msgs}"
 
 
 # ---------------------------------------------------------------------------
 # B2-5 测试 5：watchdog task 清理（try/finally cancel + await）
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_watchdog_cleanup_on_fast_provider() -> None:
@@ -174,12 +180,15 @@ async def test_watchdog_cleanup_on_fast_provider() -> None:
     remaining = {t for t in asyncio.all_tasks() if id(t) not in existing}
     # 我们创建的 watchdog 应该已经被取消
     for t in remaining:
-        assert t.done() or t.cancelled(), f"残留 task：{t.get_name()}, done={t.done()}, cancelled={t.cancelled()}"
+        assert t.done() or t.cancelled(), (
+            f"残留 task：{t.get_name()}, done={t.done()}, cancelled={t.cancelled()}"
+        )
 
 
 # ---------------------------------------------------------------------------
 # B2-5 测试 6：watchdog 清理（provider 慢 + 超时到达 → watchdog 自己也能干净退出）
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_watchdog_cleanup_after_timeout_fires() -> None:
@@ -194,6 +203,7 @@ async def test_watchdog_cleanup_after_timeout_fires() -> None:
 # ---------------------------------------------------------------------------
 # B2-5 测试 7：ErrorMsg 扩枚举 + 话术字典完整性
 # ---------------------------------------------------------------------------
+
 
 def test_error_message_enum_and_talkback_complete() -> None:
     """_ERROR_TALKBACK 字典有 7 条（Day5 前 4 + 新增 3 slow），ErrorMsg.code 枚举和它一致。
@@ -221,6 +231,7 @@ def test_error_message_enum_and_talkback_complete() -> None:
 # B2-5 测试 8：阈值走 Settings 常量（不从 env 散读）
 # ---------------------------------------------------------------------------
 
+
 def test_degrade_thresholds_in_settings() -> None:
     """三组 degrade 阈值在 Settings 里有默认值。"""
     s = Settings()  # 用默认值，不从 .env 读
@@ -240,6 +251,7 @@ def test_degrade_thresholds_via_get_settings() -> None:
 # ---------------------------------------------------------------------------
 # B2-5 测试 9：两套超时不混（ASRUnavailable 异常路径 → 走 error 旧码，不是 slow 码）
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_provider_unavailable_does_not_trigger_slow() -> None:
@@ -268,6 +280,7 @@ async def test_provider_unavailable_does_not_trigger_slow() -> None:
 # ---------------------------------------------------------------------------
 # B2-5 测试 10：三档语义一致性（watchdog 触发时机相同：都是 threshold 超时即发）
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_all_three_phase_watchdogs_fire_at_same_relative_time() -> None:

@@ -221,9 +221,7 @@ async def list_guardian_notifications(
     )
     if unread_only:
         base = base.where(Notification.read_at.is_(None))
-    total = (
-        await session.execute(select(func.count()).select_from(base.subquery()))
-    ).scalar_one()
+    total = (await session.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
     rows = list(
         (
             await session.execute(

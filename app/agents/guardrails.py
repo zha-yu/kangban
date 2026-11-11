@@ -134,9 +134,7 @@ class Guardrails:
 
         # 4. 相同 Tool + 相同参数 → 短路放行（不消耗预算，但仍登记到滑动窗
         #    以便熔断判定正确——熔断看"调用次数"不看"是否消耗预算"）
-        is_short_circuit = q is not None and any(
-            stored_hash == args_hash for _, stored_hash in q
-        )
+        is_short_circuit = q is not None and any(stored_hash == args_hash for _, stored_hash in q)
 
         if not is_short_circuit:
             self._turn_total += 1
