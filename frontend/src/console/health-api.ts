@@ -1,15 +1,25 @@
 /**
- * 健康采集代填 Mock API（task-09 F5）。
+ * 健康采集代填 API（task-09 F5 → Day 8 S6a 切真）。
  *
- * 字段口径唯一依据：技术设计文档 §3 `health_records` 表（Day 8 迁移批次，未交付）。
+ * 字段口径唯一依据：docs/接口契约_照护台业务数据.md §3.3（H-1 复用 E7 / H-2 提交）。
  * 业务规则依据：PRD FR-HLT-06（P1）/ §4.6 分级阈值 / AC-32（代填边界）。
  *
- * - 提交走 Mock：分级按阈值常量模拟（f5 D3），正式分级由服务端规则引擎写入；
- * - 负责长者候选**复用真实 E7**（已交付，服务端范围过滤保证只出现负责长者，AC-32）。
- * 真实接口交付后仅替换本文件内部实现，导出签名保持不变，页面层不感知。
+ * - USE_MOCK 开关（Day 8 S6a）：后端 health_service（A2）交付前默认 Mock；
+ *   设 `VITE_USE_MOCK_API=0` 切真实接口（401 自动续期复用 api.ts authedFetch）；
+ *   后端 CP2 联调通过后默认值翻转为真实接口（S6 联调段登记）。
+ * - 负责长者候选**复用真实 E7**（服务端范围过滤保证只出现负责长者，AC-32）；
+ *   Mock 模式同样走真实 E7。
+ * - severity/follow_up 一律服务端写入；classifyHealthRecord 仅 Mock 模式模拟。
  */
 
+import { ApiError, apiPost, USE_MOCK_API } from "./api";
 import { listElders, type ElderListItem } from "./elders-api";
+
+/** 契约错误文案提取（workorders-api 同构；detail 为服务端用户语言文案，不回显 trace_id） */
+async function readErrorDetail(res: Response): Promise<string> {
+  const body = (await res.json().catch(() => null)) as { detail?: string } | null;
+  return body?.detail ?? "操作失败，请稍后重试";
+}
 
 // ---------------------------------------------------------------------------
 // 类型
@@ -38,8 +48,6 @@ export interface HealthRecordInput {
 
 export interface HealthRecordResult {
   record_id: string;
-  elder_id: string;
-  source: StaffRecordSource;
   severity: HealthSeverity;
   /** 分级规则版本（技术文档：保存 rule_version 可追溯） */
   rule_version: string;
@@ -95,19 +103,33 @@ export function classifyHealthRecord(input: HealthRecordInput): { severity: Heal
 
 let recordSeq = 1;
 
-/** 代填提交（Mock：分级 + 后续任务提示；补录追加不覆盖，AC-22） */
+/** 代填提交（Mock：分级 + 后续任务提示；真实：契约 H-2，severity/follow_up 服务端写入；补录追加不覆盖，AC-22） */
 export async function submitHealthRecord(input: HealthRecordInput): Promise<HealthRecordResult> {
-  const { severity, follow_up } = classifyHealthRecord(input);
-  const n = recordSeq++;
-  return {
-    record_id: `hr-mock-${String(n).padStart(3, "0")}`,
+  if (USE_MOCK_API) {
+    const { severity, follow_up } = classifyHealthRecord(input);
+    const n = recordSeq++;
+    return {
+      record_id: `hr-mock-${String(n).padStart(3, "0")}`,
+      severity,
+      rule_version: RULE_VERSION,
+      follow_up,
+      recorded_at: new Date().toISOString(),
+    };
+  }
+  // 真实接口（契约 H-2）：operator_id/severity 服务端注入，客户端不传
+  const res = await apiPost("/api/health-records", {
     elder_id: input.elder_id,
     source: input.source,
-    severity,
-    rule_version: RULE_VERSION,
-    follow_up,
-    recorded_at: new Date().toISOString(),
-  };
+    systolic: input.systolic,
+    diastolic: input.diastolic,
+    sleep_hours: input.sleep_hours,
+    mood_score: input.mood_score,
+    mood_note: input.mood_note,
+    complaint: input.complaint,
+  });
+  if (res.ok) return (await res.json()) as HealthRecordResult;
+  // 403 范围越权 / 422 校验，文案由服务端 detail 提供（契约 §3.3）
+  throw new ApiError("network", await readErrorDetail(res));
 }
 
 /** 负责长者候选（透传真实 E7；非负责长者天然不在候选集，AC-32） */

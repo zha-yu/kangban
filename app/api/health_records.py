@@ -54,14 +54,18 @@ _Session = Annotated[AsyncSession, Depends(get_session)]
 
 
 class HealthRecordSubmit(BaseModel):
-    """H-2 代填提交：五项指标任一非空；severity 服务端计算，不收客户端值。"""
+    """H-2 代填提交：五项指标任一非空；severity 服务端计算，不收客户端值。
+
+    区间口径：契约 §3.3——systolic/diastolic 0–300 CHECK、sleep_hours 0–24、
+    mood_score 1–5。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     elder_id: UUID
     source: Literal["staff_scheduled", "staff_active"]
-    systolic: int | None = Field(default=None, ge=50, le=300)
-    diastolic: int | None = Field(default=None, ge=30, le=200)
+    systolic: int | None = Field(default=None, ge=0, le=300)
+    diastolic: int | None = Field(default=None, ge=0, le=300)
     sleep_hours: float | None = Field(default=None, ge=0, le=24)
     mood_score: int | None = Field(default=None, ge=1, le=5)
     mood_note: str | None = Field(default=None, max_length=200)
@@ -105,17 +109,17 @@ class HealthReviewCorrect(BaseModel):
 
 
 class HealthRecordCreated(BaseModel):
+    """H-2 响应（契约 v1.0 §3.3 冻结口径：恰好五字段，无扩展）。"""
+
     record_id: UUID
-    elder_id: UUID
-    source: Literal["staff_scheduled", "staff_active"]
     severity: Literal["green", "yellow", "red"]
     rule_version: str
     recorded_at: datetime
-    follow_up: str | None
+    follow_up: str
 
 
 class HealthRecordView(BaseModel):
-    """复核队列/详情视图（§3.5 + workorders 先例的 JOIN 冗余字段）。
+    """R-1/R-2 复核队列/详情/版本链视图（契约 §3.5 全列 + JOIN 展示字段）。
 
     `review_note` / `superseded_reason`：Q-1 已裁决补列，dev-A 0017 迁移落列，
     服务层接入前这两字段恒为 None。
@@ -124,7 +128,10 @@ class HealthRecordView(BaseModel):
     record_id: UUID
     elder_id: UUID
     elder_name: str
-    bed_label: str | None
+    room_no: str | None
+    bed_no: str | None
+    operator_id: UUID | None
+    operator_name: str | None
     recorded_at: datetime
     source: Literal["staff_scheduled", "staff_active"]
     systolic: int | None
@@ -134,20 +141,15 @@ class HealthRecordView(BaseModel):
     mood_note: str | None
     complaint: str | None
     severity: Literal["green", "yellow", "red"]
+    rule_version: str
+    version: int
     review_status: Literal["pending", "confirmed", "corrected"]
-    reviewed_by_name: str | None
+    reviewed_by: UUID | None
     reviewed_at: datetime | None
+    reviewed_by_name: str | None
     review_note: str | None
+    superseded_by: UUID | None
     superseded_reason: str | None
-
-
-class ChainStep(BaseModel):
-    version_no: int
-    action: Literal["submitted", "corrected", "confirmed"]
-    operator_name: str
-    operator_role: str
-    at: datetime
-    diff: dict[str, Any] | None
 
 
 class HealthTrendPoint(BaseModel):
@@ -170,7 +172,7 @@ class HealthTrend(BaseModel):
 @router.post(
     "",
     response_model=HealthRecordCreated,
-    status_code=201,
+    status_code=200,
     summary="[H-2] 代填提交健康指标",
 )
 async def submit_health_record(
@@ -241,15 +243,15 @@ async def get_health_record(
 
 @router.get(
     "/{record_id}/chain",
-    response_model=list[ChainStep],
-    summary="[R-2b] 版本链（提交/纠正/确认留痕）",
+    response_model=list[HealthRecordView],
+    summary="[R-2b] 版本链（同 elder_id + 同 recorded_at，version 升序）",
 )
 async def get_health_record_chain(
     record_id: UUID,
     identity: Annotated[Identity, Depends(_health_reviewer)],
     session: _Session,
-) -> list[ChainStep]:
-    """[编号 R-2b｜契约 §3.5] 版本链按 version_no 升序，diff 记录字段级变更。"""
+) -> list[HealthRecordView]:
+    """[编号 R-2b｜契约 §3.5] 版本链按 version 升序（Mock getRecordChain 同口径）。"""
     raise NotImplementedError  # S3 联调段接入
 
 

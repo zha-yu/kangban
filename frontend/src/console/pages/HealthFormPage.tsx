@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ApiError } from "../api";
+import { ApiError, USE_MOCK_API } from "../api";
 import type { ElderListItem } from "../elders-api";
 import {
   SOURCE_LABELS,
@@ -205,8 +205,9 @@ export function HealthFormPage() {
             <span className="badge badge-neutral">规则版本 {result.rule_version}</span>
           </div>
           <p className="hf-result-line">
-            {selectedElder?.name ?? "长者"} · {SOURCE_LABELS[result.source]} ·{" "}
-            {TIME_FMT.format(new Date(result.recorded_at))}（Mock 提交，未落库）
+            {selectedElder?.name ?? "长者"} · {SOURCE_LABELS[source]} ·{" "}
+            {TIME_FMT.format(new Date(result.recorded_at))}
+            {USE_MOCK_API ? "（Mock 提交，未落库）" : ""}
           </p>
           <p className="hf-result-followup">{result.follow_up}</p>
         </div>

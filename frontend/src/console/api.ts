@@ -14,6 +14,13 @@ const ACCESS_KEY = `${STORAGE_PREFIX}_access_token`;
 const REFRESH_KEY = `${STORAGE_PREFIX}_refresh_token`;
 const PROFILE_KEY = `${STORAGE_PREFIX}_profile`;
 
+/**
+ * Mock 开关（Day 8 S6a）：健康/复核/告警三组接口后端未交付前默认 Mock 内存层，
+ * 设 `VITE_USE_MOCK_API=0` 切真实接口；后端 CP2 联调通过后默认值翻转（计划登记）。
+ * 工单/药单/长者等已交付接口不受此开关影响（本来就走真实接口）。
+ */
+export const USE_MOCK_API = import.meta.env.VITE_USE_MOCK_API !== "0";
+
 /** 登录主体信息（E1 principal / E3 身份详情共用的展示字段） */
 export interface Principal {
   kind: "staff" | "guardian";

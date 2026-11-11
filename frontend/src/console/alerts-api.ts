@@ -1,14 +1,21 @@
 /**
- * 告警通知中心 Mock API（task-08 F4）。
+ * 告警通知中心 API（task-08 F4 → Day 8 S6a 切真）。
  *
- * 字段口径唯一依据：技术设计文档 §3 `notifications` 表（Day 8 迁移批次，未交付）。
+ * 字段口径唯一依据：docs/接口契约_照护台业务数据.md §3.2 通知中心（N-1 列表 /
+ * N-2 已读 / N-3 人工确认）与 §3.4 `notifications` 列清单。
  * 业务规则依据：PRD FR-ALT-03（P0）+ AC-23（通知状态边界：generated→pending→delivered→
  * acknowledged 严格顺序；只有客户端回执算送达、只有人工操作算确认；送达≠确认、
  * 确认≠工单完成）+ 裁决 B5（P0 只做「落库 + 演示卡片」，webpush 归 P1）。
  *
- * 后端通知接口尚未交付：本模块为 Mock 层——TS 类型对齐表字段，内存虚构教学数据。
- * 真实接口交付后仅替换本文件内部实现，导出签名保持不变，页面层不感知。
+ * - USE_MOCK 开关（Day 8 S6a）：后端通知接口（dev-A H6/H7）交付前默认 Mock
+ *   内存层，设 `VITE_USE_MOCK_API=0` 切真实接口；导出签名不变，页面层不感知。
+ * - 状态枚举按 dev-B 核实口径（v1.3 收口）：契约 §3.4 五值（failed 为
+ *   pending 30s×3 重试终态，TD §3.5）；正常链路只见四态，页面仍展示 failed。
+ * - 真实模式下 actor 入参仅兼容签名——确认人身份由服务端 JWT 注入；
+ *   N-3 仅 delivered 可确认（409），N-2 已读 ≠ 确认（AC-23）。
  */
+
+import { apiGet, apiPost, USE_MOCK_API } from "./api";
 
 // ---------------------------------------------------------------------------
 // 类型（对齐 notifications 表字段）
@@ -238,45 +245,69 @@ export class MockApiError extends Error {
   }
 }
 
+/** 契约错误文案提取（workorders-api 同构） */
+async function readErrorDetail(res: Response): Promise<string> {
+  const body = (await res.json().catch(() => null)) as { detail?: string } | null;
+  return body?.detail ?? "操作失败，请稍后重试";
+}
+
 /** staff 通知列表（护工侧只看 target_type=staff；真实接口由服务端按身份过滤） */
 export async function listNotifications(): Promise<NotificationItem[]> {
-  return delay(
-    store
-      .filter((n) => n.target_type === "staff")
-      .map((n) => ({ ...n, payload: { ...n.payload } })),
-  );
-}
-
-/** 打开详情 = 已读（AC-23：已读 ≠ 确认） */
-export async function markNotificationRead(notificationId: string): Promise<NotificationItem> {
-  const idx = store.findIndex((n) => n.notification_id === notificationId);
-  if (idx === -1) throw new MockApiError("通知不存在");
-  if (!store[idx].read_at) {
-    store = store.map((n, i) =>
-      i === idx ? { ...n, read_at: new Date().toISOString() } : n,
+  if (USE_MOCK_API) {
+    return delay(
+      store
+        .filter((n) => n.target_type === "staff")
+        .map((n) => ({ ...n, payload: { ...n.payload } })),
     );
   }
-  return delay({ ...store[idx], payload: { ...store[idx].payload } });
+  const res = await apiGet<{ items: NotificationItem[] }>("/api/notifications");
+  return res.items;
 }
 
-/** 人工确认（AC-23：只有人工操作算确认；仅 delivered 可确认，禁止跳步） */
+/** 打开详情 = 已读（AC-23：已读 ≠ 确认；N-2） */
+export async function markNotificationRead(notificationId: string): Promise<NotificationItem> {
+  if (USE_MOCK_API) {
+    const idx = store.findIndex((n) => n.notification_id === notificationId);
+    if (idx === -1) throw new MockApiError("通知不存在");
+    if (!store[idx].read_at) {
+      store = store.map((n, i) =>
+        i === idx ? { ...n, read_at: new Date().toISOString() } : n,
+      );
+    }
+    return delay({ ...store[idx], payload: { ...store[idx].payload } });
+  }
+  const res = await apiPost(`/api/notifications/${notificationId}/read`, {});
+  if (res.ok) return (await res.json()) as NotificationItem;
+  if (res.status === 404) throw new MockApiError("通知不存在");
+  throw new MockApiError(await readErrorDetail(res));
+}
+
+/** 人工确认（AC-23：只有人工操作算确认；仅 delivered 可确认，禁止跳步；N-3） */
 export async function acknowledgeNotification(
   notificationId: string,
   actor: { id: string; name: string },
 ): Promise<NotificationItem> {
-  const idx = store.findIndex((n) => n.notification_id === notificationId);
-  if (idx === -1) throw new MockApiError("通知不存在");
-  const item = store[idx];
-  if (item.status !== "delivered") {
-    throw new MockApiError("仅已送达的通知可人工确认");
+  if (USE_MOCK_API) {
+    const idx = store.findIndex((n) => n.notification_id === notificationId);
+    if (idx === -1) throw new MockApiError("通知不存在");
+    const item = store[idx];
+    if (item.status !== "delivered") {
+      throw new MockApiError("仅已送达的通知可人工确认");
+    }
+    const now = new Date().toISOString();
+    store = store.map((n, i) =>
+      i === idx
+        ? { ...n, status: "acknowledged", acknowledged_by: actor.id, acknowledged_by_name: actor.name, acknowledged_at: now }
+        : n,
+    );
+    return delay({ ...store[idx], payload: { ...store[idx].payload } });
   }
-  const now = new Date().toISOString();
-  store = store.map((n, i) =>
-    i === idx
-      ? { ...n, status: "acknowledged", acknowledged_by: actor.id, acknowledged_by_name: actor.name, acknowledged_at: now }
-      : n,
-  );
-  return delay({ ...store[idx], payload: { ...store[idx].payload } });
+  void actor; // 确认人身份由服务端 JWT 注入，入参仅兼容签名
+  const res = await apiPost(`/api/notifications/${notificationId}/acknowledge`, {});
+  if (res.ok) return (await res.json()) as NotificationItem;
+  if (res.status === 404) throw new MockApiError("通知不存在");
+  if (res.status === 409) throw new MockApiError("仅已送达的通知可人工确认");
+  throw new MockApiError(await readErrorDetail(res));
 }
 
 /** 页面导出：状态推进顺序（时间线渲染用） */

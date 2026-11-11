@@ -1,17 +1,23 @@
 /**
- * 健康记录复核 Mock API（task-11 F7）。
+ * 健康记录复核 API（task-11 F7 → Day 8 S6a 切真）。
  *
- * 字段口径唯一依据：技术设计文档 §3 `health_records` 表（Day 8 迁移批次，未交付）。
+ * 字段口径唯一依据：docs/接口契约_照护台业务数据.md §3.3（R-1/R-2/R-2b/R-3/R-4）
+ * 与 §3.5 `health_records` 列清单。
  * 业务规则依据：PRD FR-HLT-03/04（P0）/ AC-21（单分量红档）/ AC-22（补录追加不覆盖、
- * 原值保留可查）。
+ * 原值保留可查、纠错=追加新版本）。
  *
- * - 队列 = review_status=pending 的黄/红档记录，红档置顶（f7 D2）；
- * - 纠错 = 生成新版本（version+1、severity 重算、reviewed_by 留痕），
- *   原记录 corrected 且 superseded_by 指向新版本（f7 D3）；
- * - review_note 为 Mock 自裁展示字段（表无此列，f7 D4 留痕）。
- * 真实接口交付后仅替换本文件内部实现，导出签名保持不变，页面层不感知。
+ * - USE_MOCK 开关（Day 8 S6a）：后端 health_service（A2）交付前默认 Mock 内存层，
+ *   设 `VITE_USE_MOCK_API=0` 切真实接口；导出签名不变，页面层不感知。
+ * - 队列 = review_status=pending 的黄/红档记录，红档置顶（f7 D2，真实模式
+ *   排序由服务端 R-1 保证，页面层不再排序）；
+ * - 纠错 = 生成新版本（version+1、severity 服务端重算、reviewed_by 留痕），
+ *   原记录 corrected 且 superseded_by 指向新版本（f7 D3，AC-22）；
+ * - review_note/superseded_reason：Q-1 补列后由服务端落列返回，Mock 层先行透传；
+ * - 真实模式下 reviewerName 入参仅兼容签名——复核人身份由服务端 JWT 注入；
+ *   403（非医生复核红档/越权）与 409（状态机）文案取服务端 detail。
  */
 
+import { apiGet, apiGetWithStatus, apiPost, USE_MOCK_API } from "./api";
 import {
   RULE_VERSION,
   classifyHealthRecord,
@@ -19,6 +25,20 @@ import {
   type HealthSeverity,
   type StaffRecordSource,
 } from "./health-api";
+
+/** 契约错误文案提取（workorders-api 同构） */
+async function readErrorDetail(res: Response): Promise<string> {
+  const body = (await res.json().catch(() => null)) as { detail?: string } | null;
+  return body?.detail ?? "操作失败，请稍后重试";
+}
+
+/** 复核操作错误（真实/Mock 模式共用；页面 catch 展示 message） */
+export class ReviewApiError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReviewApiError";
+  }
+}
 
 export type ReviewStatus = "pending" | "confirmed" | "corrected";
 export type SupersededBy = "review_correction" | "backfill";
@@ -44,7 +64,7 @@ export interface ReviewRecord {
   review_status: ReviewStatus;
   reviewed_by_name: string | null;
   reviewed_at: string | null;
-  review_note: string | null; // Mock 自裁字段（f7 D4）
+  review_note: string | null;
   superseded_by: string | null; // 指向新版本 record_id
   superseded_reason: SupersededBy | null;
 }
@@ -55,7 +75,7 @@ export interface CorrectInput {
 }
 
 // ---------------------------------------------------------------------------
-// Mock 数据（虚构教学演示数据）
+// Mock 数据与行为（USE_MOCK_API=0 时不触达；后端交付前默认走这里）
 // ---------------------------------------------------------------------------
 
 let store: ReviewRecord[] = [
@@ -163,10 +183,6 @@ let store: ReviewRecord[] = [
 
 let recordSeq = 5;
 
-// ---------------------------------------------------------------------------
-// Mock 行为（真实接口交付后仅替换本节实现）
-// ---------------------------------------------------------------------------
-
 const MOCK_DELAY_MS = 200;
 
 function delay<T>(value: T): Promise<T> {
@@ -180,45 +196,114 @@ function sortQueue(items: ReviewRecord[]): ReviewRecord[] {
   );
 }
 
-/** 复核队列：pending 黄/红档，红档置顶、时间倒序（f7 D2） */
+// ---------------------------------------------------------------------------
+// 真实接口（后端 app/api/health_records.py：R-1/R-2/R-2b/R-3/R-4，health_service）
+// ---------------------------------------------------------------------------
+
+/** 复核队列：pending 黄/红档，红档置顶、时间倒序（f7 D2；排序由服务端 R-1 保证） */
 export async function listPendingReviews(): Promise<ReviewRecord[]> {
-  return delay(sortQueue(store.filter((r) => r.review_status === "pending")).map((r) => ({ ...r })));
+  if (USE_MOCK_API) {
+    return delay(sortQueue(store.filter((r) => r.review_status === "pending")).map((r) => ({ ...r })));
+  }
+  return apiGet<ReviewRecord[]>("/api/health-records/pending-reviews");
 }
 
 /** 按 record_id 取单条（含已复核历史，用于版本链展示） */
 export async function getReviewRecord(recordId: string): Promise<ReviewRecord | null> {
-  const found = store.find((r) => r.record_id === recordId);
-  return delay(found ? { ...found } : null);
-}
-
-/** 按版本链取一组记录：同长者同 recorded_at 视为同一采集批次链，旧版本在前 */
-export async function getRecordChain(recordId: string): Promise<ReviewRecord[]> {
-  const current = store.find((r) => r.record_id === recordId);
-  if (!current) return delay([]);
-  const group = store.filter(
-    (r) => r.elder_id === current.elder_id && r.recorded_at === current.recorded_at,
+  if (USE_MOCK_API) {
+    const found = store.find((r) => r.record_id === recordId);
+    return delay(found ? { ...found } : null);
+  }
+  const { status, body } = await apiGetWithStatus<ReviewRecord>(
+    `/api/health-records/${recordId}`,
   );
-  return delay(group.sort((a, b) => a.version - b.version).map((r) => ({ ...r })));
+  return status === 200 ? body : null; // 404 与越权同口径 → 页面按不存在展示
 }
 
-/** 确认无误（仅 pending） */
+/** 按版本链取一组记录：同长者同 recorded_at 视为同一采集批次链，旧版本在前（R-2b） */
+export async function getRecordChain(recordId: string): Promise<ReviewRecord[]> {
+  if (USE_MOCK_API) {
+    const current = store.find((r) => r.record_id === recordId);
+    if (!current) return delay([]);
+    const group = store.filter(
+      (r) => r.elder_id === current.elder_id && r.recorded_at === current.recorded_at,
+    );
+    return delay(group.sort((a, b) => a.version - b.version).map((r) => ({ ...r })));
+  }
+  return apiGet<ReviewRecord[]>(`/api/health-records/${recordId}/chain`);
+}
+
+/** 确认无误（仅 pending；409 状态机文案与后端一致，AC-23） */
 export async function confirmReview(recordId: string, reviewerName: string, note: string | null): Promise<ReviewRecord> {
-  const target = store.find((r) => r.record_id === recordId);
-  if (!target) throw new Error("记录不存在");
-  if (target.review_status !== "pending") throw new Error("仅待复核记录可操作");
-  target.review_status = "confirmed";
-  target.reviewed_by_name = reviewerName;
-  target.reviewed_at = new Date().toISOString();
-  target.review_note = note;
-  return delay({ ...target });
+  if (USE_MOCK_API) {
+    const target = store.find((r) => r.record_id === recordId);
+    if (!target) throw new ReviewApiError("记录不存在");
+    if (target.review_status !== "pending") throw new ReviewApiError("仅待复核记录可操作");
+    target.review_status = "confirmed";
+    target.reviewed_by_name = reviewerName;
+    target.reviewed_at = new Date().toISOString();
+    target.review_note = note;
+    return delay({ ...target });
+  }
+  void reviewerName; // 复核人身份由服务端 JWT 注入，入参仅兼容签名
+  const res = await apiPost(`/api/health-records/${recordId}/confirm`, { note });
+  if (res.ok) return (await res.json()) as ReviewRecord;
+  if (res.status === 404) throw new ReviewApiError("记录不存在");
+  if (res.status === 409) throw new ReviewApiError("仅待复核记录可操作");
+  throw new ReviewApiError(await readErrorDetail(res));
 }
 
 /** 纠错：新版本 + 原记录 corrected + superseded_by 指向（f7 D3，AC-22 原值保留） */
 export async function correctReview(recordId: string, input: CorrectInput, reviewerName: string): Promise<ReviewRecord> {
-  const target = store.find((r) => r.record_id === recordId);
-  if (!target) throw new Error("记录不存在");
-  if (target.review_status !== "pending") throw new Error("仅待复核记录可操作");
+  if (USE_MOCK_API) {
+    const target = store.find((r) => r.record_id === recordId);
+    if (!target) throw new ReviewApiError("记录不存在");
+    if (target.review_status !== "pending") throw new ReviewApiError("仅待复核记录可操作");
 
+    const changed =
+      input.fields.systolic !== undefined ||
+      input.fields.diastolic !== undefined ||
+      input.fields.sleep_hours !== undefined ||
+      input.fields.mood_score !== undefined ||
+      input.fields.mood_note !== undefined ||
+      input.fields.complaint !== undefined;
+    if (!changed) throw new ReviewApiError("纠错至少需要修改一项数值");
+
+    const n = recordSeq++;
+    const next: ReviewRecord = {
+      ...target,
+      record_id: `rv-mock-${String(n).padStart(3, "0")}`,
+      ...input.fields,
+      severity: classifyHealthRecord({
+        elder_id: target.elder_id,
+        source: target.source,
+        systolic: input.fields.systolic ?? target.systolic,
+        diastolic: input.fields.diastolic ?? target.diastolic,
+        sleep_hours: input.fields.sleep_hours ?? target.sleep_hours,
+        mood_score: input.fields.mood_score ?? target.mood_score,
+        mood_note: input.fields.mood_note ?? target.mood_note,
+        complaint: input.fields.complaint ?? target.complaint,
+      }).severity,
+      rule_version: RULE_VERSION,
+      version: target.version + 1,
+      review_status: "confirmed",
+      reviewed_by_name: reviewerName,
+      reviewed_at: new Date().toISOString(),
+      review_note: input.review_note ?? "纠错版本",
+      superseded_by: null,
+      superseded_reason: null,
+    };
+    target.review_status = "corrected";
+    target.reviewed_by_name = reviewerName;
+    target.reviewed_at = new Date().toISOString();
+    if (input.review_note) target.review_note = input.review_note;
+    target.superseded_by = next.record_id;
+    target.superseded_reason = "review_correction";
+    store.push(next);
+    return delay({ ...next });
+  }
+  void reviewerName; // 复核人身份由服务端 JWT 注入，入参仅兼容签名
+  // 至少改一项（契约 422）客户端先校验，避免无谓往返
   const changed =
     input.fields.systolic !== undefined ||
     input.fields.diastolic !== undefined ||
@@ -226,38 +311,14 @@ export async function correctReview(recordId: string, input: CorrectInput, revie
     input.fields.mood_score !== undefined ||
     input.fields.mood_note !== undefined ||
     input.fields.complaint !== undefined;
-  if (!changed) throw new Error("纠错至少需要修改一项数值");
+  if (!changed) throw new ReviewApiError("纠错至少需要修改一项数值");
 
-  const n = recordSeq++;
-  const next: ReviewRecord = {
-    ...target,
-    record_id: `rv-mock-${String(n).padStart(3, "0")}`,
-    ...input.fields,
-    severity: classifyHealthRecord({
-      elder_id: target.elder_id,
-      source: target.source,
-      systolic: input.fields.systolic ?? target.systolic,
-      diastolic: input.fields.diastolic ?? target.diastolic,
-      sleep_hours: input.fields.sleep_hours ?? target.sleep_hours,
-      mood_score: input.fields.mood_score ?? target.mood_score,
-      mood_note: input.fields.mood_note ?? target.mood_note,
-      complaint: input.fields.complaint ?? target.complaint,
-    }).severity,
-    rule_version: RULE_VERSION,
-    version: target.version + 1,
-    review_status: "confirmed",
-    reviewed_by_name: reviewerName,
-    reviewed_at: new Date().toISOString(),
-    review_note: input.review_note ?? "纠错版本",
-    superseded_by: null,
-    superseded_reason: null,
-  };
-  target.review_status = "corrected";
-  target.reviewed_by_name = reviewerName;
-  target.reviewed_at = new Date().toISOString();
-  if (input.review_note) target.review_note = input.review_note;
-  target.superseded_by = next.record_id;
-  target.superseded_reason = "review_correction";
-  store.push(next);
-  return delay({ ...next });
+  const res = await apiPost(`/api/health-records/${recordId}/correct`, {
+    fields: input.fields,
+    review_note: input.review_note,
+  });
+  if (res.ok) return (await res.json()) as ReviewRecord;
+  if (res.status === 404) throw new ReviewApiError("记录不存在");
+  if (res.status === 409) throw new ReviewApiError("仅待复核记录可操作");
+  throw new ReviewApiError(await readErrorDetail(res));
 }
