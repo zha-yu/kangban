@@ -113,14 +113,16 @@ def _router(**kwargs: Any) -> tuple[Router, FakeSystemOne, list[dict[str, Any]]]
 
 async def test_rule_hit_skips_system_one_and_agent() -> None:
     """规则命中时 System One 一次都不该调（验收：命中时 System One 调用 = 0）。"""
-    router, system_one, _ = _router()
+    executor = FakeExecutor()
+    router, system_one, _ = _router(tool_executor_factory=lambda: executor)
 
     decision = await router.decide("暂停一下", thread_id="th-1", runtime=FakeRuntime())
 
     assert decision.route_layer == "rule"
-    assert decision.action == "agent"  # 媒体库未就绪 → 能力下沉
+    assert decision.action == "tool"  # Day 8 A5 直连 play_opera（B4 注册后真调）
+    assert decision.tool_name == "play_opera"
+    assert decision.tool_args == {"action": "pause"}
     assert decision.intent == "opera"
-    assert decision.reason == "capability_not_ready"
     assert system_one.fast_calls == 0
     assert system_one.shadow_calls == 0
     assert decision.latency_ms >= 0
