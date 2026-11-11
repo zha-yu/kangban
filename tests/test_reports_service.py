@@ -186,6 +186,27 @@ async def test_first_version_generates_stats_summary_and_notification(
     await session.rollback()
 
 
+async def test_report_ready_payload_follows_contract_s02(world: ReportWorld, db_conn) -> None:
+    """Q-D9 回归：report_ready 通知 payload 按家属端契约 S-02 三键组装。"""
+    session = AsyncSession(db_conn)
+    ref = await report_service.generate_daily_report(
+        session, elder_id=world.elder_id, report_date=world.day
+    )
+    await session.flush()
+    row = (
+        await session.execute(
+            select(Notification).where(
+                Notification.dedupe_key.like(f"daily_report:{ref.report_id}:update%")
+            )
+        )
+    ).scalar_one()
+    assert row.type == report_service.NOTIFICATION_TYPE_DAILY_REPORT  # 开放枚举，代码常量为准
+    assert set(row.payload) >= {"elder_name", "event_brief", "report_id"}  # S-02 三键
+    assert row.payload["report_id"] == str(ref.report_id)  # 家属卡片跳转日报详情
+    assert str(world.elder_id) not in str(row.payload)  # 脱敏：不落 elder_id 等内部标识
+    await session.rollback()
+
+
 async def test_regenerate_false_is_idempotent(world: ReportWorld, db_conn) -> None:
     """幂等：重复生成返回原版（不重建行、不重发通知，S2 断言通知数=1）。"""
     session = AsyncSession(db_conn)

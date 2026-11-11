@@ -237,10 +237,18 @@ def _build_summary_text(
     )
 
 
-async def _notify_daily_report(
-    session: AsyncSession, *, ref: DailyReportRef, summary_text: str
-) -> bool:
-    """「日报已更新」家属通知（每版一次，X2 三段式键）；无 active 绑定不阻塞生成。"""
+async def _notify_daily_report(session: AsyncSession, *, ref: DailyReportRef) -> bool:
+    """「日报已更新」家属通知（每版一次，X2 三段式键）；无 active 绑定不阻塞生成。
+
+    payload 按家属端契约 S-02 三键组装（docs/接口契约_家属端数据.md §2.2）：
+    ``elder_name`` / ``event_brief`` / ``report_id``——家属卡片渲染与日报跳转
+    都靠这三键；Q-D9 实测 {title,body,summary_text} 落法卡片空、点不动日报。
+    ``title`` 为向前兼容保留键（家属端忽略未知键）；日报全文经 report_id
+    拉详情，不进 payload（S-02 脱敏口径）。
+    """
+    elder_name = (
+        await session.execute(select(Elder.name).where(Elder.elder_id == ref.elder_id))
+    ).scalar_one_or_none()
     try:
         refs = await send_guardian_notifications(
             session,
@@ -248,8 +256,11 @@ async def _notify_daily_report(
             ntype=NOTIFICATION_TYPE_DAILY_REPORT,
             payload={
                 "title": "日报已更新",
-                "body": f"{ref.report_date.isoformat()} 健康日报（第 {ref.version} 版）已生成",
-                "summary_text": summary_text,
+                "elder_name": elder_name or "您的家人",
+                "event_brief": (
+                    f"{ref.report_date.isoformat()} 健康日报（第 {ref.version} 版）已生成，点击查看详情"
+                ),
+                "report_id": str(ref.report_id),
             },
             dedupe_key=f"daily_report:{ref.report_id}:update",
         )
@@ -333,9 +344,7 @@ async def generate_daily_report(
     )
     ref = dataclasses.replace(
         ref,
-        notification_created=await _notify_daily_report(
-            session, ref=ref, summary_text=summary_text
-        ),
+        notification_created=await _notify_daily_report(session, ref=ref),
     )
     return ref
 
