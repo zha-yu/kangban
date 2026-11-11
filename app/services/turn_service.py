@@ -950,6 +950,14 @@ class TurnService:
         if isinstance(message, str) and message:
             return message
         data = getattr(tool_result, "data", None) or {}
+        if tool_name == "play_opera" and isinstance(data, dict):
+            # D4（X8 口径③）：控制动作 → 简短确认；换一段 → 报新曲名
+            control = data.get("control")
+            if control:
+                return _PLAY_CONTROL_SPEECH.get(str(control), "好的。")
+            media = data.get("media") or {}
+            if data.get("found") and media.get("title"):
+                return f"好的，为您换了一首《{media['title']}》，请欣赏。"
         if tool_name == "get_weather" and isinstance(data, dict):
             city = data.get("city") or "当地"
             condition = data.get("condition") or ""
@@ -985,6 +993,17 @@ class TurnService:
             call_id=call_id,
         )
 
+
+#: 直连播放控制的播报确认（契约 §6.3 七动作；interrupt 让位后由后续轮次接管话术）
+_PLAY_CONTROL_SPEECH: Final[dict[str, str]] = {
+    "pause": "好的，先停在这里。",
+    "resume": "好的，继续播放。",
+    "stop": "好的，已停止播放。",
+    "replay": "好的，重新播放一遍。",
+    "interrupt": "好的。",
+    "volume_up": "好的，音量调大了。",
+    "volume_down": "好的，音量调小了。",
+}
 
 __all__ = [
     "DELIVERY_STATUS_PLAYING",
