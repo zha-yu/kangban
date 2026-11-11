@@ -14,6 +14,47 @@ import {
 } from "../medication-api";
 
 /**
+ * 把用户常见的时间简写转成标准 5 段 cron（分 时 日 月 周）。
+ * 已满足 cron 格式（含 4+ 段）→ 原样返回；
+ * 不认识的输入 → 原样返回（交由后端严格校验兜底）。
+ *
+ * 支持的简写：
+ *   "8:00"          → "0 8 * * *"       每天 08:00
+ *   "08:30"         → "30 8 * * *"       每天 08:30
+ *   "8:00, 20:00"   → "0 8,20 * * *"     每天 08:00 和 20:00
+ *   "8:00,20:00"    → "0 8,20 * * *"     同上（去空格）
+ */
+function normalizeCron(raw: string): string {
+  const s = raw.trim();
+  if (!s) return s;
+
+  // 已是标准 cron（包含空格分隔的 5 段）→ 原样返回
+  if (/^\S+\s+\S+\s+\S+\s+\S+\s+\S+$/.test(s)) return s;
+
+  // 匹配 "HH:MM, HH:MM[, ...]" 或 "HH:MM,HH:MM"
+  const hhmmList = s
+    .split(/[,\uff0c]/) // 中英文逗号
+    .map((t) => t.trim())
+    .filter(Boolean);
+
+  if (hhmmList.length === 0) return s;
+
+  const parts: Array<{ hour: string; minute: string }> = [];
+  for (const t of hhmmList) {
+    const m = t.match(/^(\d{1,2}):(\d{1,2})$/);
+    if (!m) return s; // 任一子项不匹配 → 整体放弃转换，交给后端
+    const h = parseInt(m[1], 10);
+    const mi = parseInt(m[2], 10);
+    if (h < 0 || h > 23 || mi < 0 || mi > 59) return s;
+    parts.push({ hour: String(h), minute: String(mi) });
+  }
+
+  const minutes = parts.map((p) => p.minute).join(",");
+  const hours = parts.map((p) => p.hour).join(",");
+  return `${minutes} ${hours} * * *`;
+}
+
+/**
  * 药单维护（task-12 F8，console 医生，Mock 先行，与护工只读页共享 store）。
  *
  * 口径：§4.5 医生增改停查（无删除语义）；AC-27 修改 = version+1（历史提醒
@@ -50,9 +91,26 @@ function PlanForm({
   const [drugName, setDrugName] = useState(initial.drug_name);
   const [dose, setDose] = useState(initial.dose);
   const [cron, setCron] = useState(initial.schedule_cron);
+  const [cronHint, setCronHint] = useState<string>("");
   const [startDate, setStartDate] = useState(initial.start_date);
   const [endDate, setEndDate] = useState(initial.end_date ?? "");
   const [error, setError] = useState<string | null>(null);
+
+  /** 失焦时自动把常见时间简写转成标准 cron，并给用户反馈 */
+  function handleCronBlur() {
+    const normalized = normalizeCron(cron);
+    if (normalized !== cron.trim()) {
+      setCron(normalized);
+      setCronHint(`已自动转成：${normalized}（${cronToText(normalized)}）`);
+    } else {
+      // 已经是标准 cron，给个预览
+      if (/^\S+\s+\S+\s+\S+\s+\S+\s+\S+$/.test(normalized)) {
+        setCronHint(`✓ ${cronToText(normalized)}`);
+      } else {
+        setCronHint("");
+      }
+    }
+  }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -83,8 +141,20 @@ function PlanForm({
         <input className="field-input" type="text" value={dose} onChange={(e) => setDose(e.target.value)} placeholder="如：20mg 每日一片" />
       </label>
       <label className="field">
-        <span className="field-label">服药时间 cron（必填）</span>
-        <input className="field-input" type="text" value={cron} onChange={(e) => setCron(e.target.value)} placeholder="如 0 8 * * *（每天 08:00）" />
+        <span className="field-label">服药时间（必填）</span>
+        <input
+          className="field-input"
+          type="text"
+          value={cron}
+          onChange={(e) => setCron(e.target.value)}
+          onBlur={handleCronBlur}
+          placeholder="如 8:00（每天 08:00）"
+        />
+        <small className="field-help">
+          可直接写 <code>8:00</code> / <code>8:00, 20:00</code>（失焦自动转换）；
+          也支持标准 cron 如 <code>0 8 * * *</code>（每天 08:00）。
+          {cronHint && <span style={{ color: "#16a34a" }}>　{cronHint}</span>}
+        </small>
       </label>
       <div className="hf-grid">
         <label className="field">
