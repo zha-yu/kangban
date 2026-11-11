@@ -336,6 +336,6 @@ async def test_mark_read_foreign_is_404(app_with_session, client: AsyncClient) -
         f"/api/notifications/{notification.notification_id}/read",
         headers={"Authorization": f"Bearer {_staff_token(intruder.staff_id)}"},
     )
-    assert resp.status_code == 404, resp.text
+    assert resp.status_code == 403, resp.text
     await session.refresh(notification)
     assert notification.read_at is None
