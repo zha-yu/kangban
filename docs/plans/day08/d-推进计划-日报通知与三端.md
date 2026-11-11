@@ -464,6 +464,7 @@ uv run python scripts/update_progress.py --check-plans
 | 2026-11-11 | **S11 部分交付：完成定义对证据表（CP-D11 文档段）** | 新增计划 **§11**：PRD Day 8 完成定义中 D 相关项逐条对证据（命令＋数字或文件＋行号）。有实证据 4 项：N-3 主体隔离（401×2 用例）、AC-23 状态机（delivered/跳步 409/幂等 5 用例）、AC-37 播放器（16 步行为序列＋build）、FR-TC-09（四步篡改验证＋七层归因＋15 条回流＋基线锁）；待上游 4 项：AC-13/18（C2 读函数）、AC-38 演练、375px（D2）、N-3 归属校验（R-D10）。每项状态只用 ✅/🚧/⛔，⛔ 必写卡谁 | 四件套未全绿：`ruff`/`pytest`/`tsc`/`build` 当前全绿，但「完成定义全绿」还差上游 4 项，故 S11 记「部分完成」而非完成 |
 | 2026-11-11 | **合并 develop `ff3591c`＋R-D10 回归修复（16:30）** | 合并 `ff3591c`（C 的 X8 媒体证据＋S7 门禁回填、A 的 notify_service typed exception 与归属校验）；冲突仅 `docs/plans/README.md` 索引（取远端，含新增证据文件行）。**A 侧两项已修**：`acknowledge_notification` 加 `target_id != acknowledger_id → NotificationForbidden`；拆出 `NotificationNotFound/IllegalTransition/Forbidden`。D 侧 `alerts.py` 改为 `isinstance` 判定（删掉消息前缀 hack）、新增 403＋审计分支（`record_audit` 只 flush，正常 return 让 `get_session` 提交），`tests/test_alerts_api.py` **9 passed**（新增越权用例：403 + 状态不变 + 审计恰好一条） | **发现并挡住一个 A 侧回归**：`Identity.staff_id` 是 `str`、`notifications.target_id` 是 `uuid.UUID`，A 直接 `!=` 比较恒真 → **所有员工确认都 403**（我 4 条老用例第一时间变红）。D 在 api 边界 `uuid.UUID(staff.staff_id)` 归一化修复；**service 侧仍需 A 归一化**，否则 scheduler 等调用方同样踩坑。另：`_require_transition` 仍抛基类 `NotificationError`，D 暂以「其余 → 409」兜住 |
 | 2026-11-11 | **素材改 mp3（16:25）** | 用户告知 B4 媒体播放改 mp3（wav 体积过大）。核对：**pad 播放器不感知扩展名**（只用 `mediaUrl` 字符串），代码零改动；`?demo=opera` 演示音已转 mp3（96KB→25KB，`frontend/public/media/opera/demo-tone.mp3`），wav 删除；`tsc --noEmit` exit=0 | **契约 §6.1 仍写死 `.wav`**（冻结口径），扩展名变更须 dev-B 在 §6 留痕，已写入 J-X8 追加：建议 `media_url` 不限定扩展名、实际文件名由 `media_library` 行承载。D 不改契约 |
+| 2026-11-11 | **合并 develop `58f81d5`＋N-1/N-2 落地（17:05）** | 合并 `58f81d5`（A：staff 读函数＋0019 迁移；B：`generate_opera_seed.py`＋`bind_dev_b_tools`＋工具注册测试）。**`app/api/alerts.py` 补齐 N-1 列表（分页/未读过滤/倒序）与 N-2 已读（只写 read_at、幂等、越权同口径 404）**，N-1/N-2/N-3 三条齐；`tests/test_alerts_api.py` 由 9 → **16 用例全绿**（新增：只出本人通知并倒序、unread_only、page_size 上限 422、已读幂等不刷时间戳、越权 404 且不落 read_at）。DB 升到 `0019_day8_medplan_version` | **新发现两处上游缺口**：① 契约 §3.2 的 `acknowledged_by_name` 是 JOIN 展示字段，但 `list_staff_notifications` 不 JOIN、`staff_service` 也无按 id 取名 → api 如实返回 `null`（R-D12），不编名字；② `bind_dev_b_tools` 已注册 `play_opera`，但 `app/main.py` **没有调用点**，启动时并未真正绑定 → AC-37 端到端仍不可跑。**全量 pytest 1300 passed / 2 failed**：失败在 `test_staff_reassign.py`（`Elder.updated_at` 未推进，断言 `new_ts > baseline`），属 A/B 域的改绑逻辑，D 侧文件未触碰，已登记待其修正 |
 
 ---
 
@@ -502,8 +503,8 @@ uv run python scripts/update_progress.py --check-plans
 | # | 缺什么 | 归属 | 需要的确切东西 | 挡住谁 | 核对证据 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | 日报**家属侧读函数** | **C2 · dev-C** | `list_reports_for_guardian(guardian_id,page,page_size)`；`get_report_detail_for_guardian(guardian_id,report_id)`；`GuardianReportNotFound/Forbidden` 两个异常（J-C2b） | S4 收口、S6 互测、S7 D2 切真、F1/F2 全部 | `app/services/report_service.py` 只有 `generate_daily_report` / `get_daily_report(elder_id,report_date)` / `list_daily_report_versions`，**无家属维度、无 report_id 查询、无区分异常** |
-| 2 | 员工侧通知**读/已读函数** | **A3 · dev-A** | `list_staff_notifications(staff_id,page,page_size,unread_only)`；`mark_staff_notification_read(staff_id,notification_id)`（J-A3b） | alerts 域 N-1/N-2（C3 告警中心依赖） | `app/services/notify_service.py` 有 guardian 版 list/read、有 staff 写/确认/扫描，**无 `list_staff_*` / `mark_staff_*`** |
-| 3 | `play_opera` **Tool 注册与实现** | **B4 · dev-B** | ToolSpec + executor（入参 `{query}`、返回 §6.2 结构）；`media_history` 由 C4 写 | S9 的 WS 接线、AC-37 端到端 | `rules.py` 已把 R-01~R-08 的 `tool_name` 指向 `play_opera`（4 处），但 `app/` 内**无对应实现/注册**（`tool_impls.py` 无命中） |
+| 2 | ~~员工侧通知读/已读函数~~ **已到货（16:55）** | A3 · dev-A | `list_staff_notifications` / `mark_staff_notification_read` 已实现 | — | `notify_service.py:300/335`；D 侧 N-1/N-2 已接（`alerts.py`，16 用例） |
+| 3 | `play_opera` **实现接线** | **B4 · dev-B** | 注册已就绪（`bind_tools.py:152`），还差 `make_play_opera_executor` 在 lifespan 里被调用（`main.py` 装配属 A/B 交界，D 不碰） | S9 的 WS 接线、AC-37 端到端 | 注册函数存在，但 `app/main.py` 未见 `bind_dev_b_tools` 调用点 |
 | 4 | 戏曲**种子素材** | **B4 · dev-B** | `static/media/opera/` 20–30 条（§6.4），现口径为 mp3 | 同上；D 只能用仓库内演示音自测 | `ls static/media/opera` → **目录不存在** |
 | 5 | **WS 帧形状** | **A→B**（Q-D4） | `opera_control`（或同义）的 type/字段/动作枚举，冻结后 D 才改 `protocol.ts` | S9 协议接入 | `frontend/src/pad/protocol.ts` 白名单无 opera 类；`task_command` 仅 `kind:"medication"` |
 | 6 | **SOS 事件链入口 + 撤销函数** | **A3 / Q-D7** | `escalate_safety_event` 支持 `sos` 类别（现映射表 5 类无 sos）；撤销 service 函数 | D3 整项 | `app/services/safety_service.py:107-113` 的 `_ORDER_TYPE_BY_CATEGORY` 只有 chest_pain/breathing/stroke/fall/self_harm；`app/api/` 无 sos 端点 |
@@ -519,7 +520,9 @@ uv run python scripts/update_progress.py --check-plans
 | `notify_service` staff 写/确认/扫描/升级 | A3 · dev-A | ✅ `send_staff_notifications`/`acknowledge_notification`/`scan_*`/`escalate_red_event` |
 | notify typed exceptions | A3 · dev-A | ✅ `NotificationNotFound`/`IllegalTransition`/`Forbidden`（残项：`_require_transition` 仍抛基类） |
 | rules R-01~R-08 直连 | A5 · dev-A | ✅ `RULESET_VERSION=r2`（旧断言已由 B 同步） |
-| 员工确认端点 N-3 | **D** | ✅ `app/api/alerts.py`，9 用例（含 403＋审计） |
+| 员工侧通知读/已读 | A3 · dev-A | ✅ `list_staff_notifications`（`notify_service.py:300`）／`mark_staff_notification_read`（:335）／`StaffNotificationNotFound` |
+| 员工告警域 N-1/N-2/N-3 | **D** | ✅ `app/api/alerts.py` 三条齐，16 用例（越权 403＋审计、已读幂等不动状态、分页/未读过滤） |
+| `play_opera` Tool 注册 | B4 · dev-B | ✅ `bind_dev_b_tools` 已 bind（`bind_tools.py:152`）；**实现与素材仍待 B4 交付运行** |
 
 ### 12.3 两个「已修但需回归」的点（给 A 收尾）
 

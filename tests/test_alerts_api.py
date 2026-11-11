@@ -79,6 +79,8 @@ async def _seed_notification(
     *,
     staff_id: uuid.UUID,
     status: str = "delivered",
+    read: bool = False,
+    created_at: datetime.datetime | None = None,
 ) -> Notification:
     notification = Notification(
         target_type="staff",
@@ -90,6 +92,10 @@ async def _seed_notification(
         is_mock=True,
         dedupe_key=f"test:{uuid.uuid4()}",
     )
+    if read:
+        notification.read_at = datetime.datetime.now(datetime.UTC)
+    if created_at is not None:
+        notification.created_at = created_at
     session.add(notification)
     await session.flush()
     return notification
@@ -223,3 +229,113 @@ async def test_acknowledge_foreign_notification_is_403_and_audited(
     assert len(rows) == 1, "403 必须落一条审计（照护台契约 §2）"
     assert rows[0].actor_type == "staff"
     assert rows[0].actor_id == intruder.staff_id
+
+
+# ------------------------------------------------------------------ N-1 列表
+
+
+async def test_list_notifications_requires_auth(client: AsyncClient) -> None:
+    assert (await client.get("/api/notifications")).status_code == 401
+
+
+async def test_list_notifications_only_mine_newest_first(
+    app_with_session, client: AsyncClient
+) -> None:
+    """只出「发给我」的通知；他人与家属侧的都不出现；按 created_at 倒序。"""
+    _, session = app_with_session
+    me = await _seed_staff(session, "护工-我")
+    other = await _seed_staff(session, "护工-别人")
+    now = datetime.datetime.now(datetime.UTC)
+    older = await _seed_notification(
+        session, staff_id=me.staff_id, created_at=now - datetime.timedelta(minutes=5)
+    )
+    newer = await _seed_notification(session, staff_id=me.staff_id, created_at=now)
+    await _seed_notification(session, staff_id=other.staff_id, created_at=now)
+
+    resp = await client.get(
+        "/api/notifications", headers={"Authorization": f"Bearer {_staff_token(me.staff_id)}"}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    ids = [item["notification_id"] for item in body["items"]]
+    assert ids == [str(newer.notification_id), str(older.notification_id)]
+    assert body["total"] == 2
+    assert body["items"][0]["target_type"] == "staff"
+    # R-D12：service 未 JOIN 姓名 → 如实 null，不编
+    assert body["items"][0]["acknowledged_by_name"] is None
+
+
+async def test_list_notifications_unread_only(app_with_session, client: AsyncClient) -> None:
+    _, session = app_with_session
+    me = await _seed_staff(session, "护工-未读")
+    await _seed_notification(session, staff_id=me.staff_id)
+    await _seed_notification(session, staff_id=me.staff_id, read=True)
+
+    resp = await client.get(
+        "/api/notifications?unread_only=true",
+        headers={"Authorization": f"Bearer {_staff_token(me.staff_id)}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["total"] == 1
+
+
+async def test_list_notifications_rejects_bad_page_size(
+    app_with_session, client: AsyncClient
+) -> None:
+    _, session = app_with_session
+    me = await _seed_staff(session, "护工-分页")
+    resp = await client.get(
+        "/api/notifications?page_size=101",
+        headers={"Authorization": f"Bearer {_staff_token(me.staff_id)}"},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+# ------------------------------------------------------------------ N-2 已读
+
+
+async def test_mark_read_requires_auth(client: AsyncClient) -> None:
+    resp = await client.post(f"/api/notifications/{uuid.uuid4()}/read")
+    assert resp.status_code == 401
+
+
+async def test_mark_read_is_idempotent_and_keeps_status(
+    app_with_session, client: AsyncClient
+) -> None:
+    """只写 read_at、不动 status（已读≠确认）；重复调用返回原时间。"""
+    _, session = app_with_session
+    me = await _seed_staff(session, "护工-已读")
+    notification = await _seed_notification(session, staff_id=me.staff_id)
+    headers = {"Authorization": f"Bearer {_staff_token(me.staff_id)}"}
+
+    first = await client.post(
+        f"/api/notifications/{notification.notification_id}/read", headers=headers
+    )
+    assert first.status_code == 200, first.text
+    await session.refresh(notification)
+    assert notification.read_at is not None
+    assert notification.status == "delivered", "已读不得推进状态机"
+    stamp = notification.read_at
+
+    second = await client.post(
+        f"/api/notifications/{notification.notification_id}/read", headers=headers
+    )
+    assert second.status_code == 200, second.text
+    await session.refresh(notification)
+    assert notification.read_at == stamp, "幂等：不得刷新 read_at"
+
+
+async def test_mark_read_foreign_is_404(app_with_session, client: AsyncClient) -> None:
+    """不属于自己的通知 → 404（与不存在同口径，不泄露存在性）。"""
+    _, session = app_with_session
+    owner = await _seed_staff(session, "护工-收件人2")
+    intruder = await _seed_staff(session, "护工-路人2")
+    notification = await _seed_notification(session, staff_id=owner.staff_id)
+
+    resp = await client.post(
+        f"/api/notifications/{notification.notification_id}/read",
+        headers={"Authorization": f"Bearer {_staff_token(intruder.staff_id)}"},
+    )
+    assert resp.status_code == 404, resp.text
+    await session.refresh(notification)
+    assert notification.read_at is None
