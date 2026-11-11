@@ -10,6 +10,7 @@ import { StatusBadge } from "./components/StatusBadge";
 import { SosButton } from "./components/SosButton";
 import { HoldToTalk } from "./components/HoldToTalk";
 import { OperaDemoPanel } from "./components/OperaDemoPanel";
+import type { OperaSnapshot } from "./audio/opera-player";
 import { IdentityConfirm } from "./components/IdentityConfirm";
 import { TaskPanel } from "./components/TaskPanel";
 import { ChatTranscript, type ChatMessage } from "./components/ChatTranscript";
@@ -94,6 +95,8 @@ function MainScreen({
   const [operaDemo] = useState(
     () => import.meta.env.DEV && new URLSearchParams(window.location.search).get("demo") === "opera",
   );
+  // D4 真实链路：media_play 到达即出播放面板；stop/track 清空即收
+  const [operaSnap, setOperaSnap] = useState<OperaSnapshot | null>(null);
 
   // v1.5：任务命令（与传输解耦）。后端适配器落地后只需往任务总线 emit，
   // 主屏不需要知道是外呼、WS 降级帧还是调度器触发的。
@@ -266,6 +269,7 @@ function MainScreen({
         });
       },
       audioEl: audioRef.current,
+      onOperaState: (s) => setOperaSnap(s.track ? s : null),
     });
     clientRef.current = client;
     void client.start(session.access_token, wakeTsRef.current);
@@ -406,8 +410,14 @@ function MainScreen({
       <main
         className={`flex min-h-0 flex-1 items-center justify-center overflow-hidden ${twoColumn ? "gap-8 px-8 pt-6" : "gap-16 px-12"}`}
       >
-        {operaDemo ? (
-          <OperaDemoPanel />
+        {operaDemo || operaSnap ? (
+          <OperaDemoPanel
+            live={
+              operaSnap
+                ? { snapshot: operaSnap, onAction: (a) => clientRef.current?.operaApply(a) }
+                : undefined
+            }
+          />
         ) : sosOpen ? (
           // 结果态只占中部：顶栏 SOS（active）、大字幕区、操作区高度都在原位
           <div className="flex h-full w-full items-center justify-center">

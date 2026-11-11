@@ -224,6 +224,10 @@ export interface TtsTextMsg {
   type: "tts_text";
   text: string;
   degraded?: boolean;
+  /** 路由降级标记（D6，adhoc-20261111-route_degraded 契约冻结 v1.0）：
+   *  L0/L1 不可用经 fallback 由 L2 Agent 正常生成时为 true；与 degraded 正交。
+   *  服务端每条恒下发 true/false；前端不做缺省推断。 */
+  route_degraded?: boolean;
   /** 本次回复唯一 id（多段共用）；缺失 → 整段一播 */
   response_id?: string;
   /** 会话代次，客户端原样回传，不得自增 */
@@ -286,9 +290,39 @@ export type ServerSignal =
   | ErrorMsg
   | IdentityAskMsg
   | IdentityResultMsg
-  | TaskCommandMsg;
+  | TaskCommandMsg
+  | MediaPlayMsg
+  | MediaControlMsg;
 
 export type ServerSignalType = ServerSignal["type"];
+
+/** D4（X8 口径②，2026-11-11 主理人给定帧形状）：play_opera 命中后 companion 经
+ *  signaling.deliver 下发；pad 直连 media_url（§6.1 稳定路径，wav|mp3 不感知）。 */
+export interface MediaPlayMsg {
+  type: "media_play";
+  media_url: string;
+  title: string;
+  media_id?: string;
+  duration?: number | null;
+}
+
+/** D4（X8 口径③）：播放控制七动作（契约 §6.3 表）；next_track 由服务端取好下一段
+ *  随帧携带新 media（「换源」），pad 不猜下一段。 */
+export interface MediaControlMsg {
+  type: "media_control";
+  action:
+    | "pause"
+    | "resume"
+    | "stop"
+    | "next_track"
+    | "volume_up"
+    | "volume_down"
+    | "replay";
+  media_url?: string;
+  title?: string;
+  media_id?: string;
+  duration?: number | null;
+}
 
 const SERVER_SIGNAL_TYPES: readonly ServerSignalType[] = [
   "auth_ok",
@@ -303,6 +337,8 @@ const SERVER_SIGNAL_TYPES: readonly ServerSignalType[] = [
   "error",
   "identity_ask",
   "identity_result",
+  "media_play",
+  "media_control",
 ];
 
 /**

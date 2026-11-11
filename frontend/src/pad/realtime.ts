@@ -35,6 +35,7 @@ import { MicCapture } from "./audio/capture";
 import { TenVad } from "./audio/vad";
 import { PlaybackQueue, isSegmentedTts } from "./audio/playback-queue";
 import { TouchPlayback } from "./audio/touch-audio";
+import { OperaPlayer, type OperaAction, type OperaSnapshot, type OperaTrack } from "./audio/opera-player";
 import { SignalSocket } from "./signal-socket";
 
 /** Day 7 D1 S1.2.7 预留：路由降级常量文案（A3 下发降级标记时显示；不新增协议字段） */
@@ -52,6 +53,8 @@ export interface RealtimeCallbacks {
   onIdentityResult: (msg: IdentityResultMsg) => void;
   /** Day 7 L6#9：主动触达任务卡片命令 → 上层 emitPadTask 打开面板 */
   onTaskCommand: (msg: TaskCommandMsg) => void;
+  /** D4：戏曲播放器状态（media_play/media_control 真实链路）→ 上层渲染播放面板 */
+  onOperaState?: (snapshot: OperaSnapshot) => void;
   /** TTS 下行播放元素（登录点击后已有用户手势，autoplay 可用） */
   audioEl: HTMLAudioElement;
 }
@@ -89,14 +92,27 @@ export class RealtimeClient {
         this.reportPlayback(); // C-6：末段播完结算（无计时起点时内部静默跳过）
         this.cb.onStatus("listening"); // 播放收口 → 回到在听，麦克风保持捕获
       }
+      if (!this.touchPlaying) this.opera.resumeAfterSpeech(); // D4：播报收口恢复被压住的戏曲
     },
   });
   /** Day 7 TD-1/TD-2：触达音频独立播放轨（WS base64 PCM，不进 WebRTC 轨、不进队列）。
    *  在途触达的回传坐标（touch_id → 服务端下发的 event_id/attempt_no，播完原样回传） */
   private touchMeta = new Map<string, { event_id: string; attempt_no: number }>();
+  /** D4：触达是否在播（与回复流共同决定戏曲 duck 恢复时机） */
+  private touchPlaying = false;
   private touchPlayback = new TouchPlayback({
-    onPlayed: (touchId) => this.sendTouchPlayed(touchId),
+    onPlayed: (touchId) => {
+      this.touchPlaying = false;
+      if (!this.ttsPlaying) this.opera.resumeAfterSpeech();
+      this.sendTouchPlayed(touchId);
+    },
     sendDiag: (ok, error) => this.sendDiag("playback", ok, error),
+  });
+  /** D4（X8）：戏曲播放器——media_play 装载、media_control 七动作；播报/触达 duck 互斥 */
+  private opera = new OperaPlayer({
+    onState: (s) => this.cb.onOperaState?.(s),
+    // diag stage 白名单冻结（day03 contracts），不扩 stage：opera 失败归 playback 阶段、错误串带前缀
+    onError: (reason) => this.sendDiag("playback", false, `opera:${reason}`),
   });
 
   constructor(private cb: RealtimeCallbacks) {}
@@ -145,6 +161,7 @@ export class RealtimeClient {
   async stop(): Promise<void> {
     this.starting = false;
     this.ttsPlaying = false; // Day 7 D1 关 P3-38：登出复位播放态，防下次会话误判打断
+    void this.opera.apply("stop"); // D4：登出停戏曲
     this.unbindDeviceChange?.();
     this.unbindDeviceChange = null;
     this.socket?.stop();
@@ -190,6 +207,8 @@ export class RealtimeClient {
         if (msg.touch_id !== undefined) {
           this.cb.onSubtitle(msg.text, "reply");
           this.cb.onStatus("speaking");
+          this.opera.duckForSpeech(); // D4：触达播报压住戏曲
+          this.touchPlaying = true;
           this.handleTouchAudio(msg);
           break;
         }
@@ -201,6 +220,7 @@ export class RealtimeClient {
         this.reportPlayback();
         this.playbackStartMs = performance.now();
         this.ttsPlaying = true;
+        this.opera.duckForSpeech(); // D4：回复播报压住戏曲
         this.cb.audioEl.muted = false; // 真 TTS 到了才出声
         void this.cb.audioEl
           .play()
@@ -214,12 +234,44 @@ export class RealtimeClient {
         this.cb.onStatus("speaking");
         // Day 7 D1 S1.2.7 预留：A3 下发降级标记时显示常量文案（不新增协议字段，
         // A3 未下发则永不触发，不阻塞 D1）
-        if (msg.degraded === true) {
+        // D6（route_degraded 冻结 v1.0）：路由 fallback 轮提示条；与 degraded 正交、
+        // 互不推断，两者同 true 只显一次；LLM 失败轮仍走原 degraded 路径
+        if (msg.route_degraded === true || msg.degraded === true) {
           this.cb.onSubtitle(FALLBACK_NOTICE, "notice");
         }
         // Day 6：带分段字段 → 队列结算 playing/played（playing 由起播后补发）
         if (isSegmentedTts(msg)) this.playbackQueue.handleSegment(msg);
         break;
+      case "media_play": {
+        // D4（X8 口径②）：戏曲起播接管音频场景——回复播报本地打断、触达停播，
+        // 再装载 media_url（直连静态文件，不经后端转发）
+        this.localInterrupt();
+        this.touchPlayback.stop();
+        this.touchPlaying = false;
+        const track: OperaTrack = {
+          mediaId: msg.media_id ?? msg.media_url,
+          title: msg.title,
+          mediaUrl: msg.media_url,
+          durationSec: msg.duration ?? undefined,
+        };
+        void this.opera.load(track);
+        this.cb.onSubtitle(`正在播放：${msg.title}`, "notice");
+        break;
+      }
+      case "media_control": {
+        // D4（X8 口径③）：七动作；next_track 随帧带新段 media（服务端取段）
+        if (msg.action === "next_track" && msg.media_url) {
+          void this.opera.load({
+            mediaId: msg.media_id ?? msg.media_url,
+            title: msg.title ?? "",
+            mediaUrl: msg.media_url,
+            durationSec: msg.duration ?? undefined,
+          });
+        } else {
+          void this.opera.apply(msg.action);
+        }
+        break;
+      }
       case "error": {
         // C-1（C-D4 方案 A）：slow 为占位级，unavailable/timeout 为失败终态；
         // 失败已显后同轮迟到的 slow 压制不渲染，防止话术从失败回退成等待
@@ -282,27 +334,8 @@ export class RealtimeClient {
         onSpeechStart: () => {
           // T-F 打断（A2 裁决定案）：TTS 在播时本地开口 → 立即停播 + 清回复字幕，
           // 不等服务端；服务端 A3 收到 asr_start 停写轨清缓冲
-          if (this.ttsPlaying) {
-            this.ttsPlaying = false;
-            this.cb.audioEl.muted = true; // 打断即静音，输出通路立即关闭
-            this.cb.audioEl.pause();
-            this.cb.onSubtitle("", "final");
-            this.reportPlayback(); // C-6：打断也结算（实际已播时长，如实入档）
-            // Day 7 D1 关 P1-3（前端半边）：本地停播后立即上行打断，不等回执。
-            // response_id 取当前活跃回复（S1.1 配套暴露），无活跃回复不发送；
-            // 字段按 Day7 README §5.4 草案，待 A1 契约冻结后逐字段校对
-            const responseId = this.playbackQueue.activeResponseId;
-            if (responseId !== null) {
-              const interrupt: InterruptMsg = {
-                type: "interrupt",
-                response_id: responseId,
-                reason: "barge_in",
-              };
-              this.socket?.send(interrupt);
-            }
-            // Day 6：canceled 收口（segment_id 填最后已播完段，无则 -1——dev-C 口径转达件③）
-            this.playbackQueue.interrupt();
-          }
+          this.localInterrupt();
+          this.opera.duckForSpeech(); // D4：开口即压住戏曲（barge-in，FR-CON-03）
           this.degradeLevel = null; // 新一轮开口，降级提示级别复位
           this.cb.onStatus("listening");
           this.socket?.send({ type: "asr_start" });
@@ -367,6 +400,33 @@ export class RealtimeClient {
 
   /** Day 7 TD-1：触达音频独立播放（day07/contracts.md §1/§2）。
    *  解码/起播失败 → 降级纯字幕，不回 played（宁缺勿假）；自然播完才结算回执。 */
+  /** D4：上层播放面板按钮 → 七动作（next_track 真实链路由服务端随帧给段） */
+  operaApply(action: OperaAction, nextTrack?: OperaTrack): void {
+    void this.opera.apply(action, nextTrack);
+  }
+
+  /** 本地打断收口（speechstart 与 media_play 共用）：停回复播报 + 上行 interrupt +
+   *  队列 canceled 结算。Day 7 D1 关 P1-3 前端半边，字段按 Day7 README §5.4。 */
+  private localInterrupt(): void {
+    if (!this.ttsPlaying) return;
+    this.ttsPlaying = false;
+    this.cb.audioEl.muted = true; // 打断即静音，输出通路立即关闭
+    this.cb.audioEl.pause();
+    this.cb.onSubtitle("", "final");
+    this.reportPlayback(); // C-6：打断也结算（实际已播时长，如实入档）
+    const responseId = this.playbackQueue.activeResponseId;
+    if (responseId !== null) {
+      const interrupt: InterruptMsg = {
+        type: "interrupt",
+        response_id: responseId,
+        reason: "barge_in",
+      };
+      this.socket?.send(interrupt);
+    }
+    // Day 6：canceled 收口（segment_id 填最后已播完段，无则 -1——dev-C 口径转达件③）
+    this.playbackQueue.interrupt();
+  }
+
   private handleTouchAudio(msg: TtsTextMsg): void {
     const touchId = msg.touch_id;
     if (touchId === undefined || !msg.audio) return; // 纯字幕降级：不回执
@@ -412,6 +472,8 @@ export class RealtimeClient {
     this.degradeLevel = null;
     this.playbackQueue.reset(); // 重连清旧会话：分段确认状态一并复位（不发 ack）
     this.touchPlayback.stop(); // 触达音频一并停（宁缺勿假，不发 played）
+    this.touchPlaying = false;
+    void this.opera.apply("stop"); // D4：重连/拆线停戏曲（不 dispose，会话内播放器复用）
     this.touchMeta.clear();
     if (this.pc) {
       this.pc.onicecandidate = null;

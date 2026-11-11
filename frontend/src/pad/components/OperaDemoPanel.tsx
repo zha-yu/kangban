@@ -15,9 +15,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   OperaPlayer,
+  type OperaAction,
   type OperaSnapshot,
   type OperaTrack,
 } from "../audio/opera-player";
+
+/** D4 真实链路：状态与动作都由 realtime（WS media_play/media_control）驱动 */
+export interface OperaLiveProps {
+  snapshot: OperaSnapshot;
+  onAction: (action: OperaAction) => void;
+}
 
 /** 演示音源：3 秒五声音阶琶音（mp3，25KB），随仓库入库（不占 B4 的 static/media/opera） */
 const DEMO_TRACK: OperaTrack = {
@@ -45,9 +52,9 @@ const STATUS_TEXT: Record<OperaSnapshot["status"], string> = {
   ended: "播完",
 };
 
-export function OperaDemoPanel() {
+export function OperaDemoPanel({ live }: { live?: OperaLiveProps }) {
   const playerRef = useRef<OperaPlayer | null>(null);
-  const [snapshot, setSnapshot] = useState<OperaSnapshot>({
+  const [demoSnapshot, setDemoSnapshot] = useState<OperaSnapshot>({
     status: "idle",
     track: null,
     volume: 0.8,
@@ -57,16 +64,18 @@ export function OperaDemoPanel() {
   const [lastResult, setLastResult] = useState<string>("—");
 
   const player = useMemo(() => {
+    if (live) return null; // 真实链路：播放器归 realtime，面板只渲染与发动作
     const instance = new OperaPlayer({
-      onState: (s) => setSnapshot({ ...s }),
+      onState: (s) => setDemoSnapshot({ ...s }),
       onError: (reason) => setLastResult(`失败：${reason}`),
     });
     playerRef.current = instance;
     return instance;
-  }, []);
+  }, [live]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setSnapshot({ ...player.state }), 300);
+    if (!player) return;
+    const timer = window.setInterval(() => setDemoSnapshot({ ...player.state }), 300);
     return () => {
       window.clearInterval(timer);
       player.dispose();
@@ -74,19 +83,26 @@ export function OperaDemoPanel() {
     };
   }, [player]);
 
-  async function run(action: Parameters<OperaPlayer["apply"]>[0]) {
+  const snapshot = live ? live.snapshot : demoSnapshot;
+
+  async function run(action: OperaAction) {
+    if (live) {
+      live.onAction(action);
+      setLastResult(`${action} → 已下发`);
+      return;
+    }
     // 「换一段」在只有一首演示曲时，用同一首模拟换源（真实链路由 media_service 给下一段）
     const next = action === "next_track" ? { ...DEMO_TRACK, title: `${DEMO_TRACK.title}·第 2 段` } : undefined;
-    const result = await player.apply(action, next);
+    const result = await player!.apply(action, next);
     setLastResult(`${action} → ${result}`);
-    setSnapshot({ ...player.state });
+    setDemoSnapshot({ ...player!.state });
   }
 
   return (
     <section className="flex h-full w-full max-w-[1100px] flex-col gap-6 rounded-3xl bg-surface p-8 shadow-xl">
       <header className="flex items-baseline justify-between">
-        <h1 className="text-3xl font-bold text-ink">戏曲播放器 · 单端调试</h1>
-        <span className="text-lg text-ink-muted">?demo=opera（仅 DEV）</span>
+        <h1 className="text-3xl font-bold text-ink">戏曲播放器 · {live ? "实时" : "单端调试"}</h1>
+        <span className="text-lg text-ink-muted">{live ? "media_play / media_control" : "?demo=opera（仅 DEV）"}</span>
       </header>
 
       <dl className="grid grid-cols-2 gap-4 text-xl">
@@ -112,17 +128,19 @@ export function OperaDemoPanel() {
       </dl>
 
       <div className="flex flex-wrap gap-3">
-        <button
-          type="button"
-          className="rounded-2xl bg-brand px-6 py-4 text-2xl font-bold text-ink-inverse"
-          onClick={async () => {
-            const result = await player.load(DEMO_TRACK);
-            setLastResult(`load → ${result}`);
-            setSnapshot({ ...player.state });
-          }}
-        >
-          播放
-        </button>
+        {!live && (
+          <button
+            type="button"
+            className="rounded-2xl bg-brand px-6 py-4 text-2xl font-bold text-ink-inverse"
+            onClick={async () => {
+              const result = await player!.load(DEMO_TRACK);
+              setLastResult(`load → ${result}`);
+              setDemoSnapshot({ ...player!.state });
+            }}
+          >
+            播放
+          </button>
+        )}
         {ACTIONS.map(({ action, label }) => (
           <button
             key={action}
@@ -135,34 +153,36 @@ export function OperaDemoPanel() {
         ))}
       </div>
 
-      <div className="flex gap-3">
-        <button
-          type="button"
-          className="rounded-2xl bg-warning-soft px-6 py-4 text-2xl font-semibold text-warning-ink"
-          onClick={() => {
-            player.duckForSpeech();
-            setLastResult("duckForSpeech（模拟开始说话）");
-            setSnapshot({ ...player.state });
-          }}
-        >
-          模拟开始说话（压住戏曲）
-        </button>
-        <button
-          type="button"
-          className="rounded-2xl bg-warning-soft px-6 py-4 text-2xl font-semibold text-warning-ink"
-          onClick={() => {
-            player.resumeAfterSpeech();
-            setLastResult("resumeAfterSpeech（播报结束）");
-            setSnapshot({ ...player.state });
-          }}
-        >
-          模拟说完（恢复戏曲）
-        </button>
-      </div>
+      {!live && (
+        <div className="flex gap-3">
+          <button
+            type="button"
+            className="rounded-2xl bg-warning-soft px-6 py-4 text-2xl font-semibold text-warning-ink"
+            onClick={() => {
+              player!.duckForSpeech();
+              setLastResult("duckForSpeech（模拟开始说话）");
+              setDemoSnapshot({ ...player!.state });
+            }}
+          >
+            模拟开始说话（压住戏曲）
+          </button>
+          <button
+            type="button"
+            className="rounded-2xl bg-warning-soft px-6 py-4 text-2xl font-semibold text-warning-ink"
+            onClick={() => {
+              player!.resumeAfterSpeech();
+              setLastResult("resumeAfterSpeech（播报结束）");
+              setDemoSnapshot({ ...player!.state });
+            }}
+          >
+            模拟说完（恢复戏曲）
+          </button>
+        </div>
+      )}
 
       <p className="mt-auto text-lg leading-relaxed text-ink-muted">
-        七动作来自照护台契约 §6.3；`next_track` 在本面板用同一首模拟换源，真实链路由
-        `media_service` 给下一段 URL。WS 帧形状未定（Q-D4），故本面板不接协议层。
+        七动作来自照护台契约 §6.3；真实链路 `next_track` 由服务端随帧给下一段 URL。
+        {live ? "播报/触达自动压住戏曲，播完恢复；开口即打断。" : "WS 帧形状未定（Q-D4），故本面板不接协议层。"}
       </p>
     </section>
   );
