@@ -698,9 +698,7 @@ async def test_tts_text_route_degraded_follows_router_layer(
     )
 
     # fallback 轮（L0/L1 不可用 → L2 正常生成）
-    await service.handle_user_turn(
-        runtime, "今天天气怎么样", call_id=None, turn_id="turn-d6a"
-    )
+    await service.handle_user_turn(runtime, "今天天气怎么样", call_id=None, turn_id="turn-d6a")
     assert deliver.messages
     assert all(msg["route_degraded"] is True for _, msg in deliver.messages)
 

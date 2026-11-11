@@ -427,8 +427,8 @@ uv run python scripts/update_progress.py --check-plans
 | R-D7 | opera 与播报/触达互斥口径缺失 | 复用既有 stopPlayback/interrupt 机制；优先级口径随 X8，未定提评审，不自裁 |
 | R-D8 | SOS 类别映射无 sos、撤销函数无承载 | D3 前置核对（S12a），缺则整项顺延留痕；不修改 safety_service/medication_service |
 | R-D9 | pre-push 接 eval_gate 后推送被环境差异误拦 | 门禁失败输出可读归因；环境缺失时按 R-D3 处置；接线本身是 R1② 可裁项 |
-| R-D10 | ~~N-3 缺归属校验~~ **已修复（2026-11-11 16:20，A 侧）** | A 在 `acknowledge_notification` 内加 `notification.target_id != acknowledger_id → NotificationForbidden`。D 侧已补 `test_acknowledge_foreign_notification_is_403_and_audited`（403 + 状态不变 + 审计一条）。**但引出回归**：`Identity.staff_id` 是 `str`、`target_id` 是 `uuid.UUID`，直接 `!=` 恒真 → 所有员工 403；D 在 api 边界 `uuid.UUID(staff.staff_id)` 归一化挡住，**请 A 在 service 侧也归一化**（否则 scheduler 等其他调用方同样踩坑） |
-| R-D11 | ~~`NotificationError` 一异常两语义~~ **已修复（A 侧）** | A 拆出 `NotificationNotFound` / `NotificationIllegalTransition` / `NotificationForbidden`；D 侧 `alerts.py` 已改 `isinstance` 判定、删掉消息前缀判断。**残项**：`_require_transition` 仍抛基类 `NotificationError`（未用 `NotificationIllegalTransition`），D 暂以「其余 NotificationError → 409」兜住，**请 A 收尾** |
+| R-D10 | ~~N-3 缺归属校验~~ **已闭环（2026-11-11）** | A 在 `acknowledge_notification` 内加归属校验；**service 侧 str/UUID 归一化已补**（`notify_service.py:604-616`），scheduler 等直调方不再踩坑。D 侧 `test_acknowledge_foreign_notification_is_403_and_audited`（403 + 状态不变 + 审计一条）绿 |
+| R-D11 | ~~`NotificationError` 一异常两语义~~ **已闭环（2026-11-11）** | A 拆出 `NotificationNotFound` / `NotificationIllegalTransition` / `NotificationForbidden`；D 侧 `alerts.py` 改 `isinstance` 判定；**`_require_transition` 已改抛 `NotificationIllegalTransition`**（本轮收尾），残余兜底分支保留但不再触发 |
 
 ## 9. 待确认项（执行前需回应；未决不擅自定）
 
@@ -492,21 +492,21 @@ uv run python scripts/update_progress.py --check-plans
 | 项 | 判据 | 证据 | 状态 |
 | --- | --- | --- | --- |
 | 后台权限隔离（N-3 主体） | 非员工主体不得确认通知 | `test_alerts_api.py::test_acknowledge_requires_auth`（401）／`::test_acknowledge_rejects_guardian_subject`（401 家属） | ✅ |
-| 后台权限隔离（N-3 归属） | 员工不得确认他人通知 | **无**：`notify_service.acknowledge_notification` 不校验 target（R-D10） | ⛔ 待 A 加参 |
+| 后台权限隔离（N-3 归属） | 员工不得确认他人通知 | `test_alerts_api.py::test_acknowledge_foreign_notification_is_403_and_audited`（403 + 状态不变 + 审计一条）；service 侧 UUID 归一化已补 | ✅ |
 | AC-23 通知状态机 | 仅 delivered 可确认、跳步 409、幂等 | `test_alerts_api.py` 中 `::test_acknowledge_delivered_then_idempotent`＋`::test_acknowledge_before_delivered_is_conflict[generated/pending/failed]`（3 参数化） | ✅ |
 | AC-26 撤销边界 | 普通已服 10 秒可撤销；红色事件只追加「说错了」且保持 open | `test_medication_undo.py` 4 例（窗口内恢复 waiting_confirm＋审计／超窗 409／非已服终态 409／他人 404）；`test_sos_service.py` 3 例＋`test_sos_api.py` 3 例（追加说明 status 保持 open＋审计／他人 404／已关闭 409）；`test_pad_undo_api.py` 6 例 | ✅ 接口级；AC-26 联演待窗口 |
-| AC-13/18 家属日报范围 | 家属只见绑定长者；越权 403+审计 | **无**：F1/F2 未实现（缺 C2 读函数，J-C2b） | ⛔ 待 C |
+| AC-13/18 家属日报范围 | 家属只见绑定长者；越权 403+审计 | `tests/test_reports_api.py` 9 例（F0 三字段、F1 最新版＋80 字预览、F2 四键＋声明、越权 403＋审计、404）；D2 已切真 | ✅ |
 | AC-38 双通知（家属侧） | 红色事件 → 家属可见一条 is_mock 通知 | N1 接口已交付（提前件），但 X5/X7 演练未做（卡 D1） | ⛔ 待演练 |
 | AC-37 戏曲（pad 侧） | 七动作可控、可打断 | pad 播放器 16 步断言；服务端 action 分支＋`media_control` 下发（新增 executor 3 例＋companion 2 例）；全量 1348 passed | 🚧 代码全链路通；CP4 四方联演待窗口 |
 | FR-TC-09 门禁拦截 | 人为调坏规则层 → 门禁 EXIT≠0 | `eval/reports/day8_frtc09_intercept.md`（PASS→FAIL→还原→PASS 四步）＋ `day8_frtc09_{before,tampered,after}.md` | ✅ |
 | FR-TC-09 分层归因 | 报告含七层归因表 | `eval/reports/day8_eval_baseline.md` §3（ASR/召回/LLM/Tool 如实标「无数据」） | ✅ |
 | FR-TC-09 bad case 回流 | 失败项落盘有记录 | `eval/fixtures/badcase_backlog.jsonl`（15 条，run_id `20261111-145521`） | ✅ |
 | 评测基线不回退 | 各项 ≥ 首跑锁 | `eval/reports/day8_baseline_lock.json`（41/50、20/20、25/30、19/20）；gate B 门 PASS | ✅ |
-| 375px 家属端无障碍 | 无横向滚动、正文 ≥16px | **无**：D2 卡 D1 真端点 | ⛔ 待 D1 |
-| 全量回归 | `pytest` 零失败 | 1273 passed / 0 failed（2026-11-11 15:55，合并 `e7c5061` 后） | ✅ |
+| 375px 家属端无障碍 | 无横向滚动、正文 ≥16px | 真实数据断言 list=375/detail=360/notif=375、overflowEls=0；截图 `eval/artifacts/family-375-real-data.png`（本地，gitignore） | ✅ |
+| 全量回归 | `pytest` 零失败 | **1389 passed / 0 failed**（2026-11-11 收口复跑，192s） | ✅ |
 | 前端编译 | `tsc --noEmit` ＋ `build` | 双绿（16:10） | ✅ |
 
-**诚实结论**：D 的完成定义项里，**门禁/通知状态机/戏曲播放器/回归** 四项有实证据；**家属日报、375px、双通知演练、N-3 归属校验** 四项被上游卡住，其中 R-D10 是安全口子，必须在对外演示前补掉。
+**诚实结论（2026-11-11 收口）**：D 的完成定义项中，**门禁 / 通知状态机 / 戏曲播放器 / 家属日报与 375px / 回归** 均有实证据；只剩 **AC-38 双通知演练（X5/X7 窗口）** 与 **AC-37 CP4 联演** 两项待演练，不再有被上游代码卡住的项。
 
 ---
 
@@ -537,16 +537,16 @@ uv run python scripts/update_progress.py --check-plans
 | `report_service` **生成侧**（含固定声明、四类用药、dedupe 通知） | C2 · dev-C | ✅ `generate_daily_report` |
 | `media_service`（唯一写库层） | C4 · dev-C | ✅ list/search/get/`get_playback_url`/start/finish/history/seed，稳定路径函数 `stable_media_url` |
 | `notify_service` staff 写/确认/扫描/升级 | A3 · dev-A | ✅ `send_staff_notifications`/`acknowledge_notification`/`scan_*`/`escalate_red_event` |
-| notify typed exceptions | A3 · dev-A | ✅ `NotificationNotFound`/`IllegalTransition`/`Forbidden`（残项：`_require_transition` 仍抛基类） |
+| notify typed exceptions | A3 · dev-A | ✅ `NotificationNotFound`/`IllegalTransition`/`Forbidden`；`_require_transition` 已改抛 typed 异常 |
 | rules R-01~R-08 直连 | A5 · dev-A | ✅ `RULESET_VERSION=r2`（旧断言已由 B 同步） |
 | 员工侧通知读/已读 | A3 · dev-A | ✅ `list_staff_notifications`（`notify_service.py:300`）／`mark_staff_notification_read`（:335）／`StaffNotificationNotFound` |
 | 员工告警域 N-1/N-2/N-3 | **D** | ✅ `app/api/alerts.py` 三条齐，16 用例（越权 403＋审计、已读幂等不动状态、分页/未读过滤） |
 | `play_opera` Tool 注册 | B4 · dev-B | ✅ `bind_dev_b_tools` 已 bind（`bind_tools.py:152`）；**实现与素材仍待 B4 交付运行** |
 
-### 12.3 两个「已修但需回归」的点（给 A 收尾）
+### 12.3 通知域两处收尾（已闭环，2026-11-11）
 
-1. **service 侧 uuid 归一化**（R-D10 回归）：`Identity.staff_id` 为 `str`、`target_id` 为 `uuid.UUID`，直接比较恒不等；D 已在 api 边界 `uuid.UUID(...)` 兜住，但 scheduler 等直调方仍会踩。
-2. **`_require_transition` 改抛 `NotificationIllegalTransition`**：现在抛基类，D 靠「其余 `NotificationError` → 409」兜住，语义上不够干净。
+1. **service 侧 uuid 归一化**：已补（`notify_service.py:604-616`），`acknowledge_notification` 对 str/UUID 两种入参都能正确比对。
+2. **`_require_transition` 改抛 `NotificationIllegalTransition`**：已改，D 侧 `alerts.py` 的「其余 NotificationError → 409」兜底保留为保险，正常路径不再触发。
 
 ### 12.4 上游已知红灯（不阻塞 D，交 A/B；2026-11-11 收口门禁实测）
 
@@ -587,3 +587,4 @@ uv run python scripts/update_progress.py --check-plans
 | v2.0 | 2026-11-11 | **修复撤销边界（Q-D7）**：`medication_service.revoke_taken_report`（仅 taken_reported、10 秒窗口、恢复 waiting_confirm、审计）＋`sos_service.append_correction`（红事件只追加「说错了」、保持 open、审计）；新增 `POST /api/pad/medication-events/{id}/revoke` 与 `POST /api/pad/sos/{id}/correction`；pad 结果页加「我说错了」入口；新增/扩充 24 例用例（service 7＋API 11＋撤销 6）；§11 补 AC-26 证据。残项：撤销/说明接口为自裁口径，待 dev-B 契约留痕；AC-26 联演待窗口 |
 | v2.1 | 2026-11-11 | **Q-D11 帧冻结＋四项契约留痕**：照护台契约 v1.5（§6.2 play_opera 入参 query/action 二选一、§6.5 新增 media 帧形状并否决 `stream_id`/`media_info`、§3.2 N-3 幂等口径）；day08 contracts v1.1（§P-2 撤销/说明端点冻结、§6 route_degraded 引用登记）；`adhoc-20261111-ws-media-control-frame.md` 标「已废弃」；计划 §9 Q-D10/Q-D11、§12.1 #5/#7/#9 同步。代码零改动（D 实现与冻结口径一致） |
 | v2.2 | 2026-11-11 | **D6 服务端置位完成（跨 B 写域代改留痕）**：`turn_service._is_route_degraded`（仅 fallback＋action=agent＋生成未降级为真）→ `response_service` 逐段恒下发 `route_degraded`；`main.py` legacy 出口与 `medication_confirmation_graph` 触达帧恒 `false`；`signaling.TtsTextMsg` 与 `dialogue_service.TtsTextMsgV2` 同步声明；新增 turn_service 集成用例 1 例＋response/dialogue/signaling 形状断言 3 处。**D3 复核收口**：`append_correction` 增 `type='sos'` 过滤（非 sos 红事件按 404），补 service 用例 1 例。day08 contracts §6 状态回填 v1.2（口径零变更）。残项：D6 e2e（杀 sidecar）与 AC-26 联演待窗口 |
+| v2.3 | 2026-11-11 | **通知域两处收尾＋完成定义表同步**：`_require_transition` 改抛 `NotificationIllegalTransition`（R-D11 闭环）；§11 把 N-3 归属、AC-13/18、375px 三项改 ✅ 并更新全量回归数字（1389 passed / 0 failed）；R-D10/R-D11、§12.2、§12.3 全部标已闭环；诚实结论收敛为「仅 AC-38 演练与 AC-37 CP4 待窗口」 |
