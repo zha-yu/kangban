@@ -230,6 +230,8 @@ class FollowupTask:
 EventSink = Callable[[str, Mapping[str, object]], Awaitable[None]]
 #: 跟进任务回调：落库由 N14 接线（写 work_orders）
 FollowupSink = Callable[[FollowupTask], Awaitable[None]]
+#: 戏曲播放下行回调：``(device_id, payload)``，装配层接 signaling.deliver（D4/X8）
+MediaPlaySink = Callable[[str, Mapping[str, object]], Awaitable[None]]
 
 # ---------------------------------------------------------------------------
 # 上下文组装（占位实现）与 ReAct 线协议
@@ -381,6 +383,7 @@ class CompanionAgent:
         tools: Sequence[ToolSpec] = (),
         on_event: EventSink | None = None,
         followup_sink: FollowupSink | None = None,
+        on_media_play: MediaPlaySink | None = None,
     ) -> None:
         self._llm = llm
         self._guardrails = guardrails
@@ -388,6 +391,7 @@ class CompanionAgent:
         self._tools = tuple(tools)
         self._on_event = on_event
         self._followup_sink = followup_sink
+        self._on_media_play = on_media_play
 
     async def run(
         self,
@@ -510,6 +514,21 @@ class CompanionAgent:
                 await self._emit_event(
                     "tool_succeeded", {"tool_name": call.tool, "latency_ms": latency_ms}
                 )
+                # D4（X8 口径②/③）：play_opera 命中 → 经装配层注入的 sink 下发
+                # media_play 帧（agents 不横向 import audio，deliver 由 main 注入）
+                if call.tool == "play_opera" and self._on_media_play is not None:
+                    data = result.data or {}
+                    media = data.get("media") or {}
+                    if data.get("found") and media.get("media_url"):
+                        await self._on_media_play(
+                            runtime.device_id,
+                            {
+                                "media_url": media["media_url"],
+                                "title": media.get("title") or "",
+                                "media_id": str(media.get("media_id") or ""),
+                                "duration": media.get("duration"),
+                            },
+                        )
                 messages.append({"role": "assistant", "content": reply.text})
                 messages.append({"role": "user", "content": _observation(call, result)})
                 continue
@@ -642,6 +661,7 @@ __all__ = [
     "EventSink",
     "FollowupSink",
     "FollowupTask",
+    "MediaPlaySink",
     "ToolExecutor",
     "ToolResult",
     "ToolSpec",

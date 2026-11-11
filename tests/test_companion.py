@@ -28,6 +28,7 @@ from app.agents.companion import (
     FORBIDDEN_FALLBACK_TEXT,
     HIGH_RISK_REFUSED_TEXT,
     HIGH_RISK_TOOL_NAMES,
+    PLAY_OPERA_TOOL,
     TRANSIENT_DEGRADED_TEXT,
     WEATHER_TOOL,
     CompanionAgent,
@@ -456,3 +457,78 @@ def test_memory_recall_executor_factory_returns_callable() -> None:
 
     fn = make_memory_recall_executor(session_factory=_session_factory)
     assert callable(fn), "factory should return a callable executor"
+
+
+# ---------------------------------------------------------------------------
+# D4（X8 口径②）：play_opera 命中 → media_play 下行；未找到不下发
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_play_opera_success_emits_media_play() -> None:
+    """play_opera found=true → on_media_play(device_id, media 子集)，供装配层 deliver。"""
+    media = {
+        "media_id": "m-0001",
+        "title": "茉莉雨",
+        "media_url": "/static/media/opera/m-0001.mp3",
+        "duration": 42,
+    }
+    llm = ScriptedLLM(
+        [
+            LLMReply(text=_tool_call_text("play_opera", {"query": "茉莉雨"}), degraded=False),
+            LLMReply(text="给您放一段《茉莉雨》。", degraded=False),
+        ]
+    )
+    executor = ScriptedExecutor([_ok({"found": True, "media": media})])
+    sent: list[tuple[str, Mapping[str, object]]] = []
+
+    async def on_media_play(device_id: str, payload: Mapping[str, object]) -> None:
+        sent.append((device_id, payload))
+
+    agent = CompanionAgent(
+        llm=llm,
+        guardrails=Guardrails(
+            max_tool_calls=MAX, repeat_window_s=WINDOW, repeat_threshold=THRESHOLD
+        ),
+        tool_executor=executor,
+        tools=(PLAY_OPERA_TOOL,),
+        on_media_play=on_media_play,
+    )
+    result = await agent.run(runtime=_runtime(), turn_id=TURN_ID, user_text="放一段茉莉雨")
+
+    assert result.text == "给您放一段《茉莉雨》。"
+    assert len(sent) == 1
+    device_id, payload = sent[0]
+    assert device_id == DEVICE_ID  # 身份只从 runtime 注入
+    assert payload["media_url"] == media["media_url"]
+    assert payload["title"] == "茉莉雨"
+    assert payload["media_id"] == "m-0001"
+
+
+@pytest.mark.asyncio
+async def test_play_opera_not_found_no_media_play() -> None:
+    """found=false → 不下发 media_play（FR-CON-04 如实告知，不播空源）。"""
+    llm = ScriptedLLM(
+        [
+            LLMReply(text=_tool_call_text("play_opera", {"query": "不存在的曲目"}), degraded=False),
+            LLMReply(text="没找到这段，换个剧目试试？", degraded=False),
+        ]
+    )
+    executor = ScriptedExecutor([_ok({"found": False, "media": None})])
+    sent: list[tuple[str, Mapping[str, object]]] = []
+
+    async def on_media_play(device_id: str, payload: Mapping[str, object]) -> None:
+        sent.append((device_id, payload))
+
+    agent = CompanionAgent(
+        llm=llm,
+        guardrails=Guardrails(
+            max_tool_calls=MAX, repeat_window_s=WINDOW, repeat_threshold=THRESHOLD
+        ),
+        tool_executor=executor,
+        tools=(PLAY_OPERA_TOOL,),
+        on_media_play=on_media_play,
+    )
+    await agent.run(runtime=_runtime(), turn_id=TURN_ID, user_text="放不存在的曲目")
+
+    assert sent == []

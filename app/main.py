@@ -485,6 +485,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # 闭包按调用时解析；Agent 只在轮次内调用，不存在未定义窗口）
         await turn_service.agent_event_sink(event_type, payload)
 
+    async def _media_play_sink(device_id: str, payload: Mapping[str, object]) -> None:
+        # D4（X8 口径②）：play_opera 命中 → media_play 帧进 pad 发送队列；
+        # agents 不横向 import audio，deliver 在装配层注入（同 ResponseService 先例）
+        signaling.deliver(device_id, {"type": "media_play", **payload})
+
     agent = CompanionAgent(
         llm=llm_service,
         # AGENTS §7 硬性数值：单轮 ≤8 次工具调用；同一 Tool 1 分钟内第 3 次熔断
@@ -496,6 +501,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # 有 get_weather 可用，天气问题只能靠常识编答 → 实时天气不可用）
         tools=DEFAULT_TOOLS,
         on_event=_agent_event_sink,
+        on_media_play=_media_play_sink,
     )
     # Day 6 S4：ResponseService 提升为 lifespan 局部变量——TurnService 持有做第 7 步
     # 分段下发，装配层另持引用注册 segment_ack 回调（同一实例，ack 才能命中会话 epoch）
