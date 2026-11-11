@@ -228,7 +228,7 @@ grep -rn "from app.graphs" app/api/ app/audio/                  # 零横向 impo
 
 | 日期 | 任务 | 结果/证据 | 偏差登记 |
 | --- | --- | --- | --- |
-| （待填） | | | |
+| 2026-11-11 | dev-C：C1 健康域 REST / C4 media_service / C3 console 三页切真 / H12（C 侧参与） | ①C1：`tests/test_health_api_records.py` 15 例绿（含越权代填 403+审计、红档角色门禁、纠错版本链）；②C4：`tests/test_media_service.py` 10 例绿；③X8 证据：[dev-c-evidence-x8-media.md](dev-c-evidence-x8-media.md)——种子/列表/检索（含空命中不编造）/播放 URL 与冻结模板逐字断言一致；④C3：USE_MOCK_API 默认真实接口，AC-32 代填人展示，tsc 零错 + MPA 构建过；⑤H12 四件套全绿：pytest **1265 passed/0 failed**、ruff check+format 180 files、tsc --noEmit、vite build | ①D1（dev-D）未就绪 → 主理人裁决 console 三页**不走 Mock 桩**、直接真实接口为默认，X5 告警四态证据与三页走查截图待 dev-D 合入后主理人自测补；②ruff format 越域代修 3 个 dev-A 合入文件（纯排版零逻辑，主理人批准 A 方案）；③grade_health_record 导入名修复按主理人裁决 A 方案由 C 侧改引用（提交 2c707f4） |
 
 ---
 

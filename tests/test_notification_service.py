@@ -52,22 +52,24 @@ async def session(db_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
 async def seeded(session: AsyncSession) -> dict[str, Any]:
     """一位长者 + primary_care 护工 + 一位 active 家属。"""
     elder = Elder(name="张桂芬", status="active")
-    worker = StaffAccount(
-        name="李护工", role="care_worker", password_hash="x" * 32
-    )
-    guardian = GuardianAccount(
-        name="张子女", password_hash="x" * 32
-    )
+    worker = StaffAccount(name="李护工", role="care_worker", password_hash="x" * 32)
+    guardian = GuardianAccount(name="张子女", password_hash="x" * 32)
     session.add_all([elder, worker, guardian])
     await session.flush()
 
-    session.add(ElderStaffAssignment(
-        elder_id=elder.elder_id, staff_id=worker.staff_id, relation="primary_care"
-    ))
-    session.add(ElderGuardian(
-        elder_id=elder.elder_id, guardian_id=guardian.guardian_id,
-        relation="child", status="active",
-    ))
+    session.add(
+        ElderStaffAssignment(
+            elder_id=elder.elder_id, staff_id=worker.staff_id, relation="primary_care"
+        )
+    )
+    session.add(
+        ElderGuardian(
+            elder_id=elder.elder_id,
+            guardian_id=guardian.guardian_id,
+            relation="child",
+            status="active",
+        )
+    )
     await session.flush()
 
     return {
@@ -99,18 +101,18 @@ async def test_notification_lifecycle_success(
     # generated → pending
     await notify_service.mark_notification_sent(session, notification_id=note_id)
     await session.flush()
-    n = (await session.execute(
-        select(Notification).where(Notification.notification_id == note_id)
-    )).scalar_one()
+    n = (
+        await session.execute(select(Notification).where(Notification.notification_id == note_id))
+    ).scalar_one()
     assert n.status == "pending"
     assert n.sent_at is not None
 
     # pending → delivered
     await notify_service.mark_notification_delivered(session, notification_id=note_id)
     await session.flush()
-    n = (await session.execute(
-        select(Notification).where(Notification.notification_id == note_id)
-    )).scalar_one()
+    n = (
+        await session.execute(select(Notification).where(Notification.notification_id == note_id))
+    ).scalar_one()
     assert n.status == "delivered"
 
     # delivered → acknowledged
@@ -118,17 +120,15 @@ async def test_notification_lifecycle_success(
         session, notification_id=note_id, acknowledger_id=seeded["staff_id"]
     )
     await session.flush()
-    n = (await session.execute(
-        select(Notification).where(Notification.notification_id == note_id)
-    )).scalar_one()
+    n = (
+        await session.execute(select(Notification).where(Notification.notification_id == note_id))
+    ).scalar_one()
     assert n.status == "acknowledged"
     assert n.acknowledged_by == seeded["staff_id"]
     assert n.acknowledged_at is not None
 
 
-async def test_illegal_transition_rejected(
-    session: AsyncSession, seeded: dict[str, Any]
-) -> None:
+async def test_illegal_transition_rejected(session: AsyncSession, seeded: dict[str, Any]) -> None:
     """非法迁移抛错（generated → delivered 不能跳 pending）。"""
     refs = await notify_service.send_staff_notifications(
         session,
@@ -144,9 +144,7 @@ async def test_illegal_transition_rejected(
         await notify_service.mark_notification_delivered(session, notification_id=note_id)
 
 
-async def test_acknowledge_idempotent(
-    session: AsyncSession, seeded: dict[str, Any]
-) -> None:
+async def test_acknowledge_idempotent(session: AsyncSession, seeded: dict[str, Any]) -> None:
     """acknowledge 幂等：已确认直接返回不报错。"""
     refs = await notify_service.send_staff_notifications(
         session,
@@ -193,9 +191,9 @@ async def test_pending_retry_exhausted_becomes_failed(
     await session.flush()
 
     # 手动把 retry_count 调到上限
-    n = (await session.execute(
-        select(Notification).where(Notification.notification_id == note_id)
-    )).scalar_one()
+    n = (
+        await session.execute(select(Notification).where(Notification.notification_id == note_id))
+    ).scalar_one()
     n.retry_count = notify_service.MAX_RETRIES
     await session.flush()
 
@@ -204,9 +202,9 @@ async def test_pending_retry_exhausted_becomes_failed(
     await session.flush()
 
     # 重试耗尽的变成 failed，不再出现在 pending 返回列表里
-    updated = (await session.execute(
-        select(Notification).where(Notification.notification_id == note_id)
-    )).scalar_one()
+    updated = (
+        await session.execute(select(Notification).where(Notification.notification_id == note_id))
+    ).scalar_one()
     assert updated.status == "failed"
     assert note_id not in {n.notification_id for n in exhausted}
 
@@ -246,11 +244,17 @@ async def test_red_event_dual_notification_staff_and_guardian(
     assert len(guard_refs) == 1
 
     # 两条通知 target_type 不同
-    all_notes = list((await session.execute(
-        select(Notification).where(Notification.notification_id.in_(
-            [staff_refs[0].notification_id, guard_refs[0].notification_id]
-        ))
-    )).scalars())
+    all_notes = list(
+        (
+            await session.execute(
+                select(Notification).where(
+                    Notification.notification_id.in_(
+                        [staff_refs[0].notification_id, guard_refs[0].notification_id]
+                    )
+                )
+            )
+        ).scalars()
+    )
     types = {n.target_type for n in all_notes}
     assert types == {"staff", "guardian"}
     for n in all_notes:
@@ -289,20 +293,24 @@ async def test_red_escalation_no_second_risk_event(
     await notify_service.escalate_red_event(session, event_id=event.event_id)
     await session.flush()
 
-    updated = (await session.execute(
-        select(RiskEvent).where(RiskEvent.event_id == event.event_id)
-    )).scalar_one()
+    updated = (
+        await session.execute(select(RiskEvent).where(RiskEvent.event_id == event.event_id))
+    ).scalar_one()
     assert updated.status == "escalated"
     # severity 保持 red（升级不改 severity）
     assert updated.severity == "red"
 
     # 不应产生第二 risk_event
-    all_red = list((await session.execute(
-        select(RiskEvent).where(
-            RiskEvent.elder_id == seeded["elder_id"],
-            RiskEvent.severity == "red",
-        )
-    )).scalars())
+    all_red = list(
+        (
+            await session.execute(
+                select(RiskEvent).where(
+                    RiskEvent.elder_id == seeded["elder_id"],
+                    RiskEvent.severity == "red",
+                )
+            )
+        ).scalars()
+    )
     assert len(all_red) == 1
 
 
@@ -386,15 +394,15 @@ async def test_dedupe_key_prevents_duplicate_notifications(
     assert second[0].notification_id == first[0].notification_id
 
     # 库里只有一条（按 id 查，key 被服务内部加了 staff_id 后缀）
-    n = (await session.execute(
-        select(Notification).where(Notification.notification_id == first[0].notification_id)
-    )).scalar_one_or_none()
+    n = (
+        await session.execute(
+            select(Notification).where(Notification.notification_id == first[0].notification_id)
+        )
+    ).scalar_one_or_none()
     assert n is not None
 
 
-async def test_dedupe_key_per_target(
-    session: AsyncSession, seeded: dict[str, Any]
-) -> None:
+async def test_dedupe_key_per_target(session: AsyncSession, seeded: dict[str, Any]) -> None:
     """dedupe_key 逐目标追加后缀 —— staff 侧和 guardian 侧可以各自独立各发一条。"""
     base = f"risk_event:{uuid.uuid4()}"
 
@@ -415,12 +423,19 @@ async def test_dedupe_key_per_target(
     await session.flush()
 
     # 库里应两条 dedupe_key（各加了 staff/guardian 后缀）
-    all_notes = list((await session.execute(
-        select(Notification).where(Notification.elder_id == seeded["elder_id"]
-            if False else Notification.notification_id.in_(
-                [staff[0].notification_id, guard[0].notification_id]
-            ))  # 简化：直接按 id 查
-    )).scalars())
+    all_notes = list(
+        (
+            await session.execute(
+                select(Notification).where(
+                    Notification.elder_id == seeded["elder_id"]
+                    if False
+                    else Notification.notification_id.in_(
+                        [staff[0].notification_id, guard[0].notification_id]
+                    )
+                )  # 简化：直接按 id 查
+            )
+        ).scalars()
+    )
     keys = {n.dedupe_key for n in all_notes if n.dedupe_key}
     # 因为两个 target 各自在 key 后加了后缀，这里验证 key 不同
     assert len(keys) == 2
@@ -432,6 +447,7 @@ async def test_no_staff_returns_empty_list_not_error(
     """无 primary_care 护工时 staff 通知返回空列表（不抛错）。"""
     # 删掉 binding
     from app.models.relation import ElderStaffAssignment
+
     await session.execute(
         ElderStaffAssignment.__table__.delete().where(
             ElderStaffAssignment.elder_id == seeded["elder_id"]
