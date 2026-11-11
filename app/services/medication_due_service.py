@@ -48,6 +48,7 @@ class DuePlan:
     drug_name: str
     dose: str
     cron_expr: str
+    version: int
     # 构建子图 start_medication_task 时需要；这里算好免去调用方重复逻辑
     deadline: str  # ISO8601，T0 + 15 分钟（四次触达全部用完到达时点）
 
@@ -129,6 +130,7 @@ async def list_due_plans(
                 drug_name=plan.drug_name,
                 dose=plan.dose,
                 cron_expr=plan.schedule_cron,
+                version=plan.version,
                 deadline=deadline_iso,
             )
         )

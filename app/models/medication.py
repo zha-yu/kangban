@@ -142,7 +142,8 @@ class MedicationEvent(Base):
         UniqueConstraint(
             "plan_id",
             "scheduled_at",
-            name="uq_medication_events_plan_id_scheduled_at",
+            "plan_version",
+            name="uq_medication_events_plan_id_scheduled_at_plan_version",
         ),
         Index(
             "ix_medication_events_elder_id_scheduled_at",
@@ -168,6 +169,12 @@ class MedicationEvent(Base):
     )
     scheduled_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, comment="应服时间 T0"
+    )
+    plan_version: Mapped[int] = mapped_column(
+        Integer(),
+        server_default=text("1"),
+        nullable=False,
+        comment="药单版本（与 medication_plans.version 联动；改药单后新事件自动升级到新版本）",
     )
     drug_snapshot: Mapped[dict[str, Any]] = mapped_column(
         JSONB(), nullable=False, comment="药品剂量快照（药单改版不影响历史）"

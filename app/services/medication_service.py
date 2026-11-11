@@ -78,8 +78,14 @@ async def create_event(
     scheduled_at: datetime.datetime,
     drug_snapshot: dict[str, Any],
     triggered_by: str,
+    plan_version: int = 1,
 ) -> uuid.UUID:
-    """建（或取回）一条用药事件。幂等键 `(plan_id, scheduled_at)`。"""
+    """建（或取回）一条用药事件。幂等键 `(plan_id, scheduled_at, plan_version)`。
+
+    plan_version 联动 medication_plans.version：改药单后 version+1，新事件自动带
+    新版本号，不会与历史事件的 `(plan_id, scheduled_at)` 冲突——这是 G1 裁决落地
+    的核心。见 0019_day8_medplan_version 迁移与 docs/plans/day08/dev-a-药单管理后端接口.md。
+    """
     if triggered_by not in ("scheduler", "dialog"):
         raise MedicationError(f"unknown triggered_by: {triggered_by!r}")
 
@@ -90,6 +96,7 @@ async def create_event(
                 select(MedicationEvent.reminder_id, MedicationEvent.payload_hash).where(
                     MedicationEvent.plan_id == plan_id,
                     MedicationEvent.scheduled_at == scheduled_at,
+                    MedicationEvent.plan_version == plan_version,
                 )
             )
         )
@@ -100,7 +107,7 @@ async def create_event(
     if existing is not None:
         if existing.payload_hash != digest:
             raise MedicationConflict(
-                "same (plan_id, scheduled_at) already exists with a different drug snapshot"
+                "same (plan_id, scheduled_at, plan_version) already exists with a different drug snapshot"
             )
         # mappings() 取值仍是 Any，显式经 str 构造 UUID 而不是 cast——
         # 非法值会在这里炸响（宁可抛错也不要把脏数据静默往下传）
@@ -115,6 +122,7 @@ async def create_event(
                     plan_id=plan_id,
                     elder_id=elder_id,
                     scheduled_at=scheduled_at,
+                    plan_version=plan_version,
                     drug_snapshot=drug_snapshot,
                     payload_hash=digest,
                     triggered_by=triggered_by,
@@ -132,6 +140,7 @@ async def create_event(
                     select(MedicationEvent.reminder_id, MedicationEvent.payload_hash).where(
                         MedicationEvent.plan_id == plan_id,
                         MedicationEvent.scheduled_at == scheduled_at,
+                        MedicationEvent.plan_version == plan_version,
                     )
                 )
             )
