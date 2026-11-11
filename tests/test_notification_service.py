@@ -169,6 +169,30 @@ async def test_acknowledge_idempotent(session: AsyncSession, seeded: dict[str, A
     await session.flush()
 
 
+async def test_acknowledge_forbidden_wrong_owner(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    """R-D10 安全修复：任何持有效工牌的人不能确认别人的通知。"""
+    refs = await notify_service.send_staff_notifications(
+        session,
+        elder_id=seeded["elder_id"],
+        ntype="escalated_red_event",
+        payload={"event_id": str(uuid.uuid4())},
+    )
+    note_id = refs[0].notification_id
+    await session.flush()
+
+    await notify_service.mark_notification_sent(session, notification_id=note_id)
+    await notify_service.mark_notification_delivered(session, notification_id=note_id)
+    await session.flush()
+
+    # 家属持有效工牌但 target_type=staff，不能确认 staff 通知
+    with pytest.raises(notify_service.NotificationForbidden):
+        await notify_service.acknowledge_notification(
+            session, notification_id=note_id, acknowledger_id=seeded["guardian_id"]
+        )
+
+
 # ======================================================================
 # 重试失败终态
 # ======================================================================
@@ -465,6 +489,7 @@ async def test_no_staff_returns_empty_list_not_error(
 
 
 __all__ = [
+    "test_acknowledge_forbidden_wrong_owner",
     "test_acknowledge_idempotent",
     "test_dedupe_key_per_target",
     "test_dedupe_key_prevents_duplicate_notifications",

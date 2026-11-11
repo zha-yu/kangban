@@ -1,4 +1,4 @@
-> 状态：草稿　｜　版本：v1.1　｜　日期：2026-11-11
+> 状态：草稿　｜　版本：v1.4　｜　日期：2026-11-11
 > 关联：docs/team_tasks/day08/dev-A-后端数据与分级.md v1.2（药单管理 API 为 dev-A Day 8 **追加项**，主任务书 A1–A5 已合入，本计划为 H+1 补卡）
 > 上游依据：PRD FR-MED-01 / §4.5（医生增改停查、护工/管理员只读）｜技术设计文档 §3.3 medication_plans 表｜AC-27（version+1、历史快照不受影响）
 > 变更记录见文末
@@ -235,10 +235,23 @@ async def list_plans_by_elder(
     elder_id: uuid.UUID,
     include_stopped: bool = True,
 ) -> list[PlanRow]:
-    """按长者查药单（JOIN staff_accounts 回填 created_by_name）。"""
+    """按长者查药单（JOIN staff_accounts 回填 created_by_name + scope 过滤）。"""
+    # ① _filter_by_scope 加 WHERE elder_id IN allowed_elder_ids（admin 跳过）
+    #    越权读时 allowed_elder_ids 不包含请求 elder_id → list 自动返回空
+    #    + 审计 action=medication_plan_read_forbidden, detail.reason="read_scope_outside_assignment"
+    # ② 主查询 + JOIN staff_accounts AS creator ON plan.created_by = creator.staff_id
+    # ③ 过滤 status!='stopped' 若 include_stopped=False
+    # ④ 返回 list[PlanRow]
+    #    → 空列表是合法返回（员工查非负责长者），不抛异常
 
 async def get_plan(session: AsyncSession, plan_id: uuid.UUID) -> PlanRow | None:
-    """查单条药单。"""
+    """查单条药单（scope 校验 + 越权读记审计）。"""
+    # ① 先查 plan（拿 elder_id 用于 scope 校验）
+    # ② _filter_by_scope 判定：该 plan.elder_id 是否在当前 staff 的允许集合里
+    #    → admin 直接通过
+    #    → doctor/care_worker 且 elder_id 不在集合 → 记审计后返回 None（API 层转 404）
+    # ③ JOIN staff_accounts 回填 created_by_name
+    # ④ 返回 PlanRow 或 None
 ```
 
 **PlanRow** 结构（dataclass 或 namedtuple）：
@@ -255,7 +268,7 @@ class PlanRow:
 
 | 接口类型 | API 层 | Service 层门禁 |
 | --- | --- | --- |
-| 查询药单（list/get） | `require_roles("doctor","care_worker","admin")` 全员放行 | 校验数据访问范围（当前 staff 是否对该长者有 active assignment） |
+| 查询药单（list/get） | `require_roles("doctor","care_worker","admin")` 放行 | **范围收紧**（三分支）：admin 看全量；doctor/care_worker 只能看自己有 active assignment 的长者（`elder_staff_assignments WHERE staff_id=? AND elder_id IN (...)`——relation 不限，primary_care 或 doctor 都是"负责"）；越权读（员工查非负责长者）返回空集合（list）或 404（get）+ 审计 detail.reason="read_scope_outside_assignment" |
 | 新增药单 | `require_roles("doctor","care_worker","admin")` 放行到判定流程 | ① role=doctor；② 该 staff 是否为该长者的负责医生（`elder_staff_assignments WHERE elder_id=? AND staff_id=? AND relation='doctor'`） |
 | 修改药单 | 同上 | 同上（role + 该 staff 是否为该长者的负责医生） |
 | 停用药单 | 同上 | 同上 |
@@ -302,7 +315,44 @@ class PlanRow:
            )
            raise HTTPException(403, detail="您不是该长者的负责医生，无权操作药单")
    ```
-3. **Service 层查询范围校验**（`_assert_scope_or_optional`）：看板类接口可以放开全员查询（对齐 workorders.py 看板口径——员工侧全量视图），但如果需要严格范围过滤则复用上述 elder_staff_assignments 查询（relation='doctor' 或 relation='primary_care' 或 relation 任意值）。**当前版本 Day 8 追加任务决定放开全员查询**（与 workorders 看板口径一致），后续如需收紧再在 Service 层加 scope 过滤。
+3. **Service 层查询范围收紧**（`_assert_read_scope` / `_filter_by_scope`）：
+   - **admin → 全量**：role=="admin" 直接返回所有匹配药单，不做 elder_id 过滤
+   - **doctor / care_worker → 自己负责的长者**：先查 `elder_staff_assignments WHERE staff_id=当前 AND relation IN ('primary_care','doctor')` 拿到该员工负责的所有 elder_id 集合，再在 list 里加 `WHERE elder_id IN <集合>` 过滤
+   - **越权读**（员工查非负责长者的药单）：list 返回**空集合**（不报错但也不泄漏），get 返回 404（"药单不存在"而非 403——不暴露"这个药单存在但你无权看"的事实）
+   - **越权读也写审计**：detail.reason="read_scope_outside_assignment"，detail.elder_id / detail.plan_id 记录请求目标
+   ```python
+   async def _filter_by_scope(
+       session: AsyncSession,
+       *,
+       query: Select[tuple[MedicationPlan]],
+       elder_id: uuid.UUID | None = None,
+   ) -> Select[tuple[MedicationPlan]]:
+       """根据当前 staff 的范围过滤 query。admin 全量，doctor/care_worker 只返回负责长者的药单。"""
+       identity = get_identity()
+       role = getattr(identity, "role", None)
+       staff_id = getattr(identity, "staff_id", None)
+       if role == "admin":
+           return query  # admin 全量，不加过滤
+       # doctor / care_worker 查 elder_staff_assignments 拿负责的 elder_id 集合
+       from sqlalchemy import select as sa_select
+       from app.models.relation import ElderStaffAssignment
+       rows = (await session.execute(
+           sa_select(ElderStaffAssignment.elder_id).where(
+               ElderStaffAssignment.staff_id == uuid.UUID(str(staff_id)),
+               ElderStaffAssignment.relation.in_(["primary_care", "doctor"]),
+           )
+       )).all()
+       allowed_elder_ids = {r[0] for r in rows}
+       # 如果请求指定了 elder_id，但不在允许集合 → 记录审计（越权读）
+       if elder_id is not None and elder_id not in allowed_elder_ids:
+           await record_audit(
+               session, actor_type="staff", actor_id=staff_id,
+               action="medication_plan_read_forbidden",
+               resource_type="medication_plan", resource_id=None,
+               detail={"reason": "read_scope_outside_assignment", "elder_id": str(elder_id)},
+           )
+       return query.where(MedicationPlan.elder_id.in_(allowed_elder_ids))
+   ```
 
 **create_plan**：
 ```python
@@ -318,7 +368,8 @@ async def create_plan(
     created_by: uuid.UUID,  # 从 JWT 注入（identity.staff_id），前端不传
 ) -> PlanRow:
     """新建药单。version=1、status=active。"""
-    # ① 权限门禁（identity.role != "doctor" → 审计 + 403）
+    # ① 双重门禁：role=doctor + 负责医生 scope（_assert_doctor_authorized(session, elder_id=elder_id)）
+    #    → 不通过时自动写审计（reason="role_not_doctor" 或 "not_attending_doctor_for_elder"）+ 403
     # ② 校验 cron 合法性（CronTrigger.from_crontab 试解析）
     # ③ 校验 start_date ≤ end_date（若 end_date 不为 None）
     # ④ INSERT MedicationPlan（version=1, status='active'）
@@ -340,14 +391,14 @@ async def update_plan(
     updated_by: uuid.UUID,
 ) -> PlanRow:
     """修改药单。version+1。已停用不可修改。cron 不变则审计 detail 打 cron_unchanged 标记。"""
-    # ① 权限门禁
-    # ② 查 plan → 不存在抛 PlanNotFound；status=='stopped' 抛 PlanStopped
-    # ③ 校验 cron 合法性、start_date ≤ end_date
-    # ④ **比对 schedule_cron 是否变化**：cron 不变则审计 detail 里打 {"cron_unchanged": true}
-    #    + 响应里追加 cron_unchanged=true 提示前端"无需调整调度配置"
-    # ⑤ UPDATE 所有业务字段 + version=plan.version+1
-    # ⑥ record_audit(action="medication_plan_update", detail={"before": {...}, "after": {...}, "cron_unchanged": bool})
-    # ⑦ flush 后返回最新 PlanRow
+    # ① **先查 plan**（拿 elder_id 用于双重门禁 + 后续校验）→ 不存在抛 PlanNotFound
+    # ② 双重门禁：role=doctor + 负责医生 scope（_assert_doctor_authorized(session, elder_id=plan.elder_id)）
+    # ③ 校验 status!='stopped' → 已停用抛 PlanStopped
+    # ④ 校验 cron 合法性、start_date ≤ end_date
+    # ⑤ 比对 schedule_cron 是否变化：cron 不变则审计 detail 里打 {"cron_unchanged": true}
+    # ⑥ UPDATE 所有业务字段 + version=plan.version+1
+    # ⑦ record_audit(action="medication_plan_update", detail={"before": {...}, "after": {...}, "cron_unchanged": bool})
+    # ⑧ flush 后返回最新 PlanRow
     #
     # ✅ G1 已裁决：plan.version+1 后，scheduler 下次扫到同一分钟时
     # 会因为 plan_version 不同而自动建新事件（唯一键已改为三列），
@@ -363,11 +414,12 @@ async def stop_plan(
     stopped_by: uuid.UUID,
 ) -> PlanRow:
     """停用药单。version+1。无删除语义。已停用不可重复停。"""
-    # ① 权限门禁
-    # ② 查 plan → 不存在抛 PlanNotFound；status=='stopped' 抛 PlanStopped
-    # ③ UPDATE status='stopped' + version=plan.version+1（其他字段不变）
-    # ④ record_audit(action="medication_plan_stop", detail={"prev_version": plan.version})
-    # ⑤ flush 后返回最新 PlanRow
+    # ① **先查 plan**（拿 elder_id 用于双重门禁 + 后续校验）→ 不存在抛 PlanNotFound
+    # ② 双重门禁：role=doctor + 负责医生 scope（_assert_doctor_authorized(session, elder_id=plan.elder_id)）
+    # ③ 校验 status!='stopped' → 已停用抛 PlanStopped
+    # ④ UPDATE status='stopped' + version=plan.version+1（其他字段不变）
+    # ⑤ record_audit(action="medication_plan_stop", detail={"prev_version": plan.version})
+    # ⑥ flush 后返回最新 PlanRow
 ```
 
 #### 2.2.4 审计 detail 字段设计
@@ -404,9 +456,27 @@ detail = {
 # stop
 detail = {"prev_version": plan.version}
 
-# forbidden（越权）
+# forbidden（越权——role 非 doctor）
 detail = {
+    "reason": "role_not_doctor",                  # 越权原因（role 不够）
+    "elder_id": str(elder_id) if elder_id else None,
     "intended_action": "create/update/stop",
+    "plan_id": str(plan_id) if plan_id else None,
+}
+
+# forbidden（越权——是 doctor 但不是该长者的负责医生）
+detail = {
+    "reason": "not_attending_doctor_for_elder",   # 越权原因（scope 不够）
+    "elder_id": str(elder_id),
+    "intended_action": "create/update/stop",
+    "plan_id": str(plan_id) if plan_id else None,
+}
+
+# forbidden（越权读——员工查非负责长者的药单）
+detail = {
+    "reason": "read_scope_outside_assignment",    # 越权原因（读 scope 不够）
+    "elder_id": str(elder_id),
+    "intended_action": "list/get",
     "plan_id": str(plan_id) if plan_id else None,
 }
 ```
@@ -416,11 +486,24 @@ detail = {
 #### 2.2.5 单测用例
 
 ```python
-# ==== 权限 ====
-def test_create_plan_requires_doctor_role(): ...       # care_worker 尝试 → 403 + audit_logs 有 forbidden 行
-def test_update_plan_requires_doctor_role(): ...       # 同上
+# ==== 权限（读——范围收紧）====
+def test_admin_read_all_plans(): ...                        # admin 查任何 elder_id → 全量返回（不做 scope 过滤）
+def test_staff_read_own_assigned_elder_plans(): ...         # doctor/care_worker 查自己负责的 elder_id → 返回该长者的药单
+def test_staff_read_outside_scope_returns_empty_list(): ... # doctor/care_worker 查非负责的 elder_id → 返回 [] + 审计 action=medication_plan_read_forbidden, reason="read_scope_outside_assignment"
+def test_staff_get_outside_scope_returns_404(): ...         # doctor/care_worker get 非负责的 plan → 404 "药单不存在"（不暴露存在性）+ 审计
+def test_staff_with_no_assignments_reads_nothing(): ...      # 该 staff 在 elder_staff_assignments 里无任何 active assignment → list 恒返回 []
+
+# ==== 权限（写——角色门禁）====
+def test_create_plan_requires_doctor_role(): ...       # care_worker/admin 尝试 create → 403 + audit_logs detail.reason="role_not_doctor"
+def test_update_plan_requires_doctor_role(): ...       # 同上（care_worker 尝试 update 自己无 scope 的 plan）
 def test_stop_plan_requires_doctor_role(): ...         # 同上
-def test_read_allows_any_staff_role(): ...             # care_worker/admin/doctor 都能 list/get
+
+# ==== 权限（写——数据范围门禁）====
+def test_create_plan_unattending_doctor_forbidden(): ...  # 是 doctor 但不是该长者的负责医生 → 403 + audit_logs detail.reason="not_attending_doctor_for_elder"
+def test_update_plan_unattending_doctor_forbidden(): ...  # 同上
+def test_stop_plan_unattending_doctor_forbidden(): ...    # 同上
+def test_create_plan_attending_doctor_allowed(): ...      # 是该长者的负责医生 → create 成功
+def test_update_plan_attending_doctor_allowed(): ...      # 同上
 
 # ==== 版本 ====
 def test_create_plan_version_equals_1(): ...
@@ -433,15 +516,21 @@ def test_stop_already_stopped_forbidden(): ...
 def test_create_plan_writes_audit(): ...               # action=medication_plan_create
 def test_update_plan_writes_audit_with_before_after(): ...  # detail 有 before/after 两快照
 def test_stop_plan_writes_audit(): ...                 # action=medication_plan_stop
-def test_forbidden_write_writes_audit(): ...           # action=medication_plan_write_forbidden
+def test_forbidden_role_write_writes_audit(): ...      # action=medication_plan_write_forbidden, detail.reason="role_not_doctor"
+def test_forbidden_scope_write_writes_audit(): ...     # action=medication_plan_write_forbidden, detail.reason="not_attending_doctor_for_elder"
+def test_forbidden_read_scope_writes_audit(): ...      # action=medication_plan_read_forbidden, detail.reason="read_scope_outside_assignment"
 
 # ==== 校验 ====
 def test_invalid_cron_rejected(): ...
 def test_start_date_after_end_date_rejected(): ...
 
-# ==== 快照隔离（AC-27） ====
+# ==== 快照隔离（AC-27）====
 def test_old_event_snapshot_not_affected_by_plan_update(): ...
     # 先造一条 plan + 建 event（scheduler 驱动）→ plan.update → 再查原 event 的 drug_snapshot 仍为旧值
+
+# ==== cron_unchanged 提示 ====
+def test_update_plan_cron_unchanged_marks_audit(): ...  # 新旧 cron 相同 → audit detail 有 cron_unchanged:true
+def test_update_plan_cron_changed_no_mark(): ...        # 新旧 cron 不同 → audit detail 无 cron_unchanged 字段
 ```
 
 ---
@@ -763,5 +852,7 @@ export async function stopPlan(planId: string, _doctorName?: string): Promise<Me
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.4 | 2026-11-11 | **查询接口范围收紧**：不再放开全员看板口径。admin 看全量；doctor/care_worker 只能看自己在 `elder_staff_assignments` 里有 active assignment 的长者（relation IN ('primary_care','doctor') 都算"负责"）。越权读（员工查非负责长者）list 返回空集合、get 返回 404（不暴露存在性）+ 审计 action=medication_plan_read_forbidden, detail.reason="read_scope_outside_assignment"。新增辅助函数 `_filter_by_scope`（三分支逻辑 + 越权读审计）。单测清单扩充：新增 5 条读范围收紧用例 + 1 条越权读审计用例。同时确认保留 PlanOut.created_at（ISO string）。 |
+| v1.2 | 2026-11-11 | **门禁裁决对齐主理人**：API 层一律放行全员 staff（`require_roles("doctor","care_worker","admin")`），写操作越权请求必须进入 Service 层才能被审计（禁止 API 层直接 `require_roles("doctor")` 提前拦截）。Service 层写操作**双重门禁**：① role=doctor；② 该 staff 是否为该长者的负责医生（查 `elder_staff_assignments WHERE elder_id=? AND staff_id=? AND relation='doctor'`——表已在迁移 0002 合入）。越权审计 detail 区分两种 reason：`role_not_doctor` vs `not_attending_doctor_for_elder`。查询接口放开全员（看板口径，对齐 workorders）。update_plan/stop_plan 步骤调整：先查 plan 拿 elder_id → 双重门禁 → 再校验 status。单测清单新增数据范围门禁相关用例。 |
 | v1.1 | 2026-11-11 | **G1 裁决落地**：主理人裁决「数据库唯一约束 + Service 层校验 + Scheduler 幂等性」三者组合。新增 M0 任务（0019 迁移 events 加 plan_version + 改三列唯一键 + ORM + medication_service.create_event 签名加 plan_version + due_service DuePlan 加 version + medication_jobs 传 version + graphs 调用点增量）。update_plan 加 cron_unchanged 提示。写作用域扩充（medication.py/medication_service.py/medication_due_service.py/medication_jobs.py/graphs 增量）。时间线从 2.5h 扩到 4.0h。风险预案 G1 标记已消除、G5/G6 新增。§6 对接边界增加 dev-B scheduler + graphs。 |
 | v1.0 | 2026-11-11 | 首版：基于代码实测（MedicationPlan ORM + medication_service + medication_due_service + 前端 Mock API）编制；G1 唯一键风险标记待裁决；权限门禁下沉到 service 层（API 层放行为全员、service 内写分支 + 越权审计）；零迁移变更（Plan 表已在 0010 合入，version 列闲置） |
