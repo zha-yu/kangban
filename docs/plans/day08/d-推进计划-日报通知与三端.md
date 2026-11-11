@@ -1,4 +1,4 @@
-> 状态：进行中（S0–S7/S10 完成；D1 三偏差收口；**D3 REST＋pad 接线完成**，撤销/30 秒联演待 A/窗口；S8 卡演练、S9 卡 CP4、D6 卡 B 置位）　｜　版本：v1.7　｜　日期：2026-11-11
+> 状态：进行中（S0–S7/S10 完成；D1 三偏差收口；**D3 REST＋pad 接线完成；D4 七动作服务端路径已修**；撤销/30 秒联演待 A/窗口；S8 卡演练、S9 卡 CP4、D6 卡 B 置位）　｜　版本：v1.9　｜　日期：2026-11-11
 > 关联：docs/team_tasks/day08/dev-D-日报通知API与family-pad.md（v1.2，本计划的任务来源）｜docs/plans/day08/day-08-健康采集与三端后台.md（v1.2，全量上游计划）｜docs/team_tasks/day08/day08-任务总览与DAG.md（v1.1，对接点 X1–X9 与全局节奏）
 > 上游依据：PRD line 405/409–412（FR-RPT-01~04 验收）、line 401（FR-ALT-06）、line 254（FR-UI-08）、line 294–297（FR-CON-03/04/06）、line 459（FR-TC-09）、line 381–391（通知状态机）、line 495/500/505/507/508/519/520（AC-13/18/23/25/26/37/38）、line 94–95（媒体分发/家属无障碍）、line 527–538（固定测试集）、line 576（Day 8 完成定义）｜技术设计文档 line 653–665（daily_reports）、line 667–684（notifications）、line 633–651（media 两表）、line 686–702（decision_logs）、line 1144–1164（Day 8 实现口径）
 > 变更记录见文末
@@ -56,7 +56,7 @@
 | S6 | CP2 与 C 互测 | 🚧 部分完成 | C 侧确认全兼容；三偏差对账：N4 403✔／payload S-02✔（f445cb4）／acknowledged_by_name✔（R-D12 收口：staff_names 批量取名）；N-2 越权 403+审计补齐；本地夹具回归全过；⛔ C 侧重跑确认窗口；Q-D10（N-3 幂等 200）待 B 留痕 |
 | S7 | D2 family 切真＋375px | ✅ 已完成 | S-11 三条件满足：USE_MOCK/NOTIFICATIONS_LIVE 与 Mock 数据/实现同提交删除；375 真实数据断言 list=375/detail=360/notif=375、overflowEls=0；截图本地证据 eval/artifacts/family-375-real-data.png（gitignore 不入库，同 day05 口径） |
 | S8 | X5/X7 演练（家属侧证据） | ⛔ 阻塞 | D 侧证据就绪；卡全队 15:30 X5/X7 演练窗口 |
-| S9 | D4 pad 戏曲播放 | 🚧 部分完成 | ✅ 服务端 play_opera 命中经注入 sink→deliver 下发 media_play；pad protocol/realtime/面板 live 接线＋七动作＋duck 互斥＋barge-in；单测 2 例绿；15 首真 mp3 种子落库（稳定路径）；⛔ CP4 四方联演窗口＋A5 media_control 下发 |
+| S9 | D4 pad 戏曲播放 | 🚧 部分完成 | ✅ pad live 接线＋七动作＋duck/barge-in；**服务端七动作路径已修**（schema 支持 action、executor 分支、companion 下发 media_control；executor 3 例＋companion 2 例绿）；15 首 mp3 本地＋DB；⛔ CP4 联演窗口＋契约 §6.2 入参留痕 |
 | S10 | 报告定稿＋pre-push 接线 | ✅ 已完成 | 钩子只做机制自检（`--self-check`），真门禁不进钩子；正向 exit=0、反向 exit=1 双验证 |
 | S11 | 四件套全绿＋文档回填 | 🚧 部分完成 | 四件套复跑全绿（1333 passed／ruff／tsc／build）；⛔ 完成定义证据链待 S6 C 侧/S8/S9 CP4 |
 | S12 | 条件项（D3 SOS / D6 提示条） | 🚧 部分完成 | **D3 service＋REST＋pad 三件已接**：`sos_service.trigger_sos`＋`POST /api/pad/sos`（设备令牌、未绑 403、未关闭事件幂等复用）＋pad 点击即请求/三态结果页/失败重试；7 用例绿（service 3＋API 4）。⛔ 仍缺撤销 service 函数（Q-D7）与 30 秒看板红色置顶联演窗口；D6 pad 增量完成，⛔ 服务端置位待 B＋e2e 待联调 |
@@ -496,7 +496,7 @@ uv run python scripts/update_progress.py --check-plans
 | AC-23 通知状态机 | 仅 delivered 可确认、跳步 409、幂等 | `test_alerts_api.py` 中 `::test_acknowledge_delivered_then_idempotent`＋`::test_acknowledge_before_delivered_is_conflict[generated/pending/failed]`（3 参数化） | ✅ |
 | AC-13/18 家属日报范围 | 家属只见绑定长者；越权 403+审计 | **无**：F1/F2 未实现（缺 C2 读函数，J-C2b） | ⛔ 待 C |
 | AC-38 双通知（家属侧） | 红色事件 → 家属可见一条 is_mock 通知 | N1 接口已交付（提前件），但 X5/X7 演练未做（卡 D1） | ⛔ 待演练 |
-| AC-37 戏曲（pad 侧） | 七动作可控、可打断 | `frontend/src/pad/audio/opera-player.ts`＋`OperaDemoPanel.tsx`（`?demo=opera`）；node 假件跑通 7 动作＋duck/resume 全序列（16 步断言，0 error）；`tsc --noEmit` exit=0；`pnpm build` ✓ | 🚧 播放器绿，WS 未接（Q-D4） |
+| AC-37 戏曲（pad 侧） | 七动作可控、可打断 | pad 播放器 16 步断言；服务端 action 分支＋`media_control` 下发（新增 executor 3 例＋companion 2 例）；全量 1348 passed | 🚧 代码全链路通；CP4 四方联演待窗口 |
 | FR-TC-09 门禁拦截 | 人为调坏规则层 → 门禁 EXIT≠0 | `eval/reports/day8_frtc09_intercept.md`（PASS→FAIL→还原→PASS 四步）＋ `day8_frtc09_{before,tampered,after}.md` | ✅ |
 | FR-TC-09 分层归因 | 报告含七层归因表 | `eval/reports/day8_eval_baseline.md` §3（ASR/召回/LLM/Tool 如实标「无数据」） | ✅ |
 | FR-TC-09 bad case 回流 | 失败项落盘有记录 | `eval/fixtures/badcase_backlog.jsonl`（15 条，run_id `20261111-145521`） | ✅ |
@@ -520,11 +520,12 @@ uv run python scripts/update_progress.py --check-plans
 | --- | --- | --- | --- | --- | --- |
 | 1 | ~~日报家属侧读函数~~ **已全部到货（17:35）** | C2 · dev-C | `list_bound_elders_for_guardian`（`report_service.py:410`）、`list_reports_for_guardian(..., elder_id=)`（:429）、`get_report_detail_for_guardian`（:495 起）＋两异常 | — | D 侧 F0/F1/F2 **三条齐**：`app/api/reports.py`＋`tests/test_reports_api.py` **9 用例绿**（F0 三字段裁剪/空数组、F1 只出最新版＋80 字预览＋403 审计、F2 四键＋声明＋403/404） |
 | 2 | ~~员工侧通知读/已读函数~~ **已到货（16:55）** | A3 · dev-A | `list_staff_notifications` / `mark_staff_notification_read` 已实现 | — | `notify_service.py:300/335`；D 侧 N-1/N-2 已接（`alerts.py`，16 用例） |
-| 3 | `play_opera` **实现接线** | **B4 · dev-B** | 注册已就绪（`bind_tools.py:152`），还差 `make_play_opera_executor` 在 lifespan 里被调用（`main.py` 装配属 A/B 交界，D 不碰） | S9 的 WS 接线、AC-37 端到端 | 注册函数存在，但 `app/main.py` 未见 `bind_dev_b_tools` 调用点 |
-| 4 | 戏曲**种子素材** | **B4 · dev-B** | `static/media/opera/` 20–30 条（§6.4），现口径为 mp3 | 同上；D 只能用仓库内演示音自测 | `ls static/media/opera` → **目录不存在** |
-| 5 | **WS 帧形状** | **A→B**（Q-D4） | `opera_control`（或同义）的 type/字段/动作枚举，冻结后 D 才改 `protocol.ts` | S9 协议接入 | `frontend/src/pad/protocol.ts` 白名单无 opera 类；`task_command` 仅 `kind:"medication"` |
-| 6 | **SOS 撤销函数**（事件链入口已到货） | **A3 / Q-D7** | `sos_service.trigger_sos` 与 `POST /api/pad/sos` 已交付（D 侧）；只差撤销 service 函数（普通确认 10 秒可撤销＋审计、红色事件仅追加「说错了」且保持 open）。撤销函数不在 D 写域 | D3 撤销边界＋AC-26 用例 | `app/services/` 全仓无撤销/重开函数（`grep -rn "revoke\|undo" app/services/` 仅工单 reopen） |
-| 7 | `route_degraded` **字段冻结** | **dev-B** | 字段名/类型/出现时机（Q-D5 已裁「加字段」） | D6 | `protocol.ts` 无该字段（未冻结，D 不动协议） |
+| 3 | ~~`play_opera` 实现接线~~ **已到货** | B4 · dev-B | `main.py:373-375` 已调 `bind_dev_b_tools`，命中经 sink 下发 `media_play` | — | 但**七动作路径仍断**，见 #8 |
+| 4 | 戏曲**种子素材** | **B4 · dev-B / 运维** | 本机已有 15 首 mp3＋DB 15 行（`media_url` 全 mp3），但 `.gitignore:78` 把 `static/media/` 整目录排除，**换机/部署即丢**；需 B 决定入库或提供部署生成脚本 | CP4/演示 | `Get-ChildItem static/media/opera` → 15；`git ls-files static/media` → 0 |
+| 5 | **WS 帧形状** | **A→B**（Q-D11/Q-D4） | D 已按自洽口径实现 `media_play{media_url,title,media_id,duration}`＋`media_control{action,media?}`（protocol/realtime 白名单齐）；B 草稿 `adhoc-20261111-ws-media-control-frame.md` 另定 `media_control{trace_id,stream_id,rule_id,intent,action,payload}`＋`media_info`，**未冻结** | S9/CP4 | 草稿头 `状态：草稿 v1.0`；两份形状字段不一致 |
+| 6 | **SOS 撤销函数**（事件链入口已到货） | **A3 / Q-D7** | `sos_service.trigger_sos` 与 `POST /api/pad/sos` 已交付（D 侧）；只差撤销 service 函数（普通确认 10 秒可撤销＋审计、红色事件仅追加「说错了」且保持 open）。撤销函数不在 D 写域 | D3 撤销边界＋AC-26 用例 | `grep -rn "revoke\|undo" app/services/` 仅登录吊销与工单 reopen，无用药/SOS 撤销 |
+| 7 | `route_degraded` **服务端置位** | **dev-B** | 字段已冻结 v1.0 且 pad 已消费（`protocol.ts:226-230`、`realtime.ts:237-244`）；缺 `tts_text` 在 fallback 轮置 true 的服务端分支 | D6 e2e | `grep -rn "route_degraded" app/` → **零命中** |
+| 8 | ~~**`play_opera` 七动作执行路径**~~ **已修（2026-11-11）** | dev-B（schema/executor）＋dev-A（规则）→**本轮由 D 代改并留痕** | schema 支持 `query` 或 `action` 二选一；executor 分支 6 控制动作（pause/resume/stop/volume_up/volume_down/repeat→replay）、next→next_track 取下一段、interrupt 不下发媒体帧；companion 新增 `on_media_control` sink，main 装配 `media_control` 下行 | — | 新增/更新测试：executor 3 例＋companion 2 例；全量 1348 passed。**残项**：契约 §6.2 play_opera 入参仍写 `{query}`，需 dev-B 走契约留痕；`next` 的「当前曲目」为进程内记忆（不落库，history 归 C4），多实例部署需改由 media_history 取 |
 
 ### 12.2 已到货（可直接消费，避免重复催）
 
@@ -579,3 +580,5 @@ uv run python scripts/update_progress.py --check-plans
 | v1.5 | 2026-11-11 | D3 按主理人裁决建 service 骨架（trigger_sos＋3 单测，零迁移；纠正「0010 枚举无 sos」说法）；REST/pad/联演顺延 Day 9/10 留痕；merge 0f334bb（notify_service 采用远端审计版＋归一坑修复）；Q-D11 登记（media 帧形状冲突待 B 冻结） |
 | v1.6 | 2026-11-11 | C 三偏差收口：R-D12 acknowledged_by_name 补齐（staff_names 批量取名）、N-2 越权 403+审计（api 漏 catch 修复）；四件套 1339 passed；任务卡状态进行中＋日看板重生成 |
 | v1.7 | 2026-11-11 | D3 REST＋pad 接线收口：新增 `app/api/sos.py`（POST /api/pad/sos，设备鉴权/未绑 403/幂等）＋pad 三态结果页＋`tests/test_sos_api.py` 4 例；S12 行与 §12.1 缺口更新；全量门禁实测 1342 passed / 1 上游时序红点（§12.4 登记交 A）；响应体字段为无冻结契约下的自裁留痕 |
+| v1.8 | 2026-11-11 | 遗留问题复核（逐条回代码）：新发现 **P0 `play_opera` 七动作执行路径断**（schema 仅 query／规则只传 action／executor 忽略 action，§12.1#8）；#3/#4/#5/#7 已到货与残留状态纠正（绑定已接、15 首 mp3 本地＋DB 但未入库、帧形状仍待冻结、route_degraded 服务端零命中）；S9 与 §11 AC-37 证据同步 |
+| v1.9 | 2026-11-11 | **修复七动作执行路径**（跨域代改留痕）：`play_opera` schema 支持 `query`/`action` 二选一；executor 增控制分支（repeat→replay、next→next_track 带下一段、interrupt 不下发帧）；companion 新增 `on_media_control` sink、main 装配 `media_control`；新增 executor 3 例＋companion 2 例；全量 **1348 passed / 0 failed**。残项：契约 §6.2 入参需 B 留痕；`next` 当前曲目为进程内记忆 |

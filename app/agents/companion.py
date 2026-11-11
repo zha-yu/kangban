@@ -179,7 +179,10 @@ FAMILY_NOTIFICATION_TOOL: Final[ToolSpec] = ToolSpec(
 
 PLAY_OPERA_TOOL: Final[ToolSpec] = ToolSpec(
     name="play_opera",
-    description="按剧目或剧种检索戏曲并返回播放地址，给长者点播戏曲选段；查不到时如实告知。",
+    description=(
+        "戏曲点播与控制：点播传 query（剧目/剧种）；控制传 action"
+        "（pause/resume/stop/next/volume_up/volume_down/repeat）。查不到时如实告知。"
+    ),
 )
 
 #: 默认工具清单：六个 —— 天气（MCP）+ 用药确认 + 记忆召回 + 工单/家属通知（MCP，
@@ -232,6 +235,8 @@ EventSink = Callable[[str, Mapping[str, object]], Awaitable[None]]
 FollowupSink = Callable[[FollowupTask], Awaitable[None]]
 #: 戏曲播放下行回调：``(device_id, payload)``，装配层接 signaling.deliver（D4/X8）
 MediaPlaySink = Callable[[str, Mapping[str, object]], Awaitable[None]]
+#: 戏曲播放控制下行回调：``(device_id, {action, [media 子集]})``（D4/X8 七动作）
+MediaControlSink = Callable[[str, Mapping[str, object]], Awaitable[None]]
 
 # ---------------------------------------------------------------------------
 # 上下文组装（占位实现）与 ReAct 线协议
@@ -384,6 +389,7 @@ class CompanionAgent:
         on_event: EventSink | None = None,
         followup_sink: FollowupSink | None = None,
         on_media_play: MediaPlaySink | None = None,
+        on_media_control: MediaControlSink | None = None,
     ) -> None:
         self._llm = llm
         self._guardrails = guardrails
@@ -392,6 +398,7 @@ class CompanionAgent:
         self._on_event = on_event
         self._followup_sink = followup_sink
         self._on_media_play = on_media_play
+        self._on_media_control = on_media_control
 
     async def run(
         self,
@@ -514,12 +521,31 @@ class CompanionAgent:
                 await self._emit_event(
                     "tool_succeeded", {"tool_name": call.tool, "latency_ms": latency_ms}
                 )
-                # D4（X8 口径②/③）：play_opera 命中 → 经装配层注入的 sink 下发
-                # media_play 帧（agents 不横向 import audio，deliver 由 main 注入）
-                if call.tool == "play_opera" and self._on_media_play is not None:
+                # D4（X8 口径②/③）：play_opera 命中 → 经装配层注入的 sink 下发。
+                # 点播（无 action）发 media_play；控制动作发 media_control；
+                # interrupt 由 pad 端 barge-in 自行收口，不下发媒体帧。
+                if call.tool == "play_opera":
                     data = result.data or {}
                     media = data.get("media") or {}
-                    if data.get("found") and media.get("media_url"):
+                    action = str(data.get("action") or "")
+                    if action and action != "interrupt" and self._on_media_control is not None:
+                        frame: dict[str, object] = {"action": action}
+                        if action == "next_track" and media.get("media_url"):
+                            frame.update(
+                                {
+                                    "media_url": media["media_url"],
+                                    "title": media.get("title") or "",
+                                    "media_id": str(media.get("media_id") or ""),
+                                    "duration": media.get("duration"),
+                                }
+                            )
+                        await self._on_media_control(runtime.device_id, frame)
+                    elif (
+                        action == ""
+                        and data.get("found")
+                        and media.get("media_url")
+                        and self._on_media_play is not None
+                    ):
                         await self._on_media_play(
                             runtime.device_id,
                             {
@@ -661,6 +687,7 @@ __all__ = [
     "EventSink",
     "FollowupSink",
     "FollowupTask",
+    "MediaControlSink",
     "MediaPlaySink",
     "ToolExecutor",
     "ToolResult",

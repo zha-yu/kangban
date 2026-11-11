@@ -303,15 +303,37 @@ def _strip_play_prefixes(query: str) -> str:
 _SEARCH_PUNCT_RE: Final = re.compile(r"[《》〈〉「」『』“”‘’\"'。．.，,！!？?～~：:；;]")
 
 
+#: 规则/模型播放控制词 → pad 侧七动作名（契约 §6.3：next→next_track、repeat→replay）
+_OPERA_ACTION_ALIASES: dict[str, str] = {
+    "pause": "pause",
+    "resume": "resume",
+    "stop": "stop",
+    "next": "next_track",
+    "volume_up": "volume_up",
+    "volume_down": "volume_down",
+    "repeat": "replay",
+    "interrupt": "interrupt",
+}
+
+#: 每长者最近一次下发的曲目（仅本进程内存，用于「换一段」；不落库，history 归 C4）
+_LAST_OPERA_BY_ELDER: dict[str, uuid.UUID] = {}
+
+
 def make_play_opera_executor(
     *,
     session_factory: Callable[[], Any],
 ) -> Callable[[dict[str, Any], Identity], Awaitable[dict[str, Any]]]:
     """返回 `play_opera` 工具的本地执行器（X8 口径②冻结 schema）。
 
-    - **只读**检索 media_library（type=opera），按 title/genre/era/artist 匹配检索词；
-      逐级兜底：原词 → 剥点播口语前缀 → 剥书名号/标点，兜住 LLM 整句或带标点传参；
-      并以 `play_opera_query` 日志记录实际入参（排查 LLM 传参行为用）；
+    - **两种入参**：`query`（点播检索）或 `action`（七动作控制），至少给一个；
+      `action` 优先于 `query`（规则层 R-01~R-08 只传 action）。
+    - **控制动作**：pause/resume/stop/volume_up/volume_down/repeat→replay 返回
+      `{"found": true, "action": <pad 动作名>, "media": null}`，由 companion 经
+      `on_media_control` 下发 `media_control` 帧；interrupt 由 pad 端 barge-in
+      自行收口，不下发媒体帧；next→next_track 由服务端取下一段随帧携带 media。
+    - **点播检索**：只读检索 media_library（type=opera），按 title/genre/era/artist
+      匹配检索词；逐级兜底：原词 → 剥点播口语前缀 → 剥书名号/标点，兜住 LLM
+      整句或带标点传参；并以 `play_opera_query` 日志记录实际入参。
     - 返回 `{"found": bool, "media": {...} | None}`，media_url 严格走 X8 稳定路径
       `/static/media/opera/<media_id>.<ext>`（口径①，v1.3 扩展名放开）；
     - **不写 media_history**——播放历史归 C4 media_service.record_playback
@@ -339,12 +361,71 @@ def make_play_opera_executor(
         stmt = stmt.order_by(desc(model.title == raw_query), model.title).limit(1)
         return (await session.execute(stmt)).scalar_one_or_none()
 
-    async def _executor(args: dict[str, Any], runtime: Identity) -> dict[str, Any]:
-        query = str(args.get("query") or "").strip()
-        if not query:
-            raise ToolArgumentError("query 不能为空")
+    def _media_payload(row: Any) -> dict[str, Any]:
+        return {
+            "media_id": str(row.media_id),
+            "title": row.title,
+            "genre": row.genre,
+            "era": row.era,
+            "artist": row.artist,
+            "media_url": row.media_url,
+            "duration": row.duration,
+            "copyright_status": row.copyright_status,
+        }
 
+    def _elder_key(runtime: Identity) -> str:
+        return runtime.elder_id or runtime.device_id or ""
+
+    async def _next_track_payload(runtime: Identity, model: Any) -> dict[str, Any] | None:
+        """「换一段」：按目录顺序取上一段之后的一条；无上下文时从头开始。
+
+        状态只存本进程内存（`_LAST_OPERA_BY_ELDER`），不落库——播放历史归 C4
+        `media_service`，Tool 层不写 history（X8 ②）。
+        """
+        async with session_factory() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(model)
+                        .where(model.type == "opera")
+                        .order_by(model.title, model.media_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if not rows:
+                return None
+            key = _elder_key(runtime)
+            last = _LAST_OPERA_BY_ELDER.get(key)
+            index = next((i for i, row in enumerate(rows) if row.media_id == last), -1)
+            picked = rows[(index + 1) % len(rows)]
+            _LAST_OPERA_BY_ELDER[key] = picked.media_id
+            return _media_payload(picked)
+
+    async def _executor(args: dict[str, Any], runtime: Identity) -> dict[str, Any]:
         from app.models.media import MediaLibrary
+
+        action = str(args.get("action") or "").strip()
+        query = str(args.get("query") or "").strip()
+
+        # 控制动作优先：规则层 R-01~R-08 只传 action（不传 query）
+        if action:
+            pad_action = _OPERA_ACTION_ALIASES.get(action)
+            if pad_action is None:
+                raise ToolArgumentError(f"不支持的播放动作：{action}")
+            if pad_action == "interrupt":
+                # 「别说了」由 pad 端 speechstart/barge-in 收口，不下发媒体帧
+                return {"found": True, "action": "interrupt", "media": None}
+            if pad_action == "next_track":
+                payload = await _next_track_payload(runtime, MediaLibrary)
+                if payload is None:
+                    return {"found": False, "media": None, "action": "next_track"}
+                return {"found": True, "action": "next_track", "media": payload}
+            return {"found": True, "action": pad_action, "media": None}
+
+        if not query:
+            raise ToolArgumentError("query 与 action 至少给一个")
 
         # 逐级候选：原词 → 剥口语前缀 → 剥书名号/标点再剥前缀（LLM/ASR 常给歌名加《》或句读）
         candidates: list[str] = [query]
@@ -379,19 +460,8 @@ def make_play_opera_executor(
             # 上层按 FR-CON-04 提示+推荐，不算工具失败
             return {"found": False, "media": None}
 
-        return {
-            "found": True,
-            "media": {
-                "media_id": str(row.media_id),
-                "title": row.title,
-                "genre": row.genre,
-                "era": row.era,
-                "artist": row.artist,
-                "media_url": row.media_url,
-                "duration": row.duration,
-                "copyright_status": row.copyright_status,
-            },
-        }
+        _LAST_OPERA_BY_ELDER[_elder_key(runtime)] = row.media_id
+        return {"found": True, "media": _media_payload(row)}
 
     return _executor
 

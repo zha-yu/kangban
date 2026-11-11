@@ -120,8 +120,10 @@ def test_registry_has_day8_specs() -> None:
     assert wo is not None and wo.transport == "mcp" and wo.side_effect and wo.idempotent
     assert fn is not None and fn.transport == "mcp" and fn.side_effect and fn.idempotent
     assert po is not None and po.transport != "mcp" and not po.side_effect
-    # X8 ②：play_opera 入参只有 query
-    assert set(po.parameters_schema["required"]) == {"query"}
+    # X8 ②＋七动作：query（点播）与 action（控制）二选一
+    props = po.parameters_schema["properties"]
+    assert {"query", "action"} <= set(props)
+    assert not po.parameters_schema.get("required")
 
 
 # ------------------------------------------------------------------ 必过用例
@@ -185,6 +187,120 @@ async def test_opera_tool_not_found_returns_found_false(
 
     assert result.ok, result.message
     assert result.data == {"found": False, "media": None}
+
+
+async def test_opera_action_control_returns_pad_action(
+    session: AsyncSession, runtime: Identity, session_factory: Any
+) -> None:
+    """七动作控制：pause/stop/volume/repeat → 返回 pad 动作名、不带 media。"""
+    registry = default_registry()
+    bind_dev_b_tools(registry, session_factory=session_factory)
+    executor = _executor(session, registry=registry)
+
+    cases = {
+        "pause": "pause",
+        "resume": "resume",
+        "stop": "stop",
+        "volume_up": "volume_up",
+        "volume_down": "volume_down",
+        "repeat": "replay",
+    }
+    for action, expected in cases.items():
+        result = await executor.execute(
+            tool_name="play_opera",
+            args={"action": action},
+            runtime=runtime,
+            turn_id=None,
+            idempotency_key=f"ik-opera-{action}",
+        )
+        assert result.ok, result.message
+        assert result.data == {"found": True, "action": expected, "media": None}
+
+
+async def test_opera_action_next_returns_next_track(
+    session: AsyncSession, runtime: Identity, session_factory: Any
+) -> None:
+    """「换一段」：按目录顺序取下一段并随帧带 media；到尾回环。"""
+    ids = [uuid.uuid5(uuid.NAMESPACE_URL, f"opera-seg-{i}") for i in range(2)]
+    for i, mid in enumerate(ids):
+        session.add(
+            MediaLibrary(
+                media_id=mid,
+                type="opera",
+                title=f"越剧选段{i}",
+                genre="越剧",
+                era="经典",
+                artist="教师提供素材",
+                media_url=f"/static/media/opera/{mid}.mp3",
+                duration=30,
+                copyright_status="teacher_authorized",
+            )
+        )
+    await session.flush()
+
+    registry = default_registry()
+    bind_dev_b_tools(registry, session_factory=session_factory)
+    executor = _executor(session, registry=registry)
+
+    first = await executor.execute(
+        tool_name="play_opera",
+        args={"query": "越剧选段0"},
+        runtime=runtime,
+        turn_id=None,
+        idempotency_key="ik-opera-first",
+    )
+    assert first.ok, first.message
+    assert first.data["media"]["media_id"] == str(ids[0])
+
+    nxt = await executor.execute(
+        tool_name="play_opera",
+        args={"action": "next"},
+        runtime=runtime,
+        turn_id=None,
+        idempotency_key="ik-opera-next-1",
+    )
+    assert nxt.ok, nxt.message
+    assert nxt.data["action"] == "next_track"
+    assert nxt.data["media"]["media_id"] == str(ids[1])
+
+    back = await executor.execute(
+        tool_name="play_opera",
+        args={"action": "next"},
+        runtime=runtime,
+        turn_id=None,
+        idempotency_key="ik-opera-next-2",
+    )
+    assert back.ok, back.message
+    assert back.data["media"]["media_id"] == str(ids[0]), "到尾应回环到第一段"
+
+
+async def test_opera_bad_action_and_missing_args_are_bad_args(
+    session: AsyncSession, runtime: Identity, session_factory: Any
+) -> None:
+    """未知 action / 两者都不给 → bad_args，不落到「静默成功」。"""
+    registry = default_registry()
+    bind_dev_b_tools(registry, session_factory=session_factory)
+    executor = _executor(session, registry=registry)
+
+    bad = await executor.execute(
+        tool_name="play_opera",
+        args={"action": "dance"},
+        runtime=runtime,
+        turn_id=None,
+        idempotency_key="ik-opera-bad",
+    )
+    assert not bad.ok
+    assert bad.error_class == "bad_args"
+
+    empty = await executor.execute(
+        tool_name="play_opera",
+        args={},
+        runtime=runtime,
+        turn_id=None,
+        idempotency_key="ik-opera-empty",
+    )
+    assert not empty.ok
+    assert empty.error_class == "bad_args"
 
 
 async def test_work_order_tool_via_mcp(

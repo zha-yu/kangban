@@ -532,3 +532,78 @@ async def test_play_opera_not_found_no_media_play() -> None:
     await agent.run(runtime=_runtime(), turn_id=TURN_ID, user_text="放不存在的曲目")
 
     assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_play_opera_control_emits_media_control() -> None:
+    """七动作控制 → on_media_control(device_id, {action})，不发 media_play。"""
+    llm = ScriptedLLM(
+        [
+            LLMReply(text=_tool_call_text("play_opera", {"action": "pause"}), degraded=False),
+            LLMReply(text="好，先暂停。", degraded=False),
+        ]
+    )
+    executor = ScriptedExecutor([_ok({"found": True, "action": "pause", "media": None})])
+    plays: list[tuple[str, Mapping[str, object]]] = []
+    controls: list[tuple[str, Mapping[str, object]]] = []
+
+    async def on_media_play(device_id: str, payload: Mapping[str, object]) -> None:
+        plays.append((device_id, payload))
+
+    async def on_media_control(device_id: str, payload: Mapping[str, object]) -> None:
+        controls.append((device_id, payload))
+
+    agent = CompanionAgent(
+        llm=llm,
+        guardrails=Guardrails(
+            max_tool_calls=MAX, repeat_window_s=WINDOW, repeat_threshold=THRESHOLD
+        ),
+        tool_executor=executor,
+        tools=(PLAY_OPERA_TOOL,),
+        on_media_play=on_media_play,
+        on_media_control=on_media_control,
+    )
+    await agent.run(runtime=_runtime(), turn_id=TURN_ID, user_text="暂停一下")
+
+    assert plays == [], "控制动作不得再发 media_play（否则会把播放从头重启）"
+    assert controls == [(DEVICE_ID, {"action": "pause"})]
+
+
+@pytest.mark.asyncio
+async def test_play_opera_next_track_control_carries_media() -> None:
+    """「换一段」→ media_control(action=next_track) 随帧携带下一段 media。"""
+    media = {
+        "media_id": "m-0002",
+        "title": "越剧选段二",
+        "media_url": "/static/media/opera/m-0002.mp3",
+        "duration": 30,
+    }
+    llm = ScriptedLLM(
+        [
+            LLMReply(text=_tool_call_text("play_opera", {"action": "next"}), degraded=False),
+            LLMReply(text="给您换一段。", degraded=False),
+        ]
+    )
+    executor = ScriptedExecutor([_ok({"found": True, "action": "next_track", "media": media})])
+    controls: list[tuple[str, Mapping[str, object]]] = []
+
+    async def on_media_control(device_id: str, payload: Mapping[str, object]) -> None:
+        controls.append((device_id, payload))
+
+    agent = CompanionAgent(
+        llm=llm,
+        guardrails=Guardrails(
+            max_tool_calls=MAX, repeat_window_s=WINDOW, repeat_threshold=THRESHOLD
+        ),
+        tool_executor=executor,
+        tools=(PLAY_OPERA_TOOL,),
+        on_media_control=on_media_control,
+    )
+    await agent.run(runtime=_runtime(), turn_id=TURN_ID, user_text="换一段")
+
+    assert len(controls) == 1
+    device_id, payload = controls[0]
+    assert device_id == DEVICE_ID
+    assert payload["action"] == "next_track"
+    assert payload["media_url"] == media["media_url"]
+    assert payload["title"] == media["title"]
