@@ -9,8 +9,8 @@
 
 骨架约定（计划 S1）：
 - 本文件只做参数校验 + `require_roles` 门禁 + 调 `app.services.health_service`
-  （S1 骨架期服务未落地，处理器统一 `NotImplementedError` 桩；S3 联调段接入
-  真实实现后本文件不再改动处理器签名）；
+  （S3 联调段已接入真实服务：查询函数 list_pending_reviews / get_record_row /
+  get_record_chain / get_health_trend 由 dev-C 增量补进 health_service）；
 - severity / review_status / operator 一律服务端注入，客户端传值丢弃（AGENTS §4 红线 9）；
 - 端点编号沿用契约 v0.1 草案，dev-B 冻结版发布后回填 docstring。
 """
@@ -21,7 +21,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +29,7 @@ from app.api.elders import ContractAPIRoute
 from app.core.auth import require_roles
 from app.core.runtime_context import Identity
 from app.db import get_session
+from app.services import audit_log_service, health_service
 
 router = APIRouter(
     prefix="/api/health-records",
@@ -48,6 +49,104 @@ _health_reviewer = require_roles("care_worker", "doctor", "admin")
 _trend_reader = require_roles("doctor", "admin")
 
 _Session = Annotated[AsyncSession, Depends(get_session)]
+
+
+# --------------------------------------------------------------- 服务端注入口径
+
+#: follow_up 提示文案（PRD §4.6：红→紧急工单+通知；黄→人工复核任务；绿→入库日报）
+_FOLLOW_UP: dict[str, str] = {
+    "red": "已触发紧急告警：将创建紧急工单并同步通知家属，请立即跟进",
+    "yellow": "已生成人工复核任务，请在复核队列处理",
+    "green": "数据正常，已入库并计入健康日报",
+}
+
+#: 红档复核角色（任务卡 C1①：红档仅医生/管理员，护工 403）
+_RED_REVIEW_ROLES = ("doctor", "admin")
+
+#: R-4 纠错字段白名单（五项指标 + 两个备注字段，与 H-2 提交面一致）
+_CORRECT_FIELDS_ALLOWED = {
+    "systolic",
+    "diastolic",
+    "sleep_hours",
+    "mood_score",
+    "mood_note",
+    "complaint",
+}
+
+
+def _view_row(row: health_service.HealthRecordRow) -> HealthRecordView:
+    """服务行 → 契约视图（D-4：JOIN 展示字段服务端拼）。"""
+    r = row.record
+    return HealthRecordView(
+        record_id=r.record_id,
+        elder_id=r.elder_id,
+        elder_name=row.elder_name,
+        room_no=row.room_no,
+        bed_no=row.bed_no,
+        operator_id=r.operator_id,
+        operator_name=row.operator_name,
+        recorded_at=r.recorded_at,
+        source=r.source,
+        systolic=r.systolic,
+        diastolic=r.diastolic,
+        sleep_hours=r.sleep_hours,
+        mood_score=r.mood_score,
+        mood_note=r.mood_note,
+        complaint=r.complaint,
+        severity=r.severity,
+        rule_version=r.rule_version,
+        version=r.version,
+        review_status=r.review_status,
+        reviewed_by=r.reviewed_by,
+        # TD health_records 无 reviewed_at 列（契约 161 行引注有误，dev-A 落列正确）；
+        # 偏差已登记计划 §10，待 dev-B 契约勘误（去字段或裁决补列）。
+        reviewed_at=None,
+        reviewed_by_name=row.reviewer_name,
+        review_note=r.review_note,
+        superseded_by=r.superseded_by,
+        superseded_reason=r.superseded_reason,
+    )
+
+
+async def _audit_denial(
+    session: AsyncSession,
+    identity: Identity,
+    *,
+    action: str,
+    resource_type: str,
+    resource_id: UUID,
+    reason: str,
+) -> None:
+    """越权拒绝写审计（AGENTS §8：越权 → 拒绝 + 审计 + trace_id）。"""
+    await audit_log_service.record_audit(
+        session,
+        actor_type="staff",
+        actor_id=UUID(identity.staff_id),
+        action=action,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        detail={"reason": reason, "role": identity.role},
+    )
+
+
+async def _ensure_red_reviewer(
+    session: AsyncSession,
+    identity: Identity,
+    *,
+    record_id: UUID,
+    severity: str,
+) -> None:
+    """红档复核角色门禁（越权三例之二）：非医生/管理员 → 403 + 审计。"""
+    if severity == "red" and identity.role not in _RED_REVIEW_ROLES:
+        await _audit_denial(
+            session,
+            identity,
+            action="health_review_denied",
+            resource_type="health_record",
+            resource_id=record_id,
+            reason="red_requires_doctor",
+        )
+        raise HTTPException(status_code=403, detail="红档记录仅医生/管理员可复核")
 
 
 # --------------------------------------------------------------- 请求模型
@@ -187,10 +286,41 @@ async def submit_health_record(
       `risk_event:{event_id}:guardian` / 升级 `risk_event:{event_id}:escalated`
       —— 锚点是 event_id 而非 elder_id+日期（AC-12：同一事件不建第二
       risk_event；同日两次独立红档各自成事件，按日期去重会吞第二条）；
-    - 操作者身份从 `runtime_context` 注入，不收客户端 `operator_id`；
-    - 长者负责范围过滤在服务层（护工仅可代填名下长者）。
+    - 长者负责范围过滤在服务层（护工仅可代填名下长者，AC-32）。
     """
-    raise NotImplementedError  # S3 联调段接入 app.services.health_service
+    try:
+        ref = await health_service.create_health_record(
+            session,
+            elder_id=body.elder_id,
+            source=body.source,
+            systolic=body.systolic,
+            diastolic=body.diastolic,
+            sleep_hours=body.sleep_hours,
+            mood_score=body.mood_score,
+            mood_note=body.mood_note,
+            complaint=body.complaint,
+            operator_id=UUID(identity.staff_id),
+        )
+    except PermissionError as exc:
+        await _audit_denial(
+            session,
+            identity,
+            action="health_submit_denied",
+            resource_type="elder",
+            resource_id=body.elder_id,
+            reason="not_primary_care",
+        )
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    row = await health_service.get_record_row(session, record_id=ref.record_id)
+    assert row is not None  # 同事务刚写入
+    return HealthRecordCreated(
+        record_id=ref.record_id,
+        severity=ref.severity,
+        rule_version=row.record.rule_version,
+        recorded_at=row.record.recorded_at,
+        follow_up=_FOLLOW_UP[ref.severity],
+    )
 
 
 @router.get(
@@ -207,7 +337,8 @@ async def list_pending_reviews(
     范围口径：黄档 care_worker 可见；红档仅 doctor/admin（服务层按
     identity.role 过滤），护工看不到红档记录（越权三例之一，S3 落测试）。
     """
-    raise NotImplementedError  # S3 联调段接入
+    rows = await health_service.list_pending_reviews(session, role=identity.role)
+    return [_view_row(r) for r in rows]
 
 
 @router.get(
@@ -224,7 +355,22 @@ async def get_health_trend(
 
     仅 doctor/admin；护工不开放（溢出池 O1「医生趋势图」的数据源）。
     """
-    raise NotImplementedError  # S3 联调段接入
+    records = await health_service.get_health_trend(session, elder_id=elder_id)
+    if records is None:
+        raise HTTPException(status_code=404, detail="长者不存在")
+    return HealthTrend(
+        elder_id=elder_id,
+        points=[
+            HealthTrendPoint(
+                recorded_at=r.recorded_at,
+                systolic=r.systolic,
+                diastolic=r.diastolic,
+                sleep_hours=r.sleep_hours,
+                mood_score=r.mood_score,
+            )
+            for r in records
+        ],
+    )
 
 
 @router.get(
@@ -238,7 +384,10 @@ async def get_health_record(
     session: _Session,
 ) -> HealthRecordView:
     """[编号 R-2｜契约 §3.5] 单条记录详情；不存在与越权同口径 404。"""
-    raise NotImplementedError  # S3 联调段接入
+    row = await health_service.get_record_row(session, record_id=record_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    return _view_row(row)
 
 
 @router.get(
@@ -251,8 +400,15 @@ async def get_health_record_chain(
     identity: Annotated[Identity, Depends(_health_reviewer)],
     session: _Session,
 ) -> list[HealthRecordView]:
-    """[编号 R-2b｜契约 §3.5] 版本链按 version 升序（Mock getRecordChain 同口径）。"""
-    raise NotImplementedError  # S3 联调段接入
+    """[编号 R-2b｜契约 §3.5] 版本链按 version 升序（Mock getRecordChain 同口径）。
+
+    链接口径按 R-4/AC-22 以 superseded_by 链接（契约 169 行「同 recorded_at」
+    与 R-4 矛盾，偏差已登记，待 dev-B 勘误）。
+    """
+    rows = await health_service.get_record_chain(session, record_id=record_id)
+    if not rows:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    return [_view_row(r) for r in rows]
 
 
 @router.post(
@@ -270,7 +426,24 @@ async def confirm_health_record(
 
     幂等：已 confirmed 的记录重复确认返回原结果（服务层口径，S3 落测试）。
     """
-    raise NotImplementedError  # S3 联调段接入
+    row = await health_service.get_record_row(session, record_id=record_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    await _ensure_red_reviewer(session, identity, record_id=record_id, severity=row.record.severity)
+    if row.record.review_status == "confirmed":
+        return _view_row(row)  # 幂等：重复确认返回原结果
+    if row.record.review_status == "corrected":
+        raise HTTPException(status_code=409, detail="记录已被纠错取代，请复核最新版本")
+    await health_service.review_health_record(
+        session,
+        record_id=record_id,
+        reviewer_id=UUID(identity.staff_id),
+        action="confirm",
+        review_note=body.note,
+    )
+    updated = await health_service.get_record_row(session, record_id=record_id)
+    assert updated is not None
+    return _view_row(updated)
 
 
 @router.post(
@@ -288,4 +461,39 @@ async def correct_health_record(
 
     纠错写审计（audit_logs），红档纠正需 doctor/admin（服务层校验）。
     """
-    raise NotImplementedError  # S3 联调段接入
+    row = await health_service.get_record_row(session, record_id=record_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    await _ensure_red_reviewer(session, identity, record_id=record_id, severity=row.record.severity)
+    if row.record.review_status == "corrected":
+        raise HTTPException(status_code=409, detail="记录已被纠错取代，不能重复纠错")
+    if not body.fields:
+        raise HTTPException(status_code=422, detail="至少修改一项指标")
+    invalid = set(body.fields) - _CORRECT_FIELDS_ALLOWED
+    if invalid:
+        raise HTTPException(status_code=422, detail=f"纠错字段不支持：{sorted(invalid)}")
+
+    ref = await health_service.review_health_record(
+        session,
+        record_id=record_id,
+        reviewer_id=UUID(identity.staff_id),
+        action="correct",
+        corrected_values=body.fields,
+        review_note=body.review_note,
+    )
+    await audit_log_service.record_audit(
+        session,
+        actor_type="staff",
+        actor_id=UUID(identity.staff_id),
+        action="health_record_correct",
+        resource_type="health_record",
+        resource_id=ref.record_id,
+        detail={
+            "old_record_id": str(record_id),
+            "severity": ref.severity,
+            "version": ref.version,
+        },
+    )
+    updated = await health_service.get_record_row(session, record_id=ref.record_id)
+    assert updated is not None
+    return _view_row(updated)

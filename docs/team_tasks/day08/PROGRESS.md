@@ -17,6 +17,7 @@
 | 计划 | 状态 |
 | --- | --- |
 | `docs/plans/day08/day-08-健康采集与三端后台.md` | 📝 草稿（待主理人确认后执行） |
+| `docs/plans/day08/dev-a-数据分级规则层.md` | 📝 草稿 |
 | `docs/plans/day08/dev-b-day08-工作推进计划.md` | 🚧 进行中（Step 0 已裁决，2026-11-11） |
 | `docs/plans/day08/dev-c-day08-工作推进计划.md` | ❔ 执行中 |
 
