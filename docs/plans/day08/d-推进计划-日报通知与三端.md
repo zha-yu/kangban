@@ -1,4 +1,4 @@
-> 状态：进行中（S0–S7/S10 完成；D1 三偏差收口；D3 骨架完成；S8 卡演练、S9 卡 CP4、D6 卡 B 置位）　｜　版本：v1.6　｜　日期：2026-11-11
+> 状态：进行中（S0–S7/S10 完成；D1 三偏差收口；**D3 REST＋pad 接线完成**，撤销/30 秒联演待 A/窗口；S8 卡演练、S9 卡 CP4、D6 卡 B 置位）　｜　版本：v1.7　｜　日期：2026-11-11
 > 关联：docs/team_tasks/day08/dev-D-日报通知API与family-pad.md（v1.2，本计划的任务来源）｜docs/plans/day08/day-08-健康采集与三端后台.md（v1.2，全量上游计划）｜docs/team_tasks/day08/day08-任务总览与DAG.md（v1.1，对接点 X1–X9 与全局节奏）
 > 上游依据：PRD line 405/409–412（FR-RPT-01~04 验收）、line 401（FR-ALT-06）、line 254（FR-UI-08）、line 294–297（FR-CON-03/04/06）、line 459（FR-TC-09）、line 381–391（通知状态机）、line 495/500/505/507/508/519/520（AC-13/18/23/25/26/37/38）、line 94–95（媒体分发/家属无障碍）、line 527–538（固定测试集）、line 576（Day 8 完成定义）｜技术设计文档 line 653–665（daily_reports）、line 667–684（notifications）、line 633–651（media 两表）、line 686–702（decision_logs）、line 1144–1164（Day 8 实现口径）
 > 变更记录见文末
@@ -59,7 +59,7 @@
 | S9 | D4 pad 戏曲播放 | 🚧 部分完成 | ✅ 服务端 play_opera 命中经注入 sink→deliver 下发 media_play；pad protocol/realtime/面板 live 接线＋七动作＋duck 互斥＋barge-in；单测 2 例绿；15 首真 mp3 种子落库（稳定路径）；⛔ CP4 四方联演窗口＋A5 media_control 下发 |
 | S10 | 报告定稿＋pre-push 接线 | ✅ 已完成 | 钩子只做机制自检（`--self-check`），真门禁不进钩子；正向 exit=0、反向 exit=1 双验证 |
 | S11 | 四件套全绿＋文档回填 | 🚧 部分完成 | 四件套复跑全绿（1333 passed／ruff／tsc／build）；⛔ 完成定义证据链待 S6 C 侧/S8/S9 CP4 |
-| S12 | 条件项（D3 SOS / D6 提示条） | 🚧 部分完成 | **D3 骨架完成**（主理人裁「Day 8 建 service 骨架」）：sos_service.trigger_sos＋3 单测绿，零迁移（0010 两表枚举本就含 sos，A 卡说法不成立已纠正）；REST/pad/30 秒联演顺延 Day 9/10；D6 pad 增量完成，⛔ 服务端置位待 B＋e2e 待联调 |
+| S12 | 条件项（D3 SOS / D6 提示条） | 🚧 部分完成 | **D3 service＋REST＋pad 三件已接**：`sos_service.trigger_sos`＋`POST /api/pad/sos`（设备令牌、未绑 403、未关闭事件幂等复用）＋pad 点击即请求/三态结果页/失败重试；7 用例绿（service 3＋API 4）。⛔ 仍缺撤销 service 函数（Q-D7）与 30 秒看板红色置顶联演窗口；D6 pad 增量完成，⛔ 服务端置位待 B＋e2e 待联调 |
 
 ---
 
@@ -479,6 +479,8 @@ uv run python scripts/update_progress.py --check-plans
 | 2026-11-11 | **外部口径登记 §13（17:10）** | 收到两条 F2 口径：① `attention_events[].type` 用 `risk_events` **五枚举原值**（`red_emergency/health_alert/med_risk/sensitive/sos`），契约 F2 示例的 `emergency_health` 是示意值；② `brief` 真实优先（`health_record` 取实测血压文案），其余类型中文短标兜底、不编造。回代码核对确认五枚举与 `app/models/medication.py:320` 的 CHECK 约束逐字一致，`emergency_health` 在全仓确无出处。已建 **§13 外部口径登记**（K-1~K-4，含 mp3 与中文短标建议） | 契约 F2 示例与五枚举不一致，**需 dev-B 走契约留痕**（D 不改契约）；F2 组装尚不可做（C2 读函数未到），本口径先落纸，等函数到货即按此实现 |
 | 2026-11-11 | **合并 d853533＋F2 详情落地（17:25）** | 合并 `d853533`（C：`report_service` 读侧三函数 0d71416、媒体扩展名放开 0998c1a；A/B：`bind_dev_b_tools` 等）。新建 `app/api/reports.py`：**F2 `GET /api/family/reports/{report_id}`** 已实现——四键 `medication_stats` 强制补全不合并、`summary_text` 原样带固定声明、`attention_events` 原样透传五枚举（§13 K-1）、403 走 `record_audit`＋正常 return、404 分离。`tests/test_reports_api.py` **5 用例绿**（401 无凭证／401 员工主体／200 四键＋声明＋audio_url=null／404／403＋审计一条）。`app/api/__init__.py` ROUTERS 追加 reports 行 | **F1/F0 仍不可做，差一个参数与一个函数**（J-C2c）：① `list_reports_for_guardian` 无 `elder_id` 过滤，而契约 F1 是**按长者**的路径，api 里过滤会破坏 S-07 去重与 S-10 分页；② F0 要 `elder_id/name/relation`，现有 `_guardian_active_elders` 是私有且只给 id，`elder_service.list_elders` 是员工域。**纠错留痕**：上一轮说「C 的读函数未到货」是查了推送前的旧快照，实际 0d71416 已包含，本轮已核对 `git rev-list HEAD..origin/develop = 0` |
 | 2026-11-11 | **合并 7b08df1＋F0/F1 落地（17:40）** | 合并 `7b08df1`（C：`9a8f603` 补 F0/F1 两函数；B：`e3eaf8b` 真素材 mp3 种子脚本；A：药单管理 REST `app/api/medication.py`）；冲突仅 `app/api/__init__.py` ROUTERS（三方各加行）→ 合并保留 `alerts/reports/health_records/medication` 四行，`medication` 导入补齐。**`app/api/reports.py` 补齐 F0/F1**：F0 `GET /api/family/elders` 三字段裁剪、未绑定返回空数组；F1 `GET /api/family/elders/{elder_id}/reports` 按长者、每日期只出最新版、`summary_preview` 截 80 字、越权 403＋审计（裁决在 api 按 F0 清单，因 service 对未绑定 elder 返回空集）。`tests/test_reports_api.py` 5 → **9 用例全绿** | **F1 越权裁决位置的分工已落定**：C 的 service docstring 明确「越权分流由 API 层裁决」，故 api 先查绑定清单再取列表——不是我在 api 拼查询，是消费对方约定的分工。**仍缺**：WS 帧形状（Q-D4）、SOS 入口与撤销（Q-D7）、`main.py` 未调 `bind_dev_b_tools`、`static/media/opera` 素材未生成 |
+| 2026-11-11 | **D3 REST＋pad 接线收口（Day 9 前移）** | 新建 `app/api/sos.py`：`POST /api/pad/sos`（`current_device` 鉴权、`elder_id` 只从 `devices` 绑定解出、未绑定 403 `device_not_bound`、未关闭 sos 事件幂等复用），`app/api/__init__.py` ROUTERS 追加一行；pad：`api.ts#triggerSos`＋`App.tsx` 点击即请求/发送中/成功/失败三态＋`SosResult` 失败重试，删除「界面演示·工单接口待接」徽标。新建 `tests/test_sos_api.py` 4 例（401 无凭证／401 家属主体／403 未绑定／200 建单＋幂等） | 响应体 `{event_id,order_id,created}` 无冻结契约（Q-D7 未决）→ 自裁留痕；**撤销边界仍缺 service 函数**、30 秒看板红色置顶联演待窗口 |
+| 2026-11-11 | **全量门禁复跑（Day 8 收口）** | `pytest`：**1342 passed / 1 failed**（193s）；唯一红点 `test_staff_reassign.py::test_stale_write_conflict_on_outdated_baseline` 单独跑 **passed**（4.99s），D 侧相关文件零失败；`ruff check`＋`format --check` 全绿；`tsc --noEmit` exit=0；`pnpm build` ✓ | 该红点为上游 A/B 域**时钟源混用**的时序抖动（详见 §12.4），非本次改动引入、非 D 写域；不静默改测试，登记交 A |
 
 ---
 
@@ -521,7 +523,7 @@ uv run python scripts/update_progress.py --check-plans
 | 3 | `play_opera` **实现接线** | **B4 · dev-B** | 注册已就绪（`bind_tools.py:152`），还差 `make_play_opera_executor` 在 lifespan 里被调用（`main.py` 装配属 A/B 交界，D 不碰） | S9 的 WS 接线、AC-37 端到端 | 注册函数存在，但 `app/main.py` 未见 `bind_dev_b_tools` 调用点 |
 | 4 | 戏曲**种子素材** | **B4 · dev-B** | `static/media/opera/` 20–30 条（§6.4），现口径为 mp3 | 同上；D 只能用仓库内演示音自测 | `ls static/media/opera` → **目录不存在** |
 | 5 | **WS 帧形状** | **A→B**（Q-D4） | `opera_control`（或同义）的 type/字段/动作枚举，冻结后 D 才改 `protocol.ts` | S9 协议接入 | `frontend/src/pad/protocol.ts` 白名单无 opera 类；`task_command` 仅 `kind:"medication"` |
-| 6 | **SOS 事件链入口 + 撤销函数** | **A3 / Q-D7** | `escalate_safety_event` 支持 `sos` 类别（现映射表 5 类无 sos）；撤销 service 函数 | D3 整项 | `app/services/safety_service.py:107-113` 的 `_ORDER_TYPE_BY_CATEGORY` 只有 chest_pain/breathing/stroke/fall/self_harm；`app/api/` 无 sos 端点 |
+| 6 | **SOS 撤销函数**（事件链入口已到货） | **A3 / Q-D7** | `sos_service.trigger_sos` 与 `POST /api/pad/sos` 已交付（D 侧）；只差撤销 service 函数（普通确认 10 秒可撤销＋审计、红色事件仅追加「说错了」且保持 open）。撤销函数不在 D 写域 | D3 撤销边界＋AC-26 用例 | `app/services/` 全仓无撤销/重开函数（`grep -rn "revoke\|undo" app/services/` 仅工单 reopen） |
 | 7 | `route_degraded` **字段冻结** | **dev-B** | 字段名/类型/出现时机（Q-D5 已裁「加字段」） | D6 | `protocol.ts` 无该字段（未冻结，D 不动协议） |
 
 ### 12.2 已到货（可直接消费，避免重复催）
@@ -542,6 +544,12 @@ uv run python scripts/update_progress.py --check-plans
 
 1. **service 侧 uuid 归一化**（R-D10 回归）：`Identity.staff_id` 为 `str`、`target_id` 为 `uuid.UUID`，直接比较恒不等；D 已在 api 边界 `uuid.UUID(...)` 兜住，但 scheduler 等直调方仍会踩。
 2. **`_require_transition` 改抛 `NotificationIllegalTransition`**：现在抛基类，D 靠「其余 `NotificationError` → 409」兜住，语义上不够干净。
+
+### 12.4 上游已知红灯（不阻塞 D，交 A/B；2026-11-11 收口门禁实测）
+
+| 项 | 现象 | 根因 | 建议处置 | 归属 |
+| --- | --- | --- | --- | --- |
+| `test_staff_reassign.py::test_stale_write_conflict_on_outdated_baseline` | 全量跑失败：`new_ts > baseline` 断言不成立（new 13:51:01.769Z < baseline 13:51:02.163Z）；**单跑 passed**（4.99s），D 侧文件零失败 | `staff_service.reassign_elders` 用 **Python `datetime.now(UTC)`** 推进 `updated_at`，而测试基线/种子来自 **PostgreSQL `now()`（事务开始时刻）**；两套时钟在容器与宿主机间有亚秒级偏差，全量跑时基线可能「晚于」Python 墙钟，断言随机翻红 | 统一时钟源：service 改用 `func.now()` 推进（或测试基线也取 Python 时间）；不要用 `sleep`/放宽断言掩盖 | A（staff_service 写域）＋B（测试夹具） |
 
 ---
 
@@ -570,3 +578,4 @@ uv run python scripts/update_progress.py --check-plans
 | v1.4 | 2026-11-11 | Q-D2 收口（N4 403+审计）；Q-D9 采用远端 f445cb4；D4 真实链路（media_play 注入式下发＋pad live 接线＋单测＋15 mp3 种子）；D6 pad 增量（route_degraded 冻结 v1.0）；R-D3 归因回执报告；Q-D10 登记（N-3 幂等解释）；四件套 1333 passed；merge b0caef0（v3.1 阈值 0.62＋route_degraded 冻结文档） |
 | v1.5 | 2026-11-11 | D3 按主理人裁决建 service 骨架（trigger_sos＋3 单测，零迁移；纠正「0010 枚举无 sos」说法）；REST/pad/联演顺延 Day 9/10 留痕；merge 0f334bb（notify_service 采用远端审计版＋归一坑修复）；Q-D11 登记（media 帧形状冲突待 B 冻结） |
 | v1.6 | 2026-11-11 | C 三偏差收口：R-D12 acknowledged_by_name 补齐（staff_names 批量取名）、N-2 越权 403+审计（api 漏 catch 修复）；四件套 1339 passed；任务卡状态进行中＋日看板重生成 |
+| v1.7 | 2026-11-11 | D3 REST＋pad 接线收口：新增 `app/api/sos.py`（POST /api/pad/sos，设备鉴权/未绑 403/幂等）＋pad 三态结果页＋`tests/test_sos_api.py` 4 例；S12 行与 §12.1 缺口更新；全量门禁实测 1342 passed / 1 上游时序红点（§12.4 登记交 A）；响应体字段为无冻结契约下的自裁留痕 |
