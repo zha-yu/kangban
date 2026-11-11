@@ -7,7 +7,7 @@
 
 | # | 任务卡 | 状态 | 文件 |
 | --- | --- | --- | --- |
-| 1 | dev-A 个人任务书 | ⬜ 未开始 | `docs/team_tasks/day08/dev-A-后端数据与分级.md` |
+| 1 | dev-A 个人任务书 | 🚧 进行中（A1✅ A4✅ A2✅ A3✅ A5✅ H12⏳全员收口） | `docs/team_tasks/day08/dev-A-后端数据与分级.md` |
 | 2 | dev-B 个人任务书 | ⬜ 未开始 | `docs/team_tasks/day08/dev-B-后端子图调度与MCP.md` |
 | 3 | dev-C 个人任务书 | ⬜ 未开始 | `docs/team_tasks/day08/dev-C-健康域API与console.md` |
 | 4 | dev-D 个人任务书 | ⬜ 未开始 | `docs/team_tasks/day08/dev-D-日报通知API与family-pad.md` |
@@ -17,6 +17,7 @@
 | 计划 | 状态 |
 | --- | --- |
 | `docs/plans/day08/day-08-健康采集与三端后台.md` | 📝 草稿（待主理人确认后执行） |
+| `docs/plans/day08/dev-a-数据分级规则层.md` | 📝 草稿 |
 | `docs/plans/day08/dev-b-day08-工作推进计划.md` | 🚧 进行中（Step 0 已裁决，2026-11-11） |
 
 ## 契约冻结：（本日无 contracts.md）
