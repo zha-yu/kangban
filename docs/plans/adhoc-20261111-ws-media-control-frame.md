@@ -1,4 +1,4 @@
-> 状态：草稿　｜　版本：v1.0　｜　日期：2026-11-11
+> 状态：已废弃（2026-11-11，口径并入《接口契约_照护台业务数据.md》§6.5，Q-D11 冻结：维持 D 侧 `media_play`/`media_control{action,media?}`，否决本文 `stream_id`/`media_info` 方案）　｜　版本：v1.0　｜　日期：2026-11-11
 > 关联：Day 8 Q-D4（D 提：pad 戏曲 WS 帧形状对齐）+ B4（B 接：play_opera Tool 注册）
 > 上游依据：AGENTS §6 模型路由表（L0 规则 → L2 ToolExecutor → WS 下发）｜ Day 3 C2 信令契约（WS /ws/signal 文本帧 JSON 体系不变，本文件定义新增 type）
 > 变更记录见文末

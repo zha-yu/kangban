@@ -1,6 +1,6 @@
-# Day 8 契约增量 · 健康采集任务下发（§C-1）与 pad 答案回传（§P-1）
+# Day 8 契约增量 · 健康采集任务下发（§C-1）、pad 答案回传（§P-1）与撤销/说明（§P-2）
 
-> 状态：已冻结　｜　版本：v1.0　｜　日期：2026-11-11
+> 状态：已冻结　｜　版本：v1.1　｜　日期：2026-11-11
 > 关联：docs/team_tasks/day08/day08-任务总览与DAG.md（B3 调度 / dev-C 健康域）、docs/接口契约_照护台业务数据.md（§3.3 H-3 随本契约同日冻结，见其 §7 v1.4）
 > 上游依据：PRD §4.6（采集窗口 19:00–20:00）、FR-HLT-01、FR-UI-10（任务下发）｜技术设计文档 §3 health_records.source 枚举、§6 health_checkup_graph、Day 7 §6.2 task_command 帧先例
 > 变更记录见文末
@@ -75,8 +75,46 @@
 | O-1 | pad 面板提交与语音子图问询并发时的重复采集 | 追加新行 + 复核纠错兜底；如需互斥另立裁决 |
 | O-2 | 模糊失败（网络超时）重试产生重复行 | AC-22「追加不覆盖」为冻结口径，前端仅在明确失败时允许手动重试；不引入客户端去重键 |
 
+## 5. §P-2 pad 撤销 / 补充说明端点（D3 · Q-D7，FR-UI-08 / AC-26）
+
+权限：均只认设备凭证（同 §P-1 / C7）。未绑定长者 → 403 `device_not_bound`；
+事件不属于本设备长者一律 **404 `NOT_FOUND`**（防枚举）；`elder_id` 只从设备绑定表解出。
+
+### 5.1 普通「已服自报」撤销（10 秒窗口）
+
+`POST /api/pad/medication-events/{reminder_id}/revoke`
+
+| 项 | 口径 |
+| --- | --- |
+| 200 | `{"reminder_id":"uuid","status":"waiting_confirm","terminal_state":null}` |
+| 409 `UNDO_WINDOW_EXPIRED` | `now - confirmed_at > 10s` |
+| 409 `CONFLICT` | 非 `terminal_state='taken_reported'`（红色事件不走本端点） |
+| 404 `NOT_FOUND` | 事件不存在或不属于本设备长者 |
+| 副作用 | 恢复 `waiting_confirm`；清空 `terminal_state/confirmed_at/confirm_channel`、`late_taken=false`；写审计 `medication_taken_report_revoked`；**不删触达历史**（medication_attempts 只增不改） |
+
+### 5.2 红色事件补充说明（不可撤销）
+
+`POST /api/pad/sos/{event_id}/correction`
+
+| 项 | 口径 |
+| --- | --- |
+| 200 | `{"event_id":"uuid","status":"open|escalated","note":"刚才说错了"}`，**status 保持不变** |
+| 409 `CONFLICT` | 事件已 `closed`，不再接受说明 |
+| 404 `NOT_FOUND` | 事件不存在或不属于本设备长者 |
+| 副作用 | 仅追加审计 `sos_correction_appended`（append-only），**不关闭/不撤销事件**，由工作人员核实 |
+
+> 冻结说明：两条件端点为 Day 8 D3 自裁口径（Q-D7 撤销契约未冻结前），随本契约一并冻结；
+> 变更须回 dev-B 走修订记录。红色事件「不可一键撤销」依据 PRD FR-UI-08 / AC-26。
+
+## 6. 引用登记：`tts_text.route_degraded`（D6）
+
+字段名、类型、恒下发、与 `degraded` 正交等口径以
+`docs/plans/day08/adhoc-20261111-route_degraded契约冻结.md` v1.0 为准，本契约不重复定义。
+消费方 dev-D（`protocol.ts`/`realtime.ts` 已实现）；产出方 dev-B（服务端置位待实现）。
+
 ## 修订记录
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-11 | 首版冻结：§C-1 task_command kind=health 帧扩展（含离线补推、幂等键、单 worker 约束）；§P-1 pad 答案回传端点（source 服务端判定自裁口径）；§3 调度装配留痕；§4 开放问题 O-1/O-2。配套实现：app/services/task_dispatch_service.py、app/api/pad.py、app/api/health_records.py H-3、health_jobs 第五 tick、pad 前端 protocol/health-client/HealthCheckup 接入 |
+| v1.1 | 2026-11-11 | **新增 §5 §P-2 pad 撤销/补充说明端点**（D3 · Q-D7）：`POST /api/pad/medication-events/{id}/revoke`（仅已服自报、10 秒窗口、404 防枚举、审计）与 `POST /api/pad/sos/{id}/correction`（红事件只追加「说错了」、status 不变、审计）；**新增 §6 引用登记** `tts_text.route_degraded`（口径以 adhoc 冻结文 v1.0 为准，D6 消费/B 产出）。依据 PRD FR-UI-08 / AC-26；实现见 app/services/{medication_service,sos_service}.py、app/api/{pad_undo,sos}.py、pad SosResult 与 24 例测试 |
