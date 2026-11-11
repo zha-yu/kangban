@@ -20,14 +20,13 @@
 | N-2 | `POST /api/notifications/{id}/read` | 只写 `read_at`，**已读≠确认**；幂等返回原时间 |
 | N-3 | `POST /api/notifications/{id}/acknowledge` | 仅 `delivered` 可确认，跳步 409，写 `acknowledged_by/at` |
 
-### 一个字段缺口（R-D12，已登记）
+### 一个字段缺口（R-D12，2026-11-11 已收口）
 
-契约 §3.2 的 N-1 里 `acknowledged_by_name` 是 **JOIN 展示字段**，但
-`notify_service.list_staff_notifications()` 只返回 `Notification` 行、没有 JOIN
-`staff_accounts`；`staff_service` 也没有按 id 取名的函数。api 层不许拼查询，
-所以本文件**如实返回 `null`**，不编名字。等 A 侧在 service 里补 JOIN（或加一个
-批量取名函数）后，这里换成真实姓名——C 的 `alerts-api.ts` 已按可空处理，
-列表其余字段不受影响。
+契约 §3.2 的 N-1 里 `acknowledged_by_name` 是 **JOIN 展示字段**。原
+`notify_service.list_staff_notifications()` 只返回 `Notification` 行、没有 JOIN，
+本文件曾如实返回 null。**收口**：`staff_service.staff_names()` 批量取名（只读），
+N-1 序列化时补齐；查不到的 id 落 null 不编。C 的 `alerts-api.ts` 按可空处理，
+兼容不变。
 
 ## 归属校验（R-D10，2026-11-11 16:20 已由 A 侧修复）
 
@@ -59,7 +58,7 @@ from app.api.elders import ContractAPIRoute, _error_response
 from app.core.auth import current_staff
 from app.core.runtime_context import Identity
 from app.db import get_session
-from app.services import notify_service
+from app.services import notify_service, staff_service
 from app.services.audit_log_service import record_audit
 from app.services.notify_service import (
     NotificationError,
@@ -138,7 +137,9 @@ def _iso(value: object) -> str | None:
     return value.isoformat() if value is not None else None  # type: ignore[attr-defined]
 
 
-def _serialize_staff(notification: object) -> StaffNotificationItem:
+def _serialize_staff(
+    notification: object, names: dict[uuid.UUID, str] | None = None
+) -> StaffNotificationItem:
     return StaffNotificationItem(
         notification_id=notification.notification_id,  # type: ignore[attr-defined]
         target_type=notification.target_type,  # type: ignore[attr-defined]
@@ -153,8 +154,8 @@ def _serialize_staff(notification: object) -> StaffNotificationItem:
         created_at=_iso(notification.created_at) or "",  # type: ignore[attr-defined]
         sent_at=_iso(notification.sent_at),  # type: ignore[attr-defined]
         acknowledged_by=notification.acknowledged_by,  # type: ignore[attr-defined]
-        # R-D12：service 未 JOIN 员工姓名，api 不许拼查询 → 如实 null，不编
-        acknowledged_by_name=None,
+        # R-D12 收口：service 批量取名（staff_names），查不到落 null 不编
+        acknowledged_by_name=(names or {}).get(notification.acknowledged_by),  # type: ignore[attr-defined]
         acknowledged_at=_iso(notification.acknowledged_at),  # type: ignore[attr-defined]
         read_at=_iso(notification.read_at),  # type: ignore[attr-defined]
     )
@@ -180,8 +181,10 @@ async def list_staff_notifications(
         page_size=page_size,
         unread_only=unread_only,
     )
+    # R-D12 收口：acknowledged_by_name 为契约 JOIN 展示字段，service 批量取名补齐
+    names = await staff_service.staff_names(session, [row.acknowledged_by for row in rows])
     return {
-        "items": [_serialize_staff(row) for row in rows],
+        "items": [_serialize_staff(row, names) for row in rows],
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -196,7 +199,8 @@ async def mark_staff_notification_read(
 ) -> MarkReadOut:
     """N-2：员工标记已读。**已读 ≠ 确认**，不动 `status`（AC-23）。
 
-    不存在或不属于当前员工 → 404（service 同口径，不泄露存在性）。
+    不存在 → 404；不属于当前员工 → 403+审计（R-D10 同精神，service 抛
+    NotificationForbidden；审计 flush 后正常 return，raise 会回滚审计）。
     """
     try:
         read_at = await notify_service.mark_staff_notification_read(
@@ -204,6 +208,17 @@ async def mark_staff_notification_read(
             staff_id=uuid.UUID(staff.staff_id),
             notification_id=notification_id,
         )
+    except NotificationForbidden:
+        await record_audit(
+            session,
+            actor_type="staff",
+            actor_id=uuid.UUID(staff.staff_id),
+            action="notification_read_forbidden",
+            resource_type="notification",
+            resource_id=notification_id,
+            detail={"reason": "not_target_owner"},
+        )
+        return _error_response(403, "SCOPE_FORBIDDEN", "notification is not yours")
     except StaffNotificationNotFound:
         return _error_response(404, "NOT_FOUND", "notification not found")
     return MarkReadOut(notification_id=notification_id, read_at=_iso(read_at) or "")

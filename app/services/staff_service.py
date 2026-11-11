@@ -621,6 +621,24 @@ async def reassign_elders(
     }
 
 
+async def staff_names(
+    session: AsyncSession, staff_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, str]:
+    """批量取员工展示名（N-1 `acknowledged_by_name` JOIN 展示字段，R-D12 收口）。
+
+    只读不写；空入参返回空 dict；查不到的 id 不出现在结果里（调用方落 null）。
+    """
+    ids = list({sid for sid in staff_ids if sid is not None})
+    if not ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(StaffAccount.staff_id, StaffAccount.name).where(StaffAccount.staff_id.in_(ids))
+        )
+    ).all()
+    return {row.staff_id: row.name for row in rows}
+
+
 async def list_staff_accounts(
     session: AsyncSession,
     *,

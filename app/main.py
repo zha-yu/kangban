@@ -83,6 +83,13 @@ from app.services.dialogue_service import (
     identity_decision_to_result,
 )
 from app.services.llm_service import LLMService
+from app.services.notify_service import (
+    GuardianNotificationNotFound,
+    NotificationForbidden,
+    NotificationIllegalTransition,
+    NotificationNotFound,
+    StaffNotificationNotFound,
+)
 from app.services.response_service import RedisEpochPersistence, ResponseService
 from app.services.safety_service import escalate_safety_event
 from app.services.state_service import StateCenter
@@ -1086,6 +1093,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             status_code=401,
             content=ErrorResponse(
                 detail="token has expired", code="TOKEN_EXPIRED", trace_id=get_trace_id() or "-"
+            ).model_dump(),
+        )
+
+    # ---------- notify_service typed exceptions ----------
+    @application.exception_handler(NotificationForbidden)
+    async def _handle_notify_forbidden(req: Request, exc: NotificationForbidden) -> JSONResponse:
+        return JSONResponse(
+            status_code=403,
+            content=ErrorResponse(
+                detail=str(exc), code="NOTIFICATION_FORBIDDEN", trace_id=get_trace_id() or "-"
+            ).model_dump(),
+        )
+
+    @application.exception_handler(NotificationNotFound)
+    @application.exception_handler(GuardianNotificationNotFound)
+    @application.exception_handler(StaffNotificationNotFound)
+    async def _handle_notify_not_found(req: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(
+            status_code=404,
+            content=ErrorResponse(
+                detail=str(exc), code="NOTIFICATION_NOT_FOUND", trace_id=get_trace_id() or "-"
+            ).model_dump(),
+        )
+
+    @application.exception_handler(NotificationIllegalTransition)
+    async def _handle_notify_illegal(req: Request, exc: NotificationIllegalTransition) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content=ErrorResponse(
+                detail=str(exc), code="NOTIFICATION_ILLEGAL_TRANSITION", trace_id=get_trace_id() or "-"
             ).model_dump(),
         )
 
