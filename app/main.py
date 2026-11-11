@@ -367,6 +367,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         session_factory, registry=tool_registry, mcp_client=mcp_client
     )
 
+    # ---- B4：play_opera 本地执行器绑定（X8 口径②）----
+    # 只 registry.bind，不连库（session 在工具调用时才开），test 环境也无条件绑。
+    # 漏绑的症状：LLM 调 play_opera 一律 unwired/bad_response →「帮您记下来」话术。
+    from app.agents.bind_tools import bind_dev_b_tools
+
+    bind_dev_b_tools(tool_registry, session_factory=session_factory)
+
     # ---- D2/D3：checkpointer（与调度侧同一 DSN + 同一 schema）+ 绑定 C1 执行器 ----
     # app_env=test 时跳过：单元测试没有 PG，装配期连库会让「无库也能跑」的用例集体失败。
     checkpointer_cm = None

@@ -19,9 +19,10 @@ medication_confirm 需要 session + checkpointer 才能调子图；memory_recall
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Final
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from sqlalchemy import desc, or_, select
@@ -254,6 +255,53 @@ class ToolError(Exception):
 
 # ------------------------------------------------------------------ play_opera（Day 8 B4 / X8 ②）
 
+#: 点播口语前缀（最长优先）：LLM 有时把整句「播放茉莉雨」原样塞进 query，
+#: 中文无空格拆不开词导致 ILIKE 落空——整词 miss 后剥前缀重试一次兜底
+_PLAY_QUERY_PREFIXES: Final = (
+    "我要听",
+    "我想听",
+    "我想看",
+    "来一首",
+    "来一段",
+    "放一首",
+    "放一段",
+    "给我放",
+    "给我唱",
+    "播放一下",
+    "播放",
+    "放一下",
+    "唱一段",
+    "唱一下",
+    "听一下",
+    "听一首",
+    "来个",
+    "请放",
+    "我要",
+    "我想",
+    "给我",
+    "帮我",
+    "听",
+    "放",
+)
+
+
+def _strip_play_prefixes(query: str) -> str:
+    """剥掉点播口语前缀（可叠多次，如「我要播放茉莉雨」），剥空则原样返回。"""
+    result = query.strip()
+    changed = True
+    while changed:
+        changed = False
+        for prefix in _PLAY_QUERY_PREFIXES:  # 长前缀在前；剥中即断，防「放一首」被「放」二次误剥
+            if result.startswith(prefix) and len(result) > len(prefix):
+                result = result[len(prefix) :].strip()
+                changed = True
+                break
+    return result or query
+
+
+#: 检索词标点清洗：书名号/引号/句读——「《素颜》」「素颜。」都会让 ILIKE 落空
+_SEARCH_PUNCT_RE: Final = re.compile(r"[《》〈〉「」『』“”‘’\"'。．.，,！!？?～~：:；;]")
+
 
 def make_play_opera_executor(
     *,
@@ -262,13 +310,34 @@ def make_play_opera_executor(
     """返回 `play_opera` 工具的本地执行器（X8 口径②冻结 schema）。
 
     - **只读**检索 media_library（type=opera），按 title/genre/era/artist 匹配检索词；
+      逐级兜底：原词 → 剥点播口语前缀 → 剥书名号/标点，兜住 LLM 整句或带标点传参；
+      并以 `play_opera_query` 日志记录实际入参（排查 LLM 传参行为用）；
     - 返回 `{"found": bool, "media": {...} | None}`，media_url 严格走 X8 稳定路径
-      `/static/media/opera/<media_id>.wav`（口径①）；
+      `/static/media/opera/<media_id>.<ext>`（口径①，v1.3 扩展名放开）；
     - **不写 media_history**——播放历史归 C4 media_service.record_playback
       （X8 ②：Tool 层不直接写 history，FR-CON-06 P1）；
     - 查询直接用 ORM 读模型：media_service 未交付前的过渡实现，
       C4 交付后检索入口迁往 media_service.search_opera（只读迁移，零接口变化）。
     """
+
+    async def _search(session: Any, raw_query: str, terms: list[str], model: Any) -> Any | None:
+        """按检索词 ILIKE 匹配 title/genre/era/artist，全词精确命中优先，取 1 行。"""
+        stmt = select(model).where(model.type == "opera")
+        if terms:
+            conds = []
+            for term in terms:
+                pattern = f"%{term}%"
+                conds.extend(
+                    (
+                        model.title.ilike(pattern),
+                        model.genre.ilike(pattern),
+                        model.era.ilike(pattern),
+                        model.artist.ilike(pattern),
+                    )
+                )
+            stmt = stmt.where(or_(*conds))
+        stmt = stmt.order_by(desc(model.title == raw_query), model.title).limit(1)
+        return (await session.execute(stmt)).scalar_one_or_none()
 
     async def _executor(args: dict[str, Any], runtime: Identity) -> dict[str, Any]:
         query = str(args.get("query") or "").strip()
@@ -277,26 +346,26 @@ def make_play_opera_executor(
 
         from app.models.media import MediaLibrary
 
-        terms = [t for t in query.replace("，", " ").replace("　", " ").split() if t]
+        # 逐级候选：原词 → 剥口语前缀 → 剥书名号/标点再剥前缀（LLM/ASR 常给歌名加《》或句读）
+        candidates: list[str] = [query]
+        stripped = _strip_play_prefixes(query)
+        if stripped != query:
+            candidates.append(stripped)
+        cleaned = _SEARCH_PUNCT_RE.sub("", stripped)
+        if cleaned != stripped:
+            candidates.append(_strip_play_prefixes(cleaned))
+        logger.info("play_opera_query query=%r candidates=%r", query, candidates)
+
         try:
             async with session_factory() as session:
-                stmt = select(MediaLibrary).where(MediaLibrary.type == "opera")
-                if terms:
-                    conds = []
-                    for term in terms:
-                        pattern = f"%{term}%"
-                        conds.extend(
-                            (
-                                MediaLibrary.title.ilike(pattern),
-                                MediaLibrary.genre.ilike(pattern),
-                                MediaLibrary.era.ilike(pattern),
-                                MediaLibrary.artist.ilike(pattern),
-                            )
-                        )
-                    stmt = stmt.where(or_(*conds))
-                # 全词精确命中优先（title == query），其余按标题稳定排序
-                stmt = stmt.order_by(desc(MediaLibrary.title == query), MediaLibrary.title).limit(1)
-                row = (await session.execute(stmt)).scalar_one_or_none()
+                row: Any | None = None
+                for cand in candidates:
+                    cand_terms = [
+                        t for t in cand.replace("，", " ").replace("　", " ").split() if t
+                    ]
+                    row = await _search(session, cand, cand_terms, MediaLibrary)
+                    if row is not None:
+                        break
         except ToolError:
             raise
         except Exception as exc:
