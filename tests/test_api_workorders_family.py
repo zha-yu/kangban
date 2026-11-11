@@ -5,7 +5,7 @@
   `actor_id` 被丢弃，AGENTS §4 红线 9）/ 备注必填 / 红档办结时间强制 /
   `reopen` 仅 admin（403）；
 - 家属通知：主体种类错 401 / 按人隔离（他人的通知不可见）/ 已读幂等 /
-  越权与不存在同口径 404（不泄露存在性）。
+  越权 403+审计、不存在 404（家属端契约 v1.2 §4 N4 冻结口径）。
 
 全部走真库（conftest 事务回滚隔离）；`get_session` 被覆写为绑定测试事务的
 session，服务层的 flush 落在 savepoint 上，用例结束统一回滚。
@@ -310,7 +310,9 @@ async def test_mark_read_idempotent(app_with_session, client: AsyncClient) -> No
     assert second.json()["read_at"] == read_at  # 幂等：返回原 read_at
 
 
-async def test_mark_read_other_guardian_is_404(app_with_session, client: AsyncClient) -> None:
+async def test_mark_read_other_guardian_is_403_audited(
+    app_with_session, client: AsyncClient
+) -> None:
     _, session = app_with_session
     mine = await _seed_guardian(session)
     other = await _seed_guardian(session, name="家属乙")
@@ -320,7 +322,21 @@ async def test_mark_read_other_guardian_is_404(app_with_session, client: AsyncCl
         f"/api/family/notifications/{notification.notification_id}/read",
         headers={"Authorization": f"Bearer {_guardian_token(mine.guardian_id)}"},
     )
-    assert resp.status_code == 404  # 越权与不存在同口径，不泄露存在性
+    assert resp.status_code == 403  # 契约 v1.2：越权 403+审计
+    assert resp.json()["code"] == "SCOPE_FORBIDDEN"
+    from sqlalchemy import select
+
+    from app.models.audit import AuditLog
+
+    row = (
+        await session.execute(
+            select(AuditLog).where(
+                AuditLog.action == "family_notification_read_forbidden",
+                AuditLog.resource_id == notification.notification_id,
+            )
+        )
+    ).scalar_one_or_none()
+    assert row is not None  # 403 必带审计
 
 
 # 防止 lint 报 unused：notify_service 引用说明通知种子走 service 同源口径

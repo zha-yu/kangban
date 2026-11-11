@@ -271,20 +271,23 @@ async def mark_guardian_notification_read(
 ) -> datetime.datetime:
     """标记已读（N4：只写 `read_at`，不动 `status`）。
 
-    幂等：已读直接返回原 `read_at`。找不到或**不属于当前监护人**一律
-    抛 `GuardianNotificationNotFound`（越权与不存在同口径，不泄露存在性）。
+    幂等：已读直接返回原 `read_at`。不存在抛 `GuardianNotificationNotFound`（404）；
+    存在但**不属于当前监护人**抛 `NotificationForbidden`（403+审计，家属端契约
+    v1.2 §4 N4 冻结口径，2026-11-11 由 404 防枚举自裁收口为契约口径）。
     """
     notification = (
         await session.execute(
             select(Notification).where(
                 Notification.notification_id == notification_id,
                 Notification.target_type == _TYPE_GUARDIAN,
-                Notification.target_id == guardian_id,
             )
         )
     ).scalar_one_or_none()
     if notification is None:
         raise GuardianNotificationNotFound("通知不存在")
+    # Identity.guardian_id 可能为 str，统一字符串比较（SQL 路径会隐式转换，Python 不会）
+    if str(notification.target_id) != str(guardian_id):
+        raise NotificationForbidden("通知不属于当前监护人")
     if notification.read_at is not None:
         return notification.read_at
     notification.read_at = datetime.datetime.now(datetime.UTC)

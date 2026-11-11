@@ -6,7 +6,8 @@ owner=family 通知接口 · 依据 frontend/src/family/api.ts 注释里的「AP
 
 分层：只做校验 + 范围过滤（`current_guardian` → `target_id=guardian_id` 天然按人
 隔离）+ 调 `app/services/notify_service.py`；不拼查询、不写库。
-越权与不存在同口径 404（不泄露存在性，对齐 AC-39 的防枚举思路）。
+N4 越权口径按家属端契约 v1.2 冻结收口：不属于当前家属 → 403+审计（同事务
+flush、正常 return 让 get_session 提交）；不存在 → 404。
 
 范围：本文件不改 `app/main.py`（写锁 L7-2），经 `app/api/__init__.py` 的
 ROUTERS 注册表挂载；`status` 送达状态机归 Day 8 P8 调度器，本接口不碰。
@@ -21,12 +22,16 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.elders import ContractAPIRoute
+from app.api.elders import ContractAPIRoute, _error_response
 from app.core.auth import current_guardian
 from app.core.runtime_context import Identity
 from app.db import get_session
 from app.services import notify_service
-from app.services.notify_service import GuardianNotificationNotFound
+from app.services.audit_log_service import record_audit
+from app.services.notify_service import (
+    GuardianNotificationNotFound,
+    NotificationForbidden,
+)
 
 router = APIRouter(
     prefix="/api/family",
@@ -114,7 +119,7 @@ async def mark_notification_read(
 ) -> NotificationReadOut:
     """N4：标记已读（幂等：已读返回原 `read_at`；只写 `read_at` 不动 `status`）。
 
-    通知不存在或不属于当前家属 → 404（越权同口径，不泄露存在性）。
+    不属于当前家属 → 403+审计（契约 v1.2 §4 N4）；不存在 → 404。
     """
     try:
         read_at = await notify_service.mark_guardian_notification_read(
@@ -122,6 +127,17 @@ async def mark_notification_read(
             guardian_id=guardian.guardian_id,
             notification_id=notification_id,
         )
+    except NotificationForbidden:
+        await record_audit(
+            session,
+            actor_type="guardian",
+            actor_id=uuid.UUID(guardian.guardian_id),
+            action="family_notification_read_forbidden",
+            resource_type="notification",
+            resource_id=notification_id,
+            detail={"reason": "not_owned"},
+        )
+        return _error_response(403, "SCOPE_FORBIDDEN", "notification is outside your scope")
     except GuardianNotificationNotFound as exc:
         from fastapi import HTTPException
 
