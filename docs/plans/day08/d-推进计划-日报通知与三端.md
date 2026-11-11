@@ -465,6 +465,7 @@ uv run python scripts/update_progress.py --check-plans
 | 2026-11-11 | **合并 develop `ff3591c`＋R-D10 回归修复（16:30）** | 合并 `ff3591c`（C 的 X8 媒体证据＋S7 门禁回填、A 的 notify_service typed exception 与归属校验）；冲突仅 `docs/plans/README.md` 索引（取远端，含新增证据文件行）。**A 侧两项已修**：`acknowledge_notification` 加 `target_id != acknowledger_id → NotificationForbidden`；拆出 `NotificationNotFound/IllegalTransition/Forbidden`。D 侧 `alerts.py` 改为 `isinstance` 判定（删掉消息前缀 hack）、新增 403＋审计分支（`record_audit` 只 flush，正常 return 让 `get_session` 提交），`tests/test_alerts_api.py` **9 passed**（新增越权用例：403 + 状态不变 + 审计恰好一条） | **发现并挡住一个 A 侧回归**：`Identity.staff_id` 是 `str`、`notifications.target_id` 是 `uuid.UUID`，A 直接 `!=` 比较恒真 → **所有员工确认都 403**（我 4 条老用例第一时间变红）。D 在 api 边界 `uuid.UUID(staff.staff_id)` 归一化修复；**service 侧仍需 A 归一化**，否则 scheduler 等调用方同样踩坑。另：`_require_transition` 仍抛基类 `NotificationError`，D 暂以「其余 → 409」兜住 |
 | 2026-11-11 | **素材改 mp3（16:25）** | 用户告知 B4 媒体播放改 mp3（wav 体积过大）。核对：**pad 播放器不感知扩展名**（只用 `mediaUrl` 字符串），代码零改动；`?demo=opera` 演示音已转 mp3（96KB→25KB，`frontend/public/media/opera/demo-tone.mp3`），wav 删除；`tsc --noEmit` exit=0 | **契约 §6.1 仍写死 `.wav`**（冻结口径），扩展名变更须 dev-B 在 §6 留痕，已写入 J-X8 追加：建议 `media_url` 不限定扩展名、实际文件名由 `media_library` 行承载。D 不改契约 |
 | 2026-11-11 | **合并 develop `58f81d5`＋N-1/N-2 落地（17:05）** | 合并 `58f81d5`（A：staff 读函数＋0019 迁移；B：`generate_opera_seed.py`＋`bind_dev_b_tools`＋工具注册测试）。**`app/api/alerts.py` 补齐 N-1 列表（分页/未读过滤/倒序）与 N-2 已读（只写 read_at、幂等、越权同口径 404）**，N-1/N-2/N-3 三条齐；`tests/test_alerts_api.py` 由 9 → **16 用例全绿**（新增：只出本人通知并倒序、unread_only、page_size 上限 422、已读幂等不刷时间戳、越权 404 且不落 read_at）。DB 升到 `0019_day8_medplan_version` | **新发现两处上游缺口**：① 契约 §3.2 的 `acknowledged_by_name` 是 JOIN 展示字段，但 `list_staff_notifications` 不 JOIN、`staff_service` 也无按 id 取名 → api 如实返回 `null`（R-D12），不编名字；② `bind_dev_b_tools` 已注册 `play_opera`，但 `app/main.py` **没有调用点**，启动时并未真正绑定 → AC-37 端到端仍不可跑。**全量 pytest 1300 passed / 2 failed**：失败在 `test_staff_reassign.py`（`Elder.updated_at` 未推进，断言 `new_ts > baseline`），属 A/B 域的改绑逻辑，D 侧文件未触碰，已登记待其修正 |
+| 2026-11-11 | **外部口径登记 §13（17:10）** | 收到两条 F2 口径：① `attention_events[].type` 用 `risk_events` **五枚举原值**（`red_emergency/health_alert/med_risk/sensitive/sos`），契约 F2 示例的 `emergency_health` 是示意值；② `brief` 真实优先（`health_record` 取实测血压文案），其余类型中文短标兜底、不编造。回代码核对确认五枚举与 `app/models/medication.py:320` 的 CHECK 约束逐字一致，`emergency_health` 在全仓确无出处。已建 **§13 外部口径登记**（K-1~K-4，含 mp3 与中文短标建议） | 契约 F2 示例与五枚举不一致，**需 dev-B 走契约留痕**（D 不改契约）；F2 组装尚不可做（C2 读函数未到），本口径先落纸，等函数到货即按此实现 |
 
 ---
 
@@ -528,6 +529,20 @@ uv run python scripts/update_progress.py --check-plans
 
 1. **service 侧 uuid 归一化**（R-D10 回归）：`Identity.staff_id` 为 `str`、`target_id` 为 `uuid.UUID`，直接比较恒不等；D 已在 api 边界 `uuid.UUID(...)` 兜住，但 scheduler 等直调方仍会踩。
 2. **`_require_transition` 改抛 `NotificationIllegalTransition`**：现在抛基类，D 靠「其余 `NotificationError` → 409」兜住，语义上不够干净。
+
+---
+
+## 13. 外部口径登记（消费方执行用，2026-11-11 17:10）
+
+> 这些不是文档里原有的，是联调中口头对齐的**实现口径**。登记在这里是为了「一次说清、以后不反复」；
+> 涉及契约正文的部分**必须由 dev-B 走留痕**，D 只按登记消费。
+
+| # | 口径 | 依据 | 对 D 的影响 | 待谁留痕 |
+| --- | --- | --- | --- | --- |
+| K-1 | **`attention_events[].type` 输出 `risk_events` 五枚举原值**：`red_emergency` / `health_alert` / `med_risk` / `sensitive` / `sos`（与 `medication.py:320` 的 CHECK 约束逐字一致）。契约 F2 示例里的 `emergency_health` 是**示意值**，不是枚举 | 联调口径告知（17:10）；代码核对 `app/models/medication.py:320/344` | F2 组装时**原样透传**，不做别名映射；家属端按五枚举渲染徽标 | dev-B（契约 F2 示例值需改，D 不改契约） |
+| K-2 | **`brief` 真实优先后兜底**：`health_record` 来源取实测值（如「血压 185/95 mmHg」）；其余类型用**中文短标**兜底，**不编造细节** | 同上 | F2 的 brief 由服务层组装；无实测值时不拼假数字 | dev-B（同上） |
+| K-3 | 中文短标兜底建议（D 侧提议，供 C/前端统一）：`red_emergency`→红色事件／`health_alert`→健康告警／`med_risk`→用药风险／`sensitive`→敏感事件／`sos`→一键求助 | 本计划提议 | 家属端徽标仍按 `level`（红/黄）渲染；`type` 已在前端收成 `RiskEventType` 五枚举联合类型，mock 里两个越界值（`emergency_health`/`health_referral`）已改回 `red_emergency`/`health_alert`，`tsc` 零错 | 前端与 C，非契约 |
+| K-4 | 戏曲素材由 wav 改 **mp3**；`media_url` 不限定扩展名，实际文件名由 `media_library` 行承载 | 用户 16:25 告知；本计划 J-X8 追加 | pad 播放器不感知扩展名，零改动 | dev-B（§6.1 需改） |
 
 ---
 

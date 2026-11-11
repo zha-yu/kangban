@@ -28,9 +28,19 @@ export interface BoundElder {
 }
 
 /** 需关注事件（F2 详情内，契约 S-09 服务端 JOIN 组装） */
+/** `risk_events.type` 五枚举（与 `app/models/medication.py:320` 的 CHECK 约束逐字一致）。
+ *  契约 F2 示例里的 `emergency_health` 是示意值、不是枚举——按联调口径（计划 §13 K-1）
+ *  后端原样透传五枚举，前端按此渲染，不做别名映射。 */
+export type RiskEventType =
+  | "red_emergency"
+  | "health_alert"
+  | "med_risk"
+  | "sensitive"
+  | "sos";
+
 export interface AttentionEvent {
   level: "red" | "yellow";
-  type: string;
+  type: RiskEventType;
   brief: string;
   occurred_at: string;
 }
@@ -112,7 +122,7 @@ const MOCK_REPORTS: DailyReportDetail[] = [
     medication_stats: { taken_reported: 2, refused: 1, missed_unconfirmed: 0, notification_failed: 0 },
     health_summary: "血压 152/94mmHg；睡眠 6.5 小时；步数 1,860",
     attention_events: [
-      { level: "yellow", type: "health_referral", brief: "血压偏高，建议咨询医生", occurred_at: isoAgo(10) },
+      { level: "yellow", type: "health_alert", brief: "血压偏高，建议咨询医生", occurred_at: isoAgo(10) },
     ],
     audio_url: null,
     pushed_at: isoAgo(9),
@@ -155,7 +165,7 @@ const MOCK_REPORTS: DailyReportDetail[] = [
     medication_stats: { taken_reported: 1, refused: 0, missed_unconfirmed: 1, notification_failed: 0 },
     health_summary: "血压 146/90mmHg；睡眠 5.8 小时",
     attention_events: [
-      { level: "red", type: "emergency_health", brief: "收缩压 185mmHg，已通知护工与家属", occurred_at: isoAgo(12) },
+      { level: "red", type: "red_emergency", brief: "收缩压 185mmHg，已通知护工与家属", occurred_at: isoAgo(12) },
     ],
     audio_url: null,
     pushed_at: isoAgo(8),
@@ -165,7 +175,7 @@ const MOCK_REPORTS: DailyReportDetail[] = [
 const MOCK_NOTIFICATIONS: FamilyNotification[] = [
   {
     notification_id: "n0000000-0000-0000-0000-000000000001",
-    type: "emergency_health",
+    type: "red_emergency",
     payload: {
       elder_name: "李建国",
       event_brief: "收缩压 185mmHg，已通知护工，建议联系医生",
