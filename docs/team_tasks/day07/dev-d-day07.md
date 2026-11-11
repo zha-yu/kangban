@@ -1,6 +1,6 @@
 # Task dev-D · Day 7 · pad 可靠性、console 改绑与联调收口
 
-> 状态：进行中　｜　版本：v1.0　｜　日期：2026-11-10
+> 状态：已完成　｜　版本：v1.1　｜　日期：2026-11-10
 > 负责人：dev-D　｜　总人日：2.75（D1 1.25 + D2 0.75 + D3 0.75）
 > 关联：`docs/team_tasks/day07/README.md`（总表）｜`docs/team_tasks/day07/dev-d-触达真机联调.md`（D3 既有卡）｜`docs/team_tasks/day07/contracts.md`（TD-1/TD-2）
 > 上游依据：PRD FR-UI-04/10、FR-MED-05/06｜技术设计文档 §4/§6｜`docs/plans/adhoc-20261110-day6全面审查.md`
@@ -202,3 +202,4 @@ ORDER BY created_at DESC LIMIT 5;
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-10 | 首版：D1 pad 播放/打断/VAD、D2 console 改绑、D3 触达/路由联调；覆盖审查 P1-4/5/6、P2-22~26、P3-36~40 |
+| v1.1 | 2026-11-10 | **三任务收口**：D1 真机补测三项全过（ack 60 轮 / 打断 15+ 轮 / threshold 0.45 定稿）；D2 API+UI 层证据齐（8 项 API 验证 + 浏览器走查分页勾选/409 弹窗编辑态保留/刷新防竞态）；D3 联调 L1–L5 全 PASS（含 22:19–22:27 sidecar 权重就位后 L5 复跑：澄清一次、二次模糊进 Agent、fallback 快失败 2–4ms）。挂账项均有归属：L6#10 提示条转 day08 dev-D 卡 D4（待主理人裁决）、L6#11 误标 opera 归评测、L6#5 B1 SQL 验收待新流量（dev-B 委托）。证据：`docs/plans/day07/d-联调记录.md`（状态已改已完成） |

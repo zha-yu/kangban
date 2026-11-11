@@ -1,6 +1,6 @@
 # Day 7 · dev-D 联调记录（d-联调记录）
 
-> 状态：进行中　｜　记录人：dev-D（AI 协作）　｜　日期：2026-11-10
+> 状态：已完成　｜　记录人：dev-D（AI 协作）　｜　日期：2026-11-10
 > 关联：`docs/plans/day07/d-推进计划-pad可靠性改绑联调.md`（计划）｜`docs/team_tasks/day07/dev-d-day07.md`（任务卡）
 > 用途：D1 / D2 / D3 各项验证证据与问题登记；D3 收口后作为 G5 门禁证据链一部分。
 
@@ -35,7 +35,7 @@
 
 ### 遗留与登记
 
-- UI 层（勾选「已选 N / 共 M」显示、409 弹窗文案与编辑态保留）待 D3 联调用浏览器核验；API 层证据已齐。
+- UI 层核验 **PASS（2026-11-10 22:40 真人浏览器走查）**：①改绑弹窗「已选择 N 位 / 共 M 位」显示正确，第 2 页可见 `D2压测长者101`（第 101 位起可勾，P2-25 生效）；②唯一责任人改绑全部取消 → 409 弹窗文案「长者 xxx 移除后将失去全部责任护工」、弹窗不关、勾选编辑态保留（P2-26 生效）；③连续 5 次快速刷新列表稳定（P2-40 生效）。至此 D2 的 API 层与 UI 层证据齐，**D2 收口**。
 - 测试数据留存：150 位 `D2压测长者*`、4 名测试员工（D2测试护工 / D2共同护工×2 / 及 1380000990x 手机号），带显式前缀便于识别与后续清理；E5 无删除端点，未直插 SQL 清理。
 - `console/api.ts` 保持零改动（K2 方案 B 约束未破坏）。
 
@@ -118,13 +118,22 @@ L6#6 修复（`graph_session.commit()`，主理人授权「图运行后调用处
 - **边界三验 PASS（11:18–11:20，基线差集法）**：①被打断/关页的 5 条触达保持 `voice_dispatched` 不升级（`played` 计数 48→49 严格 +1，仅对应自然播完）；②3 条自然播完各升级一次；③`played` 按 `(event_id, attempt_no)` 零重复组，重复回执幂等无报错。**TD-2 收口**。
 - 勘误保留：§6 L3 手册原 SQL 写 `ORDER BY created_at DESC`，实际列名为 `sent_at`，以本记录为准。
 
-### L4 · TTS 降级与并发 —— 阻塞（依赖 L2 触达 + 真机语音）
+### L4 · TTS 降级与并发 —— PASS（2026-11-10 11:43–11:48 复跑）
 
-触达链路（C2）与对话并发观察（真机语音）均缺，无法执行。前端对触达消息的处理逻辑（touch_id 分支：字幕渲染不动 WebRTC 轨）已由 D1 代码走查覆盖，真机验证待补。
+L2 复跑触发链就绪后执行。测试药单 plan `92f5cf74-7ee4-4846-8144-133e87ac7e52`（长者=李奶奶同设备，`* * * * *`，验完置 stopped）。
 
-### L5 · 路由与降级提示 —— 阻塞（依赖 A2 sidecar + A3 + 真机语音）
+- **并发（11:43–11:47）**：触达播报进行中对话「现在几点了」——回复与触达互不打断、字幕不串流、各自播完；SQL 侧每分钟触达 `receipt=played` + `tts_result=ok`（11:43–11:46 四条，播放通道独立实证）。
+- **TTS 降级（11:48）**：`TTS_PROVIDER=edge→cloud`（无凭证必失败）+ 后端重启后触发——两条触达 `tts_result=tts_failed`、只出字幕不白屏；降级触达**不升级 `played`**（无 audio 无回执，receipt 保持 `voice_dispatched`），符合契约口径。验后 `.env` 已恢复 `edge`。
+- 证据 SQL：`SELECT a.attempt_no, a.receipt, a.tts_result, a.sent_at, e.scheduled_at FROM medication_attempts a JOIN medication_events e ON e.reminder_id=a.event_id JOIN medication_plans p ON p.plan_id=e.plan_id WHERE p.plan_id='92f5cf74…' ORDER BY a.sent_at DESC;`
 
-sidecar 7001 未起（A2）、需真实语音输入、`decision_logs` 降级行依赖 A3 降级链路。无法执行。前端侧「网络慢，正在换种方式回答」提示已按预留实现（`msg.degraded===true` 触发），A3 下发字段冻结后校对。
+### L5 · 路由与降级提示 —— PASS（2026-11-10 22:19–22:27 复跑，sidecar 权重就位后）
+
+2026-11-10 上午曾阻塞（缺 Laya 权重）。**解除**：22:08 权重三件套迁入 `/Users/min/models/laya/`（sha256 `9d628fd9` 校验一致），`.env` 指向修正，sidecar `model_loaded=true`（HTTP p50 63ms / p95 89ms，M 系芯片远优于 dev-A 的 180ms）。复跑结果：
+
+- **L5-1 澄清一次** ✅：「我弄一下。」→ `conf=0.559, escalated_to_s2=false`（判据：`confidence<0.85 ∧ escalated=false` = 澄清轮，与 `decision_log_service.was_clarified` 同口径）。
+- **L5-2 二次模糊进 Agent** ✅：「帮我弄一下那个。」→ `conf=0.259, escalated_to_s2=true`。
+- **L5-3 关 sidecar 降级** ✅（部分）：杀 7001 后说 5 句，`decision_logs` 全落 `fallback`（`intent=other`、`conf=0.000`、快失败 2–4ms 无 200ms 挂起、`escalated_to_s2=true`）；回复经 Agent 兜底**正常产出**。**残留项见 L6#10**：「网络慢」提示条未出现——非缺陷，是 `degraded` 字段语义口径（回复降级 vs 路由降级）与 L5 预期冲突，待裁决。
+- 复跑期间 sidecar 已恢复 `model_loaded=true`。
 
 ### L6 · 缺陷登记收口
 
@@ -134,9 +143,20 @@ sidecar 7001 未起（A2）、需真实语音输入、`decision_logs` 降级行�
 | 2 | 到点药单无触达（scheduler 无任务注册） | — | dev-C（C2 调度接线） | 催办；药单已备好，C2 就绪后复跑 L2→L3；**更新（15:15）**：medication_jobs.py 已交付（install_scheduler 待装配），复跑待装配完成 |
 | 3 | §6 L3 手册 SQL 列名勘误（created_at→sent_at） | — | 本计划 | 以本记录 L3 为准，主理人决定是否修订计划 |
 | 4 | 触达/路由步骤的真机语音项 | — | 联调环境 | R4 口径登记补测，与 D1 待补清单合并 |
+| 10 | **L5-3 提示条未出现（语义口径冲突，待裁决）**：sidecar 杀掉走 `fallback`、Agent 正常回复，但 pad 无「网络慢，正在换种方式回答」提示 | 复跑 22:25–22:27，`decision_logs` 5 行 `fallback` | 主理人裁决（口径）／实施转 **day08 dev-D 卡 D4** | 根因：`tts_text.degraded` 契约语义 = **回复本身是降级模板话术**（`turn_service.py` L864 只在 LLM 失败/工具失败时置 true；clarify 恒 false），fallback→Agent 正常生成 → `degraded=false` → 前端（realtime.ts L217）不触发。与 L5 预期「关 sidecar 应提示」冲突。改法二选一：① 后端 fallback 时置 degraded=true——**不建议**，违反降级三不变量精神（回复正常却标 degraded）；② 协议加独立「路由降级」标记字段（如 `route_degraded`），前端按它提示——契约变更走冻结流程。**处置（22:30）**：转 day08 `dev-D-日报通知API与family-pad.md` 任务 D4（前置=本条裁决），day07 侧仅留登记 |
+| 11 | 模糊话被误标 `opera`：「我弄一下那个」intent=opera（conf 0.18–0.37），行为正确（走澄清/Agent）但意图标签噪音大 | L5 复跑 22:19–22:20 3 行 | dev-A（L1 评测） | 不阻塞 L5；建议 `eval/fixtures/` 模糊类补此类样本，走评测门禁观察，不单独修 |
 | 5 | B1 终态 SQL 验收（`completed\|t`、`response_completed` 恰 1 条）待新轮次流量 | — | dev-B（委托 D 联调） | 见文末「B1 · 回合终态 SQL 验收」节，含复跑 SQL 与库内基线 |
 | 6 | 真机补测时 pad 页面卡「正在听」+ Network sherpa wasm GET 连发几十次（每次 ~0.1kB/200） | — | 联调环境（dev 扰动，非前端缺陷） | 根因：dev-C 写码期间 `uvicorn --reload` 反复重启后端 → pad WS 重连风暴 → 每次 auth_ok 重跑 setupSession 重新编译 12MB VAD wasm → CPU 卡死。前端 teardown 已 `vad.free()`（realtime.ts L396），无 worker 泄漏；干净环境 agent 实测 VAD ready 正常（console：`WASM does not support multi-threading. Changing num_threads from 2 to 1`）、各资源仅 1 次请求。处置：关卡死 tab 重开即可；**韧性改进候选（P3，登记不阻塞）**：重连风暴下 setupSession 的 VAD load 去抖/复用已编译实例 |
 | 7 | **TD-1 落库闭环断裂（P1 缺陷）**：C2 合入后调度链路真实跑通（tick→create_event→build_graph→start，pad 上线后 ~30s 收到触达卡片+字幕+TTS「到吃药时间了，请确认联调测试-到点触达片是否已经服用。」），但 `medication_attempts` **0 行**、`medication_events.status` 恒 `calling` 不推进 | scheduler tick 触发链 | dev-C（图/调度会话管理裁决） | 根因：commit 链断裂——`medication_service.record_attempt` 只 `begin_nested+flush` 不 commit（调用方提交规范）；图节点（remind 等）全文无 commit；`medication_jobs.py` 铁律「scheduler 绝不写库」连 `graph_session` 的 commit 也不做，`async with` 退出即 rollback。投递/TTS 是内存动作已发生但触达记录丢失。连锁：① `get_attempt` 恒 None → 重放防护失效，服务重启后图恢复会**重复播报**；② 事件状态不推进 → `+5/+10/+15` resume 链失效；③ L3 played 回执、TD-2 无法验证。修复方向需裁决（图运行后由调用处提交事务 vs 节点内 service 写后提交），本卡不越权改后端，登记待修；复跑 L3/TD-2 待修复后进行。**更新（当日晚）**：主理人授权按「图运行后调用处提交」修复——`medication_jobs.py` 在 start/resume 后各加一次 `graph_session.commit()`（会话管理豁免，铁律 grep 口径同步调整）；附带裁决 L6#9 卡片双发、AC-20 建单口径扩到 `notification_failed`（两种终态都建漏服单）；`tests/test_medication_graph.py` 两个失败用例已按 AC-20/卡片口径修正，**15 passed** + ruff 全绿；复跑 L3/TD-2 待提交并重启后端后进行 |
+
+| 8 | **长回复流卡死**：12:04:35 response `ff8aac93`（turn `6f3e3769`「给我讲一个故事」）启动后零 segment 下发、零结算，turn 恒 `open`，pad 无声可播 | turn `6f3e3769556142e79f06f890b97ca3fa` | dev-B（L2 生成链路） | 登记待查；疑与 LLM 不稳定相关（12:39 起 L2 超时 12.8s 降级模板批量出现），根因待 dev-B |
+| 9 | **事件乱序 + turn 行缺失**：12:05:32「给我讲一个故事」#2 的 `response_completed`（含完整故事文本）与 `turn_started` 同微秒落库、`response_started` 反晚 8s、`conversation_turns` 无此轮行、`identity_source=generic` | turn `5be5cfb5073840a9ae476eb17d74090d` / resp `703de159323d4192866aef86b14739f8` | dev-B | 登记待查；完成先于开始物理矛盾，疑 L2 异常路径事件错写 |
+
+**D1-2 打断实测 PASS（2026-11-10 12:39–12:48 真机）**：pad 在播中开口 → 本地立即静音（体感）+ 上行 interrupt → 服务端五步结算，**15+ 轮落 `turn_completed status=interrupted`**（「好好的」「他为啥说呢」「我可以」「先给我讲故事/给我讲故事/别讲了」等），`last_played_segment=-1` 符合「一段未播完」口径；打错的语音下一轮正常收录。证据：`SELECT status, count(*) FROM conversation_turns WHERE started_at > '2026-11-10 12:38:00+00' GROUP BY status;` → interrupted ≫ completed。**附带实证**：12:39 起 L2（LLM API）持续超时 → 重试 2 次后模板话术 + `degraded=true`（轮次 ~12.8s），L2 失败降级链路真机验证 PASS，但 LLM API 当时不可用需 dev-B 排查（前 12:38:59 天气工具轮正常，问题仅在生成链路）。
+
+**D1-1 真实语音 ack 统计 PASS（2026-11-10 12:38–12:53，60 轮）**：①正常完成回复 17 条 `response_completed` **全部 played 水位推满**（`delivered_text` 与 `generated_text` 等长，含 2/3/6 段多段回复逐段 ack 到位）→ 无丢失 ack；②打断回复 38 条水位截断为 0，符合「打断即未播完」口径；③终端 `response_ack_rejected` 共 3 条，**全部为打断竞态良性残留**（playing/canceled 补发赛跑到 interrupt 结算之后 → `wrong_status`×2 + `stale_epoch`×1），四步校验正确拦截、零状态污染——乱序/重复拒绝路径的正向实证。证据 SQL：`SELECT response_id, payload_json->>'response_status', (length(payload_json->>'delivered_text')=length(payload_json->>'generated_text')) AS watermark_full FROM conversation_events WHERE event_type='response_completed' AND occurred_at > '2026-11-10 12:38:00+00';`（60 轮 ≥ 20 轮目标）。**P3 打磨候选（登记不阻塞）**：pad 在上行 interrupt 后抑制同 response 的 canceled/playing 补发，消除服务端告警噪音（realtime.ts onSpeechStart 分支）。
+
+**D1-3 threshold 标定 —— 主理人裁决：跳过标定，0.45 定稿（2026-11-10）**：不再执行 20 句近/远场样本复测；依据 D1-1/D1-2 真机 60 轮实测全部正常检出、无误触发报告（0.45 已覆盖白天全部真机流量）。代码注释口径同步（vad-worker.js 文件头 + detector 参数行）。J-D1 遗留项就此关闭。**D1 真机补测三项全部收口。**
 
 前端本卡（dev-D）范围内：L1–L6 未发现前端缺陷，无待修项。G5 门禁证据链现状：L1 SQL/服务证据齐；L2 阻塞证据（表结构 + 空表 + 源码实证）齐；L3–L5 待依赖就绪后复跑补齐。
 

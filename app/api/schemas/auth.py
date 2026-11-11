@@ -98,10 +98,13 @@ class CurrentIdentityResponse(BaseModel):
 
 
 class DeviceLoginRequest(BaseModel):
-    """设备换会话请求：长期令牌明文（只在换会话这一次走明文）。"""
+    """设备换会话请求：device_id 换 24h 会话（2026-11-11 裁决：取消密钥校验）。
+
+    device_secret 字段仅为兼容旧客户端保留，后端不再校验。
+    """
 
     device_id: uuid.UUID
-    device_secret: str = Field(..., min_length=1)
+    device_secret: str = Field(default="", description="已废弃，不再校验")
 
 
 class DeviceLoginResponse(BaseModel):
