@@ -29,7 +29,7 @@ from app.system_one.schemas import Intent
 
 #: 规则表版本。改任一规则（含正则、顺序、动作）都要 +1：
 #: `decision_logs.model_version` 会带上它，否则「换了一版规则后准确率变了」无法追溯。
-RULESET_VERSION: Final[str] = "r1"
+RULESET_VERSION: Final[str] = "r2"
 
 #: 规则命中后的动作：`tool` = 直连工具（只经 ToolExecutor）；`agent` = 下沉主控。
 #: 注意：`action="agent"` 且 `route_layer="rule"` 是**允许**的组合——规则认出了意图，
@@ -119,6 +119,7 @@ class Rule:
     action: RuleAction
     patterns: tuple[str, ...]
     tool_name: str | None = None
+    tool_args: dict[str, Any] | None = None
     reason: str | None = None
     #: True = 命中点左侧出现否定标记时**不算命中**（默认安全）；少数规则（如「别放了」）
     #: 本身就是指令，把它们写成完整短语即可自然绕开否定窗口。
@@ -130,73 +131,81 @@ class Rule:
 
 #: 规则表（顺序即优先级）。**≤10 条**，逐条有正例/负例（见 tests/test_router_rules.py）。
 RULESET: Final[tuple[Rule, ...]] = (
-    # R-04 打断播报：先说，因为它与「停止播放」语义最接近但对象不同（回复流 vs 媒体）
+    # R-04 打断播报（A5 升级为真直连 play_opera.interrupt）
     Rule(
         rule_id="R-04",
         intent="chat",
-        action="agent",
+        action="tool",
         patterns=(r"别说了", r"你先别说话", r"打住", r"打断一下"),
-        reason=REASON_CAPABILITY_NOT_READY,
+        tool_name="play_opera",
+        tool_args={"action": "interrupt"},
         negation_safe=False,  # 「别说了」本身就是指令，不能被自己的「别」判成否定
     ),
     # R-01 暂停播放
     Rule(
         rule_id="R-01",
         intent="opera",
-        action="agent",
+        action="tool",
         patterns=(r"暂停", r"停一下", r"先停停", r"歇一会(儿)?"),
-        reason=REASON_CAPABILITY_NOT_READY,
+        tool_name="play_opera",
+        tool_args={"action": "pause"},
     ),
     # R-02 继续播放
     Rule(
         rule_id="R-02",
         intent="opera",
-        action="agent",
+        action="tool",
         patterns=(r"继续(播放|放|唱)?", r"接着(放|播|唱|说)", r"往下放", r"接着来吧"),
-        reason=REASON_CAPABILITY_NOT_READY,
+        tool_name="play_opera",
+        tool_args={"action": "resume"},
         excludes=("电影", "影片", "片子"),
     ),
     # R-03 停止播放
     Rule(
         rule_id="R-03",
         intent="opera",
-        action="agent",
+        action="tool",
         patterns=(r"停止(播放|放映)?", r"关掉(戏曲|收音机|电视|音乐|声音)?", r"别放了", r"不听了"),
-        reason=REASON_CAPABILITY_NOT_READY,
+        tool_name="play_opera",
+        tool_args={"action": "stop"},
         negation_safe=False,  # 「别放了」是停止指令
     ),
     # R-05 换一段
     Rule(
         rule_id="R-05",
         intent="opera",
-        action="agent",
+        action="tool",
         patterns=(r"换(一|个)?段", r"换一(个|首)", r"换(台|曲)", r"再来一段"),
-        reason=REASON_CAPABILITY_NOT_READY,
+        tool_name="play_opera",
+        tool_args={"action": "next"},
         excludes=("电影", "影片", "片子"),
     ),
     # R-06 调大音量（放在 R-07 前：「大声点」不该被 R-07 的「声」抢走）
     Rule(
         rule_id="R-06",
         intent="opera",
-        action="agent",
+        action="tool",
         patterns=(r"大(一)?点声", r"声音(调)?大", r"音量(调)?大", r"大声(一)?点", r"听不清"),
-        reason=REASON_CAPABILITY_NOT_READY,
+        tool_name="play_opera",
+        tool_args={"action": "volume_up"},
     ),
     # R-07 调小音量
     Rule(
         rule_id="R-07",
         intent="opera",
-        action="agent",
+        action="tool",
         patterns=(r"小(一)?点声", r"声音(调)?小", r"音量(调)?小", r"小声(一)?点", r"太吵"),
-        reason=REASON_CAPABILITY_NOT_READY,
+        tool_name="play_opera",
+        tool_args={"action": "volume_down"},
     ),
     # R-08 重复一遍
     Rule(
         rule_id="R-08",
         intent="opera",
-        action="agent",
+        action="tool",
         patterns=(r"再(放|说|唱|播)(一)?遍", r"重复(一遍|播放|一下)"),
-        reason=REASON_CAPABILITY_NOT_READY,
+        tool_name="play_opera",
+        tool_args={"action": "repeat"},
         excludes=("电影", "影片", "片子"),
     ),
     # R-09 天气：**唯一真直连**（走 ToolExecutor → MCP weather）
@@ -292,6 +301,7 @@ def _hit_for(rule: Rule, text: str) -> RuleHit:
         intent=rule.intent,
         action=rule.action,
         tool_name=rule.tool_name,
+        tool_args=rule.tool_args,
         reason=rule.reason,
     )
 
