@@ -1,6 +1,7 @@
 # Task dev-A · Day 7 · Chinese-Jev 三级路由与决策日志
 
-> 状态：未开始　｜　版本：v1.0　｜　日期：2026-11-10
+> 状态：已完成　｜　版本：v1.1　｜　日期：2026-11-10（2026-11-11 栈师核验更新）
+> 核验登记（2026-11-11）：A1/A2/A3 代码与测试已落地——`system_one_*` 配置组、sidecar 五文件（backend/client/questions/schemas/server）、`contracts-system-one.md`、`rules.py`/`decision.py`、0016 决策日志迁移、`main.py` Router+SystemOneClient+install_scheduler 装配；`test_router_decision`+`test_router_rules` 共 36 用例绿。**偏差**：`system_one_provider` 取值仍为 `laya|mock`、`model_id="laya-multilingual"`，未采用契约的 `chinese_jev` 命名（对应 README 待裁决 O7-1 口径），功能行为不受影响。
 > 负责人：dev-A　｜　总人日：3.0（A1 0.5 + A2 1.5 + A3 1.0）
 > 关联：`docs/team_tasks/day07/README.md`（总表）｜`docs/team_tasks/day07/contracts-system-one.md`（A1 产出）｜`docs/plans/adhoc-20261110-day6全面审查.md`（收口依据）
 > 上游依据：PRD FR-DLG-02/03/06/07/09｜技术设计文档 §1.4、§3.4、§3.6、§8.3

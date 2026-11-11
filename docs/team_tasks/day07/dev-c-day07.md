@@ -1,6 +1,7 @@
 # Task dev-C · Day 7 · 用药工具、到点调度与 Agent 边界
 
-> 状态：未开始　｜　版本：v1.0　｜　日期：2026-11-10
+> 状态：已完成　｜　版本：v1.1　｜　日期：2026-11-10（2026-11-11 栈师核验更新）
+> 核验登记（2026-11-11）：C1 三工具（memory_recall/get_weather/medication_confirm）经 `tool_registry` 注册、`tool_executor` 走 registry 通用分发 + G2 权限校验（forbidden 四分类）；C3 `safety.py` 否定/历史/他人主体已实现（历史/模糊黄档显式归 Day 9，系计划内登记）；C2 由既有卡交付（✅）。`test_tool_executor`+`test_safety` 通过；**偏差**：23 个依赖 PostgreSQL 的用例在本地无库环境 skip，待有库环境复跑确认。
 > 负责人：dev-C　｜　总人日：2.75（C1 1.0 + C2 1.0 + C3 0.75）
 > 关联：`docs/team_tasks/day07/README.md`（总表）｜`docs/team_tasks/day07/dev-c2-用药到点触发接线.md`（C2 既有卡，不重开）｜`docs/plans/day07/handoff-A-to-C-用药到点接线.md`
 > 上游依据：PRD FR-MED-02/05/06、FR-DLG-07/09、FR-DLG-10｜技术设计文档 §6/§7/§8.3
