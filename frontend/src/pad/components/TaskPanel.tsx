@@ -1,6 +1,7 @@
 import { HealthCheckup } from "../pages/HealthCheckup";
 import { IdentityConfirm } from "../pages/IdentityConfirm";
 import { MedicationCard } from "../pages/MedicationCard";
+import { loadSession } from "../session";
 import { MOCK_CANDIDATES, MOCK_MEDICATION } from "../tasks";
 import type { PadTaskCommand } from "../task-channel";
 
@@ -41,9 +42,16 @@ export function TaskPanel({ command, onExit, onHint, onAnswer }: TaskPanelProps)
       return (
         <HealthCheckup
           key={command.taskId}
-          sourceLabel={meta ? `${meta.startedAt} 定时` : undefined}
+          sourceLabel={
+            meta?.source === "staff_scheduled"
+              ? "工作人员发起"
+              : meta
+                ? `${meta.startedAt} 定时`
+                : undefined
+          }
           onExit={onExit}
           onSubtitle={onHint}
+          token={loadSession()?.access_token ?? ""}
         />
       );
     }
