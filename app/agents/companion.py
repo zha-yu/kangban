@@ -166,14 +166,34 @@ MEDICATION_CONFIRM_TOOL: Final[ToolSpec] = ToolSpec(
     description="记录长者对服药提醒的回答（吃了 / 没吃 / 稍后），推进用药任务状态。",
 )
 
-#: 默认工具清单：三个 —— 天气（MCP 远端）+ 用药确认（本地执行器）+ 记忆召回（本地执行器）。
-#: 与 tool_registry.default_registry() 里的 ToolSpec 三条**同名**（两边独立定义，
+# Day 8 B4（dev-B）：mock-operations 两工具 + 戏曲点播，与 tool_registry 同步登记
+WORK_ORDER_TOOL: Final[ToolSpec] = ToolSpec(
+    name="create_work_order",
+    description="为这位长者创建照护工单（Mock 落库），如上报异常、请求人工跟进。",
+)
+
+FAMILY_NOTIFICATION_TOOL: Final[ToolSpec] = ToolSpec(
+    name="send_family_notification",
+    description="给这位长者的家属发送通知（Mock 落库），如健康异常通报、日常报平安。",
+)
+
+PLAY_OPERA_TOOL: Final[ToolSpec] = ToolSpec(
+    name="play_opera",
+    description="按剧目或剧种检索戏曲并返回播放地址，给长者点播戏曲选段；查不到时如实告知。",
+)
+
+#: 默认工具清单：六个 —— 天气（MCP）+ 用药确认 + 记忆召回 + 工单/家属通知（MCP，
+#: Day 8 B4）+ 戏曲点播（本地，Day 8 B4）。
+#: 与 tool_registry.default_registry() 里的 ToolSpec 六条**同名**（两边独立定义，
 #: companion.py 这一套只有 name + description，服务于 ReAct prompt 描述；
 #: tool_registry 那套有完整 schema + executor，服务于实际执行）。
 DEFAULT_TOOLS: Final[tuple[ToolSpec, ...]] = (
     WEATHER_TOOL,
     MEMORY_RECALL_TOOL,
     MEDICATION_CONFIRM_TOOL,
+    WORK_ORDER_TOOL,
+    FAMILY_NOTIFICATION_TOOL,
+    PLAY_OPERA_TOOL,
 )
 
 
