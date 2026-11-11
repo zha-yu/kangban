@@ -194,9 +194,7 @@ async def device_session(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> DeviceLoginResponse | JSONResponse:
     try:
-        result = await auth_service.exchange_device_token(
-            session, device_id=body.device_id, device_secret=body.device_secret
-        )
+        result = await auth_service.exchange_device_token(session, device_id=body.device_id)
     except Exception as exc:
         return _handle_service_exception(exc)
 
