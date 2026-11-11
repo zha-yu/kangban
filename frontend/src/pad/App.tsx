@@ -95,8 +95,11 @@ function MainScreen({
   const [operaDemo] = useState(
     () => import.meta.env.DEV && new URLSearchParams(window.location.search).get("demo") === "opera",
   );
-  // D4 真实链路：media_play 到达即出播放面板；stop/track 清空即收
+  // D4 真实链路：media_play 到达即出播放面板（底部播放条）；stop/track 清空即收。
+  // 面板可手动收起（音乐继续，语音控制不受影响）；换到新歌自动重新展开
   const [operaSnap, setOperaSnap] = useState<OperaSnapshot | null>(null);
+  const [operaPanelClosed, setOperaPanelClosed] = useState(false);
+  const lastOperaTrackRef = useRef<string | null>(null);
 
   // v1.5：任务命令（与传输解耦）。后端适配器落地后只需往任务总线 emit，
   // 主屏不需要知道是外呼、WS 降级帧还是调度器触发的。
@@ -269,7 +272,17 @@ function MainScreen({
         });
       },
       audioEl: audioRef.current,
-      onOperaState: (s) => setOperaSnap(s.track ? s : null),
+      onOperaState: (s) => {
+        setOperaSnap(s.track ? s : null);
+        const trackId = s.track?.mediaId ?? null;
+        if (!s.track) {
+          lastOperaTrackRef.current = null;
+        } else if (trackId !== lastOperaTrackRef.current) {
+          // 新歌到来自动展开（用户收起只对当前这首生效）
+          lastOperaTrackRef.current = trackId;
+          setOperaPanelClosed(false);
+        }
+      },
     });
     clientRef.current = client;
     void client.start(session.access_token, wakeTsRef.current);
@@ -354,7 +367,11 @@ function MainScreen({
   const twoColumn = !sosOpen && (!!activeTask || showTranscript);
   // 两栏态收紧横向间距、字幕降档、底部不再叠一个「呼叫小伴」大按钮
   const taskMode = !sosOpen && !!activeTask;
-  const subtitleCompact = sosOpen || !!taskHint;
+  // 戏曲播放器面板态只给系统提示降档：降级提示（「网络慢，正在换种方式回答」）
+  // 只有 12 字，不触发 BigSubtitle 的长文案降档，旧版会用 60px 压过整张功能卡。
+  // 限定 source=notice，真实 ASR/TTS 字幕仍保留 48px 与说话人标签
+  const subtitleCompact =
+    sosOpen || !!taskHint || (!!(operaDemo || operaSnap) && subtitleSource === "notice");
 
   // 舞台在任务 / 对话记录到达时收窄为左侧 300px 圆框；ResizeObserver 自适应，场景不重挂
   const stage = (
@@ -410,14 +427,9 @@ function MainScreen({
       <main
         className={`flex min-h-0 flex-1 items-center justify-center overflow-hidden ${twoColumn ? "gap-8 px-8 pt-6" : "gap-16 px-12"}`}
       >
-        {operaDemo || operaSnap ? (
-          <OperaDemoPanel
-            live={
-              operaSnap
-                ? { snapshot: operaSnap, onAction: (a) => clientRef.current?.operaApply(a) }
-                : undefined
-            }
-          />
+        {operaDemo ? (
+          // ?demo=opera（仅 DEV）：单端调试面板仍独占主区（要截图留证七动作状态）
+          <OperaDemoPanel />
         ) : sosOpen ? (
           // 结果态只占中部：顶栏 SOS（active）、大字幕区、操作区高度都在原位
           <div className="flex h-full w-full items-center justify-center">
@@ -447,6 +459,20 @@ function MainScreen({
           stage
         )}
       </main>
+
+      {/* D4 底部播放条：真实链路的戏曲播放收在这里，不再独占主区舞台。
+          两行结构（信息行 + 分组动作行），收起按钮由面板自己渲染在信息行右端，
+          不再是压在按钮上的绝对定位浮层。可收起（音乐继续、语音「暂停/换一段」
+          不受影响）；新歌到来自动展开 */}
+      {operaSnap && !operaPanelClosed && (
+        <div className="mx-12 shrink-0 pt-3 pb-2">
+          <OperaDemoPanel
+            compact
+            live={{ snapshot: operaSnap, onAction: (a) => clientRef.current?.operaApply(a) }}
+            onCollapse={() => setOperaPanelClosed(true)}
+          />
+        </div>
+      )}
 
       {/* 大字幕固定区（FR-UI-02）：只显示当前这一句并与音频同步；固定高度 + 溢出裁切，
           长提示不再换行压到操作区。完整对话在中部右栏记录里翻看 */}
