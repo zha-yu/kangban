@@ -16,7 +16,7 @@
 
 | 计划 | 状态 |
 | --- | --- |
-| `docs/plans/day08/d-推进计划-日报通知与三端.md` | 📝 草稿 |
+| `docs/plans/day08/d-推进计划-日报通知与三端.md` | 🚧 进行中（执行轮 S0/S1/S3/S5 已完成，S2/S4/S6–S9/S12 卡上游交付） |
 | `docs/plans/day08/day-08-健康采集与三端后台.md` | 📝 草稿（待主理人确认后执行） |
 | `docs/plans/day08/dev-a-数据分级规则层.md` | 📝 草稿 |
 | `docs/plans/day08/dev-b-day08-工作推进计划.md` | 🚧 进行中（Step 0 已裁决，2026-11-11） |
