@@ -46,7 +46,7 @@ C1 不改 main.py，只写这个 hook 让 A3 知道怎么接。
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -55,6 +55,7 @@ from app.agents.tool_registry import ToolRegistry
 from app.services.tool_impls import (
     make_medication_confirm_executor,
     make_memory_recall_executor,
+    make_play_opera_executor,
 )
 
 logger = logging.getLogger(__name__)
@@ -89,4 +90,67 @@ def bind_dev_c_tools(
     )
 
 
-__all__ = ["bind_dev_c_tools"]
+# ------------------------------------------------------------------ Day 8 B4（dev-B）
+
+
+class MultiServerMCPClient:
+    """按工具名路由到对应 MCP server 的客户端适配（Day 8 B4）。
+
+    ToolExecutor 只持有**一个** mcp_client（`self._mcp.call_tool(...)`），而 Day 8
+    有两个 MCP server：weather（7101，get_weather）与 mock-operations（7102，
+    create_work_order / send_family_notification）。本类**不新增执行路径**——只是把
+    同协议、不同基地址的两个 `MCPClient` 按工具名分发；失败分类仍由各自
+    `MCPClient.call_tool` 内的 `tool_error_class()` 决定（G2：同一工具不得有两套
+    失败语义）。A3 装配时传给 `_SessionToolExecutor(mcp_client=...)` 即可。
+
+    路由必须显式登记（含 get_weather）；未登记的 MCP 工具 → `bad_response` 短路
+    （「未接线」口径，绝不让模型自己编答案）。
+    """
+
+    def __init__(self, routes: Mapping[str, Any], *, default: Any | None = None) -> None:
+        self._routes = dict(routes)
+        self._default = default
+
+    def client_for(self, tool_name: str) -> Any | None:
+        return self._routes.get(tool_name, self._default)
+
+    async def call_tool(self, tool_name: str, args: Mapping[str, Any] | None = None) -> Any:
+        from app.mcp_client.client import MCPResult
+
+        client = self.client_for(tool_name)
+        if client is None:
+            logger.warning("mcp_route_missing tool=%s", tool_name)
+            return MCPResult(ok=False, data=None, error="bad_response")
+        return await client.call_tool(tool_name, args)
+
+
+def bind_dev_b_tools(registry: ToolRegistry, *, session_factory: Callable[[], Any]) -> None:
+    """把 Day 8 dev-B 的本地工具执行器绑定到 registry（A3 装配时调用一次）。
+
+    只绑 `play_opera`。MCP 两工具（create_work_order / send_family_notification）
+    **不在本函数绑定**——`transport="mcp"` 的工具由 ToolExecutor 注入的 mcp_client
+    执行；A3 装配时用 `MultiServerMCPClient` 包装 weather 与 operations 两个
+    MCPClient 传给 `_SessionToolExecutor(mcp_client=...)`：
+
+    ```python
+    from app.mcp_client.client import MCPClient
+    from app.agents.bind_tools import MultiServerMCPClient, bind_dev_b_tools
+
+    ops_client = MCPClient(settings, server_url=settings.mcp_operations_server_url)
+    weather_client = MCPClient(settings)  # Day 7 既有
+    mcp = MultiServerMCPClient(
+        {
+            "get_weather": weather_client,
+            "create_work_order": ops_client,
+            "send_family_notification": ops_client,
+        },
+    )
+    bind_dev_b_tools(tool_registry, session_factory=session_factory)
+    session_tool_executor = _SessionToolExecutor(session_factory, registry=tool_registry, mcp_client=mcp)
+    ```
+    """
+    registry.bind("play_opera", make_play_opera_executor(session_factory=session_factory))
+    logger.info("bind_dev_b_tools_bound play_opera_wired=%s", registry.get("play_opera").wired)
+
+
+__all__ = ["MultiServerMCPClient", "bind_dev_b_tools", "bind_dev_c_tools"]
