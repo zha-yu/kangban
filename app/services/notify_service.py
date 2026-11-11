@@ -64,6 +64,10 @@ class GuardianNotificationNotFound(NotificationError):
     """通知不存在或不属于当前监护人 → 404，不泄露存在性（越权同口径）。"""
 
 
+class StaffNotificationNotFound(NotificationError):
+    """通知不存在或不属于当前员工 → 404，不泄露存在性（越权同口径）。"""
+
+
 class NotificationNotFound(NotificationError):
     """通知不存在（按 id 查不到）→ 404。"""
 
@@ -295,6 +299,75 @@ async def mark_guardian_notification_read(
     return notification.read_at
 
 
+async def list_staff_notifications(
+    session: AsyncSession,
+    *,
+    staff_id: uuid.UUID,
+    page: int,
+    page_size: int,
+    unread_only: bool = False,
+) -> tuple[list[Notification], int]:
+    """某员工收到的通知列表（N-1：分页 1 起、page_size ≤100、默认不筛已读）。
+
+    范围过滤：`target_type='staff' AND target_id=staff_id`——员工只能
+    看到**发给自己**的通知，其他员工/家属的通知在查询条件里就被排除。
+    返回 `(rows, total)`，`total` 为过滤后总数（分页元数据）。
+    """
+    base = select(Notification).where(
+        Notification.target_type == _TYPE_STAFF,
+        Notification.target_id == staff_id,
+    )
+    if unread_only:
+        base = base.where(Notification.read_at.is_(None))
+    total = (
+        await session.execute(select(func.count()).select_from(base.subquery()))
+    ).scalar_one()
+    rows = list(
+        (
+            await session.execute(
+                base.order_by(Notification.created_at.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        ).scalars()
+    )
+    return rows, total
+
+
+async def mark_staff_notification_read(
+    session: AsyncSession,
+    *,
+    staff_id: uuid.UUID,
+    notification_id: uuid.UUID,
+) -> datetime.datetime:
+    """员工侧标记已读（N-2：只写 `read_at`，不动 `status`）。
+
+    幂等：已读直接返回原 `read_at`。找不到或**不属于当前员工**一律
+    抛 `StaffNotificationNotFound`（越权与不存在同口径，不泄露存在性）。
+    """
+    notification = (
+        await session.execute(
+            select(Notification).where(
+                Notification.notification_id == notification_id,
+                Notification.target_type == _TYPE_STAFF,
+                Notification.target_id == staff_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if notification is None:
+        raise StaffNotificationNotFound("通知不存在")
+    if notification.read_at is not None:
+        return notification.read_at
+    notification.read_at = datetime.datetime.now(datetime.UTC)
+    await session.flush()
+    logger.debug(
+        "staff notification marked read: notification=%s staff=%s",
+        notification_id,
+        staff_id,
+    )
+    return notification.read_at
+
+
 # ======================================================================
 # Day 8 dev-A 增量：staff 侧 + 状态机五态驱动 + 2 分钟升级扫描
 # ======================================================================
@@ -491,9 +564,21 @@ async def acknowledge_notification(
     ).scalar_one_or_none()
     if notification is None:
         raise NotificationNotFound(f"notification {notification_id} not found")
-    if notification.target_id != acknowledger_id:
+    # 归一化归属方：DB 列是 UUID，调用方可能传 str（JWT Identity.staff_id）
+    # Python UUID != str 恒为 True → 所有归属校验都会被拒。service 层兜底一次。
+    try:
+        ack_uuid = (
+            acknowledger_id
+            if isinstance(acknowledger_id, uuid.UUID)
+            else uuid.UUID(str(acknowledger_id))
+        )
+    except (ValueError, AttributeError) as exc:
         raise NotificationForbidden(
-            f"acknowledger {acknowledger_id} does not own notification {notification_id} "
+            f"invalid acknowledger_id: {acknowledger_id!r} ({exc})"
+        ) from exc
+    if notification.target_id != ack_uuid:
+        raise NotificationForbidden(
+            f"acknowledger {ack_uuid} does not own notification {notification_id} "
             f"(target_type={notification.target_type}, target_id={notification.target_id})"
         )
     if notification.status == _STATUS_ACKNOWLEDGED:
@@ -660,12 +745,15 @@ __all__ = [
     "NotificationPayloadError",
     "NotificationRef",
     "NotificationTargetNotFound",
+    "StaffNotificationNotFound",
     "acknowledge_notification",
     "escalate_red_event",
     "list_guardian_notifications",
+    "list_staff_notifications",
     "mark_guardian_notification_read",
     "mark_notification_delivered",
     "mark_notification_sent",
+    "mark_staff_notification_read",
     "scan_escalations",
     "scan_pending_notifications",
     "send_guardian_notifications",
