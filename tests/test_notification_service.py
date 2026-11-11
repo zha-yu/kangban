@@ -193,6 +193,46 @@ async def test_acknowledge_forbidden_wrong_owner(
         )
 
 
+async def test_mark_guardian_read_forbidden_wrong_owner(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    """Q-D2：家属侧越权（归属不匹配）必须抛 NotificationForbidden (403) + 审计日志。"""
+    refs = await notify_service.send_staff_notifications(
+        session,
+        elder_id=seeded["elder_id"],
+        ntype="escalated_red_event",
+        payload={"event_id": str(uuid.uuid4())},
+    )
+    note_id = refs[0].notification_id
+    await session.flush()
+
+    # 家属不能把发给 staff 的通知标记为已读
+    with pytest.raises(notify_service.NotificationForbidden):
+        await notify_service.mark_guardian_notification_read(
+            session, guardian_id=seeded["guardian_id"], notification_id=note_id
+        )
+
+
+async def test_mark_staff_read_forbidden_wrong_owner(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    """Q-D2：员工侧越权（归属不匹配）必须抛 NotificationForbidden (403) + 审计日志。"""
+    refs = await notify_service.send_guardian_notifications(
+        session,
+        elder_id=seeded["elder_id"],
+        ntype="emergency_health",
+        payload={"reason": "test"},
+    )
+    note_id = refs[0].notification_id
+    await session.flush()
+
+    # 护工不能把发给 guardian 的通知标记为已读
+    with pytest.raises(notify_service.NotificationForbidden):
+        await notify_service.mark_staff_notification_read(
+            session, staff_id=seeded["staff_id"], notification_id=note_id
+        )
+
+
 # ======================================================================
 # 重试失败终态
 # ======================================================================
@@ -496,6 +536,8 @@ __all__ = [
     "test_escalation_skipped_already_closed",
     "test_escalation_skipped_yellow_event",
     "test_illegal_transition_rejected",
+    "test_mark_guardian_read_forbidden_wrong_owner",
+    "test_mark_staff_read_forbidden_wrong_owner",
     "test_no_staff_returns_empty_list_not_error",
     "test_notification_lifecycle_success",
     "test_pending_retry_exhausted_becomes_failed",

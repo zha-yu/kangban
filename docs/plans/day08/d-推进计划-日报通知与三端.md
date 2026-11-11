@@ -443,6 +443,7 @@ uv run python scripts/update_progress.py --check-plans
 | Q-D7 | FR-UI-08 撤销的 service 函数归属（medication_service/safety 追加说明均不在 D 写域） | dev-A/dev-B（D3 启动前） | A/B 提供函数，D 只做 API 边界+pad+测试；未就绪 D3 顺延 |
 | Q-D9 | **report_ready 通知 payload 键不符契约 S-02**：后端落 `{title,body,summary_text}`，契约冻结家属侧 `{elder_name,event_brief,report_id}` → 家属通知卡片空、无日报跳转（实测发现） | dev-C（report_service._notify_daily_report 组装） | 按 S-02 三键组装（可保留额外键，前端忽略未知键）；D 前端不改。**已修：远端 f445cb4 落地，本地冲突采用远端版** |
 | Q-D10 | N-3 重复确认：service 故意幂等 200（docstring 明示）vs 契约 N-3 字面「仅 delivered 可确认、非法跳步 409」 | dev-B 冻结评审解释 | 建议维持幂等（重复确认非跳步）并在契约 §7 留痕解释；若裁 409 则改 service＋测试 |
+| Q-D11 | **media 帧形状冲突**：D 已实现自洽链路 media_play{media_url,title}＋media_control{action,media?}（用户示例口径，单测绿）；B 草稿 adhoc-20261111-ws-media-control-frame.md 定 media_control{trace_id,stream_id,action,payload}＋media_info，且假设 WebRTC 轨（与 X8 §6.1 `<audio>` 直连矛盾） | dev-B 冻结裁决 | 草稿未冻结前 D 链路保持自洽可用；B 冻结后 pad 按冻结版适配（播放器状态机不变，仅帧解析层换） |
 
 ## 10. 执行记录（执行时逐条回填）
 
