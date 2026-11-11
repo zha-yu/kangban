@@ -26,11 +26,13 @@ import uuid
 import zoneinfo
 from typing import Any, Final
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.health import HealthRecord
 from app.models.medication import MedicationEvent, RiskEvent
+from app.models.organization import Elder
+from app.models.relation import ElderGuardian
 from app.models.report import DailyReport
 from app.services.notify_service import (
     NotificationTargetNotFound,
@@ -369,11 +371,179 @@ async def list_daily_report_versions(
     return list(result.scalars().all())
 
 
+# ------------------------------------------------------------------ 家属端读侧（契约 F1/F2/F3，dev-D D1 依赖）
+
+#: F1 分页上限（契约 S-10：page_size 默认 20，上限 100）
+_PAGE_SIZE_MAX: Final[int] = 100
+
+#: attention_events.brief 兜底短标（type 字段输出 risk_events.type 五枚举原值；契约 F2 示例值系示意）
+_RISK_TYPE_LABELS: Final[dict[str, str]] = {
+    "red_emergency": "紧急事件",
+    "health_alert": "健康异常提醒",
+    "med_risk": "用药风险",
+    "sensitive": "敏感内容提醒",
+    "sos": "SOS 呼叫",
+}
+
+
+class GuardianReportNotFound(LookupError):
+    """家属日报不存在（F1/F2 → 404，不与 403 混淆）。"""
+
+
+class GuardianReportForbidden(PermissionError):
+    """日报所属长者不在该监护人 active 绑定范围（F1/F2 → 403；审计由 API 层 catch 后写，AGENTS §8）。"""
+
+
+async def _guardian_active_elder_ids(
+    session: AsyncSession, *, guardian_id: uuid.UUID
+) -> list[uuid.UUID]:
+    """监护人 active 绑定长者集合（elder_guardians status='active'；AC-24 解绑即出范围）。"""
+    result = await session.execute(
+        select(ElderGuardian.elder_id).where(
+            ElderGuardian.guardian_id == guardian_id,
+            ElderGuardian.status == "active",
+        )
+    )
+    return list(result.scalars().all())
+
+
+async def list_bound_elders_for_guardian(
+    session: AsyncSession, *, guardian_id: uuid.UUID
+) -> list[tuple[uuid.UUID, str, str]]:
+    """监护人绑定长者清单（契约 F0 首页长者卡片）：[(elder_id, name, relation)]。
+
+    仅 status='active'；unbound 不出（AC-24 解绑保痕但对家属不可见）。
+    """
+    result = await session.execute(
+        select(Elder.elder_id, Elder.name, ElderGuardian.relation)
+        .join(Elder, Elder.elder_id == ElderGuardian.elder_id)
+        .where(
+            ElderGuardian.guardian_id == guardian_id,
+            ElderGuardian.status == "active",
+        )
+        .order_by(Elder.name.asc())
+    )
+    return [(row[0], row[1], row[2]) for row in result.all()]
+
+
+async def list_reports_for_guardian(
+    session: AsyncSession,
+    *,
+    guardian_id: uuid.UUID,
+    elder_id: uuid.UUID | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[list[DailyReport], int]:
+    """家属日报列表（契约 F1）：绑定范围过滤 + 每日只出最大版本（S-07）+ 分页作用在去重后。
+
+    - 范围： elder_guardians status='active'；无绑定返回 ([], 0)（S-08，200 空列表）；
+    - elder_id 可选：契约 F1 按长者路径（/api/family/elders/{elder_id}/reports）。
+      过滤进**去重子查询内部**（外层过滤后再分页会错 total/页）；指定长者不在
+      绑定范围同样返回 ([], 0)（越权分流由 API 层按 F0 绑定清单裁决）；
+    - 去重： 同一 (elder_id, report_date) 仅 version 最大者，report_date 倒序；
+    - 分页： S-10——page≥1、page_size∈[1,100]（服务端钳制兜底，入参校验在 API 层），
+      作用在去重后的行集上；total = 去重后总行数（与 page 无关）。
+    """
+    elder_ids = await _guardian_active_elder_ids(session, guardian_id=guardian_id)
+    if not elder_ids or (elder_id is not None and elder_id not in elder_ids):
+        return [], 0
+    scoped_ids = [elder_id] if elder_id is not None else elder_ids
+    page = max(1, page)
+    page_size = min(max(1, page_size), _PAGE_SIZE_MAX)
+
+    latest = (
+        select(
+            DailyReport.elder_id,
+            DailyReport.report_date,
+            func.max(DailyReport.version).label("max_version"),
+        )
+        .where(DailyReport.elder_id.in_(scoped_ids))
+        .group_by(DailyReport.elder_id, DailyReport.report_date)
+        .subquery()
+    )
+    total = int((await session.execute(select(func.count()).select_from(latest))).scalar_one())
+    result = await session.execute(
+        select(DailyReport)
+        .join(
+            latest,
+            and_(
+                DailyReport.elder_id == latest.c.elder_id,
+                DailyReport.report_date == latest.c.report_date,
+                DailyReport.version == latest.c.max_version,
+            ),
+        )
+        .order_by(DailyReport.report_date.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    return list(result.scalars().all()), total
+
+
+async def get_report_detail_for_guardian(
+    session: AsyncSession,
+    *,
+    guardian_id: uuid.UUID,
+    report_id: uuid.UUID,
+) -> tuple[DailyReport, str, list[dict[str, Any]]]:
+    """家属日报详情（契约 F2）：(report, health_summary, attention_events)，查询时组装（S-09）。
+
+    - 任意版本（含旧版）均可查（F3 自裁 S-10）；
+    - health_summary 复用生成侧口径（当日窗口、仅当前版本采集）；
+    - attention_events：当日窗口 risk_events 倒序；level=severity、type=五枚举原值、
+      brief 真实优先——health_record 来源取实测血压，其余用类型中文短标（不编造细节）；
+    - 404/403 分离：不存在→GuardianReportNotFound；存在但不属绑定范围→GuardianReportForbidden。
+    """
+    report = await session.get(DailyReport, report_id)
+    if report is None:
+        raise GuardianReportNotFound(f"daily_report {report_id} not found")
+    elder_ids = await _guardian_active_elder_ids(session, guardian_id=guardian_id)
+    if report.elder_id not in elder_ids:
+        raise GuardianReportForbidden(
+            f"daily_report {report_id} elder {report.elder_id} not bound to guardian {guardian_id}"
+        )
+
+    window = _day_window_utc(report.report_date)
+    health_summary = await _collect_health_summary(session, elder_id=report.elder_id, window=window)
+
+    result = await session.execute(
+        select(RiskEvent)
+        .where(
+            RiskEvent.elder_id == report.elder_id,
+            RiskEvent.created_at >= window[0],
+            RiskEvent.created_at < window[1],
+        )
+        .order_by(RiskEvent.created_at.desc())
+    )
+    events: list[dict[str, Any]] = []
+    for risk in result.scalars().all():
+        brief = _RISK_TYPE_LABELS.get(risk.type, risk.type)
+        if risk.source_type == "health_record" and risk.source_id is not None:
+            source = await session.get(HealthRecord, risk.source_id)
+            if source is not None and (source.systolic is not None or source.diastolic is not None):
+                systolic = source.systolic if source.systolic is not None else "未采集"
+                diastolic = source.diastolic if source.diastolic is not None else "未采集"
+                brief = f"血压 {systolic}/{diastolic} mmHg"
+        events.append(
+            {
+                "level": risk.severity,
+                "type": risk.type,
+                "brief": brief,
+                "occurred_at": risk.created_at.isoformat(),
+            }
+        )
+    return report, health_summary, events
+
+
 __all__ = [
     "DISCLAIMER",
     "NOTIFICATION_TYPE_DAILY_REPORT",
     "DailyReportRef",
+    "GuardianReportForbidden",
+    "GuardianReportNotFound",
     "generate_daily_report",
     "get_daily_report",
+    "get_report_detail_for_guardian",
+    "list_bound_elders_for_guardian",
     "list_daily_report_versions",
+    "list_reports_for_guardian",
 ]

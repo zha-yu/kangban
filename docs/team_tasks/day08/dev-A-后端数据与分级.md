@@ -1,4 +1,4 @@
-> 状态：进行中（A1✅ A4✅ A2✅ A3✅ A5✅ H12⏳全员收口）　｜　负责人：dev-A（后端 · 数据层、分级引擎与规则层）　｜　日期：2026-11-11（Day 8）　｜　版本：v1.2（v1.1＋任务状态回填）
+> 状态：**已完成（A1✅ A4✅ A2✅ A3✅ A5✅ H12✅ H+1✅ 药单管理）**　｜　负责人：dev-A（后端 · 数据层、分级引擎与规则层）　｜　日期：2026-11-11（Day 8）　｜　版本：v1.3（v1.2＋H+1 药单管理追加任务完成回填）
 > 依据：docs/plans/day08/day-08-健康采集与三端后台.md v1.2 ｜ 对接点与全局节奏见同目录《day08-任务总览与DAG.md》
 
 # dev-A 个人任务书
@@ -13,6 +13,7 @@
 | A3 | H7：通知双轨 + 2 分钟升级 + 状态机收口 | 2h | A2；X2 口径对齐（11:30，与 dev-C） | notify_service staff 侧扩展 + 升级扫描/30s 重试逻辑（供 B3 调度）+ 单测 | ① 红色事件双通知记录齐（AC-38）；② 2 分钟无人确认→escalated、无第二事件/工单、计时从 created_at（AC-12）；③ 四态 generated→pending→delivered→acknowledged 单测依次断言（AC-23）；④ dedupe_key 构造与 C2 一致（X2） |
 | A5 | H14④：规则层直连真实执行（骨架先行 + 联调段） | 1.5h | 骨架：B1 冻结的 X8 映射表；联调：B4（Tool 就绪）+C4（服务就绪） | `app/router/rules.py` R-01~R-08 播放控制从 `capability_not_ready` 降级改为直连真实执行 + `tests/test_rules_opera*.py` 增量 | ① AC-37 端到端：正在播放→依次「换一段」「大声点」「小声点」「重复一遍」规则层直连执行、路由耗时 ≤200ms（decision_logs 留痕 layer=rule）；② 每动作过 G2 权限；③ 请求不存在曲目→语音+文字提示且天气功能仍可用（FR-CON-04）；④ 暂停/继续/停止直连同样生效 |
 | H12 | 门禁收口（牵头） | 0.5h | 全员任务完成 | 证据回填计划 §11 | 四件套全绿（命令见下）；完成定义逐条有证据 |
+| H+1 | **药单管理 REST API**（追加任务，2026-11-11） | 4.0h | 无（独立于 Day 8 主线，基于 Day 6 已合入的 MedicationPlan ORM / 迁移 0010） | 迁移 0019_day8_medplan_version.py + `app/services/medication_plan_service.py`（新建） + `app/api/medication.py`（新建） + `app/api/__init__.py` 追加 ROUTERS + 前端 `frontend/src/console/medication-api.ts` 全量替换（Mock→fetch） | 详见 `docs/plans/day08/dev-a-药单管理后端接口.md` v1.4；验收命令：① `alembic upgrade head → downgrade -1 → upgrade head` 三向可逆；② `uv run ruff check app/` 全绿；③ `uv run pytest tests/ -q` 1230 passed；④ `cd frontend && npm run build` 三入口 build 通过；⑤ ROUTERS 注册表显示 `/api/medication-plans → 5 routes` |
 
 > 超载先裁序（R1 顺位核对）：A5 的联调段若 16:00 CP4 未就绪→顺延 Day 9（AC-37 为欠债核心，**骨架必须当日完成**）；A1–A4、A2、A3 均为健康主线/欠债核心，不容顺延。溢出池 O4（聚合预警，P2）仅产能富余才启动。
 

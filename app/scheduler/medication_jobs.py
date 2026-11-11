@@ -248,7 +248,9 @@ class SchedulerRuntime:
 
     async def _trigger_plan(self, plan: DuePlan) -> None:
         """单条计划驱动链：create_event → build_graph → start。"""
-        # ① 幂等建事件（同 (plan_id, scheduled_at) 已存在 → 返回原 reminder_id）
+        # ① 幂等建事件（同 (plan_id, scheduled_at, plan_version) 已存在 → 返回原 reminder_id）
+        #    plan_version=plan.version 是 G1 裁决落地：改药单后 version+1，新事件带新版本号，
+        #    不会与历史事件 (plan_id, scheduled_at) 冲突。
         async with self._session_factory() as session:
             try:
                 reminder_id = await medication_service.create_event(
@@ -261,6 +263,7 @@ class SchedulerRuntime:
                         "dose": plan.dose,
                     },
                     triggered_by="scheduler",
+                    plan_version=plan.version,
                 )
                 await session.commit()
             except medication_service.MedicationConflict as exc:

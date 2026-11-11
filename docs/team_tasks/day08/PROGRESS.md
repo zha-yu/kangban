@@ -7,7 +7,7 @@
 
 | # | 任务卡 | 状态 | 文件 |
 | --- | --- | --- | --- |
-| 1 | dev-A 个人任务书 | 🚧 进行中（A1✅ A4✅ A2✅ A3✅ A5✅ H12⏳全员收口） | `docs/team_tasks/day08/dev-A-后端数据与分级.md` |
+| 1 | dev-A 个人任务书 | ❔ **已完成（A1✅ A4✅ A2✅ A3✅ A5✅ H12✅ H+1✅ 药单管理）** | `docs/team_tasks/day08/dev-A-后端数据与分级.md` |
 | 2 | dev-B 个人任务书 | ✅ 已完成 | `docs/team_tasks/day08/dev-B-后端子图调度与MCP.md` |
 | 3 | dev-C 个人任务书 | ⬜ 未开始 | `docs/team_tasks/day08/dev-C-健康域API与console.md` |
 | 4 | dev-D 个人任务书 | ⬜ 未开始 | `docs/team_tasks/day08/dev-D-日报通知API与family-pad.md` |
@@ -21,6 +21,8 @@
 | `docs/plans/day08/dev-a-药单管理后端接口.md` | 📝 草稿 |
 | `docs/plans/day08/dev-b-day08-工作推进计划.md` | ✅ 已收口（Step 1–8 完成，O3 顺延 Day 9） |
 | `docs/plans/day08/dev-c-day08-工作推进计划.md` | ❔ 执行中 |
+
+> 另有 1 个无 `> 状态：` 行的方案/草稿文件，未列入上表。
 
 ## 契约冻结：（本日无 contracts.md）
 
