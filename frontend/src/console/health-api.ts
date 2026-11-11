@@ -12,7 +12,7 @@
  * - severity/follow_up 一律服务端写入；classifyHealthRecord 仅 Mock 模式模拟。
  */
 
-import { ApiError, apiPost, USE_MOCK_API } from "./api";
+import { ApiError, apiGet, apiPost, USE_MOCK_API } from "./api";
 import { listElders, type ElderListItem } from "./elders-api";
 
 /** 契约错误文案提取（workorders-api 同构；detail 为服务端用户语言文案，不回显 trace_id） */
@@ -136,4 +136,31 @@ export async function submitHealthRecord(input: HealthRecordInput): Promise<Heal
 export async function listResponsibleElders(): Promise<ElderListItem[]> {
   const res = await listElders({ page: 1, pageSize: 100, status: "active" });
   return res.items;
+}
+
+// ---------------------------------------------------------------------------
+// 医生 14 天趋势（O1 / FR-HLT-09 P1：辅助人工复核；窗口固定 14 天）
+// ---------------------------------------------------------------------------
+
+export interface HealthTrendPoint {
+  recorded_at: string; // ISO UTC
+  systolic: number | null;
+  diastolic: number | null;
+  sleep_hours: number | null;
+  mood_score: number | null;
+}
+
+export interface HealthTrend {
+  elder_id: string;
+  window_days: 14;
+  points: HealthTrendPoint[];
+}
+
+/**
+ * 长者近 14 天健康趋势（主理人裁决 2026-11-11：不做 Mock 分支，直连真实端点）。
+ * 后端 C1③ 端点已挂载；服务层待 dev-A A2（health_service/ORM）合入后由 S3 接入，
+ * 期间该端点返回 501，页面展示「加载失败」兜底文案。
+ */
+export async function getHealthTrend(elderId: string): Promise<HealthTrend> {
+  return apiGet<HealthTrend>(`/api/health-records/trend/${elderId}`);
 }

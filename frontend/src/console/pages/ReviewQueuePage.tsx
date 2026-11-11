@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getRecordChain, listPendingReviews, confirmReview, correctReview, type CorrectInput, type ReviewRecord } from "../review-api";
+import { TrendChart } from "../TrendChart";
 
 /**
  * 健康记录复核队列（task-11 F7，console 医生，Mock 先行）。
@@ -92,6 +93,8 @@ export function ReviewQueuePage() {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [chainId, setChainId] = useState<string | null>(null);
+  // 趋势展开的长者（O1/FR-HLT-09：同一长者的多条记录共用一张趋势图）
+  const [trendElderId, setTrendElderId] = useState<string | null>(null);
   // 纠错弹窗状态
   const [correcting, setCorrecting] = useState<ReviewRecord | null>(null);
   const [sys, setSys] = useState("");
@@ -213,8 +216,14 @@ export function ReviewQueuePage() {
               ) : (
                 <button type="button" className="btn-ghost" onClick={() => setChainId(r.record_id)}>历史版本</button>
               )}
+              {trendElderId === r.elder_id ? (
+                <button type="button" className="btn-ghost" onClick={() => setTrendElderId(null)}>收起趋势</button>
+              ) : (
+                <button type="button" className="btn-ghost" onClick={() => setTrendElderId(r.elder_id)}>14 天趋势</button>
+              )}
             </div>
             {chainId === r.record_id && <ChainView recordId={r.record_id} onClose={() => setChainId(null)} />}
+            {trendElderId === r.elder_id && <TrendChart elderId={r.elder_id} elderName={r.elder_name} />}
           </li>
         ))}
       </ul>
