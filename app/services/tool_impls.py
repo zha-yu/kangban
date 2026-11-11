@@ -25,7 +25,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Final
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from sqlalchemy import desc, or_, select
+from sqlalchemy import desc, func, or_, select
 
 from app.core.runtime_context import Identity
 from app.graphs.medication_confirmation_graph import (
@@ -302,6 +302,12 @@ def _strip_play_prefixes(query: str) -> str:
 #: 检索词标点清洗：书名号/引号/句读——「《素颜》」「素颜。」都会让 ILIKE 落空
 _SEARCH_PUNCT_RE: Final = re.compile(r"[《》〈〉「」『』“”‘’\"'。．.，,！!？?～~：:；;]")
 
+#: play_opera 的播放控制动作（契约 §6.3 七动作 + interrupt）：pad 本地执行，
+#: 后端执行器只返回 {"control": action} 标记、由下发层转 media_control 帧
+_PLAY_CONTROL_ACTIONS: Final[frozenset[str]] = frozenset(
+    {"pause", "resume", "stop", "replay", "interrupt", "volume_up", "volume_down"}
+)
+
 
 def make_play_opera_executor(
     *,
@@ -309,16 +315,35 @@ def make_play_opera_executor(
 ) -> Callable[[dict[str, Any], Identity], Awaitable[dict[str, Any]]]:
     """返回 `play_opera` 工具的本地执行器（X8 口径②冻结 schema）。
 
-    - **只读**检索 media_library（type=opera），按 title/genre/era/artist 匹配检索词；
-      逐级兜底：原词 → 剥点播口语前缀 → 剥书名号/标点，兜住 LLM 整句或带标点传参；
+    - **action=play**（缺省）：只读检索 media_library（type=opera），按
+      title/genre/era/artist 匹配检索词；逐级兜底：原词 → 剥点播口语前缀 →
+      剥书名号/标点，兜住 LLM 整句或带标点传参；
       并以 `play_opera_query` 日志记录实际入参（排查 LLM 传参行为用）；
-    - 返回 `{"found": bool, "media": {...} | None}`，media_url 严格走 X8 稳定路径
-      `/static/media/opera/<media_id>.<ext>`（口径①，v1.3 扩展名放开）；
+    - **action=next**（换一段，X8 口径③）：同剧种锚点依赖 C4
+      `record_playback`（未交付），过渡期退化为**随机换一首**（type=opera 全集），
+      C4 交付后在本分支接「最近一次播放的同剧种下一首」；
+    - **其余控制动作**（pause/resume/stop/replay/interrupt/volume_up/volume_down）：
+      不查库，返回 `{"control": <action>}` 标记，由下发层转 media_control 帧推 pad
+      （七动作在 pad OperaPlayer 本地执行，协议 §D4 media_control）；
+    - play/next 返回 `{"found": bool, "media": {...} | None}`，media_url 严格走
+      X8 稳定路径 `/static/media/opera/<media_id>.<ext>`（口径①，v1.3 扩展名放开）；
     - **不写 media_history**——播放历史归 C4 media_service.record_playback
       （X8 ②：Tool 层不直接写 history，FR-CON-06 P1）；
     - 查询直接用 ORM 读模型：media_service 未交付前的过渡实现，
       C4 交付后检索入口迁往 media_service.search_opera（只读迁移，零接口变化）。
     """
+
+    def _media_of(row: Any) -> dict[str, Any]:
+        return {
+            "media_id": str(row.media_id),
+            "title": row.title,
+            "genre": row.genre,
+            "era": row.era,
+            "artist": row.artist,
+            "media_url": row.media_url,
+            "duration": row.duration,
+            "copyright_status": row.copyright_status,
+        }
 
     async def _search(session: Any, raw_query: str, terms: list[str], model: Any) -> Any | None:
         """按检索词 ILIKE 匹配 title/genre/era/artist，全词精确命中优先，取 1 行。"""
@@ -340,6 +365,29 @@ def make_play_opera_executor(
         return (await session.execute(stmt)).scalar_one_or_none()
 
     async def _executor(args: dict[str, Any], runtime: Identity) -> dict[str, Any]:
+        action = str(args.get("action") or "play")
+
+        if action in _PLAY_CONTROL_ACTIONS:
+            # 播放控制：pad 本地执行，后端只转发（不查库、不写库）
+            return {"control": action}
+
+        from app.models.media import MediaLibrary
+
+        if action == "next":
+            # 换一段：锚点待 C4 record_playback，过渡期随机取一首（X8 ③过渡口径）
+            async with session_factory() as session:
+                row: Any | None = (
+                    await session.execute(
+                        select(MediaLibrary)
+                        .where(MediaLibrary.type == "opera")
+                        .order_by(func.random())
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+            if row is None:
+                return {"found": False, "media": None}
+            return {"found": True, "media": _media_of(row)}
+
         query = str(args.get("query") or "").strip()
         if not query:
             raise ToolArgumentError("query 不能为空")
@@ -379,19 +427,7 @@ def make_play_opera_executor(
             # 上层按 FR-CON-04 提示+推荐，不算工具失败
             return {"found": False, "media": None}
 
-        return {
-            "found": True,
-            "media": {
-                "media_id": str(row.media_id),
-                "title": row.title,
-                "genre": row.genre,
-                "era": row.era,
-                "artist": row.artist,
-                "media_url": row.media_url,
-                "duration": row.duration,
-                "copyright_status": row.copyright_status,
-            },
-        }
+        return {"found": True, "media": _media_of(row)}
 
     return _executor
 

@@ -29,7 +29,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal, Protocol
 
@@ -209,6 +209,9 @@ class Router:
     enabled: bool = True
     #: 测试注入点（生产用 `time.perf_counter`）
     clock: Callable[[], float] = field(default=time.perf_counter)
+    #: D4（X8 口径③）：直连播放控制下行回调 ``(device_id, 完整帧)``。
+    #: play_opera 控制动作/换源 → media_control 帧推 pad（装配层接 signaling.deliver）
+    media_frame_sink: Callable[[str, Mapping[str, object]], Awaitable[None]] | None = None
 
     # -------------------------------------------------------------- 决策主流程
 
@@ -335,13 +338,42 @@ class Router:
             logger.warning("router_tool_executor_missing tool=%s", decision.tool_name)
             return None
         executor = self.tool_executor_factory()
-        return await executor.execute(
+        result = await executor.execute(
             tool_name=decision.tool_name,
             args=decision.tool_args,
             runtime=runtime.identity,
             turn_id=turn_id,
             idempotency_key=f"{turn_id}:{decision.tool_name}:1",
         )
+        # D4（X8 口径③）：直连播放控制经 sink 转 media_control 帧推 pad——
+        # 七动作在 pad 本地执行；next（换一段）随帧携带新 media（换源）。
+        # agents/router 不横向 import audio，deliver 由 main 注入。
+        if (
+            decision.tool_name == "play_opera"
+            and self.media_frame_sink is not None
+            and getattr(result, "status", "") == "succeeded"
+        ):
+            data = getattr(result, "data", None) or {}
+            control = data.get("control")
+            media = data.get("media") or {}
+            device_id = getattr(runtime.identity, "device_id", None)
+            if control:
+                await self.media_frame_sink(
+                    device_id, {"type": "media_control", "action": str(control)}
+                )
+            elif data.get("found") and media.get("media_url"):
+                await self.media_frame_sink(
+                    device_id,
+                    {
+                        "type": "media_control",
+                        "action": "next_track",
+                        "media_url": media["media_url"],
+                        "title": media.get("title") or "",
+                        "media_id": str(media.get("media_id") or ""),
+                        "duration": media.get("duration"),
+                    },
+                )
+        return result
 
     # -------------------------------------------------------------- L1 规则
 

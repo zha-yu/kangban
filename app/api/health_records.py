@@ -151,12 +151,18 @@ async def _ensure_red_reviewer(
 
 # --------------------------------------------------------------- 请求模型
 
+#: health_records.source 四值（TD §3.6 第 5 条 / 0017 CHECK 同源）。
+#: 提交模型（H-2 代填）只收 staff 两值；视图模型用全量四值——语音采集
+# （voice_scheduled/voice_active）记录要进复核队列与详情链
+HealthRecordSource = Literal["voice_scheduled", "voice_active", "staff_scheduled", "staff_active"]
+
 
 class HealthRecordSubmit(BaseModel):
     """H-2 代填提交：五项指标任一非空；severity 服务端计算，不收客户端值。
 
     区间口径：契约 §3.3——systolic/diastolic 0–300 CHECK、sleep_hours 0–24、
-    mood_score 1–5。
+    mood_score 1–5。source 只收 staff 两值：代填只可能来自员工；
+    voice_scheduled/voice_active 由健康采集子图服务端写入（0017 四值域）。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -252,7 +258,9 @@ class HealthRecordView(BaseModel):
     operator_id: UUID | None
     operator_name: str | None
     recorded_at: datetime
-    source: Literal["staff_scheduled", "staff_active"]
+    # 视图四值（TD §3.6 第 5 条 / 0017 CHECK 同源）：语音采集记录（voice_*）
+    # 本来就要进复核队列，不能只收 staff 两值——2026-11-11 走查 500 根因
+    source: HealthRecordSource
     systolic: int | None
     diastolic: int | None
     sleep_hours: float | None

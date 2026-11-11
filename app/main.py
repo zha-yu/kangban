@@ -469,6 +469,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 confidence_threshold=settings.system_one_confidence_threshold,
             )
 
+    async def _media_frame_sink(device_id: str, frame: Mapping[str, object]) -> None:
+        # D4（X8 口径③）：直连播放控制 → media_control 帧进 pad 发送队列
+        # （七动作 pad 本地执行；next_track 随帧携带新 media 换源）。
+        # router/agents 不横向 import audio，deliver 在装配层注入（同 _media_play_sink 先例）
+        signaling.deliver(device_id, dict(frame))
+
     # ---- L2 客户端 + Router（规则 → System One → Agent） ----
     system_one_client = SystemOneClient(settings)
     router = Router(
@@ -479,6 +485,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         tool_executor_factory=lambda: session_tool_executor,
         confidence_threshold=settings.system_one_confidence_threshold,
         enabled=settings.system_one_enabled,
+        media_frame_sink=_media_frame_sink,
     )
 
     # ---------- Day 6 S3 对齐：N14 统一出口真身装配（N05 真状态中心 + N06 真构建器） ----------
@@ -498,6 +505,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # agents 不横向 import audio，deliver 在装配层注入（同 ResponseService 先例）
         signaling.deliver(device_id, {"type": "media_play", **payload})
 
+    async def _media_control_sink(device_id: str, payload: Mapping[str, object]) -> None:
+        # D4（X8 口径③）：LLM 路径的播放控制动作 → media_control 帧进 pad 发送队列
+        signaling.deliver(device_id, {"type": "media_control", **payload})
+
     agent = CompanionAgent(
         llm=llm_service,
         # AGENTS §7 硬性数值：单轮 ≤8 次工具调用；同一 Tool 1 分钟内第 3 次熔断
@@ -510,6 +521,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         tools=DEFAULT_TOOLS,
         on_event=_agent_event_sink,
         on_media_play=_media_play_sink,
+        on_media_control=_media_control_sink,
     )
     # Day 6 S4：ResponseService 提升为 lifespan 局部变量——TurnService 持有做第 7 步
     # 分段下发，装配层另持引用注册 segment_ack 回调（同一实例，ack 才能命中会话 epoch）

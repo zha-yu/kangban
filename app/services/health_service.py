@@ -279,14 +279,23 @@ verify_staff_proxy = _verify_staff_proxy
 async def _find_open_yellow_risk_event(
     session: AsyncSession, *, elder_id: uuid.UUID, today_start: datetime.datetime
 ) -> RiskEvent | None:
-    """查当日该长者未关闭的黄色 risk_event（AC-22 黄升红的前置条件）。"""
+    """查当日该长者未关闭的黄色 risk_event（AC-22 黄升红的前置条件）。
+
+    可能存在多条开放黄档（如采集窗口内多次触发、或历史事件未及时闭合）——
+    取**最新一条**复用即可：黄档去重的语义是「同长者当日黄档归并到一个事件」，
+    不能因多行而炸（scalar_one_or_none 会 MultipleResultsFound → 500，
+    2026-11-11 代填走查实锤）。
+    """
     result = await session.execute(
-        select(RiskEvent).where(
+        select(RiskEvent)
+        .where(
             RiskEvent.elder_id == elder_id,
             RiskEvent.severity == "yellow",
             RiskEvent.status == "open",
             RiskEvent.created_at >= today_start,
         )
+        .order_by(RiskEvent.created_at.desc())
+        .limit(1)
     )
     return result.scalar_one_or_none()
 

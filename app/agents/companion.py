@@ -232,6 +232,8 @@ EventSink = Callable[[str, Mapping[str, object]], Awaitable[None]]
 FollowupSink = Callable[[FollowupTask], Awaitable[None]]
 #: 戏曲播放下行回调：``(device_id, payload)``，装配层接 signaling.deliver（D4/X8）
 MediaPlaySink = Callable[[str, Mapping[str, object]], Awaitable[None]]
+#: 播放控制下行回调：``(device_id, {"action": ...})`` → media_control 帧（D4/X8 ③）
+MediaControlSink = Callable[[str, Mapping[str, object]], Awaitable[None]]
 
 # ---------------------------------------------------------------------------
 # 上下文组装（占位实现）与 ReAct 线协议
@@ -290,7 +292,14 @@ def _build_turn_context(
 
 
 def _tool_protocol_message(tools: Sequence[ToolSpec]) -> dict[str, str]:
-    """ReAct 输出协议说明（只描述格式，不含任何阈值——阈值在代码里强制）。"""
+    """ReAct 输出协议说明（只描述格式，不含任何阈值——阈值在代码里强制）。
+
+    Day 8 追加 few-shot：实测 minimax 对 play_opera 偶发自创 ``title`` 参数
+    （schema 只有 ``action``/``query``，bad_args 烧额度，同 Tool 60s 内 3 次即
+    触发熔断 → 长者听到「这个我处理不了」）。示例锚定 play_opera 的正确入参
+    形状与「参数被拒按 schema 修正后重试」的行为，把首调错参率打下去；
+    示例只描述入参形状，不新增 schema 字段（X8 口径② 冻结契约不动）。
+    """
     listed = "\n".join(f"- {spec.name}：{spec.description}" for spec in tools)
     return {
         "role": "system",
@@ -302,7 +311,13 @@ def _tool_protocol_message(tools: Sequence[ToolSpec]) -> dict[str, str]:
             "不需要工具时，直接用自然语言回答，不要输出 JSON。\n"
             "工具结果会以「工具执行结果：…」的消息发给你；请根据结果继续回答，"
             "或决定是否再次调用工具。\n"
-            "工具查不到的信息要如实告知长者，不要编造。"
+            "工具查不到的信息要如实告知长者，不要编造。\n"
+            "\n"
+            "示例（戏曲点播 play_opera）：检索词必须放进 args 的 query 字段，"
+            '不要自创参数名。例如长者说「我要听茉莉雨」，输出：\n'
+            '{"tool": "play_opera", "args": {"action": "play", "query": "茉莉雨"}}\n'
+            '若工具结果提示 unexpected parameters（如 ["title"]），说明参数名传错了，'
+            "请对照上面示例改成 query 后重试一次，不要换别的参数名。"
         ),
     }
 
@@ -384,6 +399,7 @@ class CompanionAgent:
         on_event: EventSink | None = None,
         followup_sink: FollowupSink | None = None,
         on_media_play: MediaPlaySink | None = None,
+        on_media_control: MediaControlSink | None = None,
     ) -> None:
         self._llm = llm
         self._guardrails = guardrails
@@ -392,6 +408,7 @@ class CompanionAgent:
         self._on_event = on_event
         self._followup_sink = followup_sink
         self._on_media_play = on_media_play
+        self._on_media_control = on_media_control
 
     async def run(
         self,
@@ -514,21 +531,26 @@ class CompanionAgent:
                 await self._emit_event(
                     "tool_succeeded", {"tool_name": call.tool, "latency_ms": latency_ms}
                 )
-                # D4（X8 口径②/③）：play_opera 命中 → 经装配层注入的 sink 下发
-                # media_play 帧（agents 不横向 import audio，deliver 由 main 注入）
-                if call.tool == "play_opera" and self._on_media_play is not None:
+                # D4（X8 口径②/③）：play_opera 结果 → 装配层注入的 sink 下发
+                # media_play（LLM 点播）或 media_control（控制动作）帧
+                # （agents 不横向 import audio，deliver 由 main 注入）
+                if call.tool == "play_opera":
                     data = result.data or {}
-                    media = data.get("media") or {}
-                    if data.get("found") and media.get("media_url"):
-                        await self._on_media_play(
-                            runtime.device_id,
-                            {
-                                "media_url": media["media_url"],
-                                "title": media.get("title") or "",
-                                "media_id": str(media.get("media_id") or ""),
-                                "duration": media.get("duration"),
-                            },
-                        )
+                    control = data.get("control")
+                    if control and self._on_media_control is not None:
+                        await self._on_media_control(runtime.device_id, {"action": str(control)})
+                    elif self._on_media_play is not None:
+                        media = data.get("media") or {}
+                        if data.get("found") and media.get("media_url"):
+                            await self._on_media_play(
+                                runtime.device_id,
+                                {
+                                    "media_url": media["media_url"],
+                                    "title": media.get("title") or "",
+                                    "media_id": str(media.get("media_id") or ""),
+                                    "duration": media.get("duration"),
+                                },
+                            )
                 messages.append({"role": "assistant", "content": reply.text})
                 messages.append({"role": "user", "content": _observation(call, result)})
                 continue
@@ -661,6 +683,7 @@ __all__ = [
     "EventSink",
     "FollowupSink",
     "FollowupTask",
+    "MediaControlSink",
     "MediaPlaySink",
     "ToolExecutor",
     "ToolResult",

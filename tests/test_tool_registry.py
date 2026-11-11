@@ -120,8 +120,13 @@ def test_registry_has_day8_specs() -> None:
     assert wo is not None and wo.transport == "mcp" and wo.side_effect and wo.idempotent
     assert fn is not None and fn.transport == "mcp" and fn.side_effect and fn.idempotent
     assert po is not None and po.transport != "mcp" and not po.side_effect
-    # X8 ②：play_opera 入参只有 query
-    assert set(po.parameters_schema["required"]) == {"query"}
+    # X8 口径③（2026-11-11 主理人裁决）：schema 含 action 枚举，required 不卡 query
+    # （规则直连只传 {"action": ...}；query 必填移到执行器 action=play 条件校验）
+    actions = po.parameters_schema["properties"]["action"]["enum"]
+    assert {"play", "pause", "resume", "stop", "next", "replay", "volume_up", "volume_down"} <= set(
+        actions
+    )
+    assert "query" not in po.parameters_schema.get("required", [])
 
 
 # ------------------------------------------------------------------ 必过用例
@@ -185,6 +190,64 @@ async def test_opera_tool_not_found_returns_found_false(
 
     assert result.ok, result.message
     assert result.data == {"found": False, "media": None}
+
+
+async def test_opera_tool_next_returns_random_media(
+    session: AsyncSession, elder_id: str, runtime: Identity, session_factory: Any
+) -> None:
+    """换一段（X8 ③）：C4 锚点未交付，过渡期随机返回一首 type=opera 全集曲目。"""
+    session.add(
+        MediaLibrary(
+            media_id=uuid.uuid5(uuid.NAMESPACE_URL, "test-next-a"),
+            type="opera",
+            title="换段测试A",
+            genre="越剧",
+            era="1950s",
+            artist="测试",
+            media_url="/static/media/opera/test-next-a.mp3",
+            duration=30,
+            copyright_status="public_domain",
+        )
+    )
+    await session.flush()
+
+    registry = default_registry()
+    bind_dev_b_tools(registry, session_factory=session_factory)
+    executor = _executor(session, registry=registry)
+
+    result = await executor.execute(
+        tool_name="play_opera",
+        args={"action": "next"},
+        runtime=runtime,
+        turn_id=None,
+        idempotency_key="ik-opera-next",
+    )
+
+    assert result.ok, result.message
+    data = result.data or {}
+    assert data["found"] is True
+    assert data["media"]["media_url"].startswith("/static/media/opera/")
+    assert data["media"]["title"]
+
+
+async def test_opera_tool_control_actions_return_marker(
+    session: AsyncSession, runtime: Identity, session_factory: Any
+) -> None:
+    """播放控制七动作：不查库，返回 {"control": action} 标记（下发层转 media_control 帧）。"""
+    registry = default_registry()
+    bind_dev_b_tools(registry, session_factory=session_factory)
+    executor = _executor(session, registry=registry)
+
+    for action in ("pause", "resume", "stop", "replay", "volume_up", "volume_down"):
+        result = await executor.execute(
+            tool_name="play_opera",
+            args={"action": action},
+            runtime=runtime,
+            turn_id=None,
+            idempotency_key=f"ik-opera-ctl-{action}",
+        )
+        assert result.ok, (action, result.message)
+        assert result.data == {"control": action}, action
 
 
 async def test_work_order_tool_via_mcp(

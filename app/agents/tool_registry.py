@@ -188,11 +188,32 @@ def default_registry() -> ToolRegistry:
             ),
             ToolSpec(
                 name="play_opera",
-                description="按剧目/剧种检索戏曲并返回播放地址（media_history 由 media_service 记录）",
+                description=(
+                    "戏曲播放与控制。action=play 时按 query（剧目/剧种/歌手）检索并返回播放地址；"
+                    "其余为播放控制动作，无需 query：pause/resume/stop/replay/interrupt/"
+                    "volume_up/volume_down/next（换一段，服务端取下一首）"
+                ),
                 parameters_schema={
                     "type": "object",
-                    "properties": {"query": {"type": "string", "minLength": 1}},
-                    "required": ["query"],
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": [
+                                "play",
+                                "pause",
+                                "resume",
+                                "stop",
+                                "next",
+                                "replay",
+                                "interrupt",
+                                "volume_up",
+                                "volume_down",
+                            ],
+                        },
+                        "query": {"type": "string", "minLength": 1},
+                    },
+                    # query 只在 action=play 时必填（条件校验在执行器）；
+                    # 规则直连只传 {"action": ...}，required 卡死会把七动作全炸掉
                     "additionalProperties": False,
                 },
                 side_effect=False,  # 只读检索；media_history 归 C4 media_service（X8 ②）
