@@ -49,7 +49,7 @@
 | --- | --- | --- | --- |
 | S0 | 环境核验 | ✅ 已完成 | pytest 1191 passed、head=0016、tsc 零错；R-D3 评测环境缺口登记 |
 | S1 | 冻结版核对＋B1 三议程 | ✅ 已完成 | 契约 v1.2/v1.0 齐备；Q-D1 已批、Q-D5 已裁、Q-D4 仍待 A |
-| S2 | D1 骨架（reports/alerts） | ⛔ 阻塞 | 卡 **dev-C**：`app/services/report_service.py` 的家属侧读函数（C2 交付物）未就绪；A1 的 ORM＋0017/0018 已交付 |
+| S2 | D1 骨架（reports/alerts） | 🚧 部分完成 | ✅ `app/api/alerts.py` N-3 已交付（8 用例绿）；⛔ 剩 N-1/N-2 卡 **dev-A**（`notify_service` 无员工侧读/已读函数）；⛔ `reports.py` 卡 **dev-C**（C2 `report_service` 读函数） |
 | S3 | D5 fixtures 固化 | ✅ 已完成 | 基线 110 条不动；`boundary_v1.jsonl` 30 条六类各 5 |
 | S5 | eval_gate 本体＋首份基线 | ✅ 已完成 | 四门 PASS（41/50、20/20、25/30、19/20）；锁＋报告＋回流 15 条；FR-TC-09 按 X9 附加4 篡改词表验证通过 |
 | S4 | D1 联调（桩换真） | ⛔ 阻塞 | 同 S2（C2 读函数）；另需 CP1 的 staff 三签名（A3 已交付写/确认函数，读函数仍缺） |
@@ -424,6 +424,8 @@ uv run python scripts/update_progress.py --check-plans
 | R-D7 | opera 与播报/触达互斥口径缺失 | 复用既有 stopPlayback/interrupt 机制；优先级口径随 X8，未定提评审，不自裁 |
 | R-D8 | SOS 类别映射无 sos、撤销函数无承载 | D3 前置核对（S12a），缺则整项顺延留痕；不修改 safety_service/medication_service |
 | R-D9 | pre-push 接 eval_gate 后推送被环境差异误拦 | 门禁失败输出可读归因；环境缺失时按 R-D3 处置；接线本身是 R1② 可裁项 |
+| R-D10 | **N-3 确认端点缺归属校验**：`notify_service.acknowledge_notification()` 只按 id 查，不校验 `target_type/target_id`，任何持牌员工可确认他人通知 | 已登记在 `app/api/alerts.py` 模块 docstring 与测试文件头；**api 层无法补**（不许拼查询、无员工侧读函数）→ 请 A 侧给该函数加 `target_type/target_id` 参数或新增带归属校验的函数；补齐后补 `test_acknowledge_foreign_403`。**补齐前该端点仅教学演示，不得对外** |
+| R-D11 | `NotificationError` 一个异常承载「不存在/非法流转」两种语义，api 只能靠消息前缀分流（`alerts.py::_map_notification_error`） | 已登记请 A 拆 typed exception（`NotificationNotFound` / `IllegalTransition`）；拆分后改 `isinstance`，删掉字符串判断 |
 
 ## 9. 待确认项（执行前需回应；未决不擅自定）
 
@@ -454,6 +456,7 @@ uv run python scripts/update_progress.py --check-plans
 | 2026-11-11 | **合并 A/B 更新后的上游红灯登记** | `git merge origin/develop`（A `3ab75f4`、B `efd3bc3`）后全量 pytest：**9 failed / 1226 passed**，全部落在 A/B 侧：① `test_health_graph.py` 6 条 `ImportError: cannot import name 'grade_health_record'`（`app/graphs/health_checkup_graph.py:124` 仍用旧名，A 侧新函数名为 `grade_health`）；② `test_router_rules.py` 2 条（`RULESET_VERSION` r1→r2、播放类规则 action 改直连后旧断言未同步）；③ `test_router_decision.py` 1 条（同因）。**D 侧文件零失败**；已在群里告知 A/B，未擅自改 graphs/rules | 迁移已随之升到 head `0018_day8_media`（daily_reports/health_records/media 四表就位）；日报读函数仍缺，归 **dev-C 的 C2（`app/services/report_service.py`）**，S2/S4 卡 C |
 | 2026-11-11 | **S10 pre-push 接线＋回流核对（CP-D10）** | ① `tests/eval_gate.py` 增 `--self-check`：只验「基线 110 条（50/20/20/20）＋六类边界各 ≥5 ＋ id 全局唯一 ＋ 文本子集可加载」，**不跑模型、不写锁、不做达标判定**；② `.githooks/pre-push` 末尾接该自检（排在 `--check`、`--check-plans` 之后），失败即中止推送；③ 正向验证 `sh .githooks/pre-push` → `HOOK_EXIT=0`；④ 反向验证：把边界集打掉「越权」整类后 `--self-check` → **EXIT=1**，报「边界类 scope 只有 0 条（要求 ≥5）」；⑤ 回流核对：`badcase_backlog.jsonl` 15 条、单一 run_id `20261111-145521`，归因层 分类器 11 / 规则层 4，分组 normal 9 / boundary 5 / ambiguous 1 | **真门禁不进钩子**（R1② 裁决留痕）：真基线需 torch ＋ ~60s ＋ 依赖 jev 环境，塞进 pre-push 会把全员堵在推送前，钩子环境无 torch 时只能「静默通过」，比不跑更糟。故钩子只做机制自检；达标判定留在本地/S10 报告。**上游红灯仍在**：9 条 A/B 侧失败未修，H12 未绿 |
 | 2026-11-11 | **更正：日报读函数归属** | 前几轮把 D1 的「日报读服务」误记成 dev-A 的 `daily_report_service`，实为 **dev-C 的 C2 交付物 `app/services/report_service.py`**（家属侧读函数）。依据三处原文：① D 卡 D1 前置「B1；A1（DailyReport 模型）；**C2（联调段）**」；② C 卡 C2 交付物与写域均含 `report_service.py`；③ 本计划 §J-C2「dev-C → D：report_service 家属侧读函数签名」、§R-D1「C2 读函数/A3 staff 函数晚到」。**A1 只负责 ORM＋0017/0018 迁移，且已交付**；名字也应为 `report_service`（此前写作 `daily_report_service` 亦属笔误） | 已同步修正 §0.4 速览 S2/S4 行、S1 行、合并红灯行的归属与函数名；此前给用户的汇报口径作废，以此行为准。**错因**：写速览表时凭"日报=数据"的直觉归到 A，未回查 D 卡前置与 §J-C2 已写明的 C 归属——违反了「先查文档再下结论」的自定纪律 |
+| 2026-11-11 | **S2 部分交付：alerts.py N-3（CP-D2 补）** | 新建 `app/api/alerts.py`（prefix `/api`，`ContractAPIRoute`，编号 N-3）：`POST /api/notifications/{id}/acknowledge`，员工身份从 `current_staff` 注入、操作人取 `staff.staff_id`（不收客户端 actor），`delivered → acknowledged` 写 `acknowledged_by/at`，跳步 409 `CONFLICT`、不存在 404 `NOT_FOUND`、非员工主体 401、幂等不刷时间戳。`app/api/__init__.py` ROUTERS 追加一行。新建 `tests/test_alerts_api.py` **8 用例全绿**（401 无凭证／401 家属主体／200 确认＋幂等／409×3 跳步／404／422 uuid 错）。相邻域回归 `test_security + test_auth_api + test_api_workorders_family` 241 passed | **两处缺口已登记（R-D10/R-D11）**：① `notify_service.acknowledge_notification()` 不校验 target 归属 → 任何员工可确认他人通知，**api 层补不了**（不许拼查询、无员工侧读函数），需 A 侧加参；补齐前该端点仅教学演示，不得对外。② `NotificationError` 一个异常两种语义，api 只能靠消息前缀分流，已请 A 拆 typed exception。**N-1/N-2 仍未实现**：摆空壳会给人「接口在但永远 500」的假象，故不摆 |
 
 ---
 
