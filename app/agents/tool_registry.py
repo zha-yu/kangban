@@ -146,6 +146,58 @@ def default_registry() -> ToolRegistry:
                 side_effect=True,
                 idempotent=True,
             ),
+            # ---- Day 8 B4（dev-B）：mock-operations 两工具 + 戏曲点播 ----
+            # `subject_elder_id` 不进 required：模型可以传（用于 AC-39 越权检测），
+            # 也可以不传（执行链步骤 1.5 从运行时身份注入）。执行链对声明了该参数
+            # 的工具统一做注入/越权拒绝，见 tool_executor.SUBJECT_ELDER_KEY。
+            ToolSpec(
+                name="create_work_order",
+                description="为这位长者创建照护工单（Mock 落库），如上报异常、请求人工跟进",
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "subject_elder_id": {"type": "string"},
+                        "order_type": {"type": "string", "minLength": 1},
+                        "severity": {"type": "string", "minLength": 1},
+                        "note": {"type": "string"},
+                    },
+                    "required": ["order_type", "severity"],
+                    "additionalProperties": False,
+                },
+                side_effect=True,
+                idempotent=True,  # dedupe_token 幂等（工单服务口径）
+                transport="mcp",  # mock-operations server（7102），失败分类归 mcp_client
+            ),
+            ToolSpec(
+                name="send_family_notification",
+                description="给这位长者的家属发送通知（Mock 落库），如健康异常通报、日常报平安",
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "subject_elder_id": {"type": "string"},
+                        "notification_type": {"type": "string", "minLength": 1},
+                        "payload": {"type": "object"},
+                        "channel": {"type": "string"},
+                    },
+                    "required": ["notification_type", "payload"],
+                    "additionalProperties": False,
+                },
+                side_effect=True,
+                idempotent=True,  # dedupe_key 幂等
+                transport="mcp",
+            ),
+            ToolSpec(
+                name="play_opera",
+                description="按剧目/剧种检索戏曲并返回播放地址（media_history 由 media_service 记录）",
+                parameters_schema={
+                    "type": "object",
+                    "properties": {"query": {"type": "string", "minLength": 1}},
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+                side_effect=False,  # 只读检索；media_history 归 C4 media_service（X8 ②）
+                idempotent=True,
+            ),
         )
     )
 

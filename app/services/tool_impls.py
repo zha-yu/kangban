@@ -24,6 +24,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from sqlalchemy import desc, or_, select
 
 from app.core.runtime_context import Identity
 from app.graphs.medication_confirmation_graph import (
@@ -251,7 +252,83 @@ class ToolError(Exception):
     """
 
 
+# ------------------------------------------------------------------ play_opera（Day 8 B4 / X8 ②）
+
+
+def make_play_opera_executor(
+    *,
+    session_factory: Callable[[], Any],
+) -> Callable[[dict[str, Any], Identity], Awaitable[dict[str, Any]]]:
+    """返回 `play_opera` 工具的本地执行器（X8 口径②冻结 schema）。
+
+    - **只读**检索 media_library（type=opera），按 title/genre/era/artist 匹配检索词；
+    - 返回 `{"found": bool, "media": {...} | None}`，media_url 严格走 X8 稳定路径
+      `/static/media/opera/<media_id>.wav`（口径①）；
+    - **不写 media_history**——播放历史归 C4 media_service.record_playback
+      （X8 ②：Tool 层不直接写 history，FR-CON-06 P1）；
+    - 查询直接用 ORM 读模型：media_service 未交付前的过渡实现，
+      C4 交付后检索入口迁往 media_service.search_opera（只读迁移，零接口变化）。
+    """
+
+    async def _executor(args: dict[str, Any], runtime: Identity) -> dict[str, Any]:
+        query = str(args.get("query") or "").strip()
+        if not query:
+            raise ToolArgumentError("query 不能为空")
+
+        from app.models.media import MediaLibrary
+
+        terms = [t for t in query.replace("，", " ").replace("　", " ").split() if t]
+        try:
+            async with session_factory() as session:
+                stmt = select(MediaLibrary).where(MediaLibrary.type == "opera")
+                if terms:
+                    conds = []
+                    for term in terms:
+                        pattern = f"%{term}%"
+                        conds.extend(
+                            (
+                                MediaLibrary.title.ilike(pattern),
+                                MediaLibrary.genre.ilike(pattern),
+                                MediaLibrary.era.ilike(pattern),
+                                MediaLibrary.artist.ilike(pattern),
+                            )
+                        )
+                    stmt = stmt.where(or_(*conds))
+                # 全词精确命中优先（title == query），其余按标题稳定排序
+                stmt = stmt.order_by(desc(MediaLibrary.title == query), MediaLibrary.title).limit(1)
+                row = (await session.execute(stmt)).scalar_one_or_none()
+        except ToolError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "play_opera_query_error query=%r error_type=%s", query, type(exc).__name__
+            )
+            raise ToolTransientError(str(exc)) from exc
+
+        if row is None:
+            # 未找到：X8 ② 明确返回 {"found": False, "media": null}，
+            # 上层按 FR-CON-04 提示+推荐，不算工具失败
+            return {"found": False, "media": None}
+
+        return {
+            "found": True,
+            "media": {
+                "media_id": str(row.media_id),
+                "title": row.title,
+                "genre": row.genre,
+                "era": row.era,
+                "artist": row.artist,
+                "media_url": row.media_url,
+                "duration": row.duration,
+                "copyright_status": row.copyright_status,
+            },
+        }
+
+    return _executor
+
+
 __all__ = [
     "make_medication_confirm_executor",
     "make_memory_recall_executor",
+    "make_play_opera_executor",
 ]
