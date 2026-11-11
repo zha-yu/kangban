@@ -157,6 +157,125 @@ def test_safety_check_is_pure_and_fast() -> None:
 
 
 # ============================================================
+# 2.5 医疗拒答拦截（Day 7 C3；与 safety_check 同级、纯函数）
+# ============================================================
+
+
+def test_medical_refusal_diagnosis_keywords() -> None:
+    """诊断类关键词命中 → 固定话术短路，不进 Agent。"""
+    from app.router.medical_refusal import (
+        MEDICAL_REFUSAL_TEXT,
+        medical_refusal_check,
+    )
+
+    cases = [
+        ("我头疼，是不是高血压啊", "diagnosis"),
+        ("我爸得糖尿病好几年了", "diagnosis"),  # 长辈说家人病史也算（不能延伸诊断）
+        ("医生说我可能是冠心病", "diagnosis"),
+        ("我这是什么病啊", "diagnosis"),
+        ("帮我诊断一下我身体怎么样", "diagnosis"),
+    ]
+    for utterance, expected_reason in cases:
+        decision = medical_refusal_check(utterance)
+        assert decision.is_refused, f"should refuse: {utterance!r}"
+        assert decision.reason == expected_reason, (utterance, decision.reason)
+        assert decision.matched_keyword is not None
+        assert decision.message == MEDICAL_REFUSAL_TEXT
+
+
+def test_medical_refusal_pharmacology_keywords() -> None:
+    """药理类关键词命中 → 固定话术短路。"""
+    from app.router.medical_refusal import (
+        MEDICAL_REFUSAL_TEXT,
+        medical_refusal_check,
+    )
+
+    cases = [
+        ("这个药有副作用吗", "pharmacology"),
+        ("这个药安全吗", "pharmacology"),
+        ("这个药能吃吗", "pharmacology"),
+        ("这个药治什么的", "pharmacology"),
+    ]
+    for utterance, expected_reason in cases:
+        decision = medical_refusal_check(utterance)
+        assert decision.is_refused, f"should refuse: {utterance!r}"
+        assert decision.reason == expected_reason, (utterance, decision.reason)
+        assert decision.message == MEDICAL_REFUSAL_TEXT
+
+
+def test_medical_refusal_general_advice_keywords() -> None:
+    """通用医疗建议关键词命中 → 固定话术短路。"""
+    from app.router.medical_refusal import (
+        MEDICAL_REFUSAL_TEXT,
+        medical_refusal_check,
+    )
+
+    cases = [
+        ("我该吃什么药啊", "general_advice"),
+        ("我该怎么办", "general_advice"),
+        ("需要动手术吗", "general_advice"),
+        ("用不用开刀", "general_advice"),
+    ]
+    for utterance, expected_reason in cases:
+        decision = medical_refusal_check(utterance)
+        assert decision.is_refused, f"should refuse: {utterance!r}"
+        assert decision.reason == expected_reason, (utterance, decision.reason)
+        assert decision.message == MEDICAL_REFUSAL_TEXT
+
+
+def test_medical_refusal_does_not_block_normal_queries() -> None:
+    """正常查询、天气、戏曲点播等 —— 不应被医疗拒答拦截。"""
+    from app.router.medical_refusal import medical_refusal_check
+
+    cases = [
+        "今天天气怎么样",
+        "帮我唱一段京剧",
+        "我吃了这个药觉得肚子胀",  # 体验反馈，不是药理询问
+        "昨天去医院查了一下",
+        "谢谢你陪我聊天",
+    ]
+    for utterance in cases:
+        decision = medical_refusal_check(utterance)
+        assert not decision.is_refused, f"should NOT refuse: {utterance!r} (matched={decision.matched_keyword})"
+
+
+def test_medical_refusal_text_has_no_diagnostic_terms() -> None:
+    """固定话术里**不能出现**具体疾病名或诊断术语（防止模型篡改话术加诊断）。"""
+    from app.router.medical_refusal import MEDICAL_REFUSAL_TEXT
+
+    forbidden = (
+        "高血压",
+        "糖尿病",
+        "冠心病",
+        "心肌梗塞",
+        "中风",
+        "确诊",
+        "诊断",
+        "建议看医生",  # 话术里不该说"建议"——只说"转告医生"
+    )
+    for term in forbidden:
+        assert term not in MEDICAL_REFUSAL_TEXT, (
+            f"MEDICAL_REFUSAL_TEXT contains forbidden term {term!r}: {MEDICAL_REFUSAL_TEXT}"
+        )
+
+
+def test_medical_refusal_is_pure_and_fast() -> None:
+    """空串/None 安全；重复调用结果一致（无状态、无 I/O）。"""
+    from app.router.medical_refusal import medical_refusal_check
+
+    assert not medical_refusal_check("").is_refused
+    assert not medical_refusal_check("   ").is_refused
+    first = medical_refusal_check("我是不是高血压")
+    second = medical_refusal_check("我是不是高血压")
+    assert first == second
+
+
+# ============================================================
+# 3. DB 依赖测试
+# ============================================================
+
+
+# ============================================================
 # 2. 落库（DB 用例，事务回滚）
 # ============================================================
 

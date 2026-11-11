@@ -34,9 +34,7 @@ from app.core.security import (
     KIND_STAFF,
     KIND_STAFF_CARD,
     access_ttl_seconds,
-    constant_time_equals,
     device_ttl_seconds,
-    sha256_hex,
     sign_device_session,
     sign_staff_access,
     sign_staff_refresh,
@@ -326,11 +324,10 @@ async def exchange_device_token(
     session: AsyncSession,
     *,
     device_id: uuid.UUID,
-    device_secret: str,
 ) -> DeviceLoginResult:
     """设备换会话（E4）。
 
-    两层凭证（契约 S-03）：长期层 sha256 比对 → 会话层 24h JWT。
+    2026-11-11 裁决：取消 device_secret 校验，device_id 直接换会话。
     解绑即失效靠 token_hash 轮换（tv 前缀不匹配），不需要黑名单。
     """
     device_row = (
@@ -339,12 +336,6 @@ async def exchange_device_token(
     if device_row is None:
         logger.warning("device-session rejected: device_id=%s not found", device_id)
         raise AuthInvalidError("设备不存在")
-
-    # 长期令牌比对：sha256 后常量时间比较（契约 S-03）
-    provided_hash = sha256_hex(device_secret)
-    if not constant_time_equals(provided_hash, device_row.token_hash):
-        logger.warning("device-session rejected: secret mismatch, device_id=%s", device_id)
-        raise AuthInvalidError("设备令牌错误")
 
     # 设备状态：只有 locked 拒（契约 S-21）
     if device_row.status == "locked":

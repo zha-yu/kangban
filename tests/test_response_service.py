@@ -1053,6 +1053,102 @@ async def test_redis_epoch_restore() -> None:
     assert record["last_acked_segment"] == -1  # playing ack 不推进水位
 
 
+# ---------------------------------------------------------------------------
+# 分节奏下发（audio_sink 注入）：段音频开始流送 → 才发对应 tts_text
+# ---------------------------------------------------------------------------
+
+
+async def test_paced_delivery_sends_each_segment_after_its_audio() -> None:
+    """audio_sink 注入：sink(段 i) 先于段 i 下发执行，文字随段音频开始流送到达。"""
+    h = Harness()
+    sink_seen: list[tuple[str, int]] = []  # (段文本, 调用时已下发消息数)
+
+    async def sink(segment_text: str) -> bool:
+        sink_seen.append((segment_text, len(h.deliver.messages)))
+        return True
+
+    handle = await h.service.start(h.turn, _result("第一段。第二段。"), audio_sink=sink)
+
+    for _ in range(200):  # 节奏任务后台跑：等两段都下发
+        if len(h.deliver.messages) == 2:
+            break
+        await asyncio.sleep(0.005)
+    assert [msg["text"] for _, msg in h.deliver.messages] == ["第一段。", "第二段。"]
+    # 音频先于文字：下发段 0 时 0 条已发；下发段 1 时仅段 0 已发
+    assert sink_seen == [("第一段。", 0), ("第二段。", 1)]
+    # 消息口径与全量下发完全一致（response_id/epoch/序号）
+    for index, (_, message) in enumerate(h.deliver.messages):
+        assert message["response_id"] == handle.response_id
+        assert message["epoch"] == handle.epoch
+        assert message["segment_id"] == index == message["index"]
+        assert message["total"] == 2
+
+
+async def test_paced_delivery_sink_failure_still_delivers_text() -> None:
+    """sink 返回 False（本段无音频）：字幕照发，语音缺段（字幕先行契约）。"""
+    h = Harness()
+
+    async def sink(segment_text: str) -> bool:
+        return False  # 模拟 TTS 不可用 / 会话已关
+
+    await h.service.start(h.turn, _result("第一段。第二段。"), audio_sink=sink)
+    for _ in range(200):
+        if len(h.deliver.messages) == 2:
+            break
+        await asyncio.sleep(0.005)
+    assert [msg["text"] for _, msg in h.deliver.messages] == ["第一段。", "第二段。"]
+
+
+async def test_paced_delivery_audio_and_text_both_failed_aborts() -> None:
+    """音频与文字双失败（连接已死）：停止空转，剩余段不再合成/下发。"""
+    h = Harness()
+    sink_calls: list[str] = []
+
+    async def sink(segment_text: str) -> bool:
+        sink_calls.append(segment_text)
+        return False
+
+    h.deliver.online = False  # deliver 也失败 → 双失败
+    await h.service.start(h.turn, _result("第一段。第二段。第三段。"), audio_sink=sink)
+    for _ in range(200):
+        if len(sink_calls) >= 1:
+            break
+        await asyncio.sleep(0.005)
+    await asyncio.sleep(0.05)
+    # 首段双失败后终止：每段只调一次 sink，剩余段不空转
+    # （FakeDeliver 失败也记录 → 第一段被尝试下发两次[重试 1 次]，均未送达）
+    assert sink_calls == ["第一段。"]
+    assert [msg["text"] for _, msg in h.deliver.messages] == ["第一段。", "第一段。"]
+
+
+async def test_paced_delivery_interrupt_cancels_remaining_segments() -> None:
+    """打断：节奏任务已登记 cancellables，第④步连任务一起取消，剩余段静默终止。"""
+    h = Harness()
+    first_sink_entered = asyncio.Event()
+
+    async def sink(segment_text: str) -> bool:
+        if segment_text == "第一段。":
+            first_sink_entered.set()
+            await asyncio.sleep(0)
+            return True
+        await asyncio.sleep(10)  # 后续段挂起：等 interrupt 取消
+        return True
+
+    handle = await h.service.start(h.turn, _result("第一段。第二段。第三段。"), audio_sink=sink)
+    assert await asyncio.wait_for(first_sink_entered.wait(), timeout=1.0)
+    for _ in range(200):  # 等第一段下发完成
+        if len(h.deliver.messages) >= 1:
+            break
+        await asyncio.sleep(0.005)
+    assert len(h.deliver.messages) == 1
+
+    interrupted = await h.service.interrupt(handle.response_id)
+    assert interrupted is not None
+    assert interrupted.delivery_status == "interrupted"
+    await asyncio.sleep(0.05)  # 给取消传播留一拍
+    assert len(h.deliver.messages) == 1  # 第二/三段不再下发
+
+
 async def test_settlement_schedules_memory_extraction() -> None:
     """B1↔B2 边界（裁决 O-B2）：终态结算调度记忆提取；generic 轮不调度。
 

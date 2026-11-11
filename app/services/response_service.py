@@ -143,6 +143,19 @@ class GenerationResultLike(Protocol):
     def degraded(self) -> bool: ...
 
 
+class SegmentAudioSink(Protocol):
+    """单段音频出口（分节奏下发用）：合成一段并写入下行播放轨，返回是否入轨成功。
+
+    实现在装配层（main.py）：闭包持有 TTS provider 与 device/turn，内部含
+    「等上一段排空再入轨」的节奏控制。返回 False 表示本段无音频（TTS 不可用 /
+    会话已关），调用方仍下发该段文字——字幕先行契约不变。
+
+    协议结构兼容 `Callable[[str], Awaitable[bool]]`，调用方可用 Callable 注解注入。
+    """
+
+    async def __call__(self, segment_text: str) -> bool: ...
+
+
 @dataclass(frozen=True, slots=True)
 class TurnContext:
     """一轮回复的服务端上下文（N14 `handle_user_turn` 构造，客户端不可传）。"""
@@ -341,6 +354,7 @@ class ResponseService:
         self._memory = memory_port
         self._settlement_warned = False
         self._memory_tasks: set[asyncio.Task[None]] = set()  # create_task 持引用防 GC
+        self._paced_tasks: set[asyncio.Task[None]] = set()  # 分节奏下发任务同款防 GC
         self._responses: dict[str, _ResponseState] = {}
         self._epochs: dict[str, int] = {}  # thread_id → 当前会话 epoch（桩期进程内持有）
 
@@ -363,6 +377,7 @@ class ResponseService:
         result: GenerationResultLike,
         *,
         response_id: str | None = None,
+        audio_sink: SegmentAudioSink | None = None,
     ) -> ResponseHandle:
         """服务端分段并把每段以 tts_text v2 下发（N14 七步的最后一步）。
 
@@ -371,6 +386,13 @@ class ResponseService:
 
         `response_id` 可选注入：N14 统一出口在第 5 步先记生成时已铸造同一枚
         response_id，第 7 步下发沿用，保证事实与下发可对账；缺省时自行铸造。
+
+        `audio_sink` 注入时走**分节奏下发**：后台任务逐段「先合成入轨 → 再下发
+        该段 tts_text」，段文字随段音频开始流送才到达（contracts §4 前端
+        「下一段到达即结算上一段 played」依赖此序）；整段合成超 15s 下行队列
+        上限会被整段拒绝（真机踩坑：226 字故事 46.7s = 2337 帧 > 750 帧）。
+        注入方（装配层）须实现打断安全：pacing 任务已登记 cancellables，
+        interrupt 第④步会连任务一起取消。缺省 None 保持一次性全量下发（旧路径/测试）。
         """
         if not turn.thread_id or not THREAD_ID_PATTERN.match(turn.thread_id):
             raise ValueError("thread_id must be a server-generated safe token")
@@ -380,7 +402,6 @@ class ResponseService:
         if not text:
             raise ValueError("generation text must be non-empty before response stream")
 
-        stopwatch = Stopwatch()
         response_id = response_id if response_id is not None else uuid.uuid4().hex
         # P2-9：进程重启后从 Redis 恢复会话 epoch（单进程范围；多 worker 登记 Day 9），
         # 否则重启后 epoch 归 0，携带旧代 epoch 的 ack 会被 stale_epoch 全拒。
@@ -421,42 +442,113 @@ class ResponseService:
         )
         await self._persist_response(state)
 
-        total = len(segments)
-        for index, segment in enumerate(segments):
-            message: dict[str, object] = {
-                "type": "tts_text",
-                "text": segment,
-                "degraded": state.degraded,
-                "response_id": response_id,
-                "epoch": epoch,
-                "segment_id": index,
-                "index": index,
-                "total": total,
-            }
-            delivered = self._deliver(turn.device_id, message)
-            if not delivered:
-                # P2-11（本日范围）：单段下发失败重试 1 次；仍失败写补偿事件。
-                # 完整重放（断连后逐段补发）登记 Day 9。
-                delivered = self._deliver(turn.device_id, message)
-            state.delivered_at[index] = time.monotonic()
-            if not delivered:
-                logger.error(
-                    "response_delivery_failed",
-                    extra=self._log_extra(state, segment_id=index, response_id=response_id),
-                )
-                await self._safe_append_event(
-                    state,
-                    EVENT_RESPONSE_DELIVERY_FAILED,
-                    {"segment_id": index, "response_id": response_id},
-                )
-            # 每段下发一条 response_segment 指标（复用 record_stage，elapsed=start 起累计）
-            record_stage(
-                METRIC_STAGE_RESPONSE_SEGMENT,
-                stopwatch.elapsed_ms(),
-                elder_id=state.elder_id,
-                source="server",
-            )
+        if audio_sink is None:
+            await self._deliver_all_segments(state)
+        else:
+            self._spawn_paced_delivery(state, audio_sink)
         return self._snapshot(state)
+
+    # -------------------------------------------------- 下发：全量 / 分节奏
+
+    async def _deliver_all_segments(self, state: _ResponseState) -> None:
+        """一次性把全部段按序下发（缺省路径：测试 / 未注入 audio_sink 的装配）。"""
+        stopwatch = Stopwatch()
+        for index in range(state.total):
+            await self._deliver_one(state, index, stopwatch.elapsed_ms)
+
+    def _spawn_paced_delivery(self, state: _ResponseState, sink: SegmentAudioSink) -> None:
+        """起后台节奏任务：段音频开始流送时才发对应 tts_text（打断第④步可取消）。"""
+        task = asyncio.create_task(self._paced_delivery(state, sink))
+        state.cancellables.append(task)  # interrupt 第④步连任务一起 cancel
+        self._paced_tasks.add(task)  # 持引用防 GC
+        task.add_done_callback(self._paced_tasks.discard)
+
+    async def _paced_delivery(self, state: _ResponseState, sink: SegmentAudioSink) -> None:
+        """逐段「先合成入轨 → 再下发文字」的节奏循环（contracts §4 对齐序）。
+
+        - 每段下发前检查播放状态：被 interrupt / 已收口 → 剩余段静默终止；
+        - sink 异常按「本段无音频」处理，文字照发（字幕先行契约）；
+        - 音频与文字**双失败**视为连接/会话已不可用，停止空转（否则每段白合成）；
+        - `CancelledError` 必须重抛（P3-27：打断/会话清理的取消语义不得吞）。
+        """
+        stopwatch = Stopwatch()
+        for index in range(state.total):
+            if state.status != PHASE_PLAYING:
+                return  # 被打断/已收口：剩余段不再下发、不再合成
+            try:
+                audio_ok = await sink(state.segments[index])
+            except asyncio.CancelledError:
+                logger.info(
+                    "response_paced_cancelled",
+                    extra=self._log_extra(state, segment_id=index, response_id=state.response_id),
+                )
+                raise
+            except Exception as exc:  # sink 内部已兜 TTSUnavailable；防御其余未预期失败
+                logger.error(
+                    "response_segment_sink_failed",
+                    extra=self._log_extra(
+                        state,
+                        segment_id=index,
+                        error_type=type(exc).__name__,
+                        error_detail=str(exc),
+                    ),
+                    exc_info=exc,
+                )
+                audio_ok = False
+            delivered = await self._deliver_one(state, index, stopwatch.elapsed_ms)
+            if not audio_ok and not delivered:
+                logger.error(
+                    "response_paced_aborted",
+                    extra=self._log_extra(
+                        state,
+                        segment_id=index,
+                        response_id=state.response_id,
+                        reason="audio_and_text_both_failed",
+                    ),
+                )
+                return
+
+    async def _deliver_one(
+        self, state: _ResponseState, index: int, elapsed_ms: Callable[[], float]
+    ) -> bool:
+        """下发一段 tts_text v2（全量/分节奏共用）：重试 1 次 + 指标 + 失败补偿事件。
+
+        返回 False 表示两次投递都未送达（WS 已断等）；调用方据此决定是否终止节奏。
+        """
+        message: dict[str, object] = {
+            "type": "tts_text",
+            "text": state.segments[index],
+            "degraded": state.degraded,
+            "response_id": state.response_id,
+            "epoch": state.epoch,
+            "segment_id": index,
+            "index": index,
+            "total": state.total,
+        }
+        delivered = self._deliver(state.device_id, message)
+        if not delivered:
+            # P2-11（本日范围）：单段下发失败重试 1 次；仍失败写补偿事件。
+            # 完整重放（断连后逐段补发）登记 Day 9。
+            delivered = self._deliver(state.device_id, message)
+        state.delivered_at[index] = time.monotonic()
+        if not delivered:
+            logger.error(
+                "response_delivery_failed",
+                extra=self._log_extra(state, segment_id=index, response_id=state.response_id),
+            )
+            await self._safe_append_event(
+                state,
+                EVENT_RESPONSE_DELIVERY_FAILED,
+                {"segment_id": index, "response_id": state.response_id},
+            )
+        # 每段下发一条 response_segment 指标（复用 record_stage，elapsed=start 起累计）
+        record_stage(
+            METRIC_STAGE_RESPONSE_SEGMENT,
+            elapsed_ms(),
+            elder_id=state.elder_id,
+            source="server",
+        )
+        return delivered
 
     # -------------------------------------------------- ack：契约四步校验
 
@@ -952,6 +1044,7 @@ __all__ = [
     "ResponseHandle",
     "ResponsePhase",
     "ResponseService",
+    "SegmentAudioSink",
     "TtsQueue",
     "TurnContext",
     "split_segments",

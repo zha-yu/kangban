@@ -32,7 +32,7 @@ import json
 import logging
 import re
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict
@@ -51,6 +51,7 @@ from app.core.context import (
 )
 from app.core.metrics import Stopwatch, record_stage
 from app.core.runtime_context import Identity
+from app.router.medical_refusal import MEDICAL_REFUSAL_TEXT, medical_refusal_check
 from app.router.safety import SEVERITY_RED, SafetyDecision, safety_check
 from app.services.llm_service import LLMService
 
@@ -506,8 +507,13 @@ class DialogueOrchestrator:
         turn_id: str,
         text: str,
         audio_bytes: bytes | None = None,
+        audio_sink: Callable[[str], Awaitable[bool]] | None = None,
     ) -> DialogueReply | None:
-        """FINAL 文本 → 文本/degraded；空文本与重复 turn 返回 None，零 LLM 调用。"""
+        """FINAL 文本 → 文本/degraded；空文本与重复 turn 返回 None，零 LLM 调用。
+
+        `audio_sink` 仅在 N14 统一出口分支生效：透传给 turn_service →
+        ResponseService.start，注入时段文字随段音频开始流送逐段下发。
+        """
         final_text = text.strip()
         if not device_id or not trace_id or not turn_id:
             return None
@@ -586,6 +592,24 @@ class DialogueOrchestrator:
                         trace_id=trace_id,
                     )
 
+                # ---------- L0.5 医疗拒答拦截（Day 7 C3；safety_check 之后、Agent 之前） ----------
+                # 不属于急症红色，但命中医疗诊断/药理/通用建议关键词 → 固定话术短路，不进 Agent
+                refusal = medical_refusal_check(final_text)
+                if refusal.is_refused:
+                    logger.info(
+                        "medical_refusal_hit reason=%s keyword=%s trace_id=%s thread_id=%s",
+                        refusal.reason,
+                        refusal.matched_keyword,
+                        trace_id,
+                        thread_id,
+                    )
+                    return DialogueReply(
+                        text=MEDICAL_REFUSAL_TEXT,
+                        degraded=False,
+                        escalated_to_agent=False,
+                        response_id=None,
+                    )
+
                 persona: PersonaContext | None = None
                 if not identity.is_generic and self._persona_provider is not None:
                     elder_id = identity.elder_id
@@ -602,6 +626,7 @@ class DialogueOrchestrator:
                         identity=identity,
                         persona=persona,
                         turn_id=turn_id,
+                        audio_sink=audio_sink,
                     )
 
                 return await self._service.respond(
@@ -697,11 +722,13 @@ class DialogueOrchestrator:
         identity: DialogueIdentity,
         persona: PersonaContext | None,
         turn_id: str,
+        audio_sink: Callable[[str], Awaitable[bool]] | None = None,
     ) -> DialogueReply:
         """N14 分支：组装 TurnRuntime → 统一出口七步 → 组装 DialogueReply。
 
         Redis 最近 5 轮只作缓存（读喂上下文、写回本轮）；generic 不读不写，
         读失败退化为空历史并让统一出口补 state_degraded。
+        `audio_sink` 透传统一出口（分节奏下发，见 turn_service.handle_user_turn）。
         """
         # 运行时 import 避环：turn_service → response_service → 本模块（见文件头说明）
         from app.services.turn_service import TurnRuntime
@@ -718,7 +745,7 @@ class DialogueOrchestrator:
             history_degraded=history_degraded,
         )
         handle = await self._turn_service.handle_user_turn(
-            runtime, final_text, call_id=None, turn_id=turn_id
+            runtime, final_text, call_id=None, turn_id=turn_id, audio_sink=audio_sink
         )
         outcome = self._turn_service.outcome_of(turn_id)
         if outcome is None:

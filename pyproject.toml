@@ -56,8 +56,6 @@ dependencies = [
     "langfuse>=2.54",
     "websockets>=17.4",
     "edge-tts>=7.3.1",
-    "pytest-xdist>=3.8.0",
-    "edge-tts>=7.3.1",
 ]
 
 # uv：本项目是应用而非可分发包，不需要 build-system，也不安装自身
@@ -72,6 +70,7 @@ dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "pytest-cov>=6.0",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.8",
     "mypy>=1.13",
     "types-redis>=4.6",
