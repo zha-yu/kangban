@@ -6,6 +6,8 @@
 - AC-25 版本链：regenerate=True 补录 → version+1 新行、旧版保留、每版通知一次；
 - 未答项「未采集」：无健康记录日 summary 声明未采集；无用药记录 total=0；
 - dedupe_key 三段式：`daily_report:{report_id}:update`（X2 冻结口径）；
+- F1/F2 家属端读侧：绑定范围过滤、每日最大版本去重（S-07）、分页在去重后、
+  health_summary/attention_events 查询时组装（S-09）、404/403 分离；
 - 红线自检：本服务不读 memory_chunks（grep 断言由任务卡验收命令覆盖）。
 """
 
@@ -23,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.guardian import GuardianAccount
 from app.models.health import HealthRecord
-from app.models.medication import MedicationEvent, MedicationPlan
+from app.models.medication import MedicationEvent, MedicationPlan, RiskEvent
 from app.models.notifications import Notification
 from app.models.organization import Elder
 from app.models.relation import ElderGuardian
@@ -61,6 +63,7 @@ class ReportWorld:
     elder_id: uuid.UUID
     plan_id: uuid.UUID
     day: datetime.date
+    guardian_id: uuid.UUID
 
 
 @pytest_asyncio.fixture(loop_scope="module")
@@ -132,7 +135,12 @@ async def world(db_conn) -> AsyncIterator[ReportWorld]:
     )
     await session.flush()
     try:
-        yield ReportWorld(elder_id=elder.elder_id, plan_id=plan.plan_id, day=day)
+        yield ReportWorld(
+            elder_id=elder.elder_id,
+            plan_id=plan.plan_id,
+            day=day,
+            guardian_id=guardian.guardian_id,
+        )
     finally:
         await session.close()
 
@@ -244,5 +252,131 @@ async def test_missing_elder_raises_value_error(world: ReportWorld, db_conn) -> 
     with pytest.raises(ValueError, match="not found"):
         await report_service.generate_daily_report(
             session, elder_id=uuid.uuid4(), report_date=world.day
+        )
+    await session.rollback()
+
+
+# ---------------- F1/F2 家属端读侧（dev-D D1 依赖，S7 交接补齐）
+
+
+async def test_list_reports_for_guardian_scope_dedupe_and_paging(
+    world: ReportWorld, db_conn
+) -> None:
+    """F1：绑定范围过滤 + 每日仅最大版本（S-07）+ report_date 倒序 + 分页作用在去重后。"""
+    session = AsyncSession(db_conn)
+    d1 = world.day - datetime.timedelta(days=1)
+    ref_d1 = await report_service.generate_daily_report(
+        session, elder_id=world.elder_id, report_date=d1
+    )
+    await report_service.generate_daily_report(
+        session, elder_id=world.elder_id, report_date=world.day
+    )
+    ref_d2_v2 = await report_service.generate_daily_report(
+        session, elder_id=world.elder_id, report_date=world.day, regenerate=True
+    )
+    # 未绑定长者的日报 → 不出
+    other = Elder(name="长者-日报F1未绑", status="active")
+    session.add(other)
+    await session.flush()
+    await report_service.generate_daily_report(
+        session, elder_id=other.elder_id, report_date=world.day
+    )
+
+    rows, total = await report_service.list_reports_for_guardian(
+        session, guardian_id=world.guardian_id
+    )
+    assert total == 2
+    assert [r.report_date for r in rows] == [world.day, d1]  # 倒序
+    assert rows[0].report_id == ref_d2_v2.report_id and rows[0].version == 2  # 每日最大版本
+    assert rows[1].report_id == ref_d1.report_id and rows[1].version == 1
+
+    # 分页作用在去重后：page_size=1 第 1 页取最新一日、第 2 页取 d1，total 始终=2
+    rows_p1, total_p1 = await report_service.list_reports_for_guardian(
+        session, guardian_id=world.guardian_id, page=1, page_size=1
+    )
+    rows_p2, total_p2 = await report_service.list_reports_for_guardian(
+        session, guardian_id=world.guardian_id, page=2, page_size=1
+    )
+    assert total_p1 == total_p2 == 2
+    assert [r.report_id for r in rows_p1] == [ref_d2_v2.report_id]
+    assert [r.report_id for r in rows_p2] == [ref_d1.report_id]
+
+    # 无绑定家属 → ([], 0)（S-08：200 空列表，不是 403）
+    stranger = GuardianAccount(name="家属-F1无绑定", phone="13800000002", password_hash="x")
+    session.add(stranger)
+    await session.flush()
+    assert await report_service.list_reports_for_guardian(
+        session, guardian_id=stranger.guardian_id
+    ) == ([], 0)
+    await session.rollback()
+
+
+async def test_get_report_detail_for_guardian_assembles_and_gates(
+    world: ReportWorld, db_conn
+) -> None:
+    """F2：health_summary + attention_events 查询时组装（S-09）；404/403 严格分离。"""
+    session = AsyncSession(db_conn)
+    ref = await report_service.generate_daily_report(
+        session, elder_id=world.elder_id, report_date=world.day
+    )
+    # 当日红档 risk_event（health_record 来源 → brief 取实测血压，不编造）
+    recorded_at = datetime.datetime(
+        world.day.year, world.day.month, world.day.day, 9, 0, tzinfo=_TZ
+    ).astimezone(datetime.UTC)
+    record = HealthRecord(
+        elder_id=world.elder_id,
+        recorded_at=recorded_at,
+        source="voice_active",
+        operator_id=None,
+        systolic=185,
+        diastolic=95,
+        sleep_hours=None,
+        mood_score=None,
+        mood_note=None,
+        complaint=None,
+        severity="red",
+        rule_version="1",
+        review_status="pending",
+        version=1,
+    )
+    session.add(record)
+    await session.flush()
+    session.add(
+        RiskEvent(
+            elder_id=world.elder_id,
+            type="red_emergency",
+            severity="red",
+            source_type="health_record",
+            source_id=record.record_id,
+            created_at=recorded_at,
+        )
+    )
+    await session.flush()
+
+    report, health_summary, events = await report_service.get_report_detail_for_guardian(
+        session, guardian_id=world.guardian_id, report_id=ref.report_id
+    )
+    assert report.report_id == ref.report_id
+    assert "185" in health_summary  # 组装口径=当日窗口最新采集（9:00 红档记录）
+    assert len(events) == 1
+    assert events[0]["level"] == "red"
+    assert events[0]["type"] == "red_emergency"
+    assert events[0]["brief"] == "血压 185/95 mmHg"
+
+    # 404：report_id 不存在
+    with pytest.raises(report_service.GuardianReportNotFound):
+        await report_service.get_report_detail_for_guardian(
+            session, guardian_id=world.guardian_id, report_id=uuid.uuid4()
+        )
+    # 403：存在但长者不在绑定范围（与 404 分离，dev-D 分流 403+审计）
+    other = Elder(name="长者-F2未绑", status="active")
+    session.add(other)
+    await session.flush()
+    ref_other = await report_service.generate_daily_report(
+        session, elder_id=other.elder_id, report_date=world.day
+    )
+    with pytest.raises(report_service.GuardianReportForbidden):
+        await report_service.get_report_detail_for_guardian(
+            session, guardian_id=world.guardian_id, report_id=ref_other.report_id
         )
     await session.rollback()
