@@ -470,6 +470,10 @@ def self_check(fixtures: Path, boundary: Path) -> int:
 
 
 def main() -> int:
+    # Windows GBK 控制台无法编码 ✅/❌，替换输出避免门禁自身崩溃（报告文件仍 UTF-8）
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(errors="replace")
     ap = argparse.ArgumentParser(description="Day 8 评测门禁（FR-TC-09）：只读阈值，不改评测实现")
     ap.add_argument("--fixtures", default=str(ROOT / "eval/fixtures/day7_intents.jsonl"))
     ap.add_argument("--boundary", default=str(ROOT / "eval/fixtures/boundary_v1.jsonl"))
