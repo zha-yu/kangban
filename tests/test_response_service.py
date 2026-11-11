@@ -127,8 +127,10 @@ class Harness:
             elder_id=elder_id,
         )
 
-    async def start(self, text: str = "你好。今天天气真不错！") -> ResponseHandle:
-        return await self.service.start(self.turn, _result(text))
+    async def start(
+        self, text: str = "你好。今天天气真不错！", *, route_degraded: bool = False
+    ) -> ResponseHandle:
+        return await self.service.start(self.turn, _result(text), route_degraded=route_degraded)
 
 
 class _Result:
@@ -146,6 +148,25 @@ def _result(text: str, degraded: bool = False) -> _Result:
 # ---------------------------------------------------------------------------
 # 分段：40 字边界 / 长句逗号补切 / 。！？；切点
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# D6：route_degraded 恒下发（显式 true/false，与 degraded 正交）
+# ---------------------------------------------------------------------------
+
+
+async def test_tts_text_carries_route_degraded_true() -> None:
+    h = Harness()
+    await h.start(route_degraded=True)
+    assert h.deliver.messages, "至少下发一段"
+    assert all(msg["route_degraded"] is True for _, msg in h.deliver.messages)
+
+
+async def test_tts_text_route_degraded_defaults_false() -> None:
+    h = Harness()
+    await h.start()
+    assert h.deliver.messages
+    assert all(msg["route_degraded"] is False for _, msg in h.deliver.messages)
 
 
 def test_split_respects_40_char_boundary() -> None:

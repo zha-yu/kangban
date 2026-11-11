@@ -236,6 +236,8 @@ async def _deliver_reminder(
         "type": "tts_text",
         "text": text,
         "degraded": False,
+        # D6：用药触达不经路由层，route_degraded 恒 false（字段恒下发）
+        "route_degraded": False,
         "touch_id": uuid.uuid4().hex,
         "touch_event_id": str(reminder_id),
         "touch_attempt_no": attempt_no,

@@ -23,7 +23,6 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
@@ -114,11 +113,11 @@ async def record_decision(
                     latency_ms=max(0, int(decision.latency_ms)),
                     asr_confidence=_as_decimal(asr_confidence),
                     model_version=model_version or "-",
-                    # `created_at` 由服务层给值，不用 DB 的 `now()`：PG 的 `now()` 是**事务开始
-                    # 时间**，同一轮里澄清行与「第二次升级」行会拿到同一个时间戳，
-                    # `ORDER BY created_at DESC LIMIT 1` 就会随机取到澄清那行，
-                    # 「只澄清一次」立刻失效。Python 侧时间戳逐行不同，排序才有意义。
-                    created_at=datetime.now(UTC),
+                    # `created_at` 用 DB 的 clock_timestamp()：既不用 `now()`（事务开始时间，
+                    # 同轮两行会同时间戳），也不用宿主 Python 时钟（粒度粗，Windows 约 15.6ms，
+                    # 同轮两行同样会撞同一 tick）。时间戳一旦并列，`ORDER BY created_at DESC
+                    # LIMIT 1` 取到哪行不确定，「只澄清一次」判据就失效。
+                    created_at=sa.func.clock_timestamp(),
                 )
             )
             await session.flush()

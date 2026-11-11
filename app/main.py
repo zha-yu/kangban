@@ -729,7 +729,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # 已在上方提前 return（分节奏下发，不再整段合成/入轨）。
             delivered = signaling.deliver(
                 device_id,
-                {"type": "tts_text", "text": reply.text, "degraded": reply.degraded},
+                {
+                    "type": "tts_text",
+                    "text": reply.text,
+                    "degraded": reply.degraded,
+                    # D6：legacy 出口不走路由层，恒 false（字段恒下发，见契约冻结 v1.0）
+                    "route_degraded": False,
+                },
             )
             logger.info(
                 "dialogue_reply_delivered",
@@ -1130,11 +1136,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @application.exception_handler(NotificationIllegalTransition)
-    async def _handle_notify_illegal(req: Request, exc: NotificationIllegalTransition) -> JSONResponse:
+    async def _handle_notify_illegal(
+        req: Request, exc: NotificationIllegalTransition
+    ) -> JSONResponse:
         return JSONResponse(
             status_code=409,
             content=ErrorResponse(
-                detail=str(exc), code="NOTIFICATION_ILLEGAL_TRANSITION", trace_id=get_trace_id() or "-"
+                detail=str(exc),
+                code="NOTIFICATION_ILLEGAL_TRANSITION",
+                trace_id=get_trace_id() or "-",
             ).model_dump(),
         )
 

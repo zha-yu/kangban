@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -13,6 +14,7 @@ import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from app.models.audit import AuditLog
 from app.models.medication import RiskEvent, WorkOrder
 from app.models.notifications import Notification
 from app.models.organization import Elder
@@ -127,3 +129,81 @@ async def test_trigger_sos_without_primary_care_assignee_none(
         await session.execute(select(WorkOrder).where(WorkOrder.order_id == result.order_id))
     ).scalar_one()
     assert order.assignee_id is None  # 未分派是真实状态，不瞎指人
+
+
+# ------------------------------------------------------------------ AC-26 撤销边界
+
+
+async def test_append_correction_keeps_event_open_and_audited(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    """红色事件不可撤销：追加「说错了」只写审计，status 保持 open。"""
+    result = await sos_service.trigger_sos(session, elder_id=seeded["elder_id"])
+    event = await sos_service.append_correction(
+        session,
+        elder_id=seeded["elder_id"],
+        event_id=result.event_id,
+        device_id=str(uuid.uuid4()),
+    )
+    assert event.status == "open", "追加说明不得关闭/撤销事件"
+
+    audits = (
+        (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "sos_correction_appended",
+                    AuditLog.resource_id == result.event_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(audits) == 1, "补充说明必须落审计"
+    assert audits[0].detail["note"] == "刚才说错了"
+
+
+async def test_append_correction_foreign_event_not_found(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    other = Elder(name="SOS他人长者", status="active")
+    session.add(other)
+    await session.flush()
+    result = await sos_service.trigger_sos(session, elder_id=other.elder_id)
+
+    with pytest.raises(sos_service.SosEventNotFound):
+        await sos_service.append_correction(
+            session, elder_id=seeded["elder_id"], event_id=result.event_id
+        )
+
+
+async def test_append_correction_non_sos_event_not_found(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    """非 sos 红事件不走本端点（契约 §5.2 只服务 sos 事件，按不存在处理）。"""
+    event = RiskEvent(
+        elder_id=seeded["elder_id"], type="health_alert", severity="red", status="open"
+    )
+    session.add(event)
+    await session.flush()
+
+    with pytest.raises(sos_service.SosEventNotFound):
+        await sos_service.append_correction(
+            session, elder_id=seeded["elder_id"], event_id=event.event_id
+        )
+
+
+async def test_append_correction_closed_event_rejected(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    result = await sos_service.trigger_sos(session, elder_id=seeded["elder_id"])
+    event = (
+        await session.execute(select(RiskEvent).where(RiskEvent.event_id == result.event_id))
+    ).scalar_one()
+    event.status = "closed"
+    await session.flush()
+
+    with pytest.raises(sos_service.SosCorrectionNotAllowed):
+        await sos_service.append_correction(
+            session, elder_id=seeded["elder_id"], event_id=result.event_id
+        )

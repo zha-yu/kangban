@@ -664,7 +664,8 @@ def test_identity_decision_without_thread_non_confirm_is_invalid() -> None:
 
 
 def test_c6_thread_info_elder_id_is_nullable_after_b1() -> None:
-    assert set(TtsTextMsgV2.__annotations__) == {"type", "text", "degraded"}
+    # D6（route_degraded 冻结 v1.0）：tts_text 增路由降级标记，与 degraded 并列
+    assert set(TtsTextMsgV2.__annotations__) == {"type", "text", "degraded", "route_degraded"}
     assert set(ThreadInfo.__annotations__) == {"thread_id", "elder_id", "session_seq"}
     hints = get_type_hints(ThreadInfo)
     assert hints["thread_id"] is str

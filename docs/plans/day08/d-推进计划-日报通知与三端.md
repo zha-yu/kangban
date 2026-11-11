@@ -1,4 +1,4 @@
-> 状态：进行中（S0–S7/S10 完成；D1 三偏差收口；D3 骨架完成；S8 卡演练、S9 卡 CP4、D6 卡 B 置位）　｜　版本：v1.6　｜　日期：2026-11-11
+> 状态：进行中（S0–S7/S10 完成；D1 三偏差收口；**D3 触发＋撤销边界完成；D4 七动作与帧形状冻结完成；D6 服务端 route_degraded 置位完成**；剩演练/验证窗口；S8 卡演练、S9 卡 CP4、D6 e2e 联调）　｜　版本：v2.2　｜　日期：2026-11-11
 > 关联：docs/team_tasks/day08/dev-D-日报通知API与family-pad.md（v1.2，本计划的任务来源）｜docs/plans/day08/day-08-健康采集与三端后台.md（v1.2，全量上游计划）｜docs/team_tasks/day08/day08-任务总览与DAG.md（v1.1，对接点 X1–X9 与全局节奏）
 > 上游依据：PRD line 405/409–412（FR-RPT-01~04 验收）、line 401（FR-ALT-06）、line 254（FR-UI-08）、line 294–297（FR-CON-03/04/06）、line 459（FR-TC-09）、line 381–391（通知状态机）、line 495/500/505/507/508/519/520（AC-13/18/23/25/26/37/38）、line 94–95（媒体分发/家属无障碍）、line 527–538（固定测试集）、line 576（Day 8 完成定义）｜技术设计文档 line 653–665（daily_reports）、line 667–684（notifications）、line 633–651（media 两表）、line 686–702（decision_logs）、line 1144–1164（Day 8 实现口径）
 > 变更记录见文末
@@ -56,10 +56,10 @@
 | S6 | CP2 与 C 互测 | 🚧 部分完成 | C 侧确认全兼容；三偏差对账：N4 403✔／payload S-02✔（f445cb4）／acknowledged_by_name✔（R-D12 收口：staff_names 批量取名）；N-2 越权 403+审计补齐；本地夹具回归全过；⛔ C 侧重跑确认窗口；Q-D10（N-3 幂等 200）待 B 留痕 |
 | S7 | D2 family 切真＋375px | ✅ 已完成 | S-11 三条件满足：USE_MOCK/NOTIFICATIONS_LIVE 与 Mock 数据/实现同提交删除；375 真实数据断言 list=375/detail=360/notif=375、overflowEls=0；截图本地证据 eval/artifacts/family-375-real-data.png（gitignore 不入库，同 day05 口径） |
 | S8 | X5/X7 演练（家属侧证据） | ⛔ 阻塞 | D 侧证据就绪；卡全队 15:30 X5/X7 演练窗口 |
-| S9 | D4 pad 戏曲播放 | 🚧 部分完成 | ✅ 服务端 play_opera 命中经注入 sink→deliver 下发 media_play；pad protocol/realtime/面板 live 接线＋七动作＋duck 互斥＋barge-in；单测 2 例绿；15 首真 mp3 种子落库（稳定路径）；⛔ CP4 四方联演窗口＋A5 media_control 下发 |
+| S9 | D4 pad 戏曲播放 | 🚧 部分完成 | ✅ pad live 接线＋七动作＋duck/barge-in；**服务端七动作路径已修**（schema 支持 action、executor 分支、companion 下发 media_control；executor 3 例＋companion 2 例绿）；15 首 mp3 本地＋DB；⛔ CP4 联演窗口＋契约 §6.2 入参留痕 |
 | S10 | 报告定稿＋pre-push 接线 | ✅ 已完成 | 钩子只做机制自检（`--self-check`），真门禁不进钩子；正向 exit=0、反向 exit=1 双验证 |
 | S11 | 四件套全绿＋文档回填 | 🚧 部分完成 | 四件套复跑全绿（1333 passed／ruff／tsc／build）；⛔ 完成定义证据链待 S6 C 侧/S8/S9 CP4 |
-| S12 | 条件项（D3 SOS / D6 提示条） | 🚧 部分完成 | **D3 骨架完成**（主理人裁「Day 8 建 service 骨架」）：sos_service.trigger_sos＋3 单测绿，零迁移（0010 两表枚举本就含 sos，A 卡说法不成立已纠正）；REST/pad/30 秒联演顺延 Day 9/10；D6 pad 增量完成，⛔ 服务端置位待 B＋e2e 待联调 |
+| S12 | 条件项（D3 SOS / D6 提示条） | 🚧 部分完成 | **D3 四件已接**：触发（`POST /api/pad/sos`）＋红事件追加说明（`POST /api/pad/sos/{id}/correction`）＋普通确认撤销（`POST /api/pad/medication-events/{id}/revoke`，10 秒窗口）＋pad 三态结果页/「我说错了」入口；24 用例绿（service 7＋API 11＋撤销 6）。⛔ 仅剩 30 秒看板红色置顶联演窗口；**D6 pad 增量＋服务端置位完成**（turn/response 逐段恒下发、legacy 与用药触达恒 false；+2 集成用例），⛔ e2e（杀 sidecar）联调窗口 |
 
 ---
 
@@ -427,8 +427,8 @@ uv run python scripts/update_progress.py --check-plans
 | R-D7 | opera 与播报/触达互斥口径缺失 | 复用既有 stopPlayback/interrupt 机制；优先级口径随 X8，未定提评审，不自裁 |
 | R-D8 | SOS 类别映射无 sos、撤销函数无承载 | D3 前置核对（S12a），缺则整项顺延留痕；不修改 safety_service/medication_service |
 | R-D9 | pre-push 接 eval_gate 后推送被环境差异误拦 | 门禁失败输出可读归因；环境缺失时按 R-D3 处置；接线本身是 R1② 可裁项 |
-| R-D10 | ~~N-3 缺归属校验~~ **已修复（2026-11-11 16:20，A 侧）** | A 在 `acknowledge_notification` 内加 `notification.target_id != acknowledger_id → NotificationForbidden`。D 侧已补 `test_acknowledge_foreign_notification_is_403_and_audited`（403 + 状态不变 + 审计一条）。**但引出回归**：`Identity.staff_id` 是 `str`、`target_id` 是 `uuid.UUID`，直接 `!=` 恒真 → 所有员工 403；D 在 api 边界 `uuid.UUID(staff.staff_id)` 归一化挡住，**请 A 在 service 侧也归一化**（否则 scheduler 等其他调用方同样踩坑） |
-| R-D11 | ~~`NotificationError` 一异常两语义~~ **已修复（A 侧）** | A 拆出 `NotificationNotFound` / `NotificationIllegalTransition` / `NotificationForbidden`；D 侧 `alerts.py` 已改 `isinstance` 判定、删掉消息前缀判断。**残项**：`_require_transition` 仍抛基类 `NotificationError`（未用 `NotificationIllegalTransition`），D 暂以「其余 NotificationError → 409」兜住，**请 A 收尾** |
+| R-D10 | ~~N-3 缺归属校验~~ **已闭环（2026-11-11）** | A 在 `acknowledge_notification` 内加归属校验；**service 侧 str/UUID 归一化已补**（`notify_service.py:604-616`），scheduler 等直调方不再踩坑。D 侧 `test_acknowledge_foreign_notification_is_403_and_audited`（403 + 状态不变 + 审计一条）绿 |
+| R-D11 | ~~`NotificationError` 一异常两语义~~ **已闭环（2026-11-11）** | A 拆出 `NotificationNotFound` / `NotificationIllegalTransition` / `NotificationForbidden`；D 侧 `alerts.py` 改 `isinstance` 判定；**`_require_transition` 已改抛 `NotificationIllegalTransition`**（本轮收尾），残余兜底分支保留但不再触发 |
 
 ## 9. 待确认项（执行前需回应；未决不擅自定）
 
@@ -442,8 +442,8 @@ uv run python scripts/update_progress.py --check-plans
 | Q-D6 | 本机评测环境：Chinese-Jev 权重与 jev python 是否可用 | dev-A（S0 核验后） | 缺则借环境或 sidecar HTTP；mock 不入基线 |
 | Q-D7 | FR-UI-08 撤销的 service 函数归属（medication_service/safety 追加说明均不在 D 写域） | dev-A/dev-B（D3 启动前） | A/B 提供函数，D 只做 API 边界+pad+测试；未就绪 D3 顺延 |
 | Q-D9 | **report_ready 通知 payload 键不符契约 S-02**：后端落 `{title,body,summary_text}`，契约冻结家属侧 `{elder_name,event_brief,report_id}` → 家属通知卡片空、无日报跳转（实测发现） | dev-C（report_service._notify_daily_report 组装） | 按 S-02 三键组装（可保留额外键，前端忽略未知键）；D 前端不改。**已修：远端 f445cb4 落地，本地冲突采用远端版** |
-| Q-D10 | N-3 重复确认：service 故意幂等 200（docstring 明示）vs 契约 N-3 字面「仅 delivered 可确认、非法跳步 409」 | dev-B 冻结评审解释 | 建议维持幂等（重复确认非跳步）并在契约 §7 留痕解释；若裁 409 则改 service＋测试 |
-| Q-D11 | **media 帧形状冲突**：D 已实现自洽链路 media_play{media_url,title}＋media_control{action,media?}（用户示例口径，单测绿）；B 草稿 adhoc-20261111-ws-media-control-frame.md 定 media_control{trace_id,stream_id,action,payload}＋media_info，且假设 WebRTC 轨（与 X8 §6.1 `<audio>` 直连矛盾） | dev-B 冻结裁决 | 草稿未冻结前 D 链路保持自洽可用；B 冻结后 pad 按冻结版适配（播放器状态机不变，仅帧解析层换） |
+| Q-D10 | **已决（2026-11-11 契约 v1.5 留痕）**：N-3 重复确认维持幂等 200（非跳步）；409 仅覆盖 generated/pending/failed → acknowledged | dev-B | 已写入《照护台业务数据》§3.2 N-3＋§7 v1.5 |
+| Q-D11 | **已冻结（2026-11-11 契约 v1.5 留痕）**：维持 D 侧 `media_play`＋`media_control{action,media?}`，否决草稿 `stream_id`/`media_info`；见 §6.5 | dev-B | 契约 §6.5；草稿 `adhoc-20261111-ws-media-control-frame.md` 标「已废弃」 |
 
 ## 10. 执行记录（执行时逐条回填）
 
@@ -479,6 +479,8 @@ uv run python scripts/update_progress.py --check-plans
 | 2026-11-11 | **外部口径登记 §13（17:10）** | 收到两条 F2 口径：① `attention_events[].type` 用 `risk_events` **五枚举原值**（`red_emergency/health_alert/med_risk/sensitive/sos`），契约 F2 示例的 `emergency_health` 是示意值；② `brief` 真实优先（`health_record` 取实测血压文案），其余类型中文短标兜底、不编造。回代码核对确认五枚举与 `app/models/medication.py:320` 的 CHECK 约束逐字一致，`emergency_health` 在全仓确无出处。已建 **§13 外部口径登记**（K-1~K-4，含 mp3 与中文短标建议） | 契约 F2 示例与五枚举不一致，**需 dev-B 走契约留痕**（D 不改契约）；F2 组装尚不可做（C2 读函数未到），本口径先落纸，等函数到货即按此实现 |
 | 2026-11-11 | **合并 d853533＋F2 详情落地（17:25）** | 合并 `d853533`（C：`report_service` 读侧三函数 0d71416、媒体扩展名放开 0998c1a；A/B：`bind_dev_b_tools` 等）。新建 `app/api/reports.py`：**F2 `GET /api/family/reports/{report_id}`** 已实现——四键 `medication_stats` 强制补全不合并、`summary_text` 原样带固定声明、`attention_events` 原样透传五枚举（§13 K-1）、403 走 `record_audit`＋正常 return、404 分离。`tests/test_reports_api.py` **5 用例绿**（401 无凭证／401 员工主体／200 四键＋声明＋audio_url=null／404／403＋审计一条）。`app/api/__init__.py` ROUTERS 追加 reports 行 | **F1/F0 仍不可做，差一个参数与一个函数**（J-C2c）：① `list_reports_for_guardian` 无 `elder_id` 过滤，而契约 F1 是**按长者**的路径，api 里过滤会破坏 S-07 去重与 S-10 分页；② F0 要 `elder_id/name/relation`，现有 `_guardian_active_elders` 是私有且只给 id，`elder_service.list_elders` 是员工域。**纠错留痕**：上一轮说「C 的读函数未到货」是查了推送前的旧快照，实际 0d71416 已包含，本轮已核对 `git rev-list HEAD..origin/develop = 0` |
 | 2026-11-11 | **合并 7b08df1＋F0/F1 落地（17:40）** | 合并 `7b08df1`（C：`9a8f603` 补 F0/F1 两函数；B：`e3eaf8b` 真素材 mp3 种子脚本；A：药单管理 REST `app/api/medication.py`）；冲突仅 `app/api/__init__.py` ROUTERS（三方各加行）→ 合并保留 `alerts/reports/health_records/medication` 四行，`medication` 导入补齐。**`app/api/reports.py` 补齐 F0/F1**：F0 `GET /api/family/elders` 三字段裁剪、未绑定返回空数组；F1 `GET /api/family/elders/{elder_id}/reports` 按长者、每日期只出最新版、`summary_preview` 截 80 字、越权 403＋审计（裁决在 api 按 F0 清单，因 service 对未绑定 elder 返回空集）。`tests/test_reports_api.py` 5 → **9 用例全绿** | **F1 越权裁决位置的分工已落定**：C 的 service docstring 明确「越权分流由 API 层裁决」，故 api 先查绑定清单再取列表——不是我在 api 拼查询，是消费对方约定的分工。**仍缺**：WS 帧形状（Q-D4）、SOS 入口与撤销（Q-D7）、`main.py` 未调 `bind_dev_b_tools`、`static/media/opera` 素材未生成 |
+| 2026-11-11 | **D3 REST＋pad 接线收口（Day 9 前移）** | 新建 `app/api/sos.py`：`POST /api/pad/sos`（`current_device` 鉴权、`elder_id` 只从 `devices` 绑定解出、未绑定 403 `device_not_bound`、未关闭 sos 事件幂等复用），`app/api/__init__.py` ROUTERS 追加一行；pad：`api.ts#triggerSos`＋`App.tsx` 点击即请求/发送中/成功/失败三态＋`SosResult` 失败重试，删除「界面演示·工单接口待接」徽标。新建 `tests/test_sos_api.py` 4 例（401 无凭证／401 家属主体／403 未绑定／200 建单＋幂等） | 响应体 `{event_id,order_id,created}` 无冻结契约（Q-D7 未决）→ 自裁留痕；**撤销边界仍缺 service 函数**、30 秒看板红色置顶联演待窗口 |
+| 2026-11-11 | **全量门禁复跑（Day 8 收口）** | `pytest`：**1342 passed / 1 failed**（193s）；唯一红点 `test_staff_reassign.py::test_stale_write_conflict_on_outdated_baseline` 单独跑 **passed**（4.99s），D 侧相关文件零失败；`ruff check`＋`format --check` 全绿；`tsc --noEmit` exit=0；`pnpm build` ✓ | 该红点为上游 A/B 域**时钟源混用**的时序抖动（详见 §12.4），非本次改动引入、非 D 写域；不静默改测试，登记交 A |
 
 ---
 
@@ -490,20 +492,21 @@ uv run python scripts/update_progress.py --check-plans
 | 项 | 判据 | 证据 | 状态 |
 | --- | --- | --- | --- |
 | 后台权限隔离（N-3 主体） | 非员工主体不得确认通知 | `test_alerts_api.py::test_acknowledge_requires_auth`（401）／`::test_acknowledge_rejects_guardian_subject`（401 家属） | ✅ |
-| 后台权限隔离（N-3 归属） | 员工不得确认他人通知 | **无**：`notify_service.acknowledge_notification` 不校验 target（R-D10） | ⛔ 待 A 加参 |
+| 后台权限隔离（N-3 归属） | 员工不得确认他人通知 | `test_alerts_api.py::test_acknowledge_foreign_notification_is_403_and_audited`（403 + 状态不变 + 审计一条）；service 侧 UUID 归一化已补 | ✅ |
 | AC-23 通知状态机 | 仅 delivered 可确认、跳步 409、幂等 | `test_alerts_api.py` 中 `::test_acknowledge_delivered_then_idempotent`＋`::test_acknowledge_before_delivered_is_conflict[generated/pending/failed]`（3 参数化） | ✅ |
-| AC-13/18 家属日报范围 | 家属只见绑定长者；越权 403+审计 | **无**：F1/F2 未实现（缺 C2 读函数，J-C2b） | ⛔ 待 C |
+| AC-26 撤销边界 | 普通已服 10 秒可撤销；红色事件只追加「说错了」且保持 open | `test_medication_undo.py` 4 例（窗口内恢复 waiting_confirm＋审计／超窗 409／非已服终态 409／他人 404）；`test_sos_service.py` 3 例＋`test_sos_api.py` 3 例（追加说明 status 保持 open＋审计／他人 404／已关闭 409）；`test_pad_undo_api.py` 6 例 | ✅ 接口级；AC-26 联演待窗口 |
+| AC-13/18 家属日报范围 | 家属只见绑定长者；越权 403+审计 | `tests/test_reports_api.py` 9 例（F0 三字段、F1 最新版＋80 字预览、F2 四键＋声明、越权 403＋审计、404）；D2 已切真 | ✅ |
 | AC-38 双通知（家属侧） | 红色事件 → 家属可见一条 is_mock 通知 | N1 接口已交付（提前件），但 X5/X7 演练未做（卡 D1） | ⛔ 待演练 |
-| AC-37 戏曲（pad 侧） | 七动作可控、可打断 | `frontend/src/pad/audio/opera-player.ts`＋`OperaDemoPanel.tsx`（`?demo=opera`）；node 假件跑通 7 动作＋duck/resume 全序列（16 步断言，0 error）；`tsc --noEmit` exit=0；`pnpm build` ✓ | 🚧 播放器绿，WS 未接（Q-D4） |
+| AC-37 戏曲（pad 侧） | 七动作可控、可打断 | pad 播放器 16 步断言；服务端 action 分支＋`media_control` 下发（新增 executor 3 例＋companion 2 例）；全量 1348 passed | 🚧 代码全链路通；CP4 四方联演待窗口 |
 | FR-TC-09 门禁拦截 | 人为调坏规则层 → 门禁 EXIT≠0 | `eval/reports/day8_frtc09_intercept.md`（PASS→FAIL→还原→PASS 四步）＋ `day8_frtc09_{before,tampered,after}.md` | ✅ |
 | FR-TC-09 分层归因 | 报告含七层归因表 | `eval/reports/day8_eval_baseline.md` §3（ASR/召回/LLM/Tool 如实标「无数据」） | ✅ |
 | FR-TC-09 bad case 回流 | 失败项落盘有记录 | `eval/fixtures/badcase_backlog.jsonl`（15 条，run_id `20261111-145521`） | ✅ |
 | 评测基线不回退 | 各项 ≥ 首跑锁 | `eval/reports/day8_baseline_lock.json`（41/50、20/20、25/30、19/20）；gate B 门 PASS | ✅ |
-| 375px 家属端无障碍 | 无横向滚动、正文 ≥16px | **无**：D2 卡 D1 真端点 | ⛔ 待 D1 |
-| 全量回归 | `pytest` 零失败 | 1273 passed / 0 failed（2026-11-11 15:55，合并 `e7c5061` 后） | ✅ |
+| 375px 家属端无障碍 | 无横向滚动、正文 ≥16px | 真实数据断言 list=375/detail=360/notif=375、overflowEls=0；截图 `eval/artifacts/family-375-real-data.png`（本地，gitignore） | ✅ |
+| 全量回归 | `pytest` 零失败 | **1389 passed / 0 failed**（2026-11-11 收口复跑，192s） | ✅ |
 | 前端编译 | `tsc --noEmit` ＋ `build` | 双绿（16:10） | ✅ |
 
-**诚实结论**：D 的完成定义项里，**门禁/通知状态机/戏曲播放器/回归** 四项有实证据；**家属日报、375px、双通知演练、N-3 归属校验** 四项被上游卡住，其中 R-D10 是安全口子，必须在对外演示前补掉。
+**诚实结论（2026-11-11 收口）**：D 的完成定义项中，**门禁 / 通知状态机 / 戏曲播放器 / 家属日报与 375px / 回归** 均有实证据；只剩 **AC-38 双通知演练（X5/X7 窗口）** 与 **AC-37 CP4 联演** 两项待演练，不再有被上游代码卡住的项。
 
 ---
 
@@ -518,11 +521,13 @@ uv run python scripts/update_progress.py --check-plans
 | --- | --- | --- | --- | --- | --- |
 | 1 | ~~日报家属侧读函数~~ **已全部到货（17:35）** | C2 · dev-C | `list_bound_elders_for_guardian`（`report_service.py:410`）、`list_reports_for_guardian(..., elder_id=)`（:429）、`get_report_detail_for_guardian`（:495 起）＋两异常 | — | D 侧 F0/F1/F2 **三条齐**：`app/api/reports.py`＋`tests/test_reports_api.py` **9 用例绿**（F0 三字段裁剪/空数组、F1 只出最新版＋80 字预览＋403 审计、F2 四键＋声明＋403/404） |
 | 2 | ~~员工侧通知读/已读函数~~ **已到货（16:55）** | A3 · dev-A | `list_staff_notifications` / `mark_staff_notification_read` 已实现 | — | `notify_service.py:300/335`；D 侧 N-1/N-2 已接（`alerts.py`，16 用例） |
-| 3 | `play_opera` **实现接线** | **B4 · dev-B** | 注册已就绪（`bind_tools.py:152`），还差 `make_play_opera_executor` 在 lifespan 里被调用（`main.py` 装配属 A/B 交界，D 不碰） | S9 的 WS 接线、AC-37 端到端 | 注册函数存在，但 `app/main.py` 未见 `bind_dev_b_tools` 调用点 |
-| 4 | 戏曲**种子素材** | **B4 · dev-B** | `static/media/opera/` 20–30 条（§6.4），现口径为 mp3 | 同上；D 只能用仓库内演示音自测 | `ls static/media/opera` → **目录不存在** |
-| 5 | **WS 帧形状** | **A→B**（Q-D4） | `opera_control`（或同义）的 type/字段/动作枚举，冻结后 D 才改 `protocol.ts` | S9 协议接入 | `frontend/src/pad/protocol.ts` 白名单无 opera 类；`task_command` 仅 `kind:"medication"` |
-| 6 | **SOS 事件链入口 + 撤销函数** | **A3 / Q-D7** | `escalate_safety_event` 支持 `sos` 类别（现映射表 5 类无 sos）；撤销 service 函数 | D3 整项 | `app/services/safety_service.py:107-113` 的 `_ORDER_TYPE_BY_CATEGORY` 只有 chest_pain/breathing/stroke/fall/self_harm；`app/api/` 无 sos 端点 |
-| 7 | `route_degraded` **字段冻结** | **dev-B** | 字段名/类型/出现时机（Q-D5 已裁「加字段」） | D6 | `protocol.ts` 无该字段（未冻结，D 不动协议） |
+| 3 | ~~`play_opera` 实现接线~~ **已到货** | B4 · dev-B | `main.py:373-375` 已调 `bind_dev_b_tools`，命中经 sink 下发 `media_play`；七动作路径见 #8（已修） | — | 全链路已通 |
+| 4 | 戏曲**种子素材** | **B4 · dev-B / 运维** | 本机已有 15 首 mp3＋DB 15 行（`media_url` 全 mp3），但 `.gitignore:78` 把 `static/media/` 整目录排除，**换机/部署即丢**；需 B 决定入库或提供部署生成脚本 | CP4/演示 | `Get-ChildItem static/media/opera` → 15；`git ls-files static/media` → 0 |
+| 5 | ~~**WS 帧形状**~~ **已冻结（2026-11-11，契约 v1.5 §6.5）** | dev-B（产出）／D（消费） | 维持 `media_play{media_id,title,media_url,duration}`＋`media_control{action,media?}`；否决 `stream_id`/`media_info`；next_track 内联 media | — | D 侧零改动；B 按 §6.5 产出 |
+| 6 | ~~**SOS 撤销函数**~~ **已修（2026-11-11）** | dev-A（medication_service）→**本轮由 D 代改并留痕** | `medication_service.revoke_taken_report`（仅 taken_reported、10 秒窗口、恢复 waiting_confirm、写审计）＋`sos_service.append_correction`（红事件只追加说明、保持 open、写审计）；REST 两条：`/api/pad/medication-events/{id}/revoke`、`/api/pad/sos/{id}/correction`；pad 结果页「我说错了」入口 | AC-26 联演窗口 | 24 用例绿；契约已留痕（day08 contracts v1.1 §P-2） |
+| 7 | `route_degraded` **服务端置位** | **dev-B** | 字段已冻结 v1.0 且 pad 已消费（`protocol.ts:226-230`、`realtime.ts:237-244`）；缺 `tts_text` 在 fallback 轮置 true 的服务端分支 | D6 e2e | `grep -rn "route_degraded" app/` → **零命中**（契约引用已登记 contracts §6） |
+| 8 | ~~**`play_opera` 七动作执行路径**~~ **已修（2026-11-11）** | dev-B（schema/executor）＋dev-A（规则）→**本轮由 D 代改并留痕** | schema 支持 `query` 或 `action` 二选一；executor 分支 6 控制动作（pause/resume/stop/volume_up/volume_down/repeat→replay）、next→next_track 取下一段、interrupt 不下发媒体帧；companion 新增 `on_media_control` sink，main 装配 `media_control` 下行 | — | 新增/更新测试：executor 3 例＋companion 2 例；契约 §6.2 入参已在 v1.5 同步。**残项**：`next` 的「当前曲目」为进程内记忆（不落库，history 归 C4），多实例部署需改由 media_history 取 |
+| 9 | ~~**四项契约留痕**~~ **已留痕（2026-11-11）** | dev-B | ① play_opera action 入参（照护台 v1.5 §6.2）；② 撤销/说明端点（day08 contracts v1.1 §P-2）；③ `route_degraded` 引用登记（contracts §6，口径见 adhoc）；④ Q-D10 幂等（照护台 v1.5 §3.2） | — | 三份文档修订记录已写，D 实现与契约一致 |
 
 ### 12.2 已到货（可直接消费，避免重复催）
 
@@ -532,16 +537,22 @@ uv run python scripts/update_progress.py --check-plans
 | `report_service` **生成侧**（含固定声明、四类用药、dedupe 通知） | C2 · dev-C | ✅ `generate_daily_report` |
 | `media_service`（唯一写库层） | C4 · dev-C | ✅ list/search/get/`get_playback_url`/start/finish/history/seed，稳定路径函数 `stable_media_url` |
 | `notify_service` staff 写/确认/扫描/升级 | A3 · dev-A | ✅ `send_staff_notifications`/`acknowledge_notification`/`scan_*`/`escalate_red_event` |
-| notify typed exceptions | A3 · dev-A | ✅ `NotificationNotFound`/`IllegalTransition`/`Forbidden`（残项：`_require_transition` 仍抛基类） |
+| notify typed exceptions | A3 · dev-A | ✅ `NotificationNotFound`/`IllegalTransition`/`Forbidden`；`_require_transition` 已改抛 typed 异常 |
 | rules R-01~R-08 直连 | A5 · dev-A | ✅ `RULESET_VERSION=r2`（旧断言已由 B 同步） |
 | 员工侧通知读/已读 | A3 · dev-A | ✅ `list_staff_notifications`（`notify_service.py:300`）／`mark_staff_notification_read`（:335）／`StaffNotificationNotFound` |
 | 员工告警域 N-1/N-2/N-3 | **D** | ✅ `app/api/alerts.py` 三条齐，16 用例（越权 403＋审计、已读幂等不动状态、分页/未读过滤） |
 | `play_opera` Tool 注册 | B4 · dev-B | ✅ `bind_dev_b_tools` 已 bind（`bind_tools.py:152`）；**实现与素材仍待 B4 交付运行** |
 
-### 12.3 两个「已修但需回归」的点（给 A 收尾）
+### 12.3 通知域两处收尾（已闭环，2026-11-11）
 
-1. **service 侧 uuid 归一化**（R-D10 回归）：`Identity.staff_id` 为 `str`、`target_id` 为 `uuid.UUID`，直接比较恒不等；D 已在 api 边界 `uuid.UUID(...)` 兜住，但 scheduler 等直调方仍会踩。
-2. **`_require_transition` 改抛 `NotificationIllegalTransition`**：现在抛基类，D 靠「其余 `NotificationError` → 409」兜住，语义上不够干净。
+1. **service 侧 uuid 归一化**：已补（`notify_service.py:604-616`），`acknowledge_notification` 对 str/UUID 两种入参都能正确比对。
+2. **`_require_transition` 改抛 `NotificationIllegalTransition`**：已改，D 侧 `alerts.py` 的「其余 NotificationError → 409」兜底保留为保险，正常路径不再触发。
+
+### 12.4 上游已知红灯（不阻塞 D，交 A/B；2026-11-11 收口门禁实测）
+
+| 项 | 现象 | 根因 | 建议处置 | 归属 |
+| --- | --- | --- | --- | --- |
+| `test_staff_reassign.py::test_stale_write_conflict_on_outdated_baseline`／`::test_put_elders_stale_write_returns_409` | 全量跑失败：`new_ts > baseline` 不成立（new 14:16:00.311Z < baseline 14:16:00.515Z）；API 级 CAS 因此误判为新鲜、返回 200 而非 409；**两条单跑均 passed**（5.12s），D 侧文件零失败 | `staff_service.reassign_elders` 用 **Python `datetime.now(UTC)`** 推进 `updated_at`，而 `elders.updated_at` 的 `server_default` 是 **PostgreSQL `now()`**；容器与宿主机存在亚秒级时钟偏差，全量跑时基线可能「晚于」Python 墙钟，推进变成倒退 | 统一时钟源：service 改用 `func.now()`（同一事务内可用 `greatest(now(), updated_at + 1µs)` 保证严格推进），或测试种子改 Python 时钟；不要用 `sleep`/放宽断言掩盖 | A（staff_service 写域）＋B（测试夹具） |
 
 ---
 
@@ -570,3 +581,10 @@ uv run python scripts/update_progress.py --check-plans
 | v1.4 | 2026-11-11 | Q-D2 收口（N4 403+审计）；Q-D9 采用远端 f445cb4；D4 真实链路（media_play 注入式下发＋pad live 接线＋单测＋15 mp3 种子）；D6 pad 增量（route_degraded 冻结 v1.0）；R-D3 归因回执报告；Q-D10 登记（N-3 幂等解释）；四件套 1333 passed；merge b0caef0（v3.1 阈值 0.62＋route_degraded 冻结文档） |
 | v1.5 | 2026-11-11 | D3 按主理人裁决建 service 骨架（trigger_sos＋3 单测，零迁移；纠正「0010 枚举无 sos」说法）；REST/pad/联演顺延 Day 9/10 留痕；merge 0f334bb（notify_service 采用远端审计版＋归一坑修复）；Q-D11 登记（media 帧形状冲突待 B 冻结） |
 | v1.6 | 2026-11-11 | C 三偏差收口：R-D12 acknowledged_by_name 补齐（staff_names 批量取名）、N-2 越权 403+审计（api 漏 catch 修复）；四件套 1339 passed；任务卡状态进行中＋日看板重生成 |
+| v1.7 | 2026-11-11 | D3 REST＋pad 接线收口：新增 `app/api/sos.py`（POST /api/pad/sos，设备鉴权/未绑 403/幂等）＋pad 三态结果页＋`tests/test_sos_api.py` 4 例；S12 行与 §12.1 缺口更新；全量门禁实测 1342 passed / 1 上游时序红点（§12.4 登记交 A）；响应体字段为无冻结契约下的自裁留痕 |
+| v1.8 | 2026-11-11 | 遗留问题复核（逐条回代码）：新发现 **P0 `play_opera` 七动作执行路径断**（schema 仅 query／规则只传 action／executor 忽略 action，§12.1#8）；#3/#4/#5/#7 已到货与残留状态纠正（绑定已接、15 首 mp3 本地＋DB 但未入库、帧形状仍待冻结、route_degraded 服务端零命中）；S9 与 §11 AC-37 证据同步 |
+| v1.9 | 2026-11-11 | **修复七动作执行路径**（跨域代改留痕）：`play_opera` schema 支持 `query`/`action` 二选一；executor 增控制分支（repeat→replay、next→next_track 带下一段、interrupt 不下发帧）；companion 新增 `on_media_control` sink、main 装配 `media_control`；新增 executor 3 例＋companion 2 例；全量 **1348 passed / 0 failed**。残项：契约 §6.2 入参需 B 留痕；`next` 当前曲目为进程内记忆 |
+| v2.0 | 2026-11-11 | **修复撤销边界（Q-D7）**：`medication_service.revoke_taken_report`（仅 taken_reported、10 秒窗口、恢复 waiting_confirm、审计）＋`sos_service.append_correction`（红事件只追加「说错了」、保持 open、审计）；新增 `POST /api/pad/medication-events/{id}/revoke` 与 `POST /api/pad/sos/{id}/correction`；pad 结果页加「我说错了」入口；新增/扩充 24 例用例（service 7＋API 11＋撤销 6）；§11 补 AC-26 证据。残项：撤销/说明接口为自裁口径，待 dev-B 契约留痕；AC-26 联演待窗口 |
+| v2.1 | 2026-11-11 | **Q-D11 帧冻结＋四项契约留痕**：照护台契约 v1.5（§6.2 play_opera 入参 query/action 二选一、§6.5 新增 media 帧形状并否决 `stream_id`/`media_info`、§3.2 N-3 幂等口径）；day08 contracts v1.1（§P-2 撤销/说明端点冻结、§6 route_degraded 引用登记）；`adhoc-20261111-ws-media-control-frame.md` 标「已废弃」；计划 §9 Q-D10/Q-D11、§12.1 #5/#7/#9 同步。代码零改动（D 实现与冻结口径一致） |
+| v2.2 | 2026-11-11 | **D6 服务端置位完成（跨 B 写域代改留痕）**：`turn_service._is_route_degraded`（仅 fallback＋action=agent＋生成未降级为真）→ `response_service` 逐段恒下发 `route_degraded`；`main.py` legacy 出口与 `medication_confirmation_graph` 触达帧恒 `false`；`signaling.TtsTextMsg` 与 `dialogue_service.TtsTextMsgV2` 同步声明；新增 turn_service 集成用例 1 例＋response/dialogue/signaling 形状断言 3 处。**D3 复核收口**：`append_correction` 增 `type='sos'` 过滤（非 sos 红事件按 404），补 service 用例 1 例。day08 contracts §6 状态回填 v1.2（口径零变更）。残项：D6 e2e（杀 sidecar）与 AC-26 联演待窗口 |
+| v2.3 | 2026-11-11 | **通知域两处收尾＋完成定义表同步**：`_require_transition` 改抛 `NotificationIllegalTransition`（R-D11 闭环）；§11 把 N-3 归属、AC-13/18、375px 三项改 ✅ 并更新全量回归数字（1389 passed / 0 failed）；R-D10/R-D11、§12.2、§12.3 全部标已闭环；诚实结论收敛为「仅 AC-38 演练与 AC-37 CP4 待窗口」 |

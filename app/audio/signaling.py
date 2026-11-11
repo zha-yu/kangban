@@ -238,11 +238,15 @@ class TtsTextMsg(TypedDict):
     - `touch_id`：触达唯一 message_id，`touch_played` 回带；
     - `touch_event_id` / `touch_attempt_no`：用药事件与第几次触达，回传用；
     - `audio`：合成成功才携带；缺省 = 纯字幕降级，与 Day 6 形状完全一致。
+
+    v4（day08 D6，adhoc-20261111-route_degraded 契约冻结 v1.0）追加 `route_degraded`：
+    L0/L1 不可用经 fallback 由 L2 正常生成时为 True；与 `degraded` 正交，每条 `tts_text` 恒下发。
     """
 
     type: Literal["tts_text"]
     text: str
     degraded: NotRequired[bool]
+    route_degraded: NotRequired[bool]  # v4 D6：路由降级标记（与 degraded 正交、恒下发）
     response_id: NotRequired[str]  # 可选：缺失时旧客户端按整段一播处理
     epoch: NotRequired[int]  # 可选：客户端原样回传，不得自增
     segment_id: NotRequired[int]  # 可选：0 基
