@@ -8,7 +8,7 @@
 | # | 任务卡 | 状态 | 文件 |
 | --- | --- | --- | --- |
 | 1 | dev-A 个人任务书 | ❔ **已完成（A1✅ A4✅ A2✅ A3✅ A5✅ H12✅ H+1✅ 药单管理）** | `docs/team_tasks/day08/dev-A-后端数据与分级.md` |
-| 2 | dev-B 个人任务书 | ✅ 已完成 | `docs/team_tasks/day08/dev-B-后端子图调度与MCP.md` |
+| 2 | dev-B 个人任务书 | ✅ 已完成（含 O3 补做收口） | `docs/team_tasks/day08/dev-B-后端子图调度与MCP.md` |
 | 3 | dev-C 个人任务书 | ⬜ 未开始 | `docs/team_tasks/day08/dev-C-健康域API与console.md` |
 | 4 | dev-D 个人任务书 | 🚧 进行中 | `docs/team_tasks/day08/dev-D-日报通知API与family-pad.md` |
 
@@ -17,12 +17,13 @@
 | 计划 | 状态 |
 | --- | --- |
 | `docs/plans/day08/adhoc-20261111-route_degraded契约冻结.md` | 🔒 已冻结 |
+| `docs/plans/day08/adhoc-20261111-三档身份级联演示脚本.md` | 🔒 已冻结 |
 | `docs/plans/day08/adhoc-20261111-声纹互测录音指南.md` | 🔒 已冻结 |
 | `docs/plans/day08/d-推进计划-日报通知与三端.md` | 🚧 进行中（S0–S7/S10 完成；D1 三偏差收口；D3 骨架完成；S8 卡演练、S9 卡 CP4、D6 卡 B 置位） |
 | `docs/plans/day08/day-08-健康采集与三端后台.md` | 📝 草稿（待主理人确认后执行） |
 | `docs/plans/day08/dev-a-数据分级规则层.md` | 📝 草稿 |
 | `docs/plans/day08/dev-a-药单管理后端接口.md` | 📝 草稿 |
-| `docs/plans/day08/dev-b-day08-工作推进计划.md` | ✅ 已收口（Step 1–8 完成，O3 顺延 Day 9） |
+| `docs/plans/day08/dev-b-day08-工作推进计划.md` | ✅ 已收口（Step 1–10 完成，O3 当日补做收口） |
 | `docs/plans/day08/dev-c-day08-工作推进计划.md` | ❔ 执行中 |
 
 > 另有 1 个无 `> 状态：` 行的方案/草稿文件，未列入上表。
