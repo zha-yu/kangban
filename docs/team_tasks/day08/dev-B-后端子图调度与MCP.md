@@ -1,4 +1,4 @@
-> 状态：已完成　｜　负责人：dev-B（后端 · 健康子图、调度、MCP 与记忆治理）　｜　日期：2026-11-11（Day 8）　｜　版本：v1.2（v1.1＋完成证据回填）
+> 状态：已完成（含 O3 补做收口）　｜　负责人：dev-B（后端 · 健康子图、调度、MCP 与记忆治理）　｜　日期：2026-11-11（Day 8）　｜　版本：v1.3（v1.2＋O3 声纹调优补做证据）
 > 依据：docs/plans/day08/day-08-健康采集与三端后台.md v1.2 ｜ 对接点与全局节奏见同目录《day08-任务总览与DAG.md》
 
 # dev-B 个人任务书
@@ -56,5 +56,6 @@ uv run pytest tests/test_tool_registry*.py -q                 # play_opera 注�
 | B4 | 三工具注册 + 身份注入 + 素材种子 | commit `1b37981`；AC-39 双留痕（audit_logs 行 + `tool_uses_context_elder_id_ignores_model_arg` / `cross_elder_call_rejected_audited` 用例）；`static/media/opera/` 种子 + 生成脚本随仓库 |
 | B5 | 记忆治理收尾 | Step 3 冲突检测（FR-MEM-03/05：`conflict_flips_preference_keeps_two_versions` / `superseded_not_recalled` / `deleted_not_recalled`）；Step 7 衰减归并 commit `6eb8a73`（FR-MEM-07：`test_consolidation_outputs_merge_record_for_similar_pair` + 90 天边界用例）；**未触发 R1① 顺延** |
 | H12 | 门禁自检 | `uv run pytest -q` 1301 passed 0 skip；`ruff check app tests` + `ruff format --check app tests` 全绿；scheduler 零写库 grep 零命中；`from app.graphs` 于 app/api、app/audio 零横向 import |
+| O3（补做） | H13 声纹调优四要素 | ① 补录样本 3 人 × 3 段（[录音指南](../../plans/day08/adhoc-20261111-声纹互测录音指南.md) + `record_samples.py`）；② 阈值扫描 `threshold_sweep.py`：同人 0.6664–0.8399 / 异人 0.2165–0.6512，0.55 有 5 例误识、0.62 起 FAR=0；③ 主理人裁决 B：**阈值定稿 0.62**，commit `4734d95` 四处落地（config.py / .env.example / AGENTS §7 / PRD 七处 + 修订记录 v3.1）；④ 级联演示 `scripts/cascade_demo_check.py` 四场景全过（device / voice 1.0 / confirm·test2_1=0.5745 旧阈值会误放行、新阈值正确拒绝 / 冒充降级 generic），报告 v1.2 §七留证，commit `6f9bf71` |
 
-**未关闭项（→ Day 9）**：O3 声纹调优（溢出池，17:00 前主线收口但互测名单未确认，按裁决②整体顺延）。
+**未关闭项（→ Day 9）**：无——O3 声纹调优于当日 19:00 后补做并收口（互测样本由现场 3 人补录，阈值 0.62 经主理人裁决 B 定稿，证据见上表 O3 行与 `eval/reports/声纹调优报告.md` v1.2）。
