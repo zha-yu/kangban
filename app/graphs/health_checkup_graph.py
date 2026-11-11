@@ -108,6 +108,7 @@ class HealthCheckState(TypedDict, total=False):
     notified: dict[str, Any]  # 双通知返回（AC-38 回执）
     hitl_result: dict[str, Any]  # 黄=护工确认 / 红=医生确认 payload
     record_ref: dict[str, Any]  # persist 返回（record_id/version）
+    force_close: bool  # 20:00 强制收口（scheduler 注入）：不再发问/重问，未答直接标缺失进判定
 
 
 # ---------------------------------------------------------------- 服务出口
@@ -380,6 +381,9 @@ def build_health_checkup_graph(
 
     async def collect(state: HealthCheckState) -> dict[str, Any]:
         """5 问循环：一次 interrupt 问一题；60s 窗口与超时重试由外部执行。"""
+        if state.get("force_close"):
+            # 20:00 强制收口（PRD §4.6）：窗口已关，不再发问，让校验把未答标缺失
+            return {}
         answers = dict(state.get("answers") or {})
         attempts = dict(state.get("attempts") or {})
         current = next((key for key, _ in QUESTIONS if key not in answers), None)
@@ -425,8 +429,12 @@ def build_health_checkup_graph(
                     invalid.append(key)
                 else:
                     record[key] = value
-        # 无效重问一次（TD §7.2「无效重问一次，再失败标缺失」）：
-        reask = [key for key in invalid if int(attempts.get(key) or 0) < 2]
+        # 无效重问一次（TD §7.2「无效重问一次，再失败标缺失」）；强制收口时不重问
+        reask = (
+            []
+            if state.get("force_close")
+            else [key for key in invalid if int(attempts.get(key) or 0) < 2]
+        )
         if reask:
             reopened = dict(answers)
             for key in reask:
@@ -456,6 +464,10 @@ def build_health_checkup_graph(
         return {"order_ref": dict(ref or {})}
 
     async def hitl_yellow(state: HealthCheckState) -> dict[str, Any]:
+        if state.get("force_close"):
+            # 20:00 强制收口：夜里不挂起等护工确认（PRD §4.6）——系统代确认，
+            # 留痕 note；漏采人工跟进由收口 tick 建的 collection_missed 工单承接。
+            return {"hitl_result": {"decision": "confirmed", "review_note": "force_closed_20h"}}
         payload = interrupt(
             {
                 "kind": "yellow_review",
@@ -499,10 +511,14 @@ def build_health_checkup_graph(
         return {"record_ref": dict(ref or {})}
 
     def route_collect(state: HealthCheckState) -> Literal["collect", "validate"]:
+        if state.get("force_close"):
+            return "validate"  # 强制收口：pending 问题不再回问，否则 collect↔validate 死循环
         return "collect" if _pending_questions(state) else "validate"
 
     def route_validate(state: HealthCheckState) -> Literal["collect", "grade"]:
         # 无效重问：validate 清掉无效答案后仍有未答问题 → 回 collect；否则进分级
+        if state.get("force_close"):
+            return "grade"  # 强制收口：未答/无效已标缺失，直接进判定
         return "collect" if _pending_questions(state) else "grade"
 
     def route_grade(
@@ -593,10 +609,24 @@ async def start_health_checkup(
 
 
 async def resume_health_checkup(
-    graph: Any, *, thread_id: str, payload: dict[str, Any] | str
+    graph: Any,
+    *,
+    thread_id: str,
+    payload: dict[str, Any] | str | None = None,
+    force_close: bool = False,
 ) -> dict[str, Any]:
-    """把长者回答 / 护工与医生的确认送回去，继续跑到下一次阻塞或结束。"""
-    result: dict[str, Any] = await graph.ainvoke(Command(resume=payload), graph_config(thread_id))
+    """把长者回答 / 护工与医生的确认送回去，继续跑到下一次阻塞或结束。
+
+    ``force_close=True``（20:00 强制收口，scheduler 专用）：先 ``aupdate_state``
+    置 ``force_close`` 再 ``ainvoke(None)`` 续跑——图内 collect/route/validate
+    见到该标记后不再发问与重问，未答字段标缺失直接进判定落库（PRD §4.6）。
+    """
+    config = graph_config(thread_id)
+    if force_close:
+        await graph.aupdate_state(config, {"force_close": True})
+        result: dict[str, Any] = await graph.ainvoke(None, config)
+        return result
+    result = await graph.ainvoke(Command(resume=payload), config)
     return result
 
 
