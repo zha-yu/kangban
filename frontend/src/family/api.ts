@@ -10,17 +10,12 @@
  * 同源 localStorage 共享，故所有 key 带入口前缀，避免双端互踢登录态。
  * 家属端 kind=guardian、role 为 None，角色显示只依赖 kind/name。
  *
- * 数据源分层（N6）：业务类型、Mock 数据与 Mock 实现全部在 `./data-source.ts`；
- * 本文件只保留认证域、唯一 `USE_MOCK` 开关、类型导出与 5 个业务函数（N7 双轨）。
+ * 数据源分层（N6）：业务类型在 `./data-source.ts`（Day 8 S-11 后仅类型）；
+ * 本文件保留认证域、类型导出与 5 个业务函数（直连冻结契约 v1.2 真实接口）。
  */
 
 import {
   SCOPE_FORBIDDEN_TEXT,
-  mockBoundElders,
-  mockMarkNotificationRead,
-  mockNotifications,
-  mockReportDetail,
-  mockReports,
   type AttentionEvent,
   type BoundElder,
   type DailyReportDetail,
@@ -259,22 +254,9 @@ export function logout(): void {
 }
 
 // ---------------------------------------------------------------------------
-// 家属端业务数据（契约：docs/接口契约_家属端数据.md v1.0 草案）
+// 家属端业务数据（契约：docs/接口契约_家属端数据.md v1.2 已冻结）
+// Day 8 S-11 收口：五端点交付＋冻结＋联调通过，Mock 分支与开关已删除（同提交登记）。
 // ---------------------------------------------------------------------------
-
-/**
- * S-11：后端 daily_reports / notifications 属 Day 8 批次尚未交付，
- * 前端 Mock 先行——本常量切 false 后走真实接口，联调通过后删除 mock 分支。
- *
- * 2026-11-10：N1/N4（notifications）后端已交付（app/api/family.py，P8 提前件），
- * `NOTIFICATIONS_LIVE` 单独放行；F0/F1/F2（绑定长者 / 日报）仍走 Mock。
- */
-export const USE_MOCK = true;
-
-/** N1/N4 真实接口已交付的开关（与 USE_MOCK 独立；联调通过后并入 USE_MOCK=false） */
-export const NOTIFICATIONS_LIVE = true;
-
-// 业务类型与 Mock 数据已迁至 ./data-source.ts（N6）；本文件只保留类型再导出与双轨切换。
 
 /** 业务接口响应 → ApiError（401 凭证失效 / 403 越权 / 其余按网络错，不回显内部细节） */
 async function ensureOk(res: Response): Promise<void> {
@@ -284,14 +266,10 @@ async function ensureOk(res: Response): Promise<void> {
   throw new ApiError("network", NETWORK_ERROR_TEXT);
 }
 
-// Mock 数据与 Mock 实现已迁至 ./data-source.ts（N6）；以下只做双轨切换。
-
-// ---- 业务 fetch（N7 双轨：Mock / 真实分支签名一致，S-11） ----
-// 真实分支路径严格对齐《接口契约_家属端数据》草案 §4；契约冻结评审（X3）前全部标注「待冻结」。
+// ---- 业务 fetch（路径严格对齐冻结契约 §4） ----
 
 export async function fetchBoundElders(): Promise<BoundElder[]> {
-  if (USE_MOCK) return mockBoundElders();
-  // 待冻结：F0 GET /api/family/elders（契约 §4 F0 只返回 {items}）
+  // F0 GET /api/family/elders（契约 §4 F0 只返回 {items}）
   const res = await authedFetch("/api/family/elders");
   await ensureOk(res);
   const data = (await res.json()) as ListItems<BoundElder>;
@@ -299,8 +277,7 @@ export async function fetchBoundElders(): Promise<BoundElder[]> {
 }
 
 export async function fetchReports(elderId: string): Promise<DailyReportSummary[]> {
-  if (USE_MOCK) return mockReports(elderId);
-  // 待冻结：F1 GET /api/family/elders/{elder_id}/reports（分页 1/20，上限 100，S-10）
+  // F1 GET /api/family/elders/{elder_id}/reports（分页 1/20，上限 100，S-10）
   const res = await authedFetch(
     `/api/family/elders/${encodeURIComponent(elderId)}/reports?page=1&page_size=100`,
   );
@@ -310,20 +287,14 @@ export async function fetchReports(elderId: string): Promise<DailyReportSummary[
 }
 
 export async function fetchReport(reportId: string): Promise<DailyReportDetail> {
-  if (USE_MOCK) {
-    const hit = mockReportDetail(reportId);
-    if (!hit) throw new ApiError("invalid", "日报不存在或已删除");
-    return hit;
-  }
-  // 待冻结：F2 GET /api/family/reports/{report_id}
+  // F2 GET /api/family/reports/{report_id}
   const res = await authedFetch(`/api/family/reports/${encodeURIComponent(reportId)}`);
   await ensureOk(res);
   return (await res.json()) as DailyReportDetail;
 }
 
 export async function fetchNotifications(): Promise<FamilyNotification[]> {
-  if (USE_MOCK && !NOTIFICATIONS_LIVE) return mockNotifications();
-  // N1 已交付（app/api/family.py，2026-11-10 P8 提前件）：分页 1 起、上限 100
+  // N1 GET /api/family/notifications（分页 1 起、上限 100）
   const res = await authedFetch("/api/family/notifications?page=1&page_size=100&unread_only=false");
   await ensureOk(res);
   const data = (await res.json()) as Paged<FamilyNotification>;
@@ -332,12 +303,6 @@ export async function fetchNotifications(): Promise<FamilyNotification[]> {
 
 /** N4 标记已读（幂等：重复调用返回原 read_at，且只写 read_at、不动 status） */
 export async function markNotificationRead(notificationId: string): Promise<string> {
-  if (USE_MOCK && !NOTIFICATIONS_LIVE) {
-    const readAt = mockMarkNotificationRead(notificationId);
-    if (!readAt) throw new ApiError("invalid", "通知不存在或已删除");
-    return readAt;
-  }
-  // N4 已交付（app/api/family.py）：只写 read_at、不动 status；越权与不存在同口径 404
   const res = await authedFetch(
     `/api/family/notifications/${encodeURIComponent(notificationId)}/read`,
     { method: "POST" },
