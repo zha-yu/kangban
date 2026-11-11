@@ -126,25 +126,34 @@ export interface UserTextMsg {
 
 /** Day 7 联调（L6#9）：主动触达的任务卡片命令（scheduler / 子图下发）。
  *  shape 与 task-channel.ts 的 PadTaskCommand 对齐（snake_case 下行、camelCase snapshot）；
- *  同 taskId 重复下发前端幂等（FR-MED-04），不重启面板。 */
+ *  同 taskId 重复下发前端幂等（FR-MED-04），不重启面板。
+ *  Day 8（day08/contracts.md §C-1）：kind 扩 "health"（每日健康采集面板触发）。 */
 export interface TaskCommandMsg {
   type: "task_command";
   task_id: string;
-  kind: "medication";
+  kind: "medication" | "health";
   source: "scheduler" | "ws_fallback" | "staff" | "voiceprint";
   hint: string;
-  payload: {
-    kind: "medication";
-    snapshot: {
-      drugName: string;
-      dose: string;
-      scheduledAt: string;
-      usage: string;
-      attemptNo: number;
-      windowSeconds: number;
-      snapshotAt: string;
-    };
-  };
+  payload:
+    | {
+        kind: "medication";
+        snapshot: {
+          drugName: string;
+          dose: string;
+          scheduledAt: string;
+          usage: string;
+          attemptNo: number;
+          windowSeconds: number;
+          snapshotAt: string;
+        };
+      }
+    | {
+        kind: "health";
+        /** 触达时刻展示标签（HH:MM），前端只展示不参与分级 */
+        startedAt: string;
+        /** 与后端 health_records.source 前缀口径对齐；仅展示 */
+        source: "voice_scheduled" | "staff_scheduled";
+      };
   issued_at: number;
 }
 

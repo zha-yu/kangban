@@ -268,6 +268,11 @@ async def _verify_staff_proxy(
         raise PermissionError(f"staff {operator_id} is not primary_care for elder {elder_id}")
 
 
+#: 对外别名：H-3 补启动 / 调度补推的范围过滤复用（task_dispatch_service），
+#: 避免跨模块摸私有名；语义与 `_verify_staff_proxy` 完全一致。
+verify_staff_proxy = _verify_staff_proxy
+
+
 # ------------------------------------------------------------------ 黄升红查询
 
 

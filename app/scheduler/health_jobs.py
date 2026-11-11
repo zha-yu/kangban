@@ -21,6 +21,11 @@
    版本幂等返回，不重建不重发）。触发时刻 PRD/TD 均未定义——**自裁口径**
    （AGENTS 前置铁律 6）：取 20:00 强制结束之后、日切之前的 21:30，调整改
    模块常量 `_DAILY_REPORT_FIRE` 并在提交说明留痕。
+5. **面板帧补推（每分钟，窗口内）**：对当日无记录的 active 长者重推
+   `task_command kind=health` 帧（§C-1，经 `task_dispatch_service`）。与起图
+   解耦——起图是 graph/checkpointer 事实（幂等跳过），帧投递是 UI 触达：
+   pad 离线时 deliver 丢失，设备上线后下一分钟 tick 自动补推；taskId 按日
+   固定，pad 端按 taskId 幂等不重启面板（FR-MED-04 同款口径）。
 
 采集窗口起止读 Pydantic Settings（`health_checkup_start` / `health_checkup_end`，
 待确认项①裁决：允许经环境变量覆盖为可测试时刻）。
@@ -46,7 +51,7 @@ from app.graphs.health_checkup_graph import (
     resume_health_checkup,
     start_health_checkup,
 )
-from app.services import health_service, notify_service, report_service
+from app.services import health_service, notify_service, report_service, task_dispatch_service
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +71,7 @@ _TRIGGER_JOB_ID = "health_evening_trigger"
 _CLOSE_JOB_ID = "health_window_close"
 _RISK_SCAN_JOB_ID = "health_risk_scan"
 _REPORT_JOB_ID = "health_daily_report"
+_PANEL_PUSH_JOB_ID = "health_panel_push"
 
 _UTC = datetime.UTC
 
@@ -194,6 +200,7 @@ class HealthSchedulerRuntime:
             (_CLOSE_JOB_ID, self._tick_window_close),
             (_RISK_SCAN_JOB_ID, self._tick_risk_scan),
             (_REPORT_JOB_ID, self._tick_report),
+            (_PANEL_PUSH_JOB_ID, self._tick_panel_push),
         ):
             self._scheduler.add_job(
                 handler,
@@ -279,6 +286,43 @@ class HealthSchedulerRuntime:
                 )
             except Exception:
                 logger.exception("health_scheduler_trigger_failed elder_id=%s", elder_id)
+
+    # --- tick ①b：窗口内面板帧补推（每分钟，UI 触达与起图解耦） ---
+
+    async def _tick_panel_push(self) -> None:
+        """采集窗口内对当日无记录的长者重推 task_command 帧（§C-1）。
+
+        幂等两层：taskId 按日固定（pad 端按 taskId 不重启面板）+ 只推「当日
+        无任何记录」的长者（有记录说明已答完，不再打扰）。帧投递失败（离线）
+        不重试不建单——下一分钟 tick 自动再来，窗口外由漏采判定兜底。
+        """
+        now_sh = self._shanghai()
+        now_min = _minutes_of_day(now_sh.strftime("%H:%M"))
+        start_min = _minutes_of_day(self._settings().health_checkup_start)
+        end_min = _minutes_of_day(self._settings().health_checkup_end)
+        if not (start_min <= now_min < end_min):
+            return
+
+        day = now_sh.date()
+        async with self._session_factory() as session:
+            elder_ids = await health_service.list_active_elder_ids(session)
+            with_records = await health_service.list_elder_ids_with_records_on(session, day=day)
+        pending = [elder_id for elder_id in elder_ids if elder_id not in with_records]
+        if not pending:
+            return
+
+        pushed = 0
+        for elder_id in pending:
+            try:
+                async with self._session_factory() as session:
+                    status, _ = await task_dispatch_service.push_health_collection_task(
+                        session, elder_id=elder_id, source="scheduler"
+                    )
+                if status == "voice_dispatched":
+                    pushed += 1
+            except Exception:
+                logger.exception("health_panel_push_failed elder_id=%s day=%s", elder_id, day)
+        logger.info("health_panel_push day=%s pending=%d dispatched=%d", day, len(pending), pushed)
 
     # --- tick ②：20:00 强制结束 + 漏采派单 ---
 
