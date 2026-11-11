@@ -64,6 +64,18 @@ class GuardianNotificationNotFound(NotificationError):
     """通知不存在或不属于当前监护人 → 404，不泄露存在性（越权同口径）。"""
 
 
+class NotificationNotFound(NotificationError):
+    """通知不存在（按 id 查不到）→ 404。"""
+
+
+class NotificationIllegalTransition(NotificationError):
+    """非法状态迁移（如 generated → delivered 跳过 pending）→ 409。"""
+
+
+class NotificationForbidden(NotificationError):
+    """归属校验失败（acknowler 不是通知 target_id）→ 403。"""
+
+
 @dataclass(frozen=True, slots=True)
 class NotificationRef:
     """一次通知落库的结果引用（created=False 表示幂等复用既有记录）。"""
@@ -431,7 +443,7 @@ async def mark_notification_sent(
         )
     ).scalar_one_or_none()
     if notification is None:
-        raise NotificationError(f"notification {notification_id} not found")
+        raise NotificationNotFound(f"notification {notification_id} not found")
     _require_transition(notification.status, _STATUS_PENDING)
     notification.status = _STATUS_PENDING
     notification.sent_at = datetime.datetime.now(datetime.UTC)
@@ -448,7 +460,7 @@ async def mark_notification_delivered(
         )
     ).scalar_one_or_none()
     if notification is None:
-        raise NotificationError(f"notification {notification_id} not found")
+        raise NotificationNotFound(f"notification {notification_id} not found")
     _require_transition(notification.status, _STATUS_DELIVERED)
     notification.status = _STATUS_DELIVERED
     await session.flush()
@@ -465,6 +477,9 @@ async def acknowledge_notification(
 ) -> None:
     """delivered → acknowledged（人工确认，AC-23）。
 
+    **归属校验**：acknowledger_id 必须等于 notification.target_id。
+    任何持有效工牌的人不能确认别人的通知（R-D10 安全修复）。
+
     幂等：已确认直接返回，不报错。
     """
     notification = (
@@ -473,7 +488,12 @@ async def acknowledge_notification(
         )
     ).scalar_one_or_none()
     if notification is None:
-        raise NotificationError(f"notification {notification_id} not found")
+        raise NotificationNotFound(f"notification {notification_id} not found")
+    if notification.target_id != acknowledger_id:
+        raise NotificationForbidden(
+            f"acknowledger {acknowledger_id} does not own notification {notification_id} "
+            f"(target_type={notification.target_type}, target_id={notification.target_id})"
+        )
     if notification.status == _STATUS_ACKNOWLEDGED:
         return  # 幂等
     _require_transition(notification.status, _STATUS_ACKNOWLEDGED)
@@ -490,7 +510,7 @@ async def acknowledge_notification(
 def _require_transition(current: str, target: str) -> None:
     allowed = _STATUS_TRANSITIONS.get(current, frozenset())
     if target not in allowed:
-        raise NotificationError(
+        raise NotificationIllegalTransition(
             f"illegal notification transition: {current} → {target}"
         )
 
@@ -584,7 +604,7 @@ async def escalate_red_event(
         )
     ).scalar_one_or_none()
     if event is None:
-        raise NotificationError(f"risk_event {event_id} not found")
+        raise NotificationNotFound(f"risk_event {event_id} not found")
     if event.severity != "red":
         logger.info("escalation skipped: event %s severity=%s", event_id, event.severity)
         return
@@ -632,6 +652,9 @@ __all__ = [
     "RETRY_INTERVAL_S",
     "GuardianNotificationNotFound",
     "NotificationError",
+    "NotificationForbidden",
+    "NotificationIllegalTransition",
+    "NotificationNotFound",
     "NotificationPayloadError",
     "NotificationRef",
     "NotificationTargetNotFound",
