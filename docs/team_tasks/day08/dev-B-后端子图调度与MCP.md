@@ -1,4 +1,4 @@
-> 状态：未开始　｜　负责人：dev-B（后端 · 健康子图、调度、MCP 与记忆治理）　｜　日期：2026-11-11（Day 8）　｜　版本：v1.1（v1.0＋B4 扩容、B5 新增）
+> 状态：已完成　｜　负责人：dev-B（后端 · 健康子图、调度、MCP 与记忆治理）　｜　日期：2026-11-11（Day 8）　｜　版本：v1.2（v1.1＋完成证据回填）
 > 依据：docs/plans/day08/day-08-健康采集与三端后台.md v1.2 ｜ 对接点与全局节奏见同目录《day08-任务总览与DAG.md》
 
 # dev-B 个人任务书
@@ -45,3 +45,16 @@ uv run pytest tests/test_tool_registry*.py -q                 # play_opera 注�
 - 图节点内不写 SQL；分级阈值不进 prompt（照 A2 常量）；冲突判定语义矛盾用统一 LLM 适配器（既有），不得绕过。
 - 迁移 0017/0018 由 dev-A 独占，你不碰。
 - X8 四件口径冻结后不得私改；opera Tool 参数/返回只按冻结 schema，变更走契约 §6 留痕。
+
+## 完成记录（2026-11-11 回填）
+
+| # | 交付 | 证据 |
+| --- | --- | --- |
+| B1 | 两份契约冻结 + X8 四件口径 | 《接口契约_照护台业务数据》《接口契约_家属端数据》状态行「已冻结」，X8 四件写入，变更走 §6 留痕 |
+| B2 | 健康决策子图 | `app/graphs/health_checkup_graph.py`，三分支双 HITL + 双入口；commit `7793643`（X1 接线与三分支端到端转绿）；AC-10/21（bp 180 interrupt→resume）、AC-09（bp 160 护工确认）、AC-34（source=voice_active）用例全绿 |
+| B3 | health_jobs 四 job | commit `a165b7e`；AC-12 升级扫描（原事件标 escalated 不建第二事件）、AC-23 通知 30s 重试、漏采派单 assignee=负责护工；scheduler 零写库 grep 零命中 |
+| B4 | 三工具注册 + 身份注入 + 素材种子 | commit `1b37981`；AC-39 双留痕（audit_logs 行 + `tool_uses_context_elder_id_ignores_model_arg` / `cross_elder_call_rejected_audited` 用例）；`static/media/opera/` 种子 + 生成脚本随仓库 |
+| B5 | 记忆治理收尾 | Step 3 冲突检测（FR-MEM-03/05：`conflict_flips_preference_keeps_two_versions` / `superseded_not_recalled` / `deleted_not_recalled`）；Step 7 衰减归并 commit `6eb8a73`（FR-MEM-07：`test_consolidation_outputs_merge_record_for_similar_pair` + 90 天边界用例）；**未触发 R1① 顺延** |
+| H12 | 门禁自检 | `uv run pytest -q` 1301 passed 0 skip；`ruff check app tests` + `ruff format --check app tests` 全绿；scheduler 零写库 grep 零命中；`from app.graphs` 于 app/api、app/audio 零横向 import |
+
+**未关闭项（→ Day 9）**：O3 声纹调优（溢出池，17:00 前主线收口但互测名单未确认，按裁决②整体顺延）。

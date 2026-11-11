@@ -1,6 +1,6 @@
 # dev-B Day 8 工作推进计划 · 健康子图、调度、MCP 与记忆治理收尾
 
-> 状态：进行中（Step 0 已裁决，2026-11-11）　｜　版本：v1.2　｜　日期：2026-11-11
+> 状态：已收口（Step 1–8 完成，O3 顺延 Day 9）　｜　版本：v1.3　｜　日期：2026-11-11
 > 负责人：dev-B　｜　性质：**执行计划文档（本文件不含任何业务代码，本轮未修改任何代码文件）**
 > 任务来源：`docs/team_tasks/day08/dev-B-后端子图调度与MCP.md` v1.1（B1–B5 + H12 参与，O3 溢出池）｜`docs/team_tasks/day08/day08-任务总览与DAG.md` v1.1（对接点 X1/X5/X6/X8/X9、当日节奏）
 > 上游依据（事实只引这几份）：`docs/康伴3D数字人_PRD.md` v3.0（AC-09/10/11/21/22/23/32/34/38/12/39、FR-MEM-03/05/06/07、FR-CON-03/04、FR-VPR-04）｜`docs/康伴3D数字人_技术设计文档.md` v2.1（§7.2 健康子图、§3.4/§3.5 表定义、§3.6 迁移批次）｜`docs/plans/day08/day-08-健康采集与三端后台.md` v1.2（H0–H16 拆解、§6 命令级自检、§7 R1 顺延顺位）
@@ -342,3 +342,18 @@ grep -rn "from app.graphs" app/api/ app/audio/                    # 零横向 im
 | v1.0 | 2026-11-11 | 首版：依据 team_tasks/day08 v1.1 分工（B1–B5 + H12 + O3）与 plans/day08 v1.2 拆解编制；2026-11-11 代码现状实测（graphs/scheduler/tool_registry/memory_service/mock-operations/static 五项基线）写入 §0-5；Step 0–9 逐步确认制；含 X1/X5/X6/X8/X9 交接矩阵与 5 项待裁决 |
 | v1.1 | 2026-11-11 | Step 0 站会裁决收口：§5 新增裁决记录表（①–⑤ 逐项确认 + dev-C 转达三项附加裁决：Q-1 补列、通知状态照 TD 5 值冻结、H 前缀照惯例）；状态行草稿→进行中 |
 | v1.2 | 2026-11-11 | X9 裁决登记（§5 附加4）：FR-TC-09「人为调低规则层阈值」按字面在当前实现不可观测（规则层无置信度阈值、0.85 属 L1 升级闸且门禁对 clarify/agent 等价、fixtures 无边界置信度用例——dev-D 实测 0.30/0.99 指标不变），主理人裁决**选项 A**：PRD 原文不动，验证手段改为篡改 rules.py/safety.py 关键词模式表后跑门禁；dev-D mock 拦截证据补充归档。另：同日 B1 范围内完成契约 v1.1 两处勘误（reviewed_at 引注笔误删字段、R-2 版本链冻结为 superseded_by 串联，D-11/D-12 登记、Q-3 待裁决），见契约文档修订记录 |
+| v1.3 | 2026-11-11 | Step 8 收口：新增 §8 完成记录（B1–B5/H12 证据回填，本文档原引用「§11」为笔误——实际证据承载于 §8）；任务卡状态行改「已完成」；O3 声纹按裁决②顺延 Day 9；全量门禁 1301 passed / ruff 全绿 |
+
+## 8. 完成记录与证据回填（Step 8，2026-11-11）
+
+| Step | 内容 | 证据 |
+| --- | --- | --- |
+| Step 1 | B1 契约冻结 + X8 四件 | 两份契约「已冻结」；X8 四件写入；变更走契约 §6 留痕（含 v1.1 勘误） |
+| Step 2–4 | B2 健康子图 | `app/graphs/health_checkup_graph.py`；桩红→X1 接线→全绿 commit `7793643`；必过 6 用例（AC-10/21、AC-09、AC-34 等）全绿；14:00 X9 已向 dev-D 交接评测口径 |
+| Step 3/7 | B5 记忆治理 | 冲突检测（FR-MEM-03/05）+ 衰减归并（FR-MEM-07）commit `6eb8a73`；`memory_jobs.py` 双周维护 job（裁决③④落地）；R1① 未触发 |
+| Step 5 | B4 三工具 + 素材 | commit `1b37981`；AC-39 双留痕 + 手工越权复现记录；X8 链三信号（Tool 就绪→A5 直连、素材就绪→D4）已发 |
+| Step 6 | B3 四 job | commit `a165b7e`；15:30 X5 红色事件端到端演练 B 侧触发证据已留；漏采派单 assignee=负责护工 |
+| Step 8 | H12 门禁 | `uv run pytest -q`：**1301 passed**，无新增 skip；`ruff check app tests` + `ruff format --check app tests` 全绿；`grep session.add/from app.models app/scheduler/` 零命中（仅既有 docstring 说明文字）；`grep "from app.graphs" app/api/ app/audio/` 零命中 |
+| 顺延 | O3 声纹调优 | 按裁决②（互测名单未确认）整体顺延 Day 9；B5 无顺延项 |
+
+详细证据清单见任务卡 `docs/team_tasks/day08/dev-B-后端子图调度与MCP.md` v1.2「完成记录」。
