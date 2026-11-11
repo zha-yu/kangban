@@ -1,8 +1,9 @@
-> 状态：草稿（待主理人确认后执行）　｜　版本：v1.1　｜　日期：2026-11-10
-> 上游依据（事实来源，本文所有「是什么/有多少/什么字段/什么接口」只引自这两份）：
-> ① `docs/康伴3D数字人_PRD.md` v3.0（验收口径：§6.1 Day 8 行、FR-HLT-01~10、FR-RPT-01~04、FR-ALT-01~04/06、FR-UI-08、AC-09~11/21/22/12/23/25/32/34/38）
-> ② `docs/康伴3D数字人_技术设计文档.md` v2.1（实现口径：§7.2 健康子图、§3.4/§3.5 表定义、§3.6 Day 8 迁移批次、§8.3 Day 8 落地清单）
-> 流程来源：`docs/康伴3D数字人_大纲.md` §十 Day 8（**仅取迭代流程与产出物顺序，不取任何字段/表名/接口/阈值**）
+> 状态：草稿（待主理人确认后执行）　｜　版本：v1.2　｜　日期：2026-11-11（2026-11-11 增补）
+> 上游依据（事实来源，本文所有「是什么/有多少/什么字段/什么接口」只引自这几份）：
+> ① `docs/康伴3D数字人_PRD.md` v3.0（验收口径：§6.1 Day 7/8 行、FR-HLT-01~10、FR-RPT-01~04、FR-ALT-01~04/06、FR-UI-08、FR-CON-03/04/06、FR-MEM-03~07、FR-TC-09、AC-09~11/21/22/12/23/25/32/34/38/37）
+> ② `docs/康伴3D数字人_技术设计文档.md` v2.1（实现口径：§7.2 健康子图、§3.4/§3.5 表定义、§3.6 Day 7/8 迁移批次、§8.3/§8.4.3）
+> ③ `docs/team_tasks/day07/README.md` §1.1（执行口径：**实际 Day 8 = 原大纲 Day 8 ＋ 原大纲 Day 7 剩余项**——记忆治理完整五步、娱乐点播、评测基线 v1）
+> 流程来源：`docs/康伴3D数字人_大纲.md` §十 Day 7 剩余/Day 8（**仅取迭代流程与产出物顺序，不取任何字段/表名/接口/阈值**）
 > 关联：`docs/plans/adhoc-20261110-mockoperations提前实现.md`（Day 8 范围提前件，§4 留尾四项）、`docs/接口契约_照护台业务数据.md` v0.1（待冻结）、`docs/接口契约_家属端数据.md` v1.0（待冻结）、`docs/接口契约_工单看板`（f2-D1 已交付）
 > 变更记录见文末
 
@@ -22,6 +23,9 @@
 | D-2 | **红色分支医院对接不排期** | TD §7.2 图中「Mock 医院对接单」节点在 Day 8 批次（仅 3 张表）无承载表、落地清单未写实现；Day 8 红色分支止于「紧急通知护工+监护人 → 紧急工单 → 医生 HITL interrupt」，医院对接节点显式登记为不排期（见 §8 范围外清单），待主理人后续裁决承载形态再补 |
 | D-3 | **护工看板维持 React 形态** | 大纲 8.2「最简 HTML+JS 服务端渲染，不引前端框架」与 PRD §2.1（console 统一 React + 原生 CSS，MUI 已于 2026-11-06 裁决移除）冲突；按铁律以 PRD 为准，console 五页在现有 React 工程内真实对接，冲突行已回填 README §11 |
 | D-4 | **聚合预警（FR-HLT-10）按 P2 弹性处理** | TD Day 8 功能验收第 12 条含聚合预警，但 PRD §4.6 标 P2；按「PRD 定验收」处理：当天产能富余才做，不进入完成定义，顺延/不做均须在 §11 执行记录留痕 |
+| D-5 | **Day 7 欠债三项全列 P0 纳入 Day 8**（2026-11-11 主理人裁决） | 依据 day07 README §1.1：娱乐点播（FR-CON-03/04）、记忆治理收尾（FR-MEM-03/06 冲突检测＋FR-MEM-07 衰减归并）、评测基线 v1（FR-TC-09）三项全部纳入 Day 8 必做；**总量超单日容量（§7 R1），做不完的部分显式顺延 Day 9 并在 §11 留痕，不许静默砍掉** |
+| D-6 | **评测门禁 Day 8 全量做**（2026-11-11 主理人裁决） | 与 TD §8.4.3（FR-TC-07 归 Day 9）冲突，以本裁决为准：`eval_gate.py` 门禁＋pre-push 接线在 Day 8 完成；冲突行已回填 README §11 待修订 |
+| D-7 | **戏曲素材 mock 先行、真素材热替换**（2026-11-11 主理人确认） | `media_library.media_url` 指向稳定路径约定，Day 8 用程序生成 mock 素材（短 wav＋20–30 条种子数据）跑通 AC-37；真素材到位后**仅替换静态文件＋更新 duration 等元数据行，不改代码**（替换操作说明随交付物输出） |
 
 ## 1. 项目认知基线（一天一页版）
 
@@ -44,11 +48,15 @@
 | family | 仅通知域 N1/N4 切真实（`app/api/family.py`）；**F0/F1/F2（绑定长者/日报列表/详情）仍 Mock**（data-source USE_MOCK） | 切换层机制已有，按 `day05/d-家属端切换层说明.md` 步骤执行 |
 | pad | `SosButton.tsx` 组件已有 | 后端接线与端到端 30 秒验收待完成 |
 | 声纹 | `voiceprint_service` cosine 比对链路已有（`CosineMatch` 含 score/threshold），阈值走 `settings.voiceprint_similarity_threshold`；Day 4 spike 数据留档（day04 计划明示「留档供复用」） | H13 直接复用现有链路，无新表/新迁移 |
+| **娱乐点播（Day 7 债）** | 路由识别已就绪（`rules.py` R-01~R-04+ 播放控制规则、`capability_not_ready` 降级、decision_logs）；**`media_library`/`media_history` 两表无迁移、无 media_service、无戏曲 Tool、pad 无播放模块**；`static/` 仅有 TTS 缓存 wav，无戏曲素材 | H14 全新开发；规则层执行口径从「只识别」改为「真实执行」 |
+| **记忆治理（Day 7 债）** | 萃取/存储/召回过滤/pgvector 已落地（实际 Day 6 骨架）；`memory_service.py` L203/L250 明确「conflict judgment deferred to Day 7」，**无 superseded/disputed 状态迁移、无 90 天衰减与每周归并 job**（scheduler 仅 medication_jobs） | H15 补冲突检测＋状态迁移＋衰减归并 job |
+| **评测基线（Day 7 债）** | `tests/eval_gate.py` **不存在**；`eval/fixtures/` 仅 `day7_intents.jsonl`；AGENTS §2 要求的 eval_gate/test_gates/test_injection 三件套均缺 | H16 新建门禁＋fixtures 扩充＋分层归因（D-6 全量做） |
+| day07 任务卡 | dev-A/dev-C 卡曾标「未开始」但代码已落地（2026-11-11 核验后已改「已完成」，偏差入卡）；dev-D「进行中」（联调记录未收口）；PROGRESS 7/8 | 卡状态债已清偿；dev-D 收口继续跟踪，不阻塞 H 线 |
 
 ## 3. Day 8 任务总清单（拆解：前置依赖 · 执行步骤 · 量化验收）
 
-> 编号 H0–H13。**执行顺序 = DAG 拓扑序（§4）**；「验收标准」列为最小可判定口径，命令级自检见 §6。
-> 优先级口径：**P0 = 当日完成定义**（PRD §6.1）；**P1 = 当日全力推进**，超载按 PRD §6.2 裁剪顺序顺延 Day 9 且必须在 commit 说明写明，不许静默砍掉；**P2 = 不进完成定义**（PRD §4.6 FR-HLT-10 等）。
+> 编号 H0–H16。**执行顺序 = DAG 拓扑序（§4）**；「验收标准」列为最小可判定口径，命令级自检见 §6。
+> 优先级口径：**P0 = 当日必做**（PRD §6.1 Day 8 完成定义 ＋ D-5 裁决的 Day 7 欠债三项）；**P1 = 当日全力推进**，超载按 §7 R1 顺延顺位裁剪且必须在 commit 说明写明，不许静默砍掉；**P2 = 不进完成定义**（PRD §4.6 FR-HLT-10 等）。
 
 | # | 任务 | 优先级 | 前置依赖 | 内容与执行步骤（概要） | 量化验收标准 |
 | --- | --- | --- | --- | --- | --- |
@@ -66,6 +74,9 @@
 | H11 | pad：SOS 接线核验 + 撤销边界 | P1 | H7 | ① `SosButton` 常显大按钮（≥48×48px）后端接线：点击即生成敏感事件+护工工单，不经语音路由（FR-ALT-06）；② 撤销边界（FR-UI-08）：普通确认 10 秒内可撤销并记审计；红色事件不可一键撤销，只能追加「说错了」由工作人员核实 | SOS 按下 30 秒内护工看板出现红色置顶工单；红色事件撤销尝试仅追加说明、事件保持 open（AC-26 口径） |
 | H12 | 门禁收口与文档回填 | P0 | H1–H11 | ① pytest 全绿 + 新增健康/日报/通知测试；② ruff check + format；③ 前端 tsc + build；④ PRD §6.1 Day 8 完成定义逐条复核（AC-09/10/11/21/22 + 后台权限隔离 + 红色 2 分钟升级）；⑤ README / ER / 相关契约文档回填；⑥ 本计划 §11 执行记录回填 | 全部门禁命令绿（§6）；Day 8 完成定义逐条有证据（截图/SQL/测试名）；`uv run pytest -q` 无 skip 新增 |
 | H13 | 声纹调优与级联验证（FR-VPR-04，D-1 改裁决提前） | P1 | H0；与健康主线（H1–H12）完全并行 | ① 素材：复用 Day 4 spike 留档 + 现场补录本人样本与**不同使用者互测样本**（不涉及真实长者；录制前告知用途、可随时删除——README 合规口径）；② 阈值扫描：以 `voiceprint_service` 现有 cosine 链路在 0.80–0.90 区间批量评测，统计 FAR（误识）/FRR（拒识），逐条记录误识/拒识 case；③ 阈值定稿：按「隐私场景宁可不通过」取平衡点，结论回写 `Settings` 默认值并记录模型/embedding 版本；④ 三档身份级联端到端验证：单人间设备锁定（100%）+ 声纹辅助 / 双人间声纹确认 / 声纹失败主动确认兜底，各演示一次留证；⑤ 产出 `eval/reports/声纹调优报告.md`（TD 目录树指定位置，先例 day07_router_baseline.md） | 报告四要素齐（样本量 / 模型版本 / FAR-FRR 表含 case 记录 / 阈值结论，对齐 FR-VPR-04）；三档级联各留演示证据；阈值变更进 Settings 且可回溯。产能不足时整体顺延 Day 9（PRD §6.2 口径内，commit 说明写明） |
+| H14 | 娱乐点播（戏曲）：表 + 服务 + Tool + 规则直连 + pad 播放（Day 7 债，D-5） | P0 | H0（工具口径入契约）；迁移可与 H1 并行（0018 由迁移主导人顺做，避开迁移写锁） | ① 迁移 `0018_day8_media.py`：`media_library`（type=opera/movie、title/genre/era/artist/media_url/duration/copyright_status，照 TD §3.4）＋ `media_history`（播放时长/完播率，FR-CON-06 P1 部分）；② `media_service`：列表/按剧种剧目搜索/取播放 URL/history 写入（唯一写库层）；③ `opera` 点播 Tool 注册进 tool_registry，经 ToolExecutor 统一执行（G2 权限照走）；④ **规则层执行升级**：R-01~R-08 播放控制从 `capability_not_ready` 降级改为直连真实执行（暂停/继续/停止/换一段/大声点/小声点/重复一遍），每动作过 G2；⑤ pad `<audio>` 播放模块：直连 media_url（PRD §2.1 媒体分发口径），与播报流互斥、可打断；⑥ FR-CON-04：未找到剧目/格式不支持语音+文字提示，不影响其他功能；⑦ mock 素材：程序生成短 wav＋20–30 条种子数据（D-7，media_url 稳定路径约定＋替换操作说明） | AC-37 端到端：正在播放 → 依次「换一段」「大声点」「小声点」「重复一遍」→ 规则层直连执行、路由耗时 ≤200ms（decision_logs 留痕 layer=rule）；请求不存在曲目 → 提示且天气功能仍可用（FR-CON-04）；`media_history` 有播放记录（P1）；素材替换演练一次成功（D-7） |
+| H15 | 记忆治理收尾：冲突检测 + 衰减归并（Day 7 债，D-5） | P0 | H0；语义矛盾判定依赖统一 LLM 适配器（既有） | ① FR-MEM-03/06（P0）冲突检测与版本保留：新萃取候选与存量相似度 >0.9 时做语义矛盾判定 → 旧记忆标 `superseded`、当前生效值唯一、两条版本均保留；补齐 `memory_service` 冲突五关系判定与状态迁移（替换 L203/L250 的 deferred 占位）；② FR-MEM-05 联动：召回过滤排除 superseded/disputed；③ FR-MEM-07（P1，PRD 口径）：90 天衰减 + 每周归并 APScheduler job（scheduler 零写库，照 medication_jobs 驱动链模式） | 单测：已存「喜欢越剧」→ 新萃取「不喜欢越剧了」→ 两版本均在、旧值 superseded、仅新值生效（FR-MEM-03 验收）；删除记忆不再被召回注入（既有回归）；归并任务对两条高度相似记忆输出归并记录（FR-MEM-07）；scheduler 零写库 grep 零命中 |
+| H16 | 评测基线 v1 + eval_gate 门禁（Day 7 债，D-5/D-6 全量） | P0 | H3（路由层稳定后跑基线）；fixtures 可先行 | ① `eval/fixtures/` 扩充：路由固定测试集（50 例固化 + 六类边界：否定/多意图/超时/打断/重复/越权）入库；② 新建 `tests/eval_gate.py`：本地/pre-push 门禁，固定测试集不达标阻止提交（FR-TC-09）；③ 失败分层归因：ASR/分类器/规则层/召回/LLM/Tool/编排七层，评测报告含归因表；④ bad case 自动回流 fixtures；⑤ pre-push 钩子接线 | FR-TC-09 验证：人为调低规则层阈值后跑门禁**被拦截**；评测报告含分层归因表且可复跑；bad case 回流有记录；pre-push 提交触发门禁 |
 
 ## 4. 依赖关系与执行顺序（DAG）
 
@@ -96,10 +107,17 @@ flowchart LR
     H11 --> H12
     H0 --> H13[H13 声纹调优与级联验证]
     H13 --> H12
+    H0 --> H14[H14 娱乐点播]
+    H14 --> H12
+    H0 --> H15[H15 记忆治理收尾]
+    H15 --> H12
+    H3 --> H16[H16 评测基线与门禁]
+    H16 --> H12
 ```
 
 - **关键路径**：H0 → H1 → H2 → H3 → H8 → H12（数据层与子图是全局瓶颈，最先启动）。
-- **可并行**：H5/H6（API 线）与 H3（子图线）在 H2 完成后并行；H9/H10（前端线）在 H5/H6 后并行；H11 只依赖 H7；**H13 与健康主线完全并行**（只依赖 H0），建议安排在联调等待间隙或由独立同学承接。
+- **可并行**：H5/H6（API 线）与 H3（子图线）在 H2 完成后并行；H9/H10（前端线）在 H5/H6 后并行；H11 只依赖 H7；H13 与健康主线完全并行；**H14/H15 与健康主线全并行**（只依赖 H0/H2 已有件），H16 在 H3 后可随时插入。
+- **容量警示（D-5）**：H0–H16 合计约 44 人时 > 4 人 × 8h = 32h，超载部分按 §7 R1 顺延顺位裁剪并留痕，不许静默砍掉。
 - **外部留尾承接**：mock-operations 两工具注册 + `subject_elder_id` 注入 + AC-39 证据在 H3/H8 期间由持有 tool_executor 写锁的同学一并完成（`adhoc-20261110-mockoperations提前实现.md` §4 四项，属 Day 8 范围）。
 - **写锁提示**：`tool_registry.py`/`tool_executor.py`（若 Day 7 dev-C 收口仍未完成则按 day07 交接归属）；`app/api/__init__.py` ROUTERS 追加挂载不改 `main.py`；迁移文件一人主导、autogenerate 后人审 diff。
 
@@ -117,6 +135,10 @@ flowchart LR
 | 前端对接 | `console/{health,reviews,alerts}-api.ts` + 三页面；`family/api.ts` + F0/F1/F2 | 导出签名不变，内部 Mock→真 | tsc 零错；375px 走查截图；无横向滚动 |
 | 测试 | `tests/test_health_*.py`、`tests/test_reports_*.py` 等 | 分级六类/AC-09~11/21/22/25/32/34/38/12/23 对应用例 | AC 用例号写进测试 docstring 便于追溯 |
 | 声纹调优报告 | `eval/reports/声纹调优报告.md`（H13，P1） | 样本量、模型/embedding 版本、FAR/FRR 阈值验证表、误识/拒识 case、阈值结论、三档级联验证记录 | FR-VPR-04 四要素齐；样本合规（现场录制、不涉真实长者、可随时删除）；阈值结论回写 Settings 且变更可回溯 |
+| 媒体迁移与素材 | `alembic/versions/0018_day8_media.py`、mock 素材生成脚本、种子数据（H14） | media_library + media_history 两表；20–30 条 opera 种子；素材替换操作说明 | 人审 diff 可 downgrade；media_url 稳定路径约定（D-7 热替换前提）；种子含 duration 元数据 |
+| 娱乐点播链路 | `app/services/media_service.py`、tool_registry 新增 `opera` Tool、rules.py 执行升级、pad 播放模块（H14） | 列表/搜索/播放/history + 播放控制直连 + FR-CON-04 提示 | 规则直连经 G2；路由耗时 ≤200ms 可复算（AC-37 证据）；pad 与播报流互斥可打断 |
+| 记忆治理收尾 | `app/services/memory_service.py` 冲突判定/状态迁移 + `app/scheduler/memory_jobs.py`（H15） | 冲突五关系判定、superseded/disputed 迁移、90 天衰减 + 每周归并 | 冲突判定走统一 LLM 适配器；FR-MEM-03 验收用例过；scheduler 零写库 |
+| 评测门禁 | `tests/eval_gate.py`、`eval/fixtures/` 扩充、pre-push 钩子（H16） | 固定测试集门禁 + 七层失败归因 + bad case 回流 | FR-TC-09 验证法通过（调低阈值被拦截）；报告可复跑 |
 | 契约冻结 | 两份接口契约文档 v→冻结 | 冻结评审记录 | 变更走各文 §6 留痕 |
 | 文档回填 | README §11、ER、plans/README | 本计划登记 + 落地差异 | 同提交登记 |
 
@@ -148,18 +170,24 @@ grep -rn "from app.graphs" app/api/ app/audio/                  # 零横向 impo
 # AC-25：补录 → 日报新版 + 更新通知仅一次
 # AC-26：红色事件不可一键撤销
 # FR-VPR-04（H13，P1）：eval/reports/声纹调优报告.md 四要素齐；三档级联演示证据各一段
+# AC-37（H14）：正在播放 →「换一段」「大声点」「小声点」「重复一遍」→ 规则层直连，decision_logs layer=rule 且路由耗时 ≤200ms
+# FR-CON-04（H14）：请求不存在曲目 → 提示且天气仍可用
+# FR-MEM-03（H15）：「喜欢越剧」→「不喜欢越剧了」→ 两版本均在、旧值 superseded、仅新值生效
+# FR-TC-09（H16）：人为调低规则层阈值 → eval_gate 拦截提交；报告含分层归因表
 ```
 
 ## 7. 风险与回退
 
 | # | 风险 | 缓解/回退 |
 | --- | --- | --- |
-| R1 | Day 8 为全章最重一天（TD §8.4.5：12 条功能验收），产能不足 | P1 项（FR-HLT-08/09、FR-RPT-03/04、FR-ALT-06、FR-UI-08、**FR-VPR-04**）按 §6.2 顺延 Day 9，**commit 说明写明**；P0 六条 AC 不容顺延。H13 与主线全并行、无表/迁移依赖，是顺延代价最小的 P1 项 |
+| R1 | **H0–H16 合计约 44 人时 > 32h 容量**（D-5 三项 P0 债纳入后） | 顺延顺位（逐级裁剪、commit 说明写明、§11 留痕）：① FR-MEM-07 衰减归并（PRD P1）→ ② H16 的 pre-push 接线（核心 eval_gate 保留）→ ③ H11 pad SOS（P1）→ ④ O1–O3/H13 溢出池。**健康主线六条 AC 与三项欠债核心（H14 的 AC-37、H15 的 FR-MEM-03、H16 的 eval_gate 本体）不容顺延** |
 | R2 | 健康子图 interrupt/resume 与 medication_jobs 的调度模式差异踩坑 | 复用 Day 7 驱动链模式与「图运行后事务提交」裁决；先写 HITL 桩测试再接真确认接口 |
 | R3 | 黄升红（AC-22）跨事件/工单两表一致性 | severity 快照语义照 TD（已建工单 severity 不变）；升级只改 risk_events + 新建紧急工单，全在 H2 单测覆盖 |
 | R4 | family 切真实接口后 Mock 页面回归破坏 | 严格走切换层 USE_MOCK 单独放行模式（N1/N4 先例）；Mock 删除条件不满足则保留开关 |
 | R5 | 通知重试/升级扫描与 scheduler 既有 tick 冲突 | health_jobs 独立文件独立注册，不复用 medication tick；扫描 job 幂等（状态条件扫描天然幂等） |
-| R6 | `tool_executor` 写锁归属不明导致 mock-operations 注册阻塞 | H0 时确认 Day 7 dev-C C3 收口状态；未收口则按 day07 交接链催办，注册项单列不阻塞 H1–H7 |
+| R6 | `tool_executor` 写锁归属不明导致 mock-operations 注册阻塞 | H0 时确认 Day 7 dev-C C3 收口状态（2026-11-11 核验：C3 已完成，锁已释放）；注册项单列不阻塞 H1–H7 |
+| R7 | 戏曲语义矛盾判定依赖 LLM 且素材/mock 质量影响 AC-37 | 冲突判定走统一 LLM 适配器（非直连 SDK），失败降级为「保留双版本人工复核」不阻塞写入；mock 素材按 D-7 稳定路径约定，真素材热替换演练一次留证 |
+| R8 | dev-D 联调未收口（day07 PROGRESS 7/8） | dev-D 收口继续跟踪，不阻塞 H 线；H14 pad 播放模块与 D1 触达链路的打断互斥需在 H14 验收中覆盖 |
 
 ## 8. 范围外 / 不排期清单（显式登记，防「以后再说」）
 
@@ -170,6 +198,9 @@ grep -rn "from app.graphs" app/api/ app/audio/                  # 零横向 impo
 | 自定义采集时间（FR-HLT-05，P2） | PRD P2，不排期 |
 | 真实浏览器 Web Push（VAPID/Service Worker） | TD 裁决 B5：P0 只做落库+演示卡片，P1 归属后续 |
 | 电影/新闻（FR-CON-05）、分类模型对比（FR-DLG-08） | PRD P2 / Day 9 |
+| 记忆查看/纠正/删除前端（FR-MEM-02，AC-14） | TD §8.4.3 归 Day 9；H15 只做后端冲突检测与衰减 |
+| 历史/模糊主诉黄档判红修正（FR-DLG-07 尾巴） | day07 safety 卡显式登记归 Day 9（「昨天疼现在好了」缓解标记判黄） |
+| P2-9 多 worker ack 归属（day07 审查遗留） | day07 README O7-3 显式登记 Day 9 |
 
 ## 9. 大纲流程对照（仅取流程，逐课时映射本计划任务）
 
@@ -179,14 +210,19 @@ grep -rn "from app.graphs" app/api/ app/audio/                  # 零横向 impo
 | 8.2 护工看板 | 待处理列表+确认/升级闭环 | H9（形态按 D-3 裁决走 React）+ H7 状态机 |
 | 8.3 医生视图与家属 H5 | 14 天折线、日报 H5 大字号 | H9⑤、H10 |
 | 8.4 声纹调优与级联验证 | 补注册样本 → cosine 阈值扫描（0.80–0.90）→ 三档身份级联验证 → 出验证报告 | H13（D-1 改裁决提前，P1 尽力） |
+| （Day 7 剩余）娱乐点播 | day07 README §1.1 顺延至实际 Day 8 补齐 | H14（D-5，P0 债） |
+| （Day 7 剩余）记忆治理完整五步 | 同上；缺冲突检测与衰减归并两步 | H15（D-5，P0 债） |
+| （Day 7 剩余）评测基线 v1 与失败归因 | 同上；D-6 裁决含 eval_gate 门禁全量 | H16（D-5/D-6，P0 债） |
 
 ## 10. 待确认项（执行前需主理人/相关同学回应）
 
-1. **tool_executor/tool_registry 写锁归属**：Day 7 dev-C C3 收口状态与 mock-operations 注册的承接人（R6）。
-2. **健康域 REST 端点编号**：冻结《接口契约_照护台业务数据》时为新端点分配编号（沿用 W/N/H 前缀惯例），H5 开工前定。
-3. **19:00 采集的测试策略**：演示环境是否允许将采集时间经 Settings 覆盖为可测试时刻（建议允许，环境变量豁免口径同既有端口覆盖）。
-4. **日报 TTS 语音条（FR-RPT-04）**：audio_url 生成依赖 TTS 服务配额，若教师 key 受限则按 P1 顺延并在执行记录留痕。
-5. **H13 互测样本与演示人员**：FR-VPR-04 需「不同使用者互测样本」与三档级联演示（单人间/双人间场景），执行前确认可参与录制的人员名单与房间场景模拟方式。
+1. **四人分工重排**：✅ 已完成（2026-11-11，主理人四裁决：不限工时全量分配 / H14 按写域四段拆 A·B·C·D / H15 归 B / H16 归 D 且 SOS 转 R1③ 顺延项）——`docs/team_tasks/day08/` 五件套已升 v1.1，新增对接点 X8（戏曲链四方契约）与 X9（评测基线交接）
+2. **迁移写锁**：0017（H1）与 0018（H14）两笔迁移建议由同一人顺做，避免并行 autogenerate 冲突——分工重排时确认。
+3. **健康域 REST 端点编号**：冻结《接口契约_照护台业务数据》时为新端点分配编号（沿用 W/N/H 前缀惯例），H5 开工前定；娱乐域走 Tool 直连无 REST 端点，但 media 工具口径需入 H0 契约冻结范围。
+4. **19:00 采集的测试策略**：演示环境是否允许将采集时间经 Settings 覆盖为可测试时刻（建议允许，环境变量豁免口径同既有端口覆盖）。
+5. **日报 TTS 语音条（FR-RPT-04）**：audio_url 生成依赖 TTS 服务配额，若教师 key 受限则按 P1 顺延并在执行记录留痕。
+6. **H13 互测样本与演示人员**：FR-VPR-04 需「不同使用者互测样本」与三档级联演示（单人间/双人间场景），执行前确认可参与录制的人员名单与房间场景模拟方式。
+7. **eval 固定测试集来源**：day07 的 50 例路由测试集与 `day7_intents.jsonl` 的固化位置需在 H16 开工前核实归档（a3-路由基线.md 称可复跑）。
 
 ## 11. 执行记录（执行时逐条回填）
 
@@ -202,3 +238,4 @@ grep -rn "from app.graphs" app/api/ app/audio/                  # 零横向 impo
 | --- | --- | --- |
 | v1.0 | 2026-11-10 | 首版：基于 PRD v3.0 / TD v2.1 / 大纲 Day 8 流程 + 代码现状实测（迁移止于 0016、健康子图/服务未建、mock-operations 已提前交付未注册）编制；四项主理人裁决登记（D-1 声纹顺延 Day 9 / D-2 医院对接不排期 / D-3 看板 React 形态 / D-4 聚合预警 P2 弹性）；H0–H12 任务拆解 + DAG + 交付物 + 命令级自检 |
 | v1.1 | 2026-11-10 | 主理人改裁决 D-1：声纹调优（FR-VPR-04）由顺延 Day 9 改为**纳入 Day 8**（依据 PRD §4 FR 表行「Day 8.4 产出报告」+ 大纲 8.4），新增 **H13（P1 尽力，与健康主线全并行）**；同步调整 §2 基线（声纹链路现状）、§4 DAG、§5 交付物（eval/reports/声纹调优报告.md）、§6 自检、§7 R1、§8 范围外（移除声纹行）、§9 对照、§10 待确认（新增互测样本人员）；PRD §6.1 Day 9 行与 TD §8.4.3 归属待修订登记 |
+| v1.2 | 2026-11-11 | 依据 day07 README §1.1（实际 Day 8 = 原大纲 Day 8 ＋ Day 7 剩余）+ 代码核查，纳入 **Day 7 欠债三项**：H14 娱乐点播（FR-CON-03/04，P0）、H15 记忆治理收尾（FR-MEM-03/06 P0 + FR-MEM-07 P1）、H16 评测基线 v1 + eval_gate 门禁（FR-TC-09，P0）；新裁决登记：D-5 三项全列 P0（容量 44h>32h，顺延顺位入 R1）、D-6 评测门禁 Day 8 全量（TD §8.4.3 冲突回填 README §11）、D-7 戏曲素材 mock 先行/真素材热替换；§2 基线补五项核查（media 表缺失、memory deferred、eval_gate 缺失、static 仅 TTS 缓存、day07 卡状态过期已核验改为 7/8）；§8 范围外补 Day 9 显式登记三项；§10 待确认重排（分工重排/迁移写锁/评测集来源） |

@@ -7,10 +7,10 @@
 
 | # | 任务卡 | 状态 | 文件 |
 | --- | --- | --- | --- |
-| 1 | dev-A 个人任务书 | ❔ 未标注 | `docs/team_tasks/day08/dev-A-后端数据与分级.md` |
-| 2 | dev-B 个人任务书 | ❔ 未标注 | `docs/team_tasks/day08/dev-B-后端子图调度与MCP.md` |
-| 3 | dev-C 个人任务书 | ❔ 未标注 | `docs/team_tasks/day08/dev-C-健康域API与console.md` |
-| 4 | dev-D 个人任务书 | ❔ 未标注 | `docs/team_tasks/day08/dev-D-日报通知API与family-pad.md` |
+| 1 | dev-A 个人任务书 | ⬜ 未开始 | `docs/team_tasks/day08/dev-A-后端数据与分级.md` |
+| 2 | dev-B 个人任务书 | ⬜ 未开始 | `docs/team_tasks/day08/dev-B-后端子图调度与MCP.md` |
+| 3 | dev-C 个人任务书 | ⬜ 未开始 | `docs/team_tasks/day08/dev-C-健康域API与console.md` |
+| 4 | dev-D 个人任务书 | ⬜ 未开始 | `docs/team_tasks/day08/dev-D-日报通知API与family-pad.md` |
 
 ## 计划件状态
 
