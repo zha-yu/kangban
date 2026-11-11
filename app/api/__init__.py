@@ -29,6 +29,7 @@ from app.api import (
     health,
     health_records,
     pad,
+    reports,
     rooms,
     staff,
     voiceprints,
@@ -51,7 +52,8 @@ ROUTERS: tuple[tuple[APIRouter, str], ...] = (
     (admin_org.router, ""),  # 自带 /api/admin 前缀（房间/床位管理，计划 v1.5）
     (workorders.router, ""),  # 自带 /api/work-orders 前缀（f2-D1 console 看板，2026-11-10 提前件）
     (family.router, ""),  # 自带 /api/family 前缀（N1/N4 家属通知，Day 8 P8 提前件）
-    (alerts.router, ""),  # 自带 /api 前缀（N-3 员工确认，Q-D1 批准新增，2026-11-11）
+    (alerts.router, ""),  # 自带 /api 前缀（N-1/N-2/N-3 员工告警域，Q-D1 批准新增）
+    (reports.router, ""),  # 自带 /api/family 前缀（F2 家属日报详情，Day 8 D1）
     (
         health_records.router,
         "",
