@@ -550,7 +550,7 @@ uv run python scripts/update_progress.py --check-plans
 
 | 项 | 现象 | 根因 | 建议处置 | 归属 |
 | --- | --- | --- | --- | --- |
-| `test_staff_reassign.py::test_stale_write_conflict_on_outdated_baseline` | 全量跑失败：`new_ts > baseline` 断言不成立（new 13:51:01.769Z < baseline 13:51:02.163Z）；**单跑 passed**（4.99s），D 侧文件零失败 | `staff_service.reassign_elders` 用 **Python `datetime.now(UTC)`** 推进 `updated_at`，而测试基线/种子来自 **PostgreSQL `now()`（事务开始时刻）**；两套时钟在容器与宿主机间有亚秒级偏差，全量跑时基线可能「晚于」Python 墙钟，断言随机翻红 | 统一时钟源：service 改用 `func.now()` 推进（或测试基线也取 Python 时间）；不要用 `sleep`/放宽断言掩盖 | A（staff_service 写域）＋B（测试夹具） |
+| `test_staff_reassign.py::test_stale_write_conflict_on_outdated_baseline`／`::test_put_elders_stale_write_returns_409` | 全量跑失败：`new_ts > baseline` 不成立（new 14:16:00.311Z < baseline 14:16:00.515Z）；API 级 CAS 因此误判为新鲜、返回 200 而非 409；**两条单跑均 passed**（5.12s），D 侧文件零失败 | `staff_service.reassign_elders` 用 **Python `datetime.now(UTC)`** 推进 `updated_at`，而 `elders.updated_at` 的 `server_default` 是 **PostgreSQL `now()`**；容器与宿主机存在亚秒级时钟偏差，全量跑时基线可能「晚于」Python 墙钟，推进变成倒退 | 统一时钟源：service 改用 `func.now()`（同一事务内可用 `greatest(now(), updated_at + 1µs)` 保证严格推进），或测试种子改 Python 时钟；不要用 `sleep`/放宽断言掩盖 | A（staff_service 写域）＋B（测试夹具） |
 
 ---
 
