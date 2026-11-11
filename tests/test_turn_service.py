@@ -51,6 +51,7 @@ from app.models.conversation import (
 )
 from app.models.memory import MemoryChunk
 from app.models.organization import Device, Elder, Room
+from app.router.decision import RouteDecision
 from app.router.safety import SafetyDecision
 from app.services.dialogue_service import (
     SAFETY_VETO_REPLY_TEXT,
@@ -76,11 +77,31 @@ from app.services.turn_service import (
     StateVersionConflict,
     TurnRuntime,
     TurnService,
+    _is_route_degraded,
 )
 
 _DEVICE_TOKEN = "test-device-token-hash"
 _ELDER_ID = "0197f6a2-3b7c-7c05-b3a0-9d4c1a2b3c5e"
 _DEVICE_ID = "0197f6a2-3b7c-7c05-b3a0-9d4c1a2b3c4d"
+
+
+def test_route_degraded_only_for_fallback_agent_normal_reply() -> None:
+    """D6：fallback→L2 正常生成=true；clarify/拒答/生成降级轮=false。"""
+
+    class _D:
+        def __init__(self, layer: str, action: str) -> None:
+            self.route_layer = layer
+            self.action = action
+
+    class _R:
+        def __init__(self, degraded: bool) -> None:
+            self.degraded = degraded
+
+    assert _is_route_degraded(_D("fallback", "agent"), _R(False)) is True
+    assert _is_route_degraded(_D("fallback", "agent"), _R(True)) is False
+    assert _is_route_degraded(_D("system_one", "answer"), _R(False)) is False
+    assert _is_route_degraded(_D("fallback", "clarify"), _R(False)) is False
+    assert _is_route_degraded(None, _R(False)) is False
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +371,21 @@ class _ScriptedAgent:
         if not self._results:
             raise AssertionError("ScriptedAgent 脚本耗尽（不该再调 LLM/Agent）")
         return self._results.pop(0)
+
+
+class _RoutingStub:
+    """RouterLike 替身：只给固定路由结论，不执行直连工具（D6 置位用例）。"""
+
+    def __init__(self, decision: Any) -> None:
+        self.decision = decision
+
+    async def decide(self, text: str, *, thread_id: str, runtime: TurnRuntime) -> Any:
+        return self.decision
+
+    async def execute_tool(
+        self, decision: Any, *, runtime: TurnRuntime, turn_id: str
+    ) -> Any | None:
+        return None
 
 
 class _ScriptedLLM:
@@ -634,6 +670,46 @@ async def test_event_flow_ordered_and_monotonic(
     # 第 7 步分段下发：发给本设备
     assert deliver.messages and deliver.messages[0][0] == seeded["device_id"]
     assert sink.events[0]["event_type"] == "response_started"
+
+
+# ---------------------------------------------------------------------------
+# ①b D6：route_degraded 按路由层置位并恒下发
+# ---------------------------------------------------------------------------
+
+
+async def test_tts_text_route_degraded_follows_router_layer(
+    turn_db: async_sessionmaker[AsyncSession], seeded: dict[str, str]
+) -> None:
+    """D6（冻结 v1.0）：fallback 轮每条 tts_text 为 true；正常路由轮显式 false。"""
+    router = _RoutingStub(
+        RouteDecision(route_layer="fallback", action="agent", escalated_to_s2=True)
+    )
+    deliver = _RecordingDeliver()
+    service = TurnService(
+        session_factory=turn_db,
+        agent=_ScriptedAgent(
+            [AgentTurnResult(text="好的，我陪您聊聊。"), AgentTurnResult(text="好的。")]
+        ),
+        response_stream=ResponseService(deliver=deliver, events=_RecordingSink()),
+        router=router,
+    )
+    runtime = _runtime(
+        seeded["thread_id"], elder_id=seeded["elder_id"], device_id=seeded["device_id"]
+    )
+
+    # fallback 轮（L0/L1 不可用 → L2 正常生成）
+    await service.handle_user_turn(
+        runtime, "今天天气怎么样", call_id=None, turn_id="turn-d6a"
+    )
+    assert deliver.messages
+    assert all(msg["route_degraded"] is True for _, msg in deliver.messages)
+
+    # 正常路由轮（L0/L1 命中）：同一字段恒下发、值为 false
+    deliver.messages.clear()
+    router.decision = RouteDecision(route_layer="system_one", action="agent")
+    await service.handle_user_turn(runtime, "我想听戏", call_id=None, turn_id="turn-d6b")
+    assert deliver.messages
+    assert all(msg["route_degraded"] is False for _, msg in deliver.messages)
 
 
 # ---------------------------------------------------------------------------

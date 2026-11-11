@@ -723,7 +723,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # 已在上方提前 return（分节奏下发，不再整段合成/入轨）。
             delivered = signaling.deliver(
                 device_id,
-                {"type": "tts_text", "text": reply.text, "degraded": reply.degraded},
+                {
+                    "type": "tts_text",
+                    "text": reply.text,
+                    "degraded": reply.degraded,
+                    # D6：legacy 出口不走路由层，恒 false（字段恒下发，见契约冻结 v1.0）
+                    "route_degraded": False,
+                },
             )
             logger.info(
                 "dialogue_reply_delivered",
