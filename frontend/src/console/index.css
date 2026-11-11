@@ -1482,3 +1482,35 @@ body {
 .staff-no-match .btn-ghost {
   margin-left: 8px;
 }
+
+/* ---- 长者 14 天趋势（O1 / FR-HLT-09，复核卡片内嵌展开） ---- */
+
+.trend-box {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--color-border, #d9d9d9);
+  border-radius: 8px;
+  background: var(--color-surface, #fafafa);
+}
+
+.trend-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--color-text-secondary, #555);
+}
+
+.trend-canvas-wrap {
+  position: relative;
+  height: 220px;
+}
+
+.trend-loading,
+.trend-error {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--color-text-secondary, #555);
+}
+
+.trend-error {
+  color: var(--color-danger, #c0392b);
+}
