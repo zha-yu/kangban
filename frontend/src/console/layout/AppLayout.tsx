@@ -4,8 +4,8 @@ import { logout, roleLabel, type Principal } from "../api";
  * 照护台应用骨架（task-06 F2）：浅色侧栏 + 顶栏 + 主区。
  *
  * 口径（前端页面方案 §3.2 通用）：侧栏浅色同族 + 主色 8% 底选中态，不用深侧栏；
- * 护工/医生业务项按批次交付；管理员 Day 5 交付「用户与角色」「模拟设备」两项，
- * 「教学数据重置 / 人设配置 / 审计日志」保持置灰（不属 D-1 四流程范围）。
+ * 护工/医生业务项按批次交付；管理员 Day 5 交付「用户与角色」「模拟设备」，
+ * Day 9 C6 交付「教学重置与退房 / 记忆管理 / 统计与审计」；「人设配置」保持置灰（X6 作废）。
  */
 
 /** 侧栏菜单项：label + 可用性；enabled 仅当前批次已交付项 */
@@ -35,9 +35,11 @@ const NAV_BY_ROLE: Record<string, NavItem[]> = {
     { key: "users", label: "用户与角色", enabled: true }, // Day 5 D-1 交付（真实端点 E12/E15/E13）
     { key: "rooms", label: "房间与床位", enabled: true }, // 房间/床位管理（E20–E28）
     { key: "devices", label: "模拟设备", enabled: true }, // Day 5 D-1 交付（E18/E16/E17）
-    { key: "reset", label: "教学数据重置", enabled: false },
-    { key: "persona", label: "人设配置", enabled: false },
-    { key: "audit", label: "审计日志", enabled: false },
+    { key: "reset", label: "教学重置与退房", enabled: true }, // Day 9 C6 交付（A4 未交付时页面提示）
+    { key: "memory", label: "记忆管理", enabled: true }, // Day 9 C6 交付（X5 未交付时页面提示）
+    { key: "stats", label: "统计与审计", enabled: true }, // Day 9 C6 交付（FR-ALT-05 三指标 + 审计表/导出）
+    // 审计日志并入「统计与审计」页（C6 收口，避免同内容双入口）
+    { key: "persona", label: "人设配置", enabled: false }, // X6 作废，保持置灰
   ],
 };
 

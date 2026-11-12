@@ -19,12 +19,14 @@ X2 口径（S2 冻结，与 dev-A A3 落库基准同款三段式，提交 99e09d
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import datetime
 import logging
+import struct
 import uuid
 import zoneinfo
-from typing import Any, Final
+from typing import Any, Final, Protocol, runtime_checkable
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,6 +60,64 @@ _MED_TERMINAL_STATES: Final = (
     "missed_unconfirmed",
     "notification_failed",
 )
+
+# ------------------------------------------------------------------ F30 日报语音条
+# services 禁反向 import app/audio（response_service 同款红线），故此处只定义
+# **结构协议**（与 app.audio.asr.TTSProvider 的 ``synthesize(text)->bytes`` 同形），
+# 由调用方（scheduler 装配 / 测试）注入任意实现；合成失败一律降级纯文本（模型注释口径）。
+
+
+@runtime_checkable
+class ReportTtsSynthesizer(Protocol):
+    """日报语音条合成协议（F30，FR-RPT-04）：文本 → 16kHz/16bit/单声道 s16le PCM。"""
+
+    async def synthesize(self, text: str) -> bytes: ...
+
+
+#: PCM 口径与 app/audio/tts.py C1 契约一致（本地常量，避免反向 import）
+_PCM_SAMPLE_RATE: Final[int] = 16_000
+_PCM_SAMPLE_WIDTH: Final[int] = 2
+_PCM_CHANNELS: Final[int] = 1
+
+
+def pcm_to_wav_bytes(pcm: bytes) -> bytes:
+    """裸 s16le PCM 包装为 WAV 容器（RIFF 头 + 数据；F30 语音条承载格式）。"""
+    byte_rate = _PCM_SAMPLE_RATE * _PCM_CHANNELS * _PCM_SAMPLE_WIDTH
+    block_align = _PCM_CHANNELS * _PCM_SAMPLE_WIDTH
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        36 + len(pcm),
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,  # PCM
+        _PCM_CHANNELS,
+        _PCM_SAMPLE_RATE,
+        byte_rate,
+        block_align,
+        _PCM_SAMPLE_WIDTH * 8,
+        b"data",
+        len(pcm),
+    )
+    return header + pcm
+
+
+def _tts_data_url(wav: bytes) -> str:
+    """WAV → ``data:audio/wav;base64,…``（教学/演示期免对象存储；D10 上线存储后换 URL 口径）。"""
+    return "data:audio/wav;base64," + base64.b64encode(wav).decode("ascii")
+
+
+async def synthesize_report_audio(tts: ReportTtsSynthesizer, summary_text: str) -> str | None:
+    """日报摘要 → ``audio_url``（F30）。合成失败降级纯文本（返回 None，不抛出、不阻断日报）。"""
+    try:
+        pcm = await tts.synthesize(summary_text)
+    except Exception:
+        logger.warning("report_tts_failed report_len=%s", len(summary_text))
+        return None
+    if not pcm:
+        return None
+    return _tts_data_url(pcm_to_wav_bytes(pcm))
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -277,6 +337,7 @@ async def generate_daily_report(
     elder_id: uuid.UUID,
     report_date: datetime.date | None = None,
     regenerate: bool = False,
+    tts: ReportTtsSynthesizer | None = None,
 ) -> DailyReportRef:
     """生成（或补录）某长者某日日报。
 
@@ -322,6 +383,7 @@ async def generate_daily_report(
     version = (
         await _latest_version(session, elder_id=elder_id, report_date=day) + 1 if regenerate else 1
     )
+    audio_url = await synthesize_report_audio(tts, summary_text) if tts is not None else None
     report = DailyReport(
         elder_id=elder_id,
         report_date=day,
@@ -329,6 +391,7 @@ async def generate_daily_report(
         status="normal",
         summary_text=summary_text,
         medication_stats=stats,
+        audio_url=audio_url,
         pushed_at=datetime.datetime.now(datetime.UTC),  # 生成即推送（通知随后落）
     )
     session.add(report)

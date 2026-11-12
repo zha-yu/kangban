@@ -447,3 +447,75 @@ async def test_list_bound_elders_for_guardian_f0(world: ReportWorld, db_conn) ->
         == []
     )
     await session.rollback()
+
+
+# ------------------------------------------------------------------ F30 日报语音条
+
+
+class _FakeTtsOk:
+    """成功合成桩：返回可辨识的假 PCM（s16le 静音 1600 采样 = 0.1s）。"""
+
+    async def synthesize(self, text: str) -> bytes:
+        assert "教学模拟" in text  # summary_text 含免责声明
+        return b"\x00\x00" * 1600
+
+
+class _FakeTtsDown:
+    """TTS 不可用桩（对应 TTSUnavailable 路径）。"""
+
+    async def synthesize(self, text: str) -> bytes:
+        raise RuntimeError("tts unavailable")
+
+
+async def test_report_audio_url_written(world: ReportWorld, db_conn) -> None:
+    """F30：注入 tts → audio_url 落 data:audio/wav;base64；WAV 头 44 字节、负载为 PCM。"""
+    import base64
+
+    session = AsyncSession(db_conn)
+    ref = await report_service.generate_daily_report(
+        session, elder_id=world.elder_id, report_date=datetime.date(2026, 3, 1), tts=_FakeTtsOk()
+    )
+    row = await session.get(DailyReport, ref.report_id)
+    assert row is not None and row.audio_url is not None
+    assert row.audio_url.startswith("data:audio/wav;base64,")
+    wav = base64.b64decode(row.audio_url.split(",", 1)[1])
+    assert len(wav) == 44 + 3200  # RIFF 头 44B + 1600 采样 × 2B
+    assert wav[:4] == b"RIFF" and wav[8:12] == b"WAVE"
+    await session.rollback()
+
+
+async def test_report_audio_downgrades_on_tts_failure(world: ReportWorld, db_conn) -> None:
+    """F30：合成失败 → audio_url=None（降级纯文本），日报本身照常生成。"""
+    session = AsyncSession(db_conn)
+    ref = await report_service.generate_daily_report(
+        session,
+        elder_id=world.elder_id,
+        report_date=datetime.date(2026, 3, 2),
+        tts=_FakeTtsDown(),
+    )
+    row = await session.get(DailyReport, ref.report_id)
+    assert row is not None
+    assert row.audio_url is None
+    assert row.summary_text  # 纯文本摘要仍在
+    await session.rollback()
+
+
+async def test_report_audio_none_without_tts(world: ReportWorld, db_conn) -> None:
+    """F30：未注入 tts（既有调用方）→ audio_url=None，行为向后兼容。"""
+    session = AsyncSession(db_conn)
+    ref = await report_service.generate_daily_report(
+        session, elder_id=world.elder_id, report_date=datetime.date(2026, 3, 3)
+    )
+    row = await session.get(DailyReport, ref.report_id)
+    assert row is not None and row.audio_url is None
+    await session.rollback()
+
+
+def test_pcm_to_wav_header() -> None:
+    """F30 纯函数：WAV 头字段逐字节符合 16k/16bit/单声道 PCM 口径。"""
+    pcm = b"\x01\x02" * 8
+    wav = report_service.pcm_to_wav_bytes(pcm)
+    assert len(wav) == 44 + len(pcm)
+    assert wav[22:24] == (1).to_bytes(2, "little")  # channels=1
+    assert wav[24:28] == (16000).to_bytes(4, "little")  # sample rate
+    assert wav[34:36] == (16).to_bytes(2, "little")  # bits per sample

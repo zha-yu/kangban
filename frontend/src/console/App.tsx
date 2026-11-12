@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ComponentType } from "react";
 import {
   ApiError,
   cachedProfile,
@@ -20,6 +20,9 @@ import { ReviewQueuePage } from "./pages/ReviewQueuePage";
 import { AdminUsersPage } from "./pages/AdminUsersPage";
 import { AdminRoomsPage } from "./pages/AdminRoomsPage";
 import { AdminDevicesPage } from "./pages/AdminDevicesPage";
+import { AdminLifecyclePage } from "./pages/AdminLifecyclePage";
+import { AdminMemoryPage } from "./pages/AdminMemoryPage";
+import { AdminStatsPage } from "./pages/AdminStatsPage";
 
 /**
  * 照护台入口：登录态路由 + 角色分流（task-06～11 F2–F7）。
@@ -31,13 +34,34 @@ import { AdminDevicesPage } from "./pages/AdminDevicesPage";
  *   / 告警通知中心（Mock）/ 健康代填（提交 Mock + 长者下拉真实 E7）/ 药单只读（Mock）；
  * - doctor → 复核队列（Mock，task-11）/ 药单维护（Mock，task-12），其余医生项仍置灰；
  * - admin → 用户与角色 / 模拟设备（Day 5 D-1，真实端点 E12/E15/E13/E18/E16/E17），
- *   教学数据重置 / 人设配置 / 审计日志仍置灰（后续批次）；
+ *   教学重置与退房 / 记忆管理 / 统计与审计（Day 9 C6；A4/X5 未交付时页面内提示），
+ *   人设配置仍置灰（X6 作废）；
  * - guardian → 家属应走 family 入口，此处仅占位提示。
  */
 type View = "loading" | "login" | "home";
 type CareWorkerView = "workorders" | "elders" | "alerts" | "health-form" | "medication";
+
+/** 护工侧栏视图 → 页面组件（映射表查表，不用三元链；键与 AppLayout NAV_BY_ROLE 的 key 对齐） */
+const CARE_PAGE_BY_VIEW: Record<CareWorkerView, ComponentType<{ principal: Principal }>> = {
+  workorders: WorkOrdersPage,
+  elders: EldersPage,
+  alerts: AlertsPage,
+  "health-form": HealthFormPage,
+  medication: MedicationPage,
+};
+
 type DoctorView = "review-queue" | "medication-edit";
-type AdminView = "users" | "rooms" | "devices";
+type AdminView = "users" | "rooms" | "devices" | "reset" | "memory" | "stats";
+
+/** admin 侧栏视图 → 页面组件（映射表查表，不用三元链；键与 AppLayout NAV_BY_ROLE 的 key 对齐） */
+const ADMIN_PAGE_BY_VIEW: Record<AdminView, ComponentType> = {
+  users: AdminUsersPage,
+  rooms: AdminRoomsPage,
+  devices: AdminDevicesPage,
+  reset: AdminLifecyclePage,
+  memory: AdminMemoryPage,
+  stats: AdminStatsPage,
+};
 
 function PlaceholderHome({ principal }: { principal: Principal }) {
   return (
@@ -86,6 +110,7 @@ export default function App() {
   if (view === "home" && principal) {
     const handleLogout = () => setView("login");
     if (principal.kind === "staff" && principal.role === "care_worker") {
+      const CarePage = CARE_PAGE_BY_VIEW[careView];
       return (
         <AppLayout
           principal={principal}
@@ -93,17 +118,7 @@ export default function App() {
           onLogout={handleLogout}
           onNavigate={(key) => setCareView(key as CareWorkerView)}
         >
-          {careView === "elders" ? (
-            <EldersPage />
-          ) : careView === "alerts" ? (
-            <AlertsPage principal={principal} />
-          ) : careView === "health-form" ? (
-            <HealthFormPage principal={principal} />
-          ) : careView === "medication" ? (
-            <MedicationPage />
-          ) : (
-            <WorkOrdersPage principal={principal} />
-          )}
+          <CarePage principal={principal} />
         </AppLayout>
       );
     }
@@ -120,6 +135,7 @@ export default function App() {
       );
     }
     if (principal.kind === "staff" && principal.role === "admin") {
+      const AdminPage = ADMIN_PAGE_BY_VIEW[adminView];
       return (
         <AppLayout
           principal={principal}
@@ -127,13 +143,7 @@ export default function App() {
           onLogout={handleLogout}
           onNavigate={(key) => setAdminView(key as AdminView)}
         >
-          {adminView === "rooms" ? (
-            <AdminRoomsPage />
-          ) : adminView === "devices" ? (
-            <AdminDevicesPage />
-          ) : (
-            <AdminUsersPage />
-          )}
+          <AdminPage />
         </AppLayout>
       );
     }

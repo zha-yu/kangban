@@ -245,6 +245,22 @@ export async function apiGet<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** 鉴权原始 GET（Day 9 C6：审计 CSV 导出等二进制/非 JSON 响应）：返回原始 Response，
+ *  401 已归一，404/403 等状态码由调用方分支（stats-api assertAuditOk） */
+export async function apiGetRaw(path: string): Promise<Response> {
+  let res: Response;
+  try {
+    res = await authedFetch(path);
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    throw new ApiError("network", NETWORK_ERROR_TEXT);
+  }
+  if (res.status === 401) {
+    throw new ApiError("invalid", INVALID_CREDENTIAL_TEXT);
+  }
+  return res;
+}
+
 /** 带状态的鉴权 GET：4xx/5xx 不再吞成「网络异常」，把状态码与错误码抛给调用方分支 */
 export async function apiGetWithStatus<T>(path: string): Promise<{ status: number; body: T | null }> {
   let res: Response;

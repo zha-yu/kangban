@@ -1561,3 +1561,182 @@ body {
 .trend-error {
   color: var(--color-danger, #c0392b);
 }
+
+/* ---- 管理台三页（Day 9 · C6 · S5：教学重置与退房 / 记忆管理 / 统计与审计） ----
+   原生 CSS + var() 引 tokens（不引组件库）；沿用卡片 / 徽标 / 按钮既有族。 */
+
+.adm-page {
+  max-width: 960px;
+}
+
+.adm-section {
+  margin-bottom: 16px;
+  padding: 20px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-card);
+}
+
+.adm-section-title {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.adm-note {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--color-ink-muted);
+}
+
+.adm-toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.adm-toolbar .field {
+  margin: 0;
+  min-width: 160px;
+}
+
+.adm-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.adm-result {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  font-size: 14px;
+  border-radius: var(--radius-control);
+  background: var(--color-success-soft);
+  color: var(--color-success-ink);
+}
+
+.adm-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.adm-card {
+  padding: 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-card);
+}
+
+.adm-card-value {
+  font-size: 28px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.adm-card-label {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--color-ink-muted);
+}
+
+.adm-table-wrap {
+  overflow-x: auto;
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-card);
+}
+
+.adm-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.adm-table th,
+.adm-table td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--color-line);
+  vertical-align: top;
+}
+
+.adm-table th {
+  background: var(--color-surface-sunken);
+  color: var(--color-ink-muted);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* 危险操作确认按钮：danger-ink 实底反白（比主色更警示，用于退房/重置/删除） */
+.btn-danger {
+  min-height: 40px;
+  padding: 0 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--color-danger-ink);
+  color: var(--color-ink-inverse);
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-danger-ink) 85%, #000);
+}
+
+.btn-danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---- 记忆管理列表（Day 9 · C6 · S5） ---- */
+
+.mem-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mem-item {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--color-line);
+}
+
+.mem-item:last-child {
+  border-bottom: 0;
+}
+
+.mem-text {
+  flex: 1;
+  font-size: 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mem-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--color-ink-muted);
+  white-space: nowrap;
+}
+
+.mem-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--color-ink-subtle);
+  word-break: break-all;
+}
