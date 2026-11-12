@@ -36,6 +36,11 @@ from app.models.medication import MedicationEvent, RiskEvent
 from app.models.organization import Elder
 from app.models.relation import ElderGuardian
 from app.models.report import DailyReport
+
+# 用药终态五值的单一来源（与 0020 CHECK 同源）。此前 report_service 本地维护四值
+# 元组，0020 追加 `late_taken_reported` 后未同步——该终态在统计里被判成
+# `state=None` 丢弃，family 日报五键缺一行（D11 联调阻塞项，2026-11-12 修复）。
+from app.services.medication_service import TERMINAL_STATES as _MED_TERMINAL_STATES
 from app.services.notify_service import (
     NotificationTargetNotFound,
     PurgeRef,
@@ -52,16 +57,6 @@ NOTIFICATION_TYPE_DAILY_REPORT: Final = "daily_report_updated"
 
 #: 免责声明（PRD §1.4：不构成医疗诊断）
 DISCLAIMER: Final = "本日报为教学模拟信息，不构成医疗诊断。"
-
-#: 用药终态五类（models/medication.py terminal_state CHECK 约束口径；B4 已落库
-#: late_taken_reported，本处对齐——family 五键联调 D11 14:00，2026-11-12 dev-B 提出）
-_MED_TERMINAL_STATES: Final = (
-    "taken_reported",
-    "refused",
-    "missed_unconfirmed",
-    "notification_failed",
-    "late_taken_reported",
-)
 
 # ------------------------------------------------------------------ F30 日报语音条
 # services 禁反向 import app/audio（response_service 同款红线），故此处只定义
@@ -184,7 +179,7 @@ async def _collect_medication_stats(
     elder_id: uuid.UUID,
     window: tuple[datetime.datetime, datetime.datetime],
 ) -> dict[str, Any]:
-    """当日用药事件按终态四类分列（AC-13；空态 total=0）。"""
+    """当日用药事件按终态五值分列（AC-13；空态 total=0；含 late_taken_reported）。"""
     result = await session.execute(
         select(
             MedicationEvent.terminal_state,

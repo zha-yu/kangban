@@ -20,6 +20,7 @@ MCP 客户端用协议桩（记录 call_tool 入参），不打真实 server—�
 
 from __future__ import annotations
 
+import datetime
 import uuid
 from collections.abc import AsyncIterator, Callable
 from typing import Any
@@ -212,22 +213,37 @@ async def test_opera_tool_not_found_returns_found_false(
     assert result.data == {"found": False, "media": None}
 
 
-async def test_opera_tool_next_returns_random_media(
+async def test_opera_tool_next_sequential_from_head_without_history(
     session: AsyncSession, elder_id: str, runtime: Identity, session_factory: Any
 ) -> None:
-    """换一段（X8 ③）：C4 锚点未交付，过渡期随机返回一首 type=opera 全集曲目。"""
-    session.add(
-        MediaLibrary(
-            media_id=uuid.uuid5(uuid.NAMESPACE_URL, "test-next-a"),
-            type="opera",
-            title="换段测试A",
-            genre="越剧",
-            era="1950s",
-            artist="测试",
-            media_url="/static/media/opera/test-next-a.mp3",
-            duration=30,
-            copyright_status="public_domain",
-        )
+    """换一段（X8 ③定稿）：无播放历史锚点 → 从全集头部开始（media_id 升序），不再随机。"""
+    media_a = uuid.uuid5(uuid.NAMESPACE_URL, "test-next-a")
+    media_b = uuid.uuid5(uuid.NAMESPACE_URL, "test-next-b")
+    session.add_all(
+        [
+            MediaLibrary(
+                media_id=media_a,
+                type="opera",
+                title="换段测试A",
+                genre="越剧",
+                era="1950s",
+                artist="测试",
+                media_url="/static/media/opera/test-next-a.mp3",
+                duration=30,
+                copyright_status="public_domain",
+            ),
+            MediaLibrary(
+                media_id=media_b,
+                type="opera",
+                title="换段测试B",
+                genre="越剧",
+                era="1950s",
+                artist="测试",
+                media_url="/static/media/opera/test-next-b.mp3",
+                duration=30,
+                copyright_status="public_domain",
+            ),
+        ]
     )
     await session.flush()
 
@@ -246,8 +262,63 @@ async def test_opera_tool_next_returns_random_media(
     assert result.ok, result.message
     data = result.data or {}
     assert data["found"] is True
-    assert data["media"]["media_url"].startswith("/static/media/opera/")
-    assert data["media"]["title"]
+    # 无锚点 → media_id 升序第一段（确定性，替代过渡期随机）
+    assert data["media"]["media_id"] == str(min(media_a, media_b))
+
+
+async def test_opera_tool_next_sequential_uses_last_played_anchor(
+    session: AsyncSession, elder_id: str, runtime: Identity, session_factory: Any
+) -> None:
+    """换一段（X8 ③定稿）：锚点 = 最近一次播放 → 同剧种下一段 / 末尾回绕。"""
+    from app.models.media import MediaHistory
+    from app.services import media_service
+
+    media_a = uuid.uuid5(uuid.NAMESPACE_URL, "test-next-a")
+    media_b = uuid.uuid5(uuid.NAMESPACE_URL, "test-next-b")
+    for mid, title in ((media_a, "换段测试A"), (media_b, "换段测试B")):
+        session.add(
+            MediaLibrary(
+                media_id=mid,
+                type="opera",
+                title=title,
+                genre="越剧",
+                era="1950s",
+                artist="测试",
+                media_url=f"/static/media/opera/{mid}.mp3",
+                duration=30,
+                copyright_status="public_domain",
+            )
+        )
+    await session.flush()
+
+    elder_uuid = uuid.UUID(elder_id)
+    # 最近一次播放 = media_id 较大的那首 → next 应回绕到同剧种第一段（较小者）
+    session.add(
+        MediaHistory(
+            elder_id=elder_uuid,
+            media_id=max(media_a, media_b),
+            started_at=datetime.datetime.now(datetime.UTC),
+        )
+    )
+    await session.flush()
+
+    registry = default_registry()
+    bind_dev_b_tools(registry, session_factory=session_factory)
+    executor = _executor(session, registry=registry)
+
+    result = await executor.execute(
+        tool_name="play_opera",
+        args={"action": "next"},
+        runtime=runtime,
+        turn_id=None,
+        idempotency_key="ik-opera-next-anchored",
+    )
+
+    assert result.ok, result.message
+    data = result.data or {}
+    assert data["found"] is True
+    assert data["media"]["media_id"] == str(min(media_a, media_b))
+    _ = media_service  # 取数实现经 media_service.get_next_media（保持导入引用）
 
 
 async def test_opera_tool_control_actions_return_marker(

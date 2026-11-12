@@ -25,7 +25,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Final
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from sqlalchemy import desc, func, or_, select
+from sqlalchemy import desc, or_, select
 
 from app.core.runtime_context import Identity
 from app.graphs.health_checkup_graph import (
@@ -618,9 +618,10 @@ def make_play_opera_executor(
       title/genre/era/artist 匹配检索词；逐级兜底：原词 → 剥点播口语前缀 →
       剥书名号/标点，兜住 LLM 整句或带标点传参；
       并以 `play_opera_query` 日志记录实际入参（排查 LLM 传参行为用）；
-    - **action=next**（换一段，X8 口径③）：同剧种锚点依赖 C4
-      `record_playback`（未交付），过渡期退化为**随机换一首**（type=opera 全集），
-      C4 交付后在本分支接「最近一次播放的同剧种下一首」；
+    - **action=next**（换一段，X8 口径③定稿）：顺序续播迁往
+      `media_service.get_next_media`——锚点 = 该长者 `media_history` 最近一条
+      （started_at 倒序），同剧种内 media_id 升序下一段、末尾回绕；
+      无锚点（generic / 无播放历史）→ 从全集头部开始（media_id 升序），不再随机；
     - **其余控制动作**（pause/resume/stop/replay/interrupt/volume_up/volume_down）：
       不查库，返回 `{"control": <action>}` 标记，由下发层转 media_control 帧推 pad
       （七动作在 pad OperaPlayer 本地执行，协议 §D4 media_control）；
@@ -674,16 +675,38 @@ def make_play_opera_executor(
         from app.models.media import MediaLibrary
 
         if action == "next":
-            # 换一段：锚点待 C4 record_playback，过渡期随机取一首（X8 ③过渡口径）
+            # 换一段（X8 口径③定稿）：**顺序续播**迁往 media_service.get_next_media
+            # （C4 已交付，替代过渡期随机取一首）——锚点 = 该长者最近一次播放
+            # （media_history started_at 倒序第一条），同剧种内 media_id 升序取
+            # 下一段、末尾回绕；generic 设备（elder_id 缺失）或尚无播放历史 →
+            # 从全集头部开始（media_id 升序第一段，与 get_next_media 同序）。
+            from app.services import media_service
+
             async with session_factory() as session:
-                row: Any | None = (
-                    await session.execute(
-                        select(MediaLibrary)
-                        .where(MediaLibrary.type == "opera")
-                        .order_by(func.random())
-                        .limit(1)
-                    )
-                ).scalar_one_or_none()
+                anchor_id: uuid.UUID | None = None
+                raw_elder = getattr(runtime, "elder_id", None)
+                if raw_elder:
+                    try:
+                        elder_uuid = uuid.UUID(str(raw_elder))
+                    except ValueError:
+                        elder_uuid = None  # 身份闸门③已校验过 UUID 规范形；兜底不猜
+                    if elder_uuid is not None:
+                        history = await media_service.list_media_history(
+                            session, elder_id=elder_uuid, limit=1
+                        )
+                        if history:
+                            anchor_id = history[0].media_id
+                if anchor_id is not None:
+                    row = await media_service.get_next_media(session, current_media_id=anchor_id)
+                else:
+                    row = (
+                        await session.execute(
+                            select(MediaLibrary)
+                            .where(MediaLibrary.type == "opera")
+                            .order_by(MediaLibrary.media_id)
+                            .limit(1)
+                        )
+                    ).scalar_one_or_none()
             if row is None:
                 return {"found": False, "media": None}
             return {"found": True, "media": _media_of(row)}
