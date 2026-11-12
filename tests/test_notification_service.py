@@ -425,6 +425,217 @@ async def test_escalation_skipped_yellow_event(
 
 
 # ======================================================================
+# F12：升级通知发 admin；已确认事件不被扫描
+# ======================================================================
+
+
+async def test_escalation_goes_to_admin_not_primary_care(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    """F12：升级通知发 admin 角色，护工不重复收（主理人裁决口径）。"""
+    admin = StaffAccount(name="王管理员", role="admin", password_hash="x" * 32)
+    session.add(admin)
+    await session.flush()
+
+    old_time = datetime.datetime.now(datetime.UTC) - datetime.timedelta(minutes=3)
+    event = RiskEvent(
+        event_id=uuid.uuid4(),
+        elder_id=seeded["elder_id"],
+        type="health_alert",
+        severity="red",
+        status="open",
+        created_at=old_time,
+    )
+    session.add(event)
+    await session.flush()
+
+    await notify_service.escalate_red_event(session, event_id=event.event_id)
+    await session.flush()
+
+    escalation_rows = list(
+        (
+            await session.execute(
+                select(Notification).where(
+                    # staff 侧键按「逐目标」派生：<key>:<staff_id>，故用前缀匹配
+                    Notification.dedupe_key.like(f"risk_event:{event.event_id}:escalated:%")
+                )
+            )
+        ).scalars()
+    )
+    assert len(escalation_rows) == 1
+    assert escalation_rows[0].target_type == "staff"
+    assert escalation_rows[0].target_id == admin.staff_id  # admin 收到
+    assert escalation_rows[0].target_id != seeded["staff_id"]  # 护工不重复收
+
+
+async def test_scan_escalations_skips_acknowledged_event(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    """F12：acknowledged_at 非空的事件不进入升级扫描（确认即止血）。"""
+    old_time = datetime.datetime.now(datetime.UTC) - datetime.timedelta(minutes=3)
+    acknowledged = RiskEvent(
+        event_id=uuid.uuid4(),
+        elder_id=seeded["elder_id"],
+        type="health_alert",
+        severity="red",
+        status="open",
+        created_at=old_time,
+        acknowledged_at=old_time + datetime.timedelta(minutes=1),
+    )
+    unacknowledged = RiskEvent(
+        event_id=uuid.uuid4(),
+        elder_id=seeded["elder_id"],
+        type="health_alert",
+        severity="red",
+        status="open",
+        created_at=old_time,
+    )
+    session.add_all([acknowledged, unacknowledged])
+    await session.flush()
+
+    now = datetime.datetime.now(datetime.UTC)
+    to_escalate = await notify_service.scan_escalations(session, now=now)
+    assert acknowledged.event_id not in to_escalate
+    assert unacknowledged.event_id in to_escalate
+
+
+# ======================================================================
+# F13：确认联动 risk_events.acknowledged_at
+# ======================================================================
+
+
+async def test_acknowledge_links_risk_event_acknowledged_at(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    """F13：通知确认后同事务回写 risk_events.acknowledged_at（幂等，二次确认不覆盖）。"""
+    event_time = datetime.datetime.now(datetime.UTC) - datetime.timedelta(minutes=1)
+    event = RiskEvent(
+        event_id=uuid.uuid4(),
+        elder_id=seeded["elder_id"],
+        type="health_alert",
+        severity="red",
+        status="open",
+        created_at=event_time,
+    )
+    session.add(event)
+    await session.flush()
+
+    notification = Notification(
+        target_type="staff",
+        target_id=seeded["staff_id"],
+        type="health_alert",
+        payload={"title": "健康红色预警", "risk_event_id": str(event.event_id)},
+        channel="inapp",
+        status="delivered",
+        is_mock=True,
+        dedupe_key=f"risk_event:{event.event_id}:staff:{seeded['staff_id']}",
+    )
+    session.add(notification)
+    await session.flush()
+
+    await notify_service.acknowledge_notification(
+        session, notification_id=notification.notification_id, acknowledger_id=seeded["staff_id"]
+    )
+    await session.flush()
+    updated = (
+        await session.execute(select(RiskEvent).where(RiskEvent.event_id == event.event_id))
+    ).scalar_one()
+    assert updated.acknowledged_at is not None
+    first_ack = updated.acknowledged_at
+
+    # 幂等：事件再关一次（模拟重复确认另一条同锚点通知）不覆盖既有时间戳
+    second = Notification(
+        target_type="staff",
+        target_id=seeded["staff_id"],
+        type="health_alert",
+        payload={"title": "健康红色预警", "risk_event_id": str(event.event_id)},
+        channel="inapp",
+        status="delivered",
+        is_mock=True,
+        dedupe_key=f"risk_event:{event.event_id}:staff:second",
+    )
+    session.add(second)
+    await session.flush()
+    await notify_service.acknowledge_notification(
+        session, notification_id=second.notification_id, acknowledger_id=seeded["staff_id"]
+    )
+    await session.flush()
+    again = (
+        await session.execute(select(RiskEvent).where(RiskEvent.event_id == event.event_id))
+    ).scalar_one()
+    assert again.acknowledged_at == first_ack
+
+
+async def test_purge_notifications_by_elder(session: AsyncSession, seeded: dict[str, Any]) -> None:
+    """X12 notify 钩子：按 guardian 目标 + risk_event 键两条通路清通知，幂等。"""
+    event = RiskEvent(
+        event_id=uuid.uuid4(),
+        elder_id=seeded["elder_id"],
+        type="health_alert",
+        severity="red",
+        status="open",
+    )
+    session.add(event)
+    await session.flush()
+    rows = [
+        Notification(
+            target_type="staff",
+            target_id=seeded["staff_id"],
+            type="health_alert",
+            payload={},
+            channel="inapp",
+            status="delivered",
+            is_mock=True,
+            dedupe_key=f"risk_event:{event.event_id}:staff:{seeded['staff_id']}",
+        ),
+        Notification(
+            target_type="guardian",
+            target_id=seeded["guardian_id"],
+            type="health_alert",
+            payload={},
+            channel="inapp",
+            status="delivered",
+            is_mock=True,
+            dedupe_key=f"risk_event:{event.event_id}:guardian:{seeded['guardian_id']}",
+        ),
+        # 别的照护单元的通知：不应误伤
+        Notification(
+            target_type="staff",
+            target_id=seeded["staff_id"],
+            type="shift",
+            payload={},
+            channel="inapp",
+            status="delivered",
+            is_mock=True,
+            dedupe_key="unrelated:shift:1",
+        ),
+    ]
+    session.add_all(rows)
+    await session.flush()
+
+    ref = await notify_service.purge_elder_data(
+        session, elder_id=seeded["elder_id"], reason="teaching_reset"
+    )
+    await session.flush()
+    assert ref.domain == "notifications"
+    assert ref.affected_rows == 2
+    assert ref.archived_rows == 0
+
+    remaining = list((await session.execute(select(Notification.dedupe_key))).scalars())
+    assert "unrelated:shift:1" in remaining
+    assert all(not k.startswith(f"risk_event:{event.event_id}") for k in remaining)
+
+    # 幂等：第二遍计数为 0
+    ref2 = await notify_service.purge_elder_data(
+        session, elder_id=seeded["elder_id"], reason="teaching_reset"
+    )
+    assert ref2.affected_rows == 0
+
+    with pytest.raises(ValueError, match="unknown purge reason"):
+        await notify_service.purge_elder_data(session, elder_id=seeded["elder_id"], reason="nope")
+
+
+# ======================================================================
 # dedupe_key 幂等
 # ======================================================================
 

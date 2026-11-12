@@ -20,7 +20,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Final
 
-from sqlalchemy import func, select
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -106,6 +107,20 @@ def validate_payload(payload: object) -> dict:
     if len(encoded.encode("utf-8")) > MAX_PAYLOAD_BYTES:
         raise NotificationPayloadError(f"payload 超过 {MAX_PAYLOAD_BYTES} 字节上限")
     return payload
+
+
+@dataclass(frozen=True, slots=True)
+class PurgeRef:
+    """域清理钩子（X12）的返回值：A 的 lifecycle 流水线只读字段做审计留痕。
+
+    - ``affected_rows``：物理清除的行数（teaching_reset 主口径）；
+    - ``archived_rows``：脱敏归档（不物理删）的行数（checkout 时健康域用）；
+    - 幂等：同一 ``(elder_id, reason)`` 重复调用第二遍两个计数均为 0。
+    """
+
+    domain: str
+    affected_rows: int
+    archived_rows: int
 
 
 async def send_guardian_notifications(
@@ -425,33 +440,52 @@ async def send_staff_notifications(
     dedupe_key: str | None = None,
     channel: str | None = None,
     is_mock: bool = True,
+    roles: tuple[str, ...] | None = None,
 ) -> list[NotificationRef]:
     """给负责护工（primary_care relation）发通知；找不到护工返回空列表不报错。
 
     AC-38 双通知链路：红色事件 → 本函数（护工侧）+ send_guardian_notifications（家属侧）各一条。
 
+    - ``roles`` 提供时改按**角色**选收件人（F12：升级通知发 admin），忽略
+      primary_care 绑定； elder_id 仅保留在 payload 语义里；
     - 幂等：dedupe_key 部分唯一索引兜底，重复调用返回既有记录（created=False）；
     - channel 缺省取 settings.notify_channel；
-    - 无 active 绑定 → 返回空列表（与 guardian 侧抛错不同：护工查不到是常态，不应阻断主流程）。
+    - 无命中收件人 → 返回空列表（与 guardian 侧抛错不同：查不到是常态，不应阻断主流程）。
     """
     validate_payload(payload)
     # 循环 import：work_order_service.resolve_primary_care_staff 不反向依赖本文件，安全
     from app.models.relation import ElderStaffAssignment
+    from app.models.staff import StaffAccount
 
-    staff_ids: list[uuid.UUID] = list(
-        (
-            await session.execute(
-                select(ElderStaffAssignment.staff_id).where(
-                    ElderStaffAssignment.elder_id == elder_id,
-                    ElderStaffAssignment.relation == "primary_care",
+    if roles is not None:
+        staff_ids: list[uuid.UUID] = list(
+            (
+                await session.execute(
+                    select(StaffAccount.staff_id).where(
+                        StaffAccount.role.in_(roles), StaffAccount.status == "active"
+                    )
                 )
             )
+            .scalars()
+            .all()
         )
-        .scalars()
-        .all()
-    )
+    else:
+        staff_ids = list(
+            (
+                await session.execute(
+                    select(ElderStaffAssignment.staff_id).where(
+                        ElderStaffAssignment.elder_id == elder_id,
+                        ElderStaffAssignment.relation == "primary_care",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
     if not staff_ids:
-        logger.info("no primary_care staff for elder %s — staff notification skipped", elder_id)
+        logger.info(
+            "no notification recipients for elder %s — staff notification skipped", elder_id
+        )
         return []
 
     resolved_channel = channel or get_settings().notify_channel
@@ -631,6 +665,30 @@ async def acknowledge_notification(
         acknowledger_id,
     )
 
+    # F13 确认联动（X3 v0.6 payload 锚点）：通知带 risk_event_id 时同事务回写
+    # risk_events.acknowledged_at（幂等：已非空跳过）。无 linkage 的既有通知行
+    # 只更新通知本身，事件字段留空——如实，不编造。
+    risk_event_raw = notification.payload.get("risk_event_id") if notification.payload else None
+    if risk_event_raw:
+        from app.models.medication import RiskEvent
+
+        try:
+            event_uuid = uuid.UUID(str(risk_event_raw))
+        except (TypeError, ValueError):
+            logger.warning("ack linkage skipped: invalid risk_event_id %r", risk_event_raw)
+        else:
+            event = (
+                await session.execute(select(RiskEvent).where(RiskEvent.event_id == event_uuid))
+            ).scalar_one_or_none()
+            if event is not None and event.acknowledged_at is None:
+                event.acknowledged_at = notification.acknowledged_at
+                await session.flush()
+                logger.info(
+                    "risk_event_acknowledged_via_notification event_id=%s notification_id=%s",
+                    event.event_id,
+                    notification_id,
+                )
+
 
 def _require_transition(current: str, target: str) -> None:
     allowed = _STATUS_TRANSITIONS.get(current, frozenset())
@@ -708,6 +766,7 @@ async def scan_escalations(
                     RiskEvent.status == "open",
                     RiskEvent.severity == "red",
                     RiskEvent.created_at < cutoff,
+                    RiskEvent.acknowledged_at.is_(None),  # F12：已确认事件不被升级扫描命中
                 )
             )
         ).scalars()
@@ -746,7 +805,8 @@ async def escalate_red_event(session: AsyncSession, *, event_id: uuid.UUID) -> N
         event.source_id,
     )
 
-    # 升级通知：给负责护工（已生成过 staff 通知，但这是 escalation 专属）
+    # 升级通知：**发 admin**（F12，主理人裁决原口径「发护工」修正）；
+    # 已生成过 staff/guardian 初始通知，护工不重复收升级件。
     escalation_key = f"risk_event:{event_id}:escalated"
     escalation_payload = {
         "event_id": str(event_id),
@@ -754,7 +814,7 @@ async def escalate_red_event(session: AsyncSession, *, event_id: uuid.UUID) -> N
         "reason": "no_acknowledgement_within_2min",
         "escalated_at": now_iso_utc(),
     }
-    # staff 侧 escalation 通知
+    # admin 侧 escalation 通知
     try:
         await send_staff_notifications(
             session,
@@ -763,10 +823,11 @@ async def escalate_red_event(session: AsyncSession, *, event_id: uuid.UUID) -> N
             payload=escalation_payload,
             dedupe_key=escalation_key,
             is_mock=True,
+            roles=("admin",),  # F12：升级对象 = admin 角色
         )
         await session.flush()
     except Exception:
-        logger.exception("escalation staff notification failed for event %s", event_id)
+        logger.exception("escalation admin notification failed for event %s", event_id)
 
 
 def now_iso_utc() -> str:
@@ -828,6 +889,60 @@ async def retry_pending_notifications(
     return RetryScanResult(delivered=delivered, failed=failed, remaining_pending=remaining)
 
 
+# ------------------------------------------------------------------ X12 域清理钩子
+
+
+async def purge_elder_data(session: AsyncSession, *, elder_id: uuid.UUID, reason: str) -> PurgeRef:
+    """通知域清理（X12）：A 的 lifecycle 流水线调用，本钩子**不写审计**（A 统一写）。
+
+    ``notifications`` 表没有 elder_id 列，长者归属只能从三条通路还原：
+    ① target 是该长者的 guardian（target_type='guardian'）；
+    ② dedupe_key 锚定该长者的 risk_event（``risk_event:<eid>:%``，覆盖 staff/
+       guardian/escalated 三类键）；
+    ③ payload elder_id（幂等通路，本域未写入，防御性保留）。
+
+    ``reason``：checkout／teaching_reset 在本域**同为物理清除**（通知是运维态
+    数据，无归档价值；健康域的 checkout 脱敏归档口径只适用于 health_records）。
+    幂等：重复调用第二遍计数为 0。
+    """
+    if reason not in ("checkout", "teaching_reset"):
+        raise ValueError(f"unknown purge reason: {reason!r}")
+    from app.models.medication import RiskEvent
+    from app.models.relation import ElderGuardian
+
+    event_ids = list(
+        (
+            await session.execute(select(RiskEvent.event_id).where(RiskEvent.elder_id == elder_id))
+        ).scalars()
+    )
+    guardian_ids = list(
+        (
+            await session.execute(
+                select(ElderGuardian.guardian_id).where(ElderGuardian.elder_id == elder_id)
+            )
+        ).scalars()
+    )
+
+    conditions = []
+    if guardian_ids:
+        conditions.append(
+            (Notification.target_type == "guardian") & Notification.target_id.in_(guardian_ids)
+        )
+    for eid in event_ids:
+        conditions.append(Notification.dedupe_key.like(f"risk_event:{eid}:%"))
+
+    affected = 0
+    if conditions:
+        result = await session.execute(sa_delete(Notification).where(or_(*conditions)))
+        affected = int(result.rowcount or 0)
+        if affected:
+            await session.flush()
+    logger.info(
+        "notify_purge_elder_data elder_id=%s reason=%s affected=%d", elder_id, reason, affected
+    )
+    return PurgeRef(domain="notifications", affected_rows=affected, archived_rows=0)
+
+
 __all__ = [
     "ESCALATION_WINDOW_MIN",
     "MAX_RETRIES",
@@ -840,6 +955,7 @@ __all__ = [
     "NotificationPayloadError",
     "NotificationRef",
     "NotificationTargetNotFound",
+    "PurgeRef",
     "RetryScanResult",
     "StaffNotificationNotFound",
     "acknowledge_notification",
@@ -850,6 +966,7 @@ __all__ = [
     "mark_notification_delivered",
     "mark_notification_sent",
     "mark_staff_notification_read",
+    "purge_elder_data",
     "retry_pending_notifications",
     "scan_escalations",
     "scan_pending_notifications",

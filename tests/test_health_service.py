@@ -237,7 +237,7 @@ from collections.abc import AsyncIterator  # noqa: E402
 from typing import Any  # noqa: E402
 
 import pytest_asyncio  # noqa: E402
-from sqlalchemy import select  # noqa: E402
+from sqlalchemy import func, select  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker  # noqa: E402
 
 from app.models.guardian import GuardianAccount  # noqa: E402
@@ -424,11 +424,12 @@ async def test_red_record_notifies_active_guardian(
     await session.flush()
 
     assert ref.work_order_id is not None
-    # 通知服务按「逐监护人」派生键：<dedupe_key>:<guardian_id>（notify_service §L149）
+    assert ref.risk_event_id is not None
+    # X3 v0.6 三段式键：guardian 侧按「逐监护人」派生 <key>:<guardian_id>（notify_service §L149）
     notif = (
         await session.execute(
             select(Notification).where(
-                Notification.dedupe_key.like(f"health_red_alert:{ref.record_id}:%")
+                Notification.dedupe_key.like(f"risk_event:{ref.risk_event_id}:guardian:%")
             )
         )
     ).scalar_one_or_none()
@@ -436,6 +437,27 @@ async def test_red_record_notifies_active_guardian(
     assert notif.target_type == "guardian"
     assert notif.payload["elder_name"] == "张桂芬"
     assert notif.payload["record_id"] == str(ref.record_id)
+    # F13 确认联动锚点：payload 必须携带 risk_event_id
+    assert notif.payload["risk_event_id"] == str(ref.risk_event_id)
+    # X3 v0.6 双通知：staff 侧同事务各 1 条（键 risk_event:<event_id>:staff:<staff_id>）
+    staff_notif = (
+        await session.execute(
+            select(Notification).where(
+                Notification.dedupe_key.like(f"risk_event:{ref.risk_event_id}:staff:%")
+            )
+        )
+    ).scalar_one_or_none()
+    assert staff_notif is not None
+    assert staff_notif.target_type == "staff"
+    # 旧单家属键必须绝迹（REST 侧切换同提交完成，dev-B 语音测试同时断言两键）
+    legacy = (
+        await session.execute(
+            select(Notification).where(
+                Notification.dedupe_key.like(f"health_red_alert:{ref.record_id}%")
+            )
+        )
+    ).scalar_one_or_none()
+    assert legacy is None
 
 
 # ------------------------------------------------------------------ AC-22 黄升红
@@ -707,12 +729,104 @@ async def test_rule_version_always_written(session: AsyncSession, seeded: dict[s
     assert rec.rule_version == RULE_VERSION
 
 
+# ------------------------------------------------------------------ X12 健康域清理
+
+
+async def test_purge_health_teaching_reset_deletes(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    """teaching_reset → health_records 物理删除（含版本链），第二遍计数 0。"""
+    await health_service.create_health_record(
+        session,
+        elder_id=seeded["elder_id"],
+        source="voice_active",
+        systolic=120,
+        diastolic=80,
+        sleep_hours=7.0,
+        mood_score=5,
+        mood_note=None,
+        complaint=None,
+        operator_id=None,
+    )
+    await session.flush()
+
+    ref = await health_service.purge_elder_data(
+        session, elder_id=seeded["elder_id"], reason="teaching_reset"
+    )
+    await session.flush()
+    assert ref.domain == "health_records"
+    assert ref.affected_rows == 1
+    assert ref.archived_rows == 0
+    assert (
+        await session.execute(
+            select(func.count())
+            .select_from(HealthRecord)
+            .where(HealthRecord.elder_id == seeded["elder_id"])
+        )
+    ).scalar_one() == 0
+
+    again = await health_service.purge_elder_data(
+        session, elder_id=seeded["elder_id"], reason="teaching_reset"
+    )
+    assert again.affected_rows == 0
+
+
+async def test_purge_health_checkout_masks_without_delete(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    """checkout → 原行保留、自由文本被脱敏替换；第二遍计数 0（幂等）。"""
+    await health_service.create_health_record(
+        session,
+        elder_id=seeded["elder_id"],
+        source="voice_active",
+        systolic=120,
+        diastolic=80,
+        sleep_hours=7.0,
+        mood_score=3,
+        mood_note="今天心情一般",
+        complaint="老人自述有点头晕，联系方式 13800138000",
+        operator_id=None,
+    )
+    await session.flush()
+
+    ref = await health_service.purge_elder_data(
+        session, elder_id=seeded["elder_id"], reason="checkout"
+    )
+    await session.flush()
+    assert ref.affected_rows == 0
+    assert ref.archived_rows == 1
+
+    rec = (
+        await session.execute(
+            select(HealthRecord).where(HealthRecord.elder_id == seeded["elder_id"])
+        )
+    ).scalar_one()
+    assert rec is not None  # 不物理删
+    assert rec.complaint != "老人自述有点头晕，联系方式 13800138000"  # 已脱敏
+    assert "13800138000" not in (rec.complaint or "")  # 手机号绝不可残留
+    # 第二遍幂等（脱敏后文本不再变化）
+    again = await health_service.purge_elder_data(
+        session, elder_id=seeded["elder_id"], reason="checkout"
+    )
+    assert again.archived_rows == 0
+
+
+async def test_purge_health_unknown_reason_rejected(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    with pytest.raises(ValueError, match="unknown purge reason"):
+        await health_service.purge_elder_data(session, elder_id=seeded["elder_id"], reason="nope")
+
+
 __all__ = [
     "TestGradeHealthPure",
     "test_create_green_health_record_no_risk_event",
     "test_create_health_record_version_defaults_to_1",
     "test_create_red_health_record_builds_red_work_order",
     "test_create_yellow_health_record_builds_work_order_and_risk_event",
+    "test_purge_health_checkout_masks_without_delete",
+    "test_purge_health_teaching_reset_deletes",
+    "test_purge_health_unknown_reason_rejected",
     "test_red_record_notifies_active_guardian",
     "test_review_confirm_does_not_create_new_version",
     "test_review_correct_creates_new_version_chain",
