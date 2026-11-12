@@ -1,8 +1,16 @@
 """生命周期 REST（Day 9 A4 / FR-ADM-02 / FR-ADM-09）。
 
-三端点全部 **admin-only**（`require_roles("admin")`），重置与退房需**二次确认
-令牌**（字面 `"CONFIRM"`，Z-A4b；缺失/不符 → 409）。薄路由：只校验＋调
-`lifecycle_service`＋序列化，不写业务逻辑（AGENTS §2.3）。
+三端点全部 **admin-only**（`require_roles("admin")`），重置与退房需**二次确认**
+（请求显式携带 `confirm: true` 布尔——对齐 C6 `lifecycle-api.ts` 定稿；缺省/false
+→ 409）。薄路由：只校验＋调 `lifecycle_service`＋序列化，不写业务逻辑（AGENTS §2.3）。
+
+## 路径口径（对齐前端定稿，elder_id 在 body）
+
+```
+POST /api/lifecycle/teaching-reset   {elder_id, confirm: true}
+POST /api/lifecycle/checkout         {elder_id, confirm: true}
+POST /api/lifecycle/away             {elder_id, away: bool}
+```
 
 ## 异常映射（契约 §7 统一错误体 `{detail, code, trace_id}`）
 
@@ -44,14 +52,16 @@ router = APIRouter(
 
 
 class ConfirmIn(BaseModel):
-    """二次确认载荷：重置与退房必填。"""
+    """二次确认载荷：elder_id 在 body（对齐 C6 lifecycle-api.ts 定稿）。"""
 
-    confirm_token: str = Field(min_length=1, description="二次确认令牌，字面 CONFIRM")
+    elder_id: uuid.UUID
+    confirm: bool = Field(description="二次确认弹窗通过后显式传 true")
 
 
 class AwayIn(BaseModel):
     """暂离/恢复载荷：true=暂离，false=恢复。"""
 
+    elder_id: uuid.UUID
     away: bool
 
 
@@ -71,45 +81,18 @@ class LifecycleOut(BaseModel):
 
 
 @router.post(
-    "/elders/{elder_id}/checkout",
-    response_model=LifecycleOut,
-    summary="长者退房（admin-only；五步清理流水线＋每步审计；需二次确认）",
-)
-async def checkout_elder(
-    elder_id: uuid.UUID,
-    payload: ConfirmIn,
-    admin: Annotated[Identity, Depends(require_roles("admin"))],
-    session: Annotated[AsyncSession, Depends(get_session)],
-) -> LifecycleOut | object:
-    try:
-        report = await lifecycle_service.checkout_elder(
-            session, operator=admin, elder_id=elder_id, confirm_token=payload.confirm_token
-        )
-    except LifecycleConfirmError as exc:
-        return _error_response(409, "CONFIRM_REQUIRED", str(exc))
-    except ElderNotFoundError as exc:
-        return _error_response(404, "NOT_FOUND", str(exc))
-    except LifecycleStepError as exc:
-        return _error_response(
-            500, "LIFECYCLE_STEP_FAILED", f"step {exc.step} failed; pipeline is resumable"
-        )
-    return _to_out(report)
-
-
-@router.post(
-    "/elders/{elder_id}/teaching-reset",
+    "/teaching-reset",
     response_model=LifecycleOut,
     summary="教学周期重置（admin-only；业务数据清零、账号/配置/审计保留；需二次确认）",
 )
 async def teaching_reset(
-    elder_id: uuid.UUID,
     payload: ConfirmIn,
     admin: Annotated[Identity, Depends(require_roles("admin"))],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> LifecycleOut | object:
     try:
         report = await lifecycle_service.teaching_reset(
-            session, operator=admin, elder_id=elder_id, confirm_token=payload.confirm_token
+            session, operator=admin, elder_id=payload.elder_id, confirm=payload.confirm
         )
     except LifecycleConfirmError as exc:
         return _error_response(409, "CONFIRM_REQUIRED", str(exc))
@@ -123,19 +106,43 @@ async def teaching_reset(
 
 
 @router.post(
-    "/elders/{elder_id}/away",
+    "/checkout",
+    response_model=LifecycleOut,
+    summary="长者退房（admin-only；五步清理流水线＋每步审计，状态收口 archived；需二次确认）",
+)
+async def checkout_elder(
+    payload: ConfirmIn,
+    admin: Annotated[Identity, Depends(require_roles("admin"))],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> LifecycleOut | object:
+    try:
+        report = await lifecycle_service.checkout_elder(
+            session, operator=admin, elder_id=payload.elder_id, confirm=payload.confirm
+        )
+    except LifecycleConfirmError as exc:
+        return _error_response(409, "CONFIRM_REQUIRED", str(exc))
+    except ElderNotFoundError as exc:
+        return _error_response(404, "NOT_FOUND", str(exc))
+    except LifecycleStepError as exc:
+        return _error_response(
+            500, "LIFECYCLE_STEP_FAILED", f"step {exc.step} failed; pipeline is resumable"
+        )
+    return _to_out(report)
+
+
+@router.post(
+    "/away",
     response_model=LifecycleOut,
     summary="暂离/恢复（admin-only；只改状态＋审计；采集与提醒由调度侧读 status 暂停）",
 )
 async def set_away(
-    elder_id: uuid.UUID,
     payload: AwayIn,
     admin: Annotated[Identity, Depends(require_roles("admin"))],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> LifecycleOut | object:
     try:
         report = await lifecycle_service.set_away(
-            session, operator=admin, elder_id=elder_id, away=payload.away
+            session, operator=admin, elder_id=payload.elder_id, away=payload.away
         )
     except ElderNotFoundError as exc:
         return _error_response(404, "NOT_FOUND", str(exc))
