@@ -91,9 +91,16 @@ def _serialize(report: Any, health_summary: str, events: list[dict[str, Any]]) -
         medication_stats={
             "taken_reported": int((report.medication_stats or {}).get("taken_reported", 0)),
             "refused": int((report.medication_stats or {}).get("refused", 0)),
-            "missed_unconfirmed": int((report.medication_stats or {}).get("missed_unconfirmed", 0)),
+            "missed_unconfirmed": int(
+                (report.medication_stats or {}).get("missed_unconfirmed", 0)
+            ),
             "notification_failed": int(
                 (report.medication_stats or {}).get("notification_failed", 0)
+            ),
+            # Day 9 D4（F10 / X8）：第五键窗口外补报。jsonb 尚无该键（B4 落库侧联调
+            # D11 14:00）时为 0，安全降级；契约 S-01 第五键已走 §7 v1.3 留痕
+            "late_taken_reported": int(
+                (report.medication_stats or {}).get("late_taken_reported", 0)
             ),
         },
         health_summary=health_summary,

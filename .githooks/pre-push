@@ -18,8 +18,13 @@ for cand in "$root/.venv/Scripts/python.exe" "$root/.venv/bin/python" python3 py
 done
 
 if [ -z "$py" ]; then
-    echo "[pre-push] 未找到 python，跳过校验（不阻塞推送）" >&2
-    exit 0
+    # Day 9 D3.4 / F02：不再静默放行。推送前校验（看板/索引/样本自检）依赖 python，
+    # 缺解释器 = 校验根本没跑 = 无法证明没把坏东西带上去。按 AGENTS §3 阻塞口径
+    # 报错退出（非 0），由开发者装好环境后再推；总览 Q2 的「报告但不阻塞」模式
+    # 须主理人显式裁决并留痕后才能改回。
+    echo "[pre-push] 错误：未找到 python，推送前校验无法执行（F02：不静默放行）。" >&2
+    echo "[pre-push] 请安装 python 或激活项目 .venv 后重试；如需临时豁免，找主理人裁决并留痕。" >&2
+    exit 1
 fi
 
 if ! "$py" "$root/scripts/update_progress.py" --check --quiet; then

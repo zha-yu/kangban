@@ -2,7 +2,7 @@
 
 覆盖口径（家属端契约 v1.2 §4 F2 / §5）：
 - 401：无凭证 / 员工主体（种类不符）；
-- 200：四键 `medication_stats` 分列、`summary_text` 含固定声明、`attention_events` 为数组；
+- 200：五键 `medication_stats` 分列（Day 9 F10 第五键 late_taken_reported）、`summary_text` 含固定声明、`attention_events` 为数组；
 - 404：report_id 不存在；
 - 403 + 审计：日报所属长者不在绑定范围。
 
@@ -132,9 +132,10 @@ async def test_report_detail_ok(app_with_session, client: AsyncClient) -> None:
         "refused",
         "missed_unconfirmed",
         "notification_failed",
-    }, "四类终态必须分列，不得合并"
+        "late_taken_reported",
+    }, "五类终态必须分列，不得合并（Day 9 F10：S-01 第五键，契约 v1.3）"
     assert isinstance(body["attention_events"], list)
-    assert body["audio_url"] is None, "P0 阶段 audio_url 恒 null（FR-RPT-04）"
+    assert body["audio_url"] is None, "C4 未生成语音条时 audio_url 为 null（FR-RPT-04 降级口径）"
 
 
 async def test_report_detail_not_found(app_with_session, client: AsyncClient) -> None:
