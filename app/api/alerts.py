@@ -20,6 +20,7 @@
 | N-2 | `POST /api/notifications/{id}/read` | 只写 `read_at`，**已读≠确认**；幂等返回原时间 |
 | N-3 | `POST /api/notifications/{id}/acknowledge` | 仅 `delivered` 可确认，跳步 409，写 `acknowledged_by/at`；payload 带 `risk_event_id` 时联动写 `risk_events.acknowledged_at`（F13） |
 | F13 | `POST /api/risk-events/{id}/close` | **admin-only**；存在未关闭关联工单 → 409；已 closed 幂等 200 |
+| F01 | `POST /api/notifications/rescan` | **admin-only** 手动重发：仅触发一次既有扫描入口（`retry_pending_notifications`，内含 `scan_pending_notifications`），不含独立重试逻辑（Q-D3 裁决） |
 
 ### 一个字段缺口（R-D12，2026-11-11 已收口）
 
@@ -48,6 +49,7 @@ A 侧已补 typed exception：`NotificationNotFound`（404）／`NotificationFor
 
 from __future__ import annotations
 
+import datetime
 import uuid
 from typing import Annotated
 
@@ -299,4 +301,35 @@ async def close_risk_event(
         status=result["status"],
         closed_at=_iso(result["closed_at"]) or "",
         idempotent=bool(result["idempotent"]),
+    )
+
+
+class RetryScanOut(BaseModel):
+    """F01 手动重发响应：与 RetryScanResult 字段一致（retried=到点重试数，状态保持 pending）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    retried: int
+    failed: int
+    remaining_pending: int
+
+
+@router.post("/notifications/rescan", response_model=RetryScanOut)
+async def admin_rescan_notifications(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    staff: Annotated[Identity, Depends(require_roles("admin"))],  # F01：admin-only
+) -> RetryScanOut:
+    """F01：admin 手动重发（Q-D3 裁决：只触发一次既有扫描入口，无独立重试逻辑）。
+
+    调 `notify_service.retry_pending_notifications`（与 30s tick 同一入口，内含
+    `scan_pending_notifications` 的超限置 failed＋X11 due 门控）；delivered 仍只由
+    X1 回执帧驱动，本端点不会把任何通知置为 delivered。
+    """
+    result = await notify_service.retry_pending_notifications(
+        session, now=datetime.datetime.now(datetime.UTC)
+    )
+    return RetryScanOut(
+        retried=result.retried,
+        failed=result.failed,
+        remaining_pending=result.remaining_pending,
     )

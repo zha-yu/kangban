@@ -495,3 +495,76 @@ async def test_close_event_unknown_is_404(app_with_session, client: AsyncClient)
     )
     assert resp.status_code == 404, resp.text
     assert resp.json()["code"] == "NOT_FOUND"
+
+
+# ------------------------------------------------------------------ F01 手动重发
+
+
+async def test_rescan_requires_auth(client: AsyncClient) -> None:
+    resp = await client.post("/api/notifications/rescan")
+    assert resp.status_code == 401
+
+
+async def test_rescan_rejects_non_admin(app_with_session, client: AsyncClient) -> None:
+    _, session = app_with_session
+    worker = await _seed_staff(session, "护工-重发尝试")
+    resp = await client.post(
+        "/api/notifications/rescan",
+        headers={"Authorization": f"Bearer {_staff_token(worker.staff_id)}"},
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["code"] == "ROLE_FORBIDDEN"
+
+
+async def test_rescan_never_marks_delivered(app_with_session, client: AsyncClient) -> None:
+    """F01/Q-D3：手动重发只触发一次扫描（due 门控＋超限置 failed），
+    delivered 只能由 X1 回执驱动——端点对到点 pending 也只记尝试。"""
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    _, session = app_with_session
+    admin = StaffAccount(name="管理员丙", role="admin", password_hash="x")
+    session.add(admin)
+    await session.flush()
+    aged = Notification(
+        target_type="staff",
+        target_id=(await _seed_staff(session, "护工-收件人")).staff_id,
+        type="health_alert",
+        payload={"title": "重发测试"},
+        channel="inapp",
+        status="pending",
+        retry_count=0,
+        is_mock=True,
+        sent_at=datetime.datetime.now(datetime.UTC) - timedelta(seconds=60),
+        dedupe_key=f"test_rescan:{uuid.uuid4()}",
+    )
+    session.add(aged)
+    await session.flush()
+
+    resp = await client.post(
+        "/api/notifications/rescan",
+        headers={"Authorization": f"Bearer {_admin_token(admin.staff_id)}"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["retried"] >= 1
+    assert set(body) == {"retried", "failed", "remaining_pending"}
+
+    await session.refresh(aged)
+    assert aged.status == "pending", "手动重发绝不置 delivered（Q-D3 + F01 真链路）"
+    assert aged.retry_count == 1
+
+    rows = (
+        (
+            await session.execute(
+                select(Notification).where(
+                    Notification.dedupe_key == aged.dedupe_key,
+                    Notification.status == "delivered",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert rows == []

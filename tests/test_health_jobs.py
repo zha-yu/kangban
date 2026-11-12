@@ -42,7 +42,7 @@ from app.models.relation import ElderStaffAssignment
 from app.models.report import DailyReport
 from app.models.staff import StaffAccount
 from app.scheduler.health_jobs import HealthSchedulerRuntime
-from app.services import health_service
+from app.services import health_service, notify_service
 
 _TZ_SH = ZoneInfo("Asia/Shanghai")
 
@@ -350,9 +350,12 @@ async def care_worker_id_of(session: AsyncSession, elder_id: uuid.UUID) -> uuid.
 
 
 async def test_notification_retry_scan(session, seeded, runtime_factory):
-    """pending 30s 重试 → delivered+sent_at；重试耗尽 → failed（AC-23 前半）；重复执行幂等。"""
+    """F01 送达真链路：重试只记尝试（保持 pending），delivered 仅由 X1 回执驱动；
+    重试耗尽 → failed（AC-23 前半）；未到点不抢跑（X11 退避）。"""
     care_worker_id = seeded["care_worker_id"]
 
+    now = datetime.datetime.now(datetime.UTC)
+    aged = now - datetime.timedelta(seconds=60)  # 上次尝试 60s 前：30s 退避已到点
     pending = Notification(
         target_type="staff",
         target_id=care_worker_id,
@@ -362,7 +365,20 @@ async def test_notification_retry_scan(session, seeded, runtime_factory):
         status="pending",
         retry_count=0,
         is_mock=True,
+        sent_at=aged,
         dedupe_key=f"test_retry_pending:{uuid.uuid4()}",
+    )
+    fresh = Notification(  # 刚生成未到点：不应被本轮重试（X11 due 门控）
+        target_type="staff",
+        target_id=care_worker_id,
+        type="escalated_red_event",
+        payload={"event_id": str(uuid.uuid4())},
+        channel="inapp",
+        status="pending",
+        retry_count=0,
+        is_mock=True,
+        sent_at=now,
+        dedupe_key=f"test_retry_fresh:{uuid.uuid4()}",
     )
     exhausted = Notification(
         target_type="staff",
@@ -375,45 +391,59 @@ async def test_notification_retry_scan(session, seeded, runtime_factory):
         is_mock=True,
         dedupe_key=f"test_retry_exhausted:{uuid.uuid4()}",
     )
-    session.add_all([pending, exhausted])
+    session.add_all([pending, fresh, exhausted])
     await session.flush()
 
-    pending_id, exhausted_id = pending.notification_id, exhausted.notification_id
-    now = datetime.datetime.now(datetime.UTC)
+    pending_id, fresh_id, exhausted_id = (
+        pending.notification_id,
+        fresh.notification_id,
+        exhausted.notification_id,
+    )
     rt = runtime_factory(lambda: now)
     await rt._tick_risk_scan()
 
-    delivered_row = (
+    retried_row = (
         await session.execute(
             select(Notification).where(Notification.notification_id == pending_id)
         )
+    ).scalar_one()
+    fresh_row = (
+        await session.execute(select(Notification).where(Notification.notification_id == fresh_id))
     ).scalar_one()
     failed_row = (
         await session.execute(
             select(Notification).where(Notification.notification_id == exhausted_id)
         )
     ).scalar_one()
-    assert delivered_row.status == "delivered"
-    assert delivered_row.sent_at is not None
-    assert delivered_row.retry_count == 1  # 记一次尝试
-    assert failed_row.status == "failed"  # 3 次失败 → 失败终态
-    assert failed_row.sent_at is None
+    # 到点行：记一次尝试，状态保持 pending 等 X1 回执——绝不出现 delivered
+    assert retried_row.status == "pending"
+    assert retried_row.retry_count == 1
+    assert retried_row.sent_at is not None
+    # 未到点行：原样跳过
+    assert fresh_row.status == "pending"
+    assert fresh_row.retry_count == 0
+    # 耗尽行：失败终态
+    assert failed_row.status == "failed"
 
-    # 重复执行：delivered/failed 均不在扫描面，无变化
-    await rt._tick_risk_scan()
-    delivered_row2 = (
+    # X1 回执驱动送达：pending → delivered → acknowledged（AC-23 全链路）
+    await notify_service.mark_notification_delivered(session, notification_id=pending_id)
+    await notify_service.acknowledge_notification(
+        session, notification_id=pending_id, acknowledger_id=care_worker_id
+    )
+    delivered_row = (
         await session.execute(
             select(Notification).where(Notification.notification_id == pending_id)
         )
     ).scalar_one()
-    failed_row2 = (
-        await session.execute(
-            select(Notification).where(Notification.notification_id == exhausted_id)
-        )
+    assert delivered_row.status == "acknowledged"
+
+    # 重复执行：failed/acknowledged 均不在扫描面；fresh 仍未到点 → 无变化
+    await rt._tick_risk_scan()
+    fresh_row2 = (
+        await session.execute(select(Notification).where(Notification.notification_id == fresh_id))
     ).scalar_one()
-    assert delivered_row2.status == "delivered"
-    assert delivered_row2.retry_count == 1  # 没有被再推一次
-    assert failed_row2.status == "failed"
+    assert fresh_row2.status == "pending"
+    assert fresh_row2.retry_count == 0
 
 
 # ------------------------------------------------------------------ 用例 ⑤
