@@ -490,10 +490,12 @@ uv run pytest -q -m "not slow" --cov=app --cov-report=term
 | 表数量与表名 | 大纲 11 张（`workorders`/`conversations`） | **30 张（技术文档 26 张 + `metrics` + Day 6 三张事件表 `conversation_events`/`conversation_turns`/`tool_executions`）** |
 | 老电影点播 | 大纲列为功能验收 | **PRD 降为 P2** |
 | 通知渠道 | 旧稿含微信 / 邮件 | **仅站内 `inapp` + Web Push** |
-| 前端 UI 库 | 技术文档 §1.4 概括为 Tailwind | **pad 用 Tailwind，console/family 用 MUI** |
+| 前端 UI 库 | 技术文档 §1.4 概括为 Tailwind；早期方案 console/family 用 MUI | **pad 用 Tailwind；console/family 用纯 React + 原生 CSS（`var()` 引 tokens.css，不引第三方组件库）。MUI 已于 2026-11-06 移除（PRD v2.7 裁决），与本表「Day 8 护工看板渲染形态」行同口径** |
 | Day 5 metrics 表 | 大纲 5.2 口径含「metrics 表」 | **技术文档 §3.6 原批次无此表（26 张）；2026-11-07 主理人裁决 D2 自裁追加第 27 张表 `metrics`（分段耗时打点），走新迁移 0006** |
 | 口型同步实现 | 大纲 5.1 口径为音素级 viseme | **PRD FR-3D-01：TTS 音频能量近似驱动口型开合即可（day-05 计划裁决 D1 维持现状，不升级 viseme）** |
 | Day 6 主题 | 大纲 §十 / PRD 旧口径：三级路由（规则层 + Laya + MCP） | **现行：长者侧 Agent 完整闭环（历史/状态/上下文/送达/记忆骨架/用药子图 + 天气 MCP + AC-04 安全一票否决）；三级路由、`rules.py`、Laya、`decision_logs` 顺延至路由日**（2026-11-09 裁决，PRD v2.9 / TD v2.0） |
 | Day 8 声纹调优归属 | 大纲 8.4 + PRD §4 FR-VPR-04 表行（「Day 8.4 产出报告」）：声纹调优在 Day 8 | **现行：主理人 2026-11-10 晚改裁决 D-1——声纹调优（FR-VPR-04）纳入 Day 8 以 P1（H13）承载，产能不足仍可顺延 Day 9**；PRD §6.1 Day 9 行与 TD §8.4.3 的「归 Day 9」表述待同步修订（见 docs/plans/day08/day-08 计划 §0 / §10） |
 | Day 8 护工看板渲染形态 | 大纲 8.2：最简 HTML+JS 服务端渲染，不引前端框架 | **PRD §2.1：console 统一 React + 原生 CSS（tokens.css 唯一真源，MUI 已于 2026-11-06 移除），在现有工程内真实对接，不另起服务端渲染**（2026-11-10 主理人裁决 D-3） |
 | 评测门禁归属 | TD §8.4.3：FR-TC-07（评测门禁）归 Day 9 | **现行：主理人 2026-11-11 裁决 D-6——评测基线 v1 + `eval_gate.py` 门禁 + pre-push 接线 Day 8 全量做**（依据 day07 README §1.1 将「评测基线 v1」列为实际 Day 8 补齐项）；TD 归属表述待同步修订（见 docs/plans/day08/day-08 计划 v1.2 §0 / H16） |
+
+> **本表修订（2026-11-12）**：「前端 UI 库」行原「现行口径」误写为 *console/family 用 MUI*，与同表「Day 8 护工看板渲染形态」行及 PRD v2.7（2026-11-06 裁决：移除 MUI、改纯 React + 原生 CSS）自相矛盾。经核对 `frontend/package.json` 无 MUI 依赖、`frontend/src/{console,family}/` 零 `@mui` import，确认 MUI 确已移除；现将「用 MUI」归入旧口径、现行口径与 PRD v2.7 对齐。**其余各行未改动。**
