@@ -16,10 +16,14 @@
 
 自裁口径（登记计划 §8 执行记录）：
 
-- Z-A4a：退房后 `elder.status='transferred'`（organization.py:87 枚举既有，账号
+- Z-A4a：退房后 `elder.status='archived'`（organization.py:87 枚举既有，账号
   与配置保留）；away 用 `'away'`，恢复回 `'active'`。
-- Z-A4b：二次确认令牌 = 请求方显式传字面 `"CONFIRM"`，否则 `LifecycleConfirmError`
-  （REST 层映射 409，零副作用）——不新增表、不引入新凭证体系。
+  （修订：初版自裁 'transferred'，对齐 C6 lifecycle-api.ts / AdminLifecyclePage
+  定稿 `checkout → archived` 后改为 'archived'，E8 状态枚举 owner 为 C。）
+- Z-A4b（修订）：二次确认 = 请求显式携带 `confirm: true` 布尔（对齐 C6 定稿
+  `{confirm: true}`），缺省/false → `LifecycleConfirmError`（REST 层映射 409，
+  零副作用）。原 "CONFIRM" 字面令牌口径废止：客户端可控字符串不比布尔更安全，
+  保护实质在 admin-only ＋ 前端二次确认弹窗。不新增表、不引入新凭证体系。
 - Z-A4c：桩统一返回 X12 口径 `PurgeRef(affected_rows, archived_rows, domain)`；
   X4 真钩子（`PurgeRef(deleted_chunks, deleted_vectors, audit_id)`，contracts.md:144）
   接入时在编排层做字段适配。
@@ -43,9 +47,10 @@ from app.services.audit_log_service import record_audit
 
 logger = logging.getLogger("app.services.lifecycle_service")
 
-#: 二次确认令牌字面值（Z-A4b；REST 层映射 409）。
-#: 不是口令，是显式确认关键词——S105 误报，显式豁免留痕。
-CONFIRM_TOKEN = "CONFIRM"  # noqa: S105
+#: 二次确认机制（Z-A4b 修订，对齐 C6 lifecycle-api.ts 定稿）：请求显式携带
+#: `confirm: true` 布尔即视为已过二次确认弹窗；缺省/false → LifecycleConfirmError
+#: （REST 层映射 409，零副作用）。原 "CONFIRM" 字面令牌口径废止——客户端可控的
+#: 字符串不比布尔更安全，保护实质在 admin-only ＋ 前端弹窗。
 
 #: 桩标记（联调段换真钩子后 grep 本串须零命中）
 LIFECYCLE_STUB_MARKER = "lifecycle-stub-x4-x12"
@@ -344,9 +349,9 @@ async def _call_real_hook(
     raise NotImplementedError("real hooks land in the integration phase")
 
 
-def _require_confirm(confirm_token: str | None) -> None:
-    if confirm_token != CONFIRM_TOKEN:
-        raise LifecycleConfirmError("missing or invalid confirm token")
+def _require_confirm(confirm: bool) -> None:
+    if confirm is not True:
+        raise LifecycleConfirmError("missing confirm flag: pass confirm=true after the dialog")
 
 
 async def _load_elder(session: AsyncSession, elder_id: uuid.UUID) -> Elder:
@@ -364,17 +369,17 @@ async def checkout_elder(
     *,
     operator: Identity,
     elder_id: uuid.UUID,
-    confirm_token: str | None,
+    confirm: bool,
 ) -> LifecycleReport:
-    """退房流水线（FR-ADM-09）：五步清理 + 状态收口 transferred。"""
-    _require_confirm(confirm_token)
+    """退房流水线（FR-ADM-09）：五步清理 + 状态收口 archived（对齐 C6/E8 口径）。"""
+    _require_confirm(confirm)
     elder = await _load_elder(session, elder_id)
 
     report = await _run_pipeline(
         session, operator=operator, elder_id=elder_id, reason=REASON_CHECKOUT, steps=CHECKOUT_STEPS
     )
 
-    elder.status = "transferred"
+    elder.status = "archived"
     await session.commit()
     return report
 
@@ -384,10 +389,10 @@ async def teaching_reset(
     *,
     operator: Identity,
     elder_id: uuid.UUID,
-    confirm_token: str | None,
+    confirm: bool,
 ) -> LifecycleReport:
     """教学周期重置（FR-ADM-02 / AC-19）：业务数据清零，账号/角色/配置/审计保留。"""
-    _require_confirm(confirm_token)
+    _require_confirm(confirm)
     await _load_elder(session, elder_id)
 
     return await _run_pipeline(
