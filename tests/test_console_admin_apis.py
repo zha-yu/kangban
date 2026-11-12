@@ -305,6 +305,20 @@ async def test_memory_503_when_x5_not_delivered(client: AsyncClient, db_conn, mo
     await session.rollback()
 
 
+def test_memory_x5_delivered_skeleton_stands_down() -> None:
+    """X5 交付收口（2026-11-12）：memory_admin_service 门面已落地 → 503 骨架下线。
+
+    `/api/memory` 三个端点经 `_require_x5()` 找到三函数即直调 service 层，
+    不再返回 X5_NOT_DELIVERED——console 记忆页横幅态随之解除。
+    """
+    from app.api import memory as memory_api
+    from app.services import memory_admin_service
+
+    assert memory_api._require_x5() is memory_admin_service
+    for name in ("list_memories", "correct_memory", "delete_memory"):
+        assert callable(getattr(memory_admin_service, name, None)), name
+
+
 # ------------------------------------------------------------------ F21 顺序续播
 
 

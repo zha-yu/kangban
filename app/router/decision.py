@@ -27,6 +27,7 @@ G0 安全一票否决（在 orchestrator 里，Router 之前）
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -42,7 +43,7 @@ from app.router.rules import (
     extract_city,
     match_rule,
 )
-from app.router.safety import SEVERITY_YELLOW, safety_check
+from app.router.safety import SEVERITY_YELLOW, SafetyDecision, safety_check
 from app.system_one.schemas import Intent, SystemOneResult
 
 logger = logging.getLogger("app.router.decision")
@@ -259,7 +260,12 @@ class Router:
         # ---- FR-DLG-07 黄档复核（历史/他人/模糊）：建 follow_up，不打断本轮 ----
         # 位置在 L1 之前：这三类表达可能同时命中固定意图（如「我爸爸胸痛，暂停一下」），
         # 复核任务与继续路由互不排斥；**不 return**，避免把进行中的用药/健康任务打断。
-        await self._maybe_open_boundary_review(cleaned, thread_id=thread_id, runtime=runtime)
+        # guard 全轮只算一次：boundary review 与 G1 复核共用同一份 safety_check
+        # 结果（纯函数无状态，重复扫只是白烧 CPU）。
+        guard = safety_check(cleaned)
+        await self._maybe_open_boundary_review(
+            cleaned, guard=guard, thread_id=thread_id, runtime=runtime
+        )
 
         # ---- L1 规则层：命中即返回，0 次模型调用（验收：命中时 System One 调用 = 0） ----
         rule_decision = self._decide_by_rules(cleaned, started)
@@ -288,20 +294,24 @@ class Router:
         shadow = await self._consume_shadow(shadow_task)
 
         # ---- G1 敏感信号复核（分类器只给信号，处置走既有升级口） ----
-        if shadow is not None and shadow.is_sensitive:
-            # 契约 §6.1：否定/历史/他人/模糊四类边界**由 safety.py 判定，不由分类器裁决**。
-            # 分类器只读「这句话像不像急症」，读不出「我爸爸胸痛」是他人主体、
-            # 「昨天疼现在好了」是历史。safety.py 的护栏已经给过结论，这里直接采信：
-            # 它判"边界"就不升级（G1 不得绕过 FR-DLG-07 的四类边界）。
-            guard = safety_check(cleaned)
-            if not guard.is_sensitive and guard.reason is not None:
-                logger.info(
-                    "router_g1_suppressed_by_boundary trace_id=%s thread_id=%s reason=%s",
-                    trace_id or "-",
-                    thread_id,
-                    guard.reason,
-                )
-                shadow = None
+        # 契约 §6.1：否定/历史/他人/模糊四类边界**由 safety.py 判定，不由分类器裁决**。
+        # 分类器只读「这句话像不像急症」，读不出「我爸爸胸痛」是他人主体、
+        # 「昨天疼现在好了」是历史。safety.py 的护栏已经给过结论（decide 开头
+        # 算好的同一份 guard），这里直接采信：
+        # 它判"边界"就不升级（G1 不得绕过 FR-DLG-07 的四类边界）。
+        if (
+            shadow is not None
+            and shadow.is_sensitive
+            and not guard.is_sensitive
+            and guard.reason is not None
+        ):
+            logger.info(
+                "router_g1_suppressed_by_boundary trace_id=%s thread_id=%s reason=%s",
+                trace_id or "-",
+                thread_id,
+                guard.reason,
+            )
+            shadow = None
 
         if shadow is not None and shadow.is_sensitive:
             escalated = await self._escalate_g1(
@@ -354,9 +364,17 @@ class Router:
 
     # -------------------------------------------------------------- F22 黄档复核
 
-    async def _maybe_open_boundary_review(self, text: str, *, thread_id: str, runtime: Any) -> None:
+    async def _maybe_open_boundary_review(
+        self,
+        text: str,
+        *,
+        guard: SafetyDecision,
+        thread_id: str,
+        runtime: Any,
+    ) -> None:
         """安全边界（历史/他人/模糊）→ 黄档 follow_up 复核任务。
 
+        - `guard` 由 `decide()` 统一计算后传入（全轮一次 safety_check）；
         - **否定不建单**：`severity != "yellow"` 一律跳过（否定是 `severity=None`）；
         - **不建 risk_events**：出口只调 `open_work_order`（order_type=follow_up）；
         - 失败只记日志：复核单建不出来不能拖垮这一轮对话；
@@ -364,7 +382,6 @@ class Router:
         """
         if self.boundary_review is None or not text:
             return
-        guard = safety_check(text)
         if guard.severity != SEVERITY_YELLOW or guard.reason is None:
             return
         turn_id = getattr(runtime, "turn_id", None) or thread_id
@@ -696,7 +713,12 @@ class Router:
             task.cancel()
             raise
         if not done:
+            # 取消后必须 await 收敛：不 await 的话任务可能在事件循环里带着
+            # CancelledError 跑完，产生 "Task exception was never retrieved" 噪音；
+            # cancel 与完成并发时这里也顺带消费掉结果/异常。
             task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
             return None
         return task.result()
 

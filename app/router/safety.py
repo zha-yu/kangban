@@ -244,22 +244,34 @@ def _window_has_marker(text: str, start: int, markers: tuple[str, ...], window: 
 
 
 def _emergency_decision(cleaned: str) -> SafetyDecision:
-    """急症三组规则（缓解护栏 → 部位×症状 → 低歧义短语）。注入防线不在此处。"""
+    """急症三组规则（缓解护栏 → 部位×症状 → 低歧义短语）。注入防线不在此处。
+
+    扫描口径（2026-11-12 修正）：他人主体/模糊护栏**不再在首个命中处提前返回**，
+    而是记为黄档候选后继续扫——同一句里若任何 occurrence 能完整走通「部位×症状」
+    或「短语」判定，红档优先（漏黄不漏红，R-5）；全文扫完仍无红才按
+    黄档候选 → 否定 → 未命中的顺序出结论。
+    """
     # 1. 缓解护栏（全文）：带「已缓解」语义的历史表达 → 黄档复核（FR-DLG-07 历史）
     for marker in RECOVERY_MARKERS:
         if marker in cleaned:
             return _boundary("recovery", matched_rule=marker)
 
-    # 2. 胸部「部位 × 症状」双命中
+    boundary_decision: SafetyDecision | None = None
     blocked_reason: str | None = None
+
+    # 2. 胸部「部位 × 症状」双命中
     for part in CHEST_PARTS:
         for part_start in _occurrences(cleaned, part):
-            # 他人主体护栏：部位左侧窗口出现他人标记 → 黄档复核，不为本人建红色（FR-DLG-07）
+            # 他人主体护栏：部位左侧窗口出现他人标记 → 黄档候选，不为本人建红色（FR-DLG-07）
             if _window_has_marker(cleaned, part_start, OTHER_PERSON_MARKERS, _PERSON_WINDOW):
-                return _boundary("other_person", matched_rule=part)
-            # 模糊护栏：部位左侧窗口出现推测标记 → 黄档复核（FR-DLG-07 模糊）
+                if boundary_decision is None:
+                    boundary_decision = _boundary("other_person", matched_rule=part)
+                continue
+            # 模糊护栏：部位左侧窗口出现推测标记 → 黄档候选（FR-DLG-07 模糊）
             if _window_has_marker(cleaned, part_start, HEDGE_MARKERS, _HEDGE_WINDOW):
-                return _boundary("hedge", matched_rule=part)
+                if boundary_decision is None:
+                    boundary_decision = _boundary("hedge", matched_rule=part)
+                continue
 
             part_end = part_start + len(part)
             for symptom in CHEST_SYMPTOMS:
@@ -274,23 +286,29 @@ def _emergency_decision(cleaned: str) -> SafetyDecision:
                     return _sensitive(
                         CATEGORY_CHEST_PAIN, matched_rule=f"部位「{part}」×症状「{symptom}」"
                     )
-    if blocked_reason is not None:
-        return _not_sensitive(blocked_reason)
 
     # 3. 低歧义短语命中（呼吸困难/跌倒/中风先兆/轻生，无需部位搭配）
     for phrase, category in CRITICAL_PHRASES:
         for phrase_start in _occurrences(cleaned, phrase):
-            # 他人主体护栏（如「我爸摔倒」→ 黄档复核，不为本人建红色）
+            # 他人主体护栏（如「我爸摔倒」→ 黄档候选，不为本人建红色）
             if _window_has_marker(cleaned, phrase_start, OTHER_PERSON_MARKERS, _PERSON_WINDOW):
-                return _boundary("other_person", matched_rule=phrase)
-            # 模糊护栏（如「好像摔倒了」→ 黄档复核）
+                if boundary_decision is None:
+                    boundary_decision = _boundary("other_person", matched_rule=phrase)
+                continue
+            # 模糊护栏（如「好像摔倒了」→ 黄档候选）
             if _window_has_marker(cleaned, phrase_start, HEDGE_MARKERS, _HEDGE_WINDOW):
-                return _boundary("hedge", matched_rule=phrase)
+                if boundary_decision is None:
+                    boundary_decision = _boundary("hedge", matched_rule=phrase)
+                continue
             # 否定护栏（如「没有摔倒」「差点摔倒」）
             if _window_has_marker(cleaned, phrase_start, NEGATION_MARKERS, _NEGATION_WINDOW):
                 blocked_reason = "negation"
                 continue
             return _sensitive(category, matched_rule=phrase)
+
+    # 4. 无红档：黄档候选优先于否定（判黄不是放行；否定只是不判红）
+    if boundary_decision is not None:
+        return boundary_decision
     if blocked_reason is not None:
         return _not_sensitive(blocked_reason)
 

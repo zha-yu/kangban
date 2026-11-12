@@ -5,10 +5,8 @@
 删了就把「出过什么事」的证据一起删掉。
 
 **目录契约**（主理人 2026-11-12 裁决 D4）：扫描 `settings.audio_debug_dir`
-（默认 `var/audio_debug`）。⚠️ 当前 `app/core/config.py` **尚无** `audio_debug_dir`
-字段（只有 `audio_retention_hours` / `audio_debug_save`）；本模块用
-`getattr(settings, "audio_debug_dir", _DEFAULT_AUDIO_DEBUG_DIR)` 兜底，配置一旦由
-dev-B2/装配补上即自动生效，**不在此处新增配置字段**（config 改动归 B2 写域）。
+（默认 `var/audio_debug`，字段已补进 `app/core/config.py` 并登记 `.env.example`）。
+`getattr(settings, "audio_debug_dir", ...)` 兜底保留，兼容未升级的测试桩配置。
 落盘生产方（谁往这个目录写）登记 Day 10，本轮只证明 job 行为。
 
 **独立 runtime**：照 `memory_jobs.py` / `health_jobs.py` 先例自建文件，不并入用药 /

@@ -222,6 +222,9 @@ class Settings(BaseSettings):
     # ---------------------------- 数据保留 / 调度 ----------------------------
     audio_retention_hours: int = 72
     audio_debug_save: bool = False
+    # F27 原始音频清理扫描目录（audio_retention_jobs.sweep 的扫描根）；
+    # 落盘生产方（谁往这个目录写）登记 Day 10。
+    audio_debug_dir: str = "var/audio_debug"
     scheduler_timezone: str = "Asia/Shanghai"
     health_checkup_start: str = "19:00"
     health_checkup_end: str = "20:00"

@@ -78,6 +78,7 @@ def install_scheduler(
     checkpointer_dsn: str | None = None,
     checkpointer_schema: str | None = None,
     timezone_name: str = "Asia/Shanghai",
+    outbound_fn: Callable[[str], Any] | None = None,
 ) -> SchedulerRuntime:
     """构造 SchedulerRuntime 并挂到 `app.state.medication_scheduler`，返回实例给调用方。
 
@@ -95,6 +96,7 @@ def install_scheduler(
         None = 走 Pydantic Settings（`langgraph_checkpoint_database_url` /
         `langgraph_checkpoint_schema`），与子图 N10 的口径一致。
     :param timezone_name: cron 解释时区（默认 Asia/Shanghai）。
+    :param outbound_fn: F17 外呼出口（`initiate_outbound_call` 同形）；None = 不外呼。
     :return: 已构造但**未启动**的 SchedulerRuntime 实例。
     """
     runtime = SchedulerRuntime(
@@ -102,6 +104,7 @@ def install_scheduler(
         checkpointer_dsn=checkpointer_dsn,
         checkpointer_schema=checkpointer_schema,
         timezone_name=timezone_name,
+        outbound_fn=outbound_fn,
     )
     app.state.medication_scheduler = runtime
     return runtime
@@ -123,14 +126,25 @@ class SchedulerRuntime:
         checkpointer_dsn: str | None = None,
         checkpointer_schema: str | None = None,
         timezone_name: str = "Asia/Shanghai",
+        outbound_fn: Callable[[str], Any] | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._checkpointer_dsn = checkpointer_dsn
         self._checkpointer_schema = checkpointer_schema
         self._timezone = timezone_name
+        # F17 外呼出口（FR-MED-06）：main.py 装配层注入 `initiate_outbound_call`；
+        # None = 图内不外呼（行为与历史版本一致，测试期免加载 WebRTC 栈）。
+        self._outbound_fn = outbound_fn
         self._scheduler: AsyncIOScheduler | None = None
         self._checkpointer_ctx: Any = None
         self._checkpointer: AsyncPostgresSaver | None = None
+
+    def _build_graph(self, session: Any) -> Any:
+        return build_medication_graph(
+            session=session,
+            checkpointer=self._checkpointer,
+            outbound_fn=self._outbound_fn,
+        )
 
     # --- start / stop ---
 
@@ -281,10 +295,7 @@ class SchedulerRuntime:
 
         # ② build_graph → start_medication_task（停在 wait_confirm interrupt）
         async with self._session_factory() as graph_session:
-            graph = build_medication_graph(
-                session=graph_session,
-                checkpointer=self._checkpointer,
-            )
+            graph = self._build_graph(graph_session)
             await start_medication_task(
                 graph,
                 reminder_id=reminder_id,
@@ -327,10 +338,7 @@ class SchedulerRuntime:
 
         # ① 读子图状态
         async with self._session_factory() as session:
-            graph = build_medication_graph(
-                session=session,
-                checkpointer=self._checkpointer,
-            )
+            graph = self._build_graph(session)
             state = await graph.aget_state(graph_id)
 
         if state is None:
@@ -365,10 +373,7 @@ class SchedulerRuntime:
 
         # ⑤ 到点 → resume 空 answer（子图 retry：未耗尽 → 下一次触达；耗尽 → finalize）
         async with self._session_factory() as resume_session:
-            graph = build_medication_graph(
-                session=resume_session,
-                checkpointer=self._checkpointer,
-            )
+            graph = self._build_graph(resume_session)
             await resume_medication_task(
                 graph, reminder_id=reminder_id, answer=_EMPTY_ANSWER_FOR_RETRY
             )
