@@ -547,10 +547,14 @@ async def reassign_elders(
             )
 
         # --- 9. 推进涉改动长者的 updated_at（下一轮 CAS 的新基准） ---
+        # 必须用 DB 的 clock_timestamp()，不能用宿主时钟：baseline 本身来自列默认值
+        # `now()`（DB 时钟），两个时钟源一旦有偏差（实测容器 DB 可比宿主快上百毫秒），
+        # 写回值可能小于 baseline → 下一轮 CAS 判定失效（该 409 的不 409）。
+        # 用 clock_timestamp() 而非 now()：now() 是事务开始时间，同事务内不会推进。
         await session.execute(
             update(Elder)
             .where(Elder.elder_id.in_(involved_ids))
-            .values(updated_at=datetime.datetime.now(datetime.UTC))
+            .values(updated_at=func.clock_timestamp())
         )
         await session.flush()
 

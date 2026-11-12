@@ -66,6 +66,52 @@ export async function deviceLogin(deviceId: string): Promise<DeviceSession> {
   throw new LoginError(code, ERROR_TEXT[code]);
 }
 
+/* ---------- D3 一键求助（FR-ALT-06） ---------- */
+
+export interface SosTriggerResult {
+  event_id: string;
+  order_id: string | null;
+  created: boolean;
+}
+
+/** 求助发送失败（网络/401/403/5xx 统一收口，页面只给「再试一次」）。 */
+export class SosRequestError extends Error {}
+
+/** POST /api/pad/sos：设备令牌鉴权，elder_id 由服务端按绑定表解出（禁区 9）。 */
+export async function triggerSos(token: string): Promise<SosTriggerResult> {
+  let res: Response;
+  try {
+    res = await fetch("/api/pad/sos", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch {
+    throw new SosRequestError("network");
+  }
+
+  if (!res.ok) {
+    // 403 = 设备没绑长者（需工作人员处理）；其余按暂时失败给重试入口。
+    throw new SosRequestError(res.status === 403 ? "device_not_bound" : "failed");
+  }
+  return (await res.json()) as SosTriggerResult;
+}
+
+/** POST /api/pad/sos/{id}/correction：红色事件不能撤销，只追加「说错了」说明。 */
+export async function appendSosCorrection(token: string, eventId: string): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`/api/pad/sos/${encodeURIComponent(eventId)}/correction`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch {
+    throw new SosRequestError("network");
+  }
+  if (!res.ok) {
+    throw new SosRequestError(res.status === 409 ? "closed" : "failed");
+  }
+}
+
 /* ---------- mock 自测：无后端时验证三类错误 UI（?mock=1 启用） ---------- */
 
 export const MOCK_ENABLED =

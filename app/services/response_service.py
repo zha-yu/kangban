@@ -314,6 +314,8 @@ class _ResponseState:
     elder_id: str | None
     user_text: str
     degraded: bool
+    #: D6（route_degraded 冻结 v1.0）：本轮 L0/L1 不可用经 fallback 由 L2 正常生成
+    route_degraded: bool
     segments: tuple[str, ...]
     total: int
     status: ResponsePhase = PHASE_PLAYING
@@ -378,6 +380,7 @@ class ResponseService:
         *,
         response_id: str | None = None,
         audio_sink: SegmentAudioSink | None = None,
+        route_degraded: bool = False,
     ) -> ResponseHandle:
         """服务端分段并把每段以 tts_text v2 下发（N14 七步的最后一步）。
 
@@ -419,6 +422,7 @@ class ResponseService:
             elder_id=turn.elder_id,
             user_text=turn.user_text,
             degraded=bool(result.degraded),
+            route_degraded=bool(route_degraded),
             segments=segments,
             total=len(segments),
         )
@@ -519,6 +523,8 @@ class ResponseService:
             "type": "tts_text",
             "text": state.segments[index],
             "degraded": state.degraded,
+            # D6：每条 tts_text 恒下发（显式 true/false，不缺省），与 degraded 正交
+            "route_degraded": state.route_degraded,
             "response_id": state.response_id,
             "epoch": state.epoch,
             "segment_id": index,

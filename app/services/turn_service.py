@@ -594,6 +594,20 @@ class HistoryEventSink:
 # ---------------------------------------------------------------- 统一出口
 
 
+def _is_route_degraded(decision: Any, result: Any) -> bool:
+    """D6（route_degraded 冻结 v1.0）：fallback 路由且 L2 正常生成才为 true。
+
+    澄清、拒答、生成降级轮一律 false——与 `degraded` 正交，不做互相推断。
+    """
+    route_layer = str(getattr(decision, "route_layer", "agent"))
+    route_action = str(getattr(decision, "action", "agent"))
+    return (
+        route_layer == "fallback"
+        and route_action == "agent"
+        and not bool(getattr(result, "degraded", False))
+    )
+
+
 class TurnService:
     """统一事实提交边界：七步顺序即契约（见模块 docstring）。
 
@@ -853,8 +867,16 @@ class TurnService:
 
         # ---- 第 7 步：最后下发（事务窗口之外；response_id 与第 5 步同一枚，事实与下发对账一致） ----
         # 下发失败不回滚已闭合的事实（只追加口径）；客户端侧由 ws_dead / 重连兜底。
+        # D6（route_degraded 冻结 v1.0）：仅「fallback 路由 → L2 正常生成」为 true；
+        # clarify / 拒答 / 生成降级轮一律 false（与 degraded 正交）。
+        route_layer = str(getattr(decision, "route_layer", "agent"))
+        route_degraded = _is_route_degraded(decision, result)
         handle = await self._response_stream.start(
-            context, result, response_id=response_id, audio_sink=audio_sink
+            context,
+            result,
+            response_id=response_id,
+            audio_sink=audio_sink,
+            route_degraded=route_degraded,
         )
 
         outcome = TurnOutcome(
@@ -865,7 +887,7 @@ class TurnService:
             escalated_to_agent=True,
             followup_required=result.followup_required,
             followup_reason=result.followup_reason,
-            route_layer=getattr(decision, "route_layer", "agent"),
+            route_layer=route_layer,
             intent=getattr(decision, "intent", "other"),
             confidence=float(getattr(decision, "confidence", 0.0) or 0.0),
             clarified=bool(decision is not None and decision.action == "clarify"),

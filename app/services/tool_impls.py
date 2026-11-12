@@ -305,8 +305,11 @@ _SEARCH_PUNCT_RE: Final = re.compile(r"[《》〈〉「」『』“”‘’\"'�
 #: play_opera 的播放控制动作（契约 §6.3 七动作 + interrupt）：pad 本地执行，
 #: 后端执行器只返回 {"control": action} 标记、由下发层转 media_control 帧
 _PLAY_CONTROL_ACTIONS: Final[frozenset[str]] = frozenset(
-    {"pause", "resume", "stop", "replay", "interrupt", "volume_up", "volume_down"}
+    {"pause", "resume", "stop", "repeat", "replay", "interrupt", "volume_up", "volume_down"}
 )
+
+#: 规则/Tool 入参动作 → pad 七动作名（§6.5 冻结：repeat→replay）
+_CONTROL_ACTION_ALIASES: Final[dict[str, str]] = {"repeat": "replay"}
 
 
 def make_play_opera_executor(
@@ -369,7 +372,8 @@ def make_play_opera_executor(
 
         if action in _PLAY_CONTROL_ACTIONS:
             # 播放控制：pad 本地执行，后端只转发（不查库、不写库）
-            return {"control": action}
+            # repeat 是规则层 R-08 的入参写法，落到协议上用 pad 的 replay（§6.5）
+            return {"control": _CONTROL_ACTION_ALIASES.get(action, action)}
 
         from app.models.media import MediaLibrary
 

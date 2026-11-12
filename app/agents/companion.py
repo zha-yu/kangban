@@ -314,7 +314,7 @@ def _tool_protocol_message(tools: Sequence[ToolSpec]) -> dict[str, str]:
             "工具查不到的信息要如实告知长者，不要编造。\n"
             "\n"
             "示例（戏曲点播 play_opera）：检索词必须放进 args 的 query 字段，"
-            '不要自创参数名。例如长者说「我要听茉莉雨」，输出：\n'
+            "不要自创参数名。例如长者说「我要听茉莉雨」，输出：\n"
             '{"tool": "play_opera", "args": {"action": "play", "query": "茉莉雨"}}\n'
             '若工具结果提示 unexpected parameters（如 ["title"]），说明参数名传错了，'
             "请对照上面示例改成 query 后重试一次，不要换别的参数名。"

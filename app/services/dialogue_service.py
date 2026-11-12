@@ -79,6 +79,7 @@ class TtsTextMsgV2(TypedDict):  # S→C：C2 tts_text 的向后兼容扩展
     type: Literal["tts_text"]
     text: str
     degraded: bool  # 新增可选字段，缺省 False：True=LLM 降级模板话术
+    route_degraded: bool  # D6 冻结 v1.0：L0/L1 不可用经 fallback 由 L2 正常生成时为 True
 
 
 class ThreadInfo(TypedDict):  # 服务端内部契约（闸门①），前端无感知；A1 identity_service 创建

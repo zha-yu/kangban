@@ -30,6 +30,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.medication import MedicationAttempt, MedicationEvent
+from app.services.audit_log_service import record_audit
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,9 @@ TERMINAL_STATES: tuple[str, ...] = (
 
 #: 事件状态四值
 EVENT_STATUSES: tuple[str, ...] = ("calling", "waiting_confirm", "confirmed", "escalated")
+
+#: FR-UI-08 / AC-26：普通已服自报的撤销窗口（秒）
+UNDO_WINDOW_SECONDS: int = 10
 
 
 class MedicationError(ValueError):
@@ -59,6 +63,14 @@ class TerminalStateConflict(MedicationError):
 
 class MedicationEventNotFound(MedicationError):
     """事件不存在：说明建事件与推进图之间发生了回滚。"""
+
+
+class MedicationUndoNotAllowed(MedicationError):
+    """非「已服自报」终态不允许撤销（FR-UI-08：红色事件不能一键撤销）。"""
+
+
+class MedicationUndoWindowExpired(MedicationError):
+    """超过 10 秒撤销窗口（AC-26）。"""
 
 
 def payload_hash(drug_snapshot: dict[str, Any]) -> str:
@@ -333,6 +345,82 @@ async def set_terminal(
     await _update_event(session, event_id, values)
 
 
+async def revoke_taken_report(
+    session: AsyncSession,
+    *,
+    elder_id: uuid.UUID,
+    reminder_id: uuid.UUID,
+    now: datetime.datetime | None = None,
+    device_id: str | None = None,
+) -> dict[str, Any]:
+    """FR-UI-08 / AC-26：普通「已服自报」10 秒内撤销，恢复为待确认。
+
+    三条边界：
+
+    1. **仅 `terminal_state='taken_reported'`** 可撤销；其他终态或未定终态 →
+       `MedicationUndoNotAllowed`（红色事件只能追加「说错了」，不能撤销）。
+    2. **10 秒窗口**（`UNDO_WINDOW_SECONDS`）→ 超时 `MedicationUndoWindowExpired`。
+    3. **归属**：事件不属于该长者一律按「不存在」处理（`MedicationEventNotFound`），
+       防止用他人 reminder_id 探测。
+
+    撤销只回滚业务状态，**不删触达历史**（medication_attempts 只增不改）；
+    同事务写审计 `medication_taken_report_revoked`，不 commit（事务归调用方）。
+    """
+    row = (
+        await session.execute(
+            select(
+                MedicationEvent.elder_id,
+                MedicationEvent.terminal_state,
+                MedicationEvent.confirmed_at,
+            ).where(MedicationEvent.reminder_id == reminder_id)
+        )
+    ).first()
+    if row is None or row.elder_id != elder_id:
+        raise MedicationEventNotFound(f"medication event not found: {reminder_id}")
+
+    if row.terminal_state != "taken_reported" or row.confirmed_at is None:
+        raise MedicationUndoNotAllowed("仅「已服自报」可撤销，红色事件请追加说明")
+
+    current = now or datetime.datetime.now(datetime.UTC)
+    confirmed_at = row.confirmed_at
+    if confirmed_at.tzinfo is None:  # 兼容无时区读值，统一按 UTC 解读
+        confirmed_at = confirmed_at.replace(tzinfo=datetime.UTC)
+    elapsed = current - confirmed_at
+    if elapsed > datetime.timedelta(seconds=UNDO_WINDOW_SECONDS):
+        raise MedicationUndoWindowExpired(f"撤销窗口已过（{UNDO_WINDOW_SECONDS} 秒）")
+
+    await _update_event(
+        session,
+        reminder_id,
+        {
+            "status": "waiting_confirm",
+            "terminal_state": None,
+            "late_taken": False,
+            "confirmed_at": None,
+            "confirm_channel": None,
+        },
+    )
+    await record_audit(
+        session,
+        actor_type="system",
+        actor_id=None,
+        action="medication_taken_report_revoked",
+        resource_type="medication_event",
+        resource_id=reminder_id,
+        detail={
+            "elder_id": str(elder_id),
+            "window_s": UNDO_WINDOW_SECONDS,
+            "elapsed_ms": int(elapsed.total_seconds() * 1000),
+            "device_id": device_id,
+        },
+    )
+    return {
+        "reminder_id": reminder_id,
+        "status": "waiting_confirm",
+        "terminal_state": None,
+    }
+
+
 async def _update_event(session: AsyncSession, event_id: uuid.UUID, values: dict[str, Any]) -> None:
     result = await session.execute(
         update(MedicationEvent).where(MedicationEvent.reminder_id == event_id).values(**values)
@@ -444,9 +532,12 @@ async def list_attempts(session: AsyncSession, event_id: uuid.UUID) -> list[dict
 __all__ = [
     "EVENT_STATUSES",
     "TERMINAL_STATES",
+    "UNDO_WINDOW_SECONDS",
     "MedicationConflict",
     "MedicationError",
     "MedicationEventNotFound",
+    "MedicationUndoNotAllowed",
+    "MedicationUndoWindowExpired",
     "TerminalStateConflict",
     "create_event",
     "get_attempt",
@@ -458,6 +549,7 @@ __all__ = [
     "payload_hash",
     "record_attempt",
     "record_response",
+    "revoke_taken_report",
     "set_terminal",
     "set_waiting_confirm",
 ]

@@ -316,7 +316,7 @@ class HealthSchedulerRuntime:
             try:
                 async with self._session_factory() as session:
                     status, _ = await task_dispatch_service.push_health_collection_task(
-                        session, elder_id=elder_id, source="scheduler"
+                        session, elder_id=elder_id, source="scheduler", now=now_sh
                     )
                 if status == "voice_dispatched":
                     pushed += 1

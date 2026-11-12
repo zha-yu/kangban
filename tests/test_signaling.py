@@ -103,6 +103,13 @@ def test_tts_text_v3_adds_touch_fields_as_not_required() -> None:
         assert "NotRequired" in str(annotations[field_name])  # v3 四字段全部可选
 
 
+def test_tts_text_v4_adds_route_degraded_as_not_required() -> None:
+    """D6（adhoc-20261111-route_degraded 冻结 v1.0）：字段恒下发，TS 侧仍为可选。"""
+    annotations = TtsTextMsg.__annotations__
+    assert "route_degraded" in annotations
+    assert "NotRequired" in str(annotations["route_degraded"])
+
+
 def test_touch_played_msg_contract_shape() -> None:
     annotations = TouchPlayedMsg.__annotations__
     assert set(annotations) == {"type", "touch_id", "event_id", "attempt_no"}

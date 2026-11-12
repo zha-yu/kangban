@@ -49,6 +49,10 @@ from app.core.config import get_settings
 from app.core.context import get_trace_id
 from app.models import ElderStaffAssignment, Notification
 from app.router.safety import SafetyDecision
+from app.services.notify_service import (
+    NotificationTargetNotFound,
+    send_guardian_notifications,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +182,7 @@ async def escalate_safety_event(
     thread_id: str | None = None,
     existing_event_id: uuid.UUID | None = None,
 ) -> EscalationResult:
-    """把一个红档安全决策升级为 红色事件 + 护工工单 + 护工通知 三行（同一事务）。
+    """把一个红档安全决策升级为 红色事件 + 护工工单 + 护工通知 + 家属通知（同一事务）。
 
     - 只接受 `severity="red"` 的决策：黄档判黄复核属 Day 9 边界集，误用即抛错；
     - `existing_event_id` 缺省时新建红色事件；传入已有事件 ID 表示**同一事件的
@@ -328,6 +332,28 @@ async def escalate_safety_event(
                 "event_id": str(event_id),
                 "trace_id": trace_id,
             },
+        )
+
+    # ---- 5. 家属通知（AC-38 双通知；无 active 绑定则跳过并留痕，不影响护工链路）----
+    try:
+        await send_guardian_notifications(
+            session,
+            elder_id=elder_id,
+            ntype=notification_type,
+            payload={
+                "elder_id": str(elder_id),
+                "event_id": str(event_id),
+                "severity": "red",
+                "category": decision.category,
+                "brief": "长者出现紧急健康事件，护工已收到通知",
+            },
+            dedupe_key=f"risk:{event_id}:guardian",
+            is_mock=True,
+        )
+    except NotificationTargetNotFound:
+        logger.warning(
+            "safety_escalation_guardian_skipped_no_binding",
+            extra={"event_id": str(event_id), "elder_id": str(elder_id), "trace_id": trace_id},
         )
 
     return EscalationResult(

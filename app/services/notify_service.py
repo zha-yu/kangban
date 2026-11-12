@@ -635,7 +635,9 @@ async def acknowledge_notification(
 def _require_transition(current: str, target: str) -> None:
     allowed = _STATUS_TRANSITIONS.get(current, frozenset())
     if target not in allowed:
-        raise NotificationError(f"illegal notification transition: {current} → {target}")
+        raise NotificationIllegalTransition(
+            f"illegal notification transition: {current} → {target}"
+        )
 
 
 # ------------------------------------------------------------------ 扫描函数（APScheduler 驱动）

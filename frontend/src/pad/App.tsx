@@ -15,7 +15,8 @@ import { IdentityConfirm } from "./components/IdentityConfirm";
 import { TaskPanel } from "./components/TaskPanel";
 import { ChatTranscript, type ChatMessage } from "./components/ChatTranscript";
 import { LoginPage } from "./pages/LoginPage";
-import { SosResult } from "./pages/SosResult";
+import { SosResult, type SosStatus } from "./pages/SosResult";
+import { triggerSos, appendSosCorrection } from "./api";
 import { DemoSwitcher } from "./pages/DemoSwitcher";
 import type { TaskKind } from "./tasks";
 import {
@@ -43,6 +44,12 @@ interface SubtitleState {
 
 /** 开发验收直达：模块加载时读一次 ?demo=，仅 DEV 生效，不进真实演示链路 */
 const INITIAL_DEMO_TASK = readDemoTask();
+
+/** 开发态直达 SOS 结果态（?sos=1 / ?demo=sos）：仅预览版式，不伪造一次真实求助请求。 */
+const SOS_DEV_DIRECT =
+  import.meta.env.DEV &&
+  (new URLSearchParams(window.location.search).has("sos") ||
+    new URLSearchParams(window.location.search).get("demo") === "sos");
 
 /** 主界面：两相轮转（Day 4 W2）——
  *  standby：待机唤醒期，KWS 端侧监听「小伴」（音频不出端）+ 呼叫按钮正交入口（FR-UI-09）；
@@ -84,12 +91,11 @@ function MainScreen({
   // FR-ALT-06：SOS 常显，结果态优先于形象选择页与任务面板；
   // 结果态只替换中部内容，顶栏按钮 / 大字幕 / 操作区高度都不动，位置永不移动。
   // 开发验收直达 ?sos=1（或 ?demo=sos），仅 DEV 生效，不进真实演示链路。
-  const [sosOpen, setSosOpen] = useState(
-    () =>
-      import.meta.env.DEV &&
-      (new URLSearchParams(window.location.search).has("sos") ||
-        new URLSearchParams(window.location.search).get("demo") === "sos"),
-  );
+  const [sosOpen, setSosOpen] = useState(SOS_DEV_DIRECT);
+  // D3 接线：点击即 POST /api/pad/sos；发送中/成功/失败三态由结果页呈现
+  const [sosStatus, setSosStatus] = useState<SosStatus>(SOS_DEV_DIRECT ? "sent" : "sending");
+  // D3/AC-26：红色事件只能追加「说错了」说明，需要记住本次事件 id
+  const [sosEventId, setSosEventId] = useState<string | null>(null);
 
   // D4 单端调试入口（?demo=opera，仅 DEV）：WS 帧形状未定（Q-D4），先验七动作状态机
   const [operaDemo] = useState(
@@ -161,10 +167,46 @@ function MainScreen({
     });
   }, [activeTask]);
 
+  /** D3：一键求助 → POST /api/pad/sos（设备令牌；elder_id 服务端解出）。
+   *  失败不吞：停在失败态并给「再试一次」，绝不显示成已送达。 */
+  const requestSos = useCallback(async () => {
+    setSosStatus("sending");
+    const token = loadSession()?.access_token;
+    if (!token) {
+      setSosStatus("failed");
+      return;
+    }
+    try {
+      const result = await triggerSos(token);
+      setSosEventId(result.event_id);
+      setSosStatus("sent");
+    } catch {
+      setSosStatus("failed");
+    }
+  }, []);
+
+  /** AC-26：红色事件不能撤销，只能追加「说错了」说明；事件保持 open。 */
+  const appendCorrection = useCallback(async (): Promise<boolean> => {
+    const token = loadSession()?.access_token;
+    if (!token || !sosEventId) return false;
+    try {
+      await appendSosCorrection(token, sosEventId);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [sosEventId]);
+
+  const openSos = useCallback(() => {
+    setPickerOpen(false);
+    setSosOpen(true);
+    void requestSos();
+  }, [requestSos]);
+
   /** 开发态切换条 = 任务下发适配器的可运行样例：点击即 emit 一条同形命令 */
   function handleSwitch(kind: TaskKind) {
     if (kind === "sos") {
-      setSosOpen(true);
+      openSos();
       return;
     }
     setSosOpen(false);
@@ -415,7 +457,7 @@ function MainScreen({
           >
             退出登录
           </button>
-          <SosButton active={sosOpen} onClick={() => setSosOpen(true)} />
+          <SosButton active={sosOpen} onClick={openSos} />
         </div>
       </header>
 
@@ -433,7 +475,12 @@ function MainScreen({
         ) : sosOpen ? (
           // 结果态只占中部：顶栏 SOS（active）、大字幕区、操作区高度都在原位
           <div className="flex h-full w-full items-center justify-center">
-            <SosResult onExit={() => setSosOpen(false)} />
+            <SosResult
+              status={sosStatus}
+              onRetry={() => void requestSos()}
+              onCorrection={sosEventId ? appendCorrection : undefined}
+              onExit={() => setSosOpen(false)}
+            />
           </div>
         ) : activeTask ? (
           // 任务面板优先于对话记录；退出任务后若在会话中会自动回到记录

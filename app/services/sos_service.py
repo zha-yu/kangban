@@ -23,8 +23,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.medication import RiskEvent, WorkOrder
 from app.services import notify_service, work_order_service
+from app.services.audit_log_service import record_audit
 
 logger = logging.getLogger(__name__)
+
+
+class SosEventNotFound(ValueError):
+    """事件不存在或不属于该长者（防枚举，统一 404）。"""
+
+
+class SosCorrectionNotAllowed(ValueError):
+    """事件已关闭，不再接受补充说明（409）。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,7 +101,77 @@ async def trigger_sos(session: AsyncSession, *, elder_id: uuid.UUID) -> SosResul
         payload={"title": "一键求助", "summary": "长者按下 SOS 按钮，请立即响应"},
         dedupe_key=f"sos:{event.event_id}",
     )
+    # AC-38：红色事件家属侧也要有记录（无 binding 时跳过，不影响主链路）
+    try:
+        await notify_service.send_guardian_notifications(
+            session,
+            elder_id=elder_id,
+            ntype="sos",
+            payload={
+                "elder_id": str(elder_id),
+                "event_id": str(event.event_id),
+                "severity": "red",
+                "brief": "长者按下了一键求助，护工已收到通知",
+            },
+            dedupe_key=f"sos:{event.event_id}:guardian",
+            is_mock=True,
+        )
+    except notify_service.NotificationTargetNotFound:
+        logger.info("sos_guardian_skipped_no_binding elder_id=%s", elder_id)
     logger.warning(
         "sos_triggered event_id=%s elder_id=%s order_id=%s", event.event_id, elder_id, ref.order_id
     )
     return SosResult(event.event_id, ref.order_id, True)
+
+
+async def append_correction(
+    session: AsyncSession,
+    *,
+    elder_id: uuid.UUID,
+    event_id: uuid.UUID,
+    note: str = "刚才说错了",
+    device_id: str | None = None,
+) -> RiskEvent:
+    """FR-UI-08 / AC-26：红色事件**不可撤销**，仅追加「说错了」补充说明。
+
+    - 只接受本长者的事件（不属于 → `SosEventNotFound`，防枚举）；
+    - 已关闭事件不再接受说明（`SosCorrectionNotAllowed`）；
+    - **不改 status**：事件保持 open/escalated，等工作人员核实；
+    - 说明落 audit_logs（append-only），不新增表、不做迁移。
+    """
+    event = (
+        (
+            await session.execute(
+                select(RiskEvent).where(
+                    RiskEvent.event_id == event_id,
+                    RiskEvent.elder_id == elder_id,
+                    # 本端点只服务 sos 事件：其他红事件（health_alert/med_risk/…）
+                    # 即便属于本长者也不接受「说错了」，按不存在返回（防跨语义误用）
+                    RiskEvent.type == "sos",
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if event is None:
+        raise SosEventNotFound(f"sos event not found: {event_id}")
+    if event.status == "closed":
+        raise SosCorrectionNotAllowed("事件已关闭，无法追加说明")
+
+    await record_audit(
+        session,
+        actor_type="system",
+        actor_id=None,
+        action="sos_correction_appended",
+        resource_type="risk_event",
+        resource_id=event.event_id,
+        detail={"note": note, "status": event.status, "device_id": device_id},
+    )
+    logger.info(
+        "sos_correction_appended event_id=%s elder_id=%s status=%s",
+        event.event_id,
+        elder_id,
+        event.status,
+    )
+    return event
