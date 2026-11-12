@@ -39,7 +39,7 @@ const NAV_BY_ROLE: Record<string, NavItem[]> = {
     { key: "memory", label: "记忆管理", enabled: true }, // Day 9 C6 交付（X5 未交付时页面提示）
     { key: "stats", label: "统计与审计", enabled: true }, // Day 9 C6 交付（FR-ALT-05 三指标 + 审计表/导出）
     // 审计日志并入「统计与审计」页（C6 收口，避免同内容双入口）
-    { key: "persona", label: "人设配置", enabled: false }, // X6 作废，保持置灰
+    // { key: "persona", label: "人设配置", enabled: false }, // X6 作废，保持置灰
   ],
 };
 
