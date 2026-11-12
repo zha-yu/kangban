@@ -43,15 +43,17 @@ class TestGradeHealthPure:
         r = grade_health(systolic=130, diastolic=125, sleep_hours=7.0, mood_score=4, complaint=None)
         assert r.severity == SEVERITY_RED
 
-    def test_red_hypotension_systolic_88(self) -> None:
-        """低血压：收缩压 ≤90 → red。"""
+    def test_hypotension_systolic_88_yellow(self) -> None:
+        """低血压：收缩压 <90 → **yellow**（PRD line 358；g1 误判红，g2 回正）。"""
         r = grade_health(systolic=88, diastolic=55, sleep_hours=7.0, mood_score=4, complaint=None)
-        assert r.severity == SEVERITY_RED
+        assert r.severity == SEVERITY_YELLOW
+        assert r.components[0].severity == SEVERITY_YELLOW  # 收缩压 <90 黄
 
-    def test_red_hypotension_diastolic_55(self) -> None:
-        """低血压：舒张压 ≤60 → red。"""
+    def test_hypotension_diastolic_55_yellow(self) -> None:
+        """低血压：舒张压 <60 → **yellow**（PRD line 358；g1 误判红，g2 回正）。"""
         r = grade_health(systolic=120, diastolic=55, sleep_hours=7.0, mood_score=4, complaint=None)
-        assert r.severity == SEVERITY_RED
+        assert r.severity == SEVERITY_YELLOW
+        assert r.components[1].severity == SEVERITY_YELLOW  # 舒张压 <60 黄
 
     # --- AC-09 黄档 ---
 
@@ -130,6 +132,97 @@ class TestGradeHealthPure:
     def test_invalid_sleep_25h(self) -> None:
         """睡眠 25h 超范围 → 标缺失 → yellow。"""
         r = grade_health(systolic=120, diastolic=80, sleep_hours=25.0, mood_score=4, complaint=None)
+        assert r.severity == SEVERITY_YELLOW
+
+    # --- C1 · g2 九边界（PRD line 357-359 原文，任务卡 C1 §1.5 逐条） ---
+
+    @pytest.mark.parametrize(
+        ("systolic", "diastolic", "expected"),
+        [
+            (90, 60, SEVERITY_GREEN),  # PRD:359 绿下边界
+            (89, 60, SEVERITY_YELLOW),  # PRD:358 收缩压 <90
+            (90, 59, SEVERITY_YELLOW),  # PRD:358 舒张压 <60
+            (139, 89, SEVERITY_GREEN),  # PRD:359 绿上边界
+            (140, 89, SEVERITY_YELLOW),  # PRD:358 收缩压 140–179
+            (90, 90, SEVERITY_YELLOW),  # PRD:358 舒张压 90–119
+            (180, 80, SEVERITY_RED),  # PRD:357 收缩压 ≥180
+            (120, 120, SEVERITY_RED),  # PRD:357 舒张压 ≥120
+            (179, 119, SEVERITY_YELLOW),  # PRD:358 黄上边界
+        ],
+        ids=[
+            "green_lower",
+            "yellow_systolic_89",
+            "yellow_diastolic_59",
+            "green_upper",
+            "yellow_systolic_140",
+            "yellow_diastolic_90",
+            "red_systolic_180",
+            "red_diastolic_120",
+            "yellow_upper",
+        ],
+    )
+    def test_g2_boundary_matrix(self, systolic: int, diastolic: int, expected: str) -> None:
+        """C1 九边界矩阵：其余采集项正常（睡眠 7h、mood 4、无主诉）。"""
+        r = grade_health(
+            systolic=systolic,
+            diastolic=diastolic,
+            sleep_hours=7.0,
+            mood_score=4,
+            complaint=None,
+        )
+        assert r.severity == expected
+
+    def test_rule_version_is_g2(self) -> None:
+        """C1：分级规则版本升 g2（既有 g1 记录不回改，新记录 g2）。"""
+        assert RULE_VERSION == "g2"
+
+    def test_non_emergency_complaint_yellow(self) -> None:
+        """C1：非急症主诉「有点头晕」＋血压正常 → yellow（PRD line 358）。"""
+        r = grade_health(
+            systolic=120,
+            diastolic=80,
+            sleep_hours=7.0,
+            mood_score=5,
+            complaint="有点头晕",
+        )
+        assert r.severity == SEVERITY_YELLOW
+
+    def test_complaint_does_not_upgrade_red(self) -> None:
+        """主诉不改变已有红档判定（红优先）。"""
+        r = grade_health(
+            systolic=185,
+            diastolic=90,
+            sleep_hours=7.0,
+            mood_score=4,
+            complaint="有点头晕",
+        )
+        assert r.severity == SEVERITY_RED
+
+    def test_sleep_13h_green(self) -> None:
+        """C1：睡眠 13h 其余正常 → **green**（g1 自加 >12h 判黄无 PRD 依据，g2 删除）。"""
+        r = grade_health(systolic=120, diastolic=80, sleep_hours=13.0, mood_score=4, complaint=None)
+        assert r.severity == SEVERITY_GREEN
+
+    # --- C1 · 无主诉否定回答归一化（X2 v0.4 口径） ---
+
+    @pytest.mark.parametrize("answer", ["没有", "无", "没什么", "没有不舒服", "None", "NO"])
+    def test_no_complaint_negation_answers_green(self, answer: str) -> None:
+        """否定回答（含 ASCII 大小写变体）→ 视为无主诉，血压正常即 green。"""
+        r = grade_health(
+            systolic=120, diastolic=80, sleep_hours=7.0, mood_score=4, complaint=answer
+        )
+        assert r.severity == SEVERITY_GREEN
+
+    def test_whitespace_only_complaint_green(self) -> None:
+        """空白主诉 → 无主诉，不判黄。"""
+        r = grade_health(systolic=120, diastolic=80, sleep_hours=7.0, mood_score=4, complaint="   ")
+        assert r.severity == SEVERITY_GREEN
+
+    def test_real_complaint_still_yellow(self) -> None:
+        """真实主诉（不在否定表内）→ 判黄不变。"""
+        r = grade_health(
+            systolic=120, diastolic=80, sleep_hours=7.0, mood_score=4, complaint="胸口闷"
+        )
         assert r.severity == SEVERITY_YELLOW
 
 
