@@ -1,4 +1,4 @@
-> 状态：待确认（主理人批准后按步执行）　｜　版本：v1.0　｜　日期：2026-11-12
+> 状态：已完成（S0–S6 全部执行，执行记录见 §9 至 v1.13；遗留归 Day 10）　｜　版本：v1.13　｜　日期：2026-11-12
 > 关联：docs/team_tasks/day09/dev-C-健康通知闭环与管理台.md（任务卡 v1.3）｜docs/team_tasks/day09/day09-任务总览与DAG.md v1.5（§4.3 分工、§5 对接点、§6 写域）｜docs/team_tasks/day09/contracts.md v0.3（X1–X12）
 > 上游依据：PRD line 357–361（分级三档＋校验）、line 365–374（FR-HLT-01~10）、line 378–392（告警与通知状态机）、line 394–400（FR-ALT-01~05）、line 405–412（FR-RPT-01~04）、line 297（FR-CON-06）、line 441（FR-ADM-07 已裁减）、line 458（FR-TC-08 /metrics）、line 487–505（AC-09/10/13/21/22/23/25/38）｜技术设计文档 line 1017–1018（分级在代码＋HITL）、line 1169/1172（console 四页→三页、统计/记忆/导出）
 > 变更记录见文末

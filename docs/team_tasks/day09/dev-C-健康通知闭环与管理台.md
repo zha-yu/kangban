@@ -1,4 +1,4 @@
-> 状态：未开始　｜　版本：v1.3　｜　日期：2026-11-12
+> 状态：已完成（C1–C4/C6 交付＋S6 联调实测收口；X3 形态对表与 eval_gate q3 题面迭代归 Day 10）　｜　版本：v1.4　｜　日期：2026-11-12
 > 负责人：**dev-C（唯一）**　｜　任务包：**C · 健康通知闭环与管理台**　｜　容量：**17.5h ＝ 2.19 人日**（人设裁减后）
 > 关联：docs/team_tasks/day09/day09-任务总览与DAG.md v1.3（§4.3 分工、§5 对接点、§6 写域）｜docs/team_tasks/day09/contracts.md v0.3（X1/X2/X3/X5/X7/X10/X11/X12 消费与提供；**X6 已裁减**）
 > 上游依据：PRD line 357–361（分级三档原文＋校验）、line 365–374（FR-HLT-01~10）、line 378–392（告警与通知状态机，**line 387 只有客户端回执算 delivered**、**line 392 工单关闭后事件才可关闭**）、line 394–400（FR-ALT-01~05）、line 405–412（FR-RPT-01~04）、line 441（FR-ADM-07 人设）、line 297（FR-CON-06 点播历史）、line 458（FR-TC-08 `/metrics`）、line 487–505（AC-09/10/13/21/22/23/25/38）｜技术设计文档 line 1017–1018（分级在代码＋HITL）、line 1169（api/memory、api/stats、console 四页）、line 1172（人设/记忆/统计/导出功能验收）
@@ -384,33 +384,34 @@ grep -r "three-vrm" frontend/dist/console frontend/dist/family   # 期望零命�
 
 ---
 
-## 7. 执行记录与对接登记（待回填）
+## 7. 执行记录与对接登记（2026-11-12 已回填）
 
 | 日期 | 节点 | 提交 | 验收结果 | 等待项 |
 | --- | --- | --- | --- | --- |
-| — | C1 | — | — | — |
-| — | C2 | — | — | — |
-| — | C3 | — | — | — |
-| — | C4 | — | — | — |
+| 2026-11-12 | C1 | `fix/health C1` 等 2 笔（详见计划件 §9-S1/S2） | 49 passed（9 边界参数化＋否定归一化）；`RED_LOWER`/`SLEEP_GREEN_UPPER` 零命中；`rule_version='g2'`；day08 计划件回正 v1.5；X2 v0.4 已发 dev-B | — |
+| 2026-11-12 | C2 | 2 笔（S2） | 全量 1428 passed；`notify_red_dual` 三段幂等键＋升级改 admin＋确认/关闭联动＋F13 admin 关闭端点＋四域 `purge_elder_data`；REST 全链路实测三表行数达标（1 事件/1 工单/2 通知） | — |
+| 2026-11-12 | C3 | `252e9b3` | 全量 1434 passed；`delivered` 写点收敛唯一（X1 回执驱动）；X11 `next_retry_at`（30/60/90s＋1/5/15min）；admin-only rescan 端点 | X11 挂 cron 后 live PASS（见 S6） |
+| 2026-11-12 | C4 | `5d539c4` | 全量 1445 passed；F07/X7 验证在位（Day 8 落地）；F30 语音条（data URL 承载）；F21 `get_next_media` 顺序续播；F26 `api/metrics.py`；FR-ALT-05 `api/stats.py`；`api/memory.py` 骨架＋ROUTERS 追加 3 行 | F26 token_usage 后经 `fb83909a` live 闭环 |
 | — | ~~C5~~ | — | **已裁减，不执行** | — |
-| — | C6 | — | — | — |
+| 2026-11-12 | C6 | `466ccd4` | console 三页（重置退房/记忆/统计审计）＋F25 空 catch 修复；tsc/build 全绿；three-vrm 包隔离零命中；A4 teaching-reset elder_id 错位修复 `7c87f713` 闭环 | — |
+| 2026-11-12 | S6 联调 | 合并 `fb9c529`＋Laya/F26 `fb83909a`（C 代码） | 全量 1660 passed；X1/X11/X5/A4 live 全链路 PASS；语音红档阶段 0＋1 真机全链路 PASS；执行细节见计划件 `docs/plans/day09/dev-c-day09-工作推进计划.md` §9 | X3 语音/REST 形态对表 D10 12:00；eval_gate q3 题面迭代归 Day 10 |
 
 **对接登记**：
 
 | 对接点 | 对方 | 我提供/消费 | 冻结时点 | 联调时点 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| X2 分级签名 g2 | B3 | **提供** | N0 | D9 12:00 | 待 |
-| X3 红档双通知出口 | B3 | **提供** | N0 | D10 15:00 | 待 |
-| X1 回执帧 | D1 | 消费 | N0 | D10 12:00 | 待 |
-| X12 域清理钩子（四个） | A3 | **提供** | D9 下午 | D10 16:00 | 待 |
-| X11 退避函数 | B（cron 持锁） | **提供函数** | N0 | D10 15:00 | 待 |
-| X7 review_status | B3 | **提供** | N0 | D11 14:00 | 待 |
-| X5 记忆管理函数 | B2 | 消费 | D10 上午 | D11 10:00 | 待 |
+| X2 分级签名 g2 | B3 | **提供** | N0 | D9 12:00 | 已交付（v0.4 含主诉归一化口径） |
+| X3 红档双通知出口 | B3 | **提供** | N0 | D10 15:00 | 已交付（v0.6）；语音/REST 通知形态对表 D10 12:00 |
+| X1 回执帧 | D1 | 消费 | N0 | D10 12:00 | 联调 PASS（live：回执→delivered→幂等→acknowledged） |
+| X12 域清理钩子（四个） | A3 | **提供** | D9 下午 | D10 16:00 | 已提供（lifecycle 接线 stub 待 A 侧收口） |
+| X11 退避函数 | B（cron 持锁） | **提供函数** | N0 | D10 15:00 | 已交付＋cron 自动重试 live PASS |
+| X7 review_status | B3 | **提供** | N0 | D11 14:00 | 已验证在位（签名证据可交 B3） |
+| X5 记忆管理函数 | B2 | 消费 | D10 上午 | D11 10:00 | 联调 PASS（live GET/PATCH/DELETE＋越权 403） |
 | ~~X6 PersonaView~~ | ~~B3~~ | **已裁减，不提供** | — | — | 作废 |
-| X10 素材规范 | D5 | 消费（seed 函数） | N0 | D11 10:00 | 待 |
-| `audio_url` | D4 | **提供** | — | D11 下午 | 待 |
-| 生命周期/审计端点 | A4 | 消费 | N0 | D11 15:00 | 待 |
-| media 调用侧改动 | B（tool_impls 持锁） | 提需求 | — | D11 上午 | 待 |
+| ~~X10 素材规范~~ | ~~D5~~ | 消费（seed 函数） | N0 | D11 10:00 | 作废（contracts v0.5，media 改现有媒体库） |
+| `audio_url` | D4 | **提供** | — | D11 下午 | 已交付（data URL 承载，真 TTS provider 由 B 注入） |
+| 生命周期/审计端点 | A4 | 消费 | N0 | D11 15:00 | 联调 PASS（elder_id 错位已修 `7c87f713`） |
+| media 调用侧改动 | B（tool_impls 持锁） | 提需求 | — | D11 上午 | 需求已提（`get_next_media` 待 B 迁接） |
 
 **高风险文件方案登记**（`safety_service.py`，落代码前必填）：**已登记 2026-11-12（S0），待主理人确认后才落代码**——
 
@@ -441,6 +442,7 @@ grep -r "three-vrm" frontend/dist/console frontend/dist/family   # 期望零命�
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.4 | 2026-11-12 | 状态改「已完成」（C1–C4/C6 交付＋S6 联调实测收口）；§7 执行记录与对接登记全量回填（证据细节见计划件 `docs/plans/day09/dev-c-day09-工作推进计划.md` §9 至 v1.13）。遗留：X3 语音/REST 形态对表（D10 12:00）、eval_gate q3 题面迭代（Day 10）。 |
 | v1.3 | 2026-11-12 | C6 验收补：退房后 console 该长者显示 **archived** 且入口不可再操作；**退房→pad/family 端到端联调**（C 触发＋console 侧断言，pad 401 回登录／family 403 空态由 D 确认，C 不改 pad/family）。依据：`elders.status` 已含 archived（E8），两端 401/403 兜底已存在。 |
 | v1.2 | 2026-11-12 | **人设裁减（主理人决定）**：删除 C5 节点（改为裁减声明＋现状留档）、C6 人设配置页（四页→三页）、X6 提供义务；写域移除 `persona_service`／`elder_service`／`context.py`／`api/personas.py`；ROUTERS 追加 4 行→3 行；高风险清单去掉 `context.py`；C 包 21h→**17.5h＝2.19 人日**，释放 3.5h 作缓冲/联调支援；console 人设入口保持置灰、既有表与代码不动。 |
 | v1.1 | 2026-11-12 | 全量校验后修正：① C2 增 **X12 四个域清理钩子**（health/notify/report/work_order 各一个 `purge_elder_data`，供 A3 编排，A 不直写 C 的表），C2 由 4h 调为 **5h**，包容量 20h→**21h＝2.625 人日**；② 写域补 `app/services/elder_service.py`（人设绑定）与 `app/api/alerts.py`（admin 重扫端点落点明确，消除原「或提需求给 A/D」的模糊表述）；③ 排程校验后队列确定为 **C1→C2→C3→C5→C4→C6**，X1 联调时点随之定为 **D10 12:00**（C3 骨架 10.5h 完成）。程序校验：硬前置 11 边、软依赖 18 边**零违例**，五里程碑全达标。 |
