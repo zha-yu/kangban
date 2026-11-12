@@ -1,6 +1,6 @@
 # dev-B Day 9 工作推进计划 · 智能层接线与注入防线
 
-> 状态：进行中（N0 已签认、contracts v1.0 已冻结；P10/P14/F03 已闭合，p95 已裁决收口（闸门 E 拆双线挂 F23），P15 已自行交付（0021 迁移 + record_llm_usage 写库））　｜　版本：v1.12　｜　日期：2026-11-12
+> 状态：已完成（B1–B4 全部交付，未决 P1–P15 全部闭合，p95 裁决收口；遗留跨线联调项归 D10/D11，system_one 优化归 Day 10 F23）　｜　版本：v1.13　｜　日期：2026-11-12
 > 关联：`docs/team_tasks/day09/dev-B-智能层接线与注入防线.md` v1.2｜`docs/team_tasks/day09/day09-任务总览与DAG.md` v1.5｜`docs/team_tasks/day09/contracts.md` **v1.0（已冻结，2026-11-12 N0 四方回执签认）**
 > 上游依据：PRD line 266–275（FR-DLG-01/07/10）、318–327（用药终态与补报）、357–361（分级与校验）、383–390（通知状态）、418–427（FR-MEM）、440（FR-ADM-06）、487–524（AC-04/08/09/10/14/20/21/22/29/36/39）、531–536（固定测试集）、547（路由 ≤200ms）｜技术设计文档 line 717（vector(1536) 口径）、778（Day 9 迁移批次）、1017–1018（分级在代码与话术）、1166–1174（Day 9 落地与验收）
 > 变更记录见文末
@@ -1225,6 +1225,7 @@ uv run ruff check app tests && uv run ruff format --check app tests
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.13 | 2026-11-12 | **23:00 状态改「已完成」**：B1–B4 全部交付，未决 P1–P15 全部闭合（P10/P12/P13/P14/P15/F03＋p95 裁决收口），全量 1664 passed / ruff 全绿 / alembic head=0021。遗留均为跨线联调时点项（X4/X12 换真钩子、外呼端到端、family 五键、remind 链路——归 D10/D11）与 Day 10 F23（system_one 量化/批处理）。 |
 | v1.12 | 2026-11-12 | **22:15 P15 DB 落点 B 自行交付（主理人授权）**：`alembic 0021_day9_llm_tokens`——`metrics.stage` 白名单八值→九值（加 `llm_tokens`），新增可空列 `prompt_tokens`/`completion_tokens`/`total_tokens`（NULL = 供应商未回 usage，不补零）；`record_llm_usage()` 补第三层——经 recorder 落 `stage=llm_tokens、duration_ms=0、source='llm_usage'` 一行（trace_id 缺失按 Z4 丢弃，进程内计数照记，落库失败降级不阻塞）；provider/model 明细仍在结构化日志（metrics 表只写指标不写内容）。跨重启/多 worker 的成本统计查库即得，snapshot 进程内计数继续服务单实例即时读数。**B 侧 Day 9 未决全部闭合。** |
 | v1.11 | 2026-11-12 | **21:45 p95 处置裁决（主理人授权 B 自裁，§11.1 三选项取 ③+① 组合）**：闸门 E 拆「规则路径 p95 ≤200ms 硬线 / 模型路径 p95 单列（目标 200ms，挂 D10 F23 验收）」，预算不放松、超时如实报告不硬失败。实现：`eval_router.py` 分层延迟 `layer_latencies` + 报告双线行；`eval_gate.py` 闸门 E 按 `rule_p95_ms` 硬线判、`model_p95_ms` 单列留痕。另：**F03 followup_sink 补装配**（main.py 注入 `make_followup_sink`，状态板「已接线」自本提交起属实）。B 侧收口只剩 P15 DB 落点（等 A 迁移）。 |
 | v1.10 | 2026-11-12 | **临时提示词文件清理**：主理人要求剩余任务提示词「不入远端、作临时文件删除」→ `docs/plans/day09/adhoc-20261112-剩余任务执行提示词.md` 已删除（其内容已于 v1.9 执行完毕并回填），`docs/plans/README.md` 索引行同步删除，Day 9 看板自动刷新。同时清理根目录入库垃圾：`backend-err.txt`（0 字节）、`backend-out.txt`（0 字节）、`tmp_check_db.py`（一次性 DB 探测脚本）、`.coverage`（本地覆盖率产物）；**保留** `docs/prompts/seed-prompt.md`、`docs/plans/task-04-鉴权内核.md`、`docs/plans/adhoc-20261109-房间床位交付存档.md`（均被 README 索引/任务卡引用，属验收留痕），`tmp/`、`vrm-playground/` 未跟踪本地工作区暂不动。 |
