@@ -158,25 +158,24 @@ psql -d silvermate -c "\d daily_reports"         # 核对 CHECK + UNIQUE
 
 ```python
 #: 分级规则版本（改阈值必须 +1，rule_version 写进 health_records）
-RULE_VERSION: Final[str] = "g1"
+RULE_VERSION: Final[str] = "g2"   # 2026-11-12 C1 回正：低血压不判红、删睡眠 12h 自加界
 
 #: 严重度三值
 SEVERITY_GREEN: Final[str] = "green"
 SEVERITY_YELLOW: Final[str] = "yellow"
 SEVERITY_RED: Final[str] = "red"
 
-#: 红色阈值（单分量即判红，AC-21）
+#: 红色阈值（单分量即判红，AC-21；**低血压不判红**——PRD line 357 原文）
 SYSTOLIC_RED: Final[int] = 180      # 收缩压 ≥180
-DIASTOLIC_RED: Final[int] = 120     # 舒张压 ≥120 或 ≤90（低血压）
-SYSTOLIC_HYPOTENSION: Final[int] = 90  # 收缩压 ≤90 也判红
-SYSTOLIC_HYPOTENSION_STRICT: Final[int] = 90  # 统一用
+DIASTOLIC_RED: Final[int] = 120     # 舒张压 ≥120
 
-#: 黄色阈值（AC-09 口径：收缩压 140–179 或 90 以下正常）
+#: 黄色阈值（AC-09 口径；**低血压判黄**——PRD line 358：收缩压 <90、舒张压 <60）
 SYSTOLIC_YELLOW_LOWER: Final[int] = 140  # 140–179 = 黄
 SYSTOLIC_YELLOW_UPPER: Final[int] = 179
 DIASTOLIC_YELLOW_LOWER: Final[int] = 90   # 90–119 = 黄
 DIASTOLIC_YELLOW_UPPER: Final[int] = 119
-SYSTOLIC_LOW_NORMAL: Final[int] = 90      # 收缩压 ≤90 触发判红阈值（SYSTOLIC_HYPOTENSION）
+SYSTOLIC_LOW_YELLOW: Final[int] = 90      # 收缩压 <90 = 黄
+DIASTOLIC_LOW_YELLOW: Final[int] = 60     # 舒张压 <60 = 黄
 
 #: 睡眠阈值
 SLEEP_RED_HOURS: Final[float] = 0.0      # 无睡眠数据 → 黄（数据质量）
@@ -210,11 +209,11 @@ def grade_health(
 3. 两分量均有时收缩压 > 舒张压 → 记录警告（健康数据口径自裁）
 4. 连续两次同一字段解析失败 → 最终标缺失不阻断（由调用方决定是否追问）
 
-**分级逻辑**（按最高优先规则匹配）：
-1. **红（AC-10/21）**：收缩压 ≥180 OR 收缩压 ≤90 OR 舒张压 ≥120 OR 舒张压 ≤60
+**分级逻辑**（按最高优先规则匹配；2026-11-12 依 PRD line 357–359 回正，见修订记录 v1.5）：
+1. **红（AC-10/21）**：收缩压 ≥180 OR 舒张压 ≥120；或命中急症症状规则（急症在规则层先行拦截）。**低血压不判红**
 2. **红（AC-10 单分量）**：只要一个分量达红 → 立即红，不等另一分量（AC-21 核心）
-3. **黄（AC-09）**：收缩压 140–179 OR 91–139 但舒张压 90–119 OR 睡眠 <5h OR mood ≤2 OR 主诉非急症 OR 任一字段缺失
-4. **绿**：收缩压 90–139 且 舒张压 60–89 且 睡眠 5–12h 且 mood 3–5 且 无缺失
+3. **黄（AC-09）**：收缩压 140–179 OR 舒张压 90–119 OR **收缩压 <90** OR **舒张压 <60** OR 睡眠 <5h OR mood ≤2 OR 非急症主诉 OR 任一字段缺失
+4. **绿**：收缩压 90–139 且 舒张压 60–89 且 睡眠 ≥5h（**>24h 无效，无 12h 上界**）且 mood 3–5 且 无缺失
 
 > 多项并存取最高（红 > 黄 > 绿）；AC-22 黄升红：**同一 event_id 下补录 → severity 升级 → 原 risk_events.status 保持 open 不新建第二事件（通知升级见 A3）**，工单 severity 是建单快照不随升级漂移（TD 明确）。
 
@@ -615,6 +614,7 @@ grep -n "route_layer.*rule\|route_layer=\"rule\"" docs/...  # 或 SQL 查 decisi
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.5 | 2026-11-12 | **Day 9 C1 回正（dev-C 同提交回改，依据 PRD line 357–359 原文与任务卡 dev-C C1 §1.3）**：原稿 Step 2.1/2.2 把低血压误写为判红（「DIASTOLIC_RED ≤90（低血压）」「SYSTOLIC_HYPOTENSION ≤90 也判红」「SYSTOLIC_LOW_NORMAL ≤90 触发判红」「红：… OR 收缩压 ≤90 OR 舒张压 ≤60」）并自加「绿：睡眠 5–12h」上界——PRD 红只有「收缩压 ≥180 或 舒张压 ≥120（或命中急症症状规则）」，收缩压 <90／舒张压 <60 属**黄**，睡眠上界只有 **>24h 无效**。常量块改为 g2 口径（删 SYSTOLIC_HYPOTENSION*／SYSTOLIC_LOW_NORMAL，增 SYSTOLIC_LOW_YELLOW／DIASTOLIC_LOW_YELLOW），RULE_VERSION g1→g2；分级逻辑四条同步回正。既有 g1 记录不回改。代码落地见 `app/services/health_service.py`（`NO_COMPLAINT_ANSWERS` 主诉归一化口径见 day09/contracts.md X2 v0.4） |
 | v1.4 | 2026-11-11 | 主理人澄清两则同步：① **Q-2 ≠ superseded_reason**：Q-2 针对 workorders.escalated 徽标（服务端推 risk_events.acknowledged_at IS NULL ∧ created_at+2min ≤ now），属 dev-D 写域，dev-A 完全不碰；superseded_reason 是 Q-1 补列，**服务端固定枚举写入**（纠错→review_correction、代填→backfill、正常采集→NULL），前端 review 端点请求体不传该值（主理人明确）。② **X8 映射表位置**：照护台契约无 §6.3（§6 是变更记录），冻结方仍 dev-B B1 任务，dev-A 预写骨架映射表风险预案 R4 保持不变 |
 | v1.3 | 2026-11-11 | X2 dedupe_key 最终口径冻结（dev-A→dev-C 10:xx 对齐）：dev-C 草案 `health_red:{elder_id}:{YYYY-MM-DD}` 粒度过粗（同日长者可能两次独立红档各自独立 risk_event，按日期去重会吞第二条）；dev-A 三段式「领域对象 + 对象 id + 动作」直接落码：①红色事件·护工 `risk_event:{event_id}:staff`、②红色事件·家属 `risk_event:{event_id}:guardian`（复用 notify_service 既有 `dedupe_key:guardian_id` 逐家属幂等）、③红色升级 `risk_event:{event_id}:escalated`；AC-12「不建第二 risk_event」与 event_id 锚点天然对齐；notifications 表 `(dedupe_key, target_id)` 唯一索引（0011）兜底；dev-C C2 日报侧建议对齐同款三段式 `daily_report:{report_id}:update` |
 | v1.2 | 2026-11-11 | X7 状态机五态对齐：dev-C 转达 09:15 契约评审会通知状态枚举对齐议题——契约 5 态（generated/pending/delivered/acknowledged/failed）vs 任务书 X7 写 4 态（无 failed）。dev-A 实现结论：pending 重试 3 次失败后置 `failed`（对齐 notifications 表 0011 CHECK 五值），任务书 4 态是写法疏漏、dev-C 按冻结契约 5 态开发。计划同步修正：状态机描述全部从「四态」→「五态（含 failed 终态）」，单测新增 `test_notification_retry_fail_three_times` |

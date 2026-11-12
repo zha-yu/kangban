@@ -71,24 +71,26 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------------ 分级常量（AGENTS §7 · 写死代码不写 prompt）
 
 #: 分级规则版本（改阈值必须 +1，rule_version 写进 health_records）
-RULE_VERSION: Final[str] = "g1"
+RULE_VERSION: Final[str] = "g2"
 
 #: 严重度三值（与 0017 迁移 CHECK 同源）
 SEVERITY_GREEN: Final[str] = "green"
 SEVERITY_YELLOW: Final[str] = "yellow"
 SEVERITY_RED: Final[str] = "red"
 
-#: 红色阈值（单分量即判红，AC-21）
+#: 红色阈值（单分量即判红，AC-21；**低血压不判红**——PRD line 357 原文，
+#: 红只有「收缩压 ≥180 或 舒张压 ≥120（或命中急症症状规则，急症在规则层先行拦截）」）
 SYSTOLIC_RED_UPPER: Final[int] = 180  # 收缩压 ≥180
-SYSTOLIC_RED_LOWER: Final[int] = 90  # 收缩压 ≤90（低血压）
 DIASTOLIC_RED_UPPER: Final[int] = 120  # 舒张压 ≥120
-DIASTOLIC_RED_LOWER: Final[int] = 60  # 舒张压 ≤60
 
-#: 黄色阈值（AC-09 口径）
+#: 黄色阈值（AC-09 口径；**低血压判黄**——PRD line 358：收缩压 <90、舒张压 <60）
 SYSTOLIC_YELLOW_LOWER: Final[int] = 140  # 140–179 = 黄收缩压
 DIASTOLIC_YELLOW_LOWER: Final[int] = 90  # 90–119 = 黄舒张压
+SYSTOLIC_LOW_YELLOW: Final[int] = 90  # 收缩压 <90 = 黄
+DIASTOLIC_LOW_YELLOW: Final[int] = 60  # 舒张压 <60 = 黄
 
-#: 睡眠阈值
+#: 睡眠阈值（<5h 判黄；上界只保留 >24h 无效校验——PRD line 361，
+#: g1 曾自加「>12h 判黄」无 PRD 依据，g2 删除）
 SLEEP_YELLOW_HOURS: Final[float] = 5.0  # <5h = 黄
 
 #: 情绪阈值
@@ -97,7 +99,15 @@ MOOD_YELLOW: Final[int] = 2  # mood_score ≤2 = 黄
 #: 正常范围上限（绿档）
 SYSTOLIC_GREEN_UPPER: Final[int] = 139
 DIASTOLIC_GREEN_UPPER: Final[int] = 89
-SLEEP_GREEN_UPPER: Final[float] = 12.0  # 睡眠 5–12h = 绿
+
+#: 「无主诉」否定回答（健康采集第 5 问「今天有没有哪里不舒服？」的否定答）。
+#: 精确匹配（ASCII 忽略大小写）；命中即视为 complaint=None，**不判黄**。
+#: 这是采集答案归一化，不是急症匹配——急症语料在规则层（app/router/safety.py）
+#: 先行拦截并走红色通路，本表不做第二套急症判定（AGENTS §4.8）。
+#: 口径冻结于 contracts.md X2（v0.4，2026-11-12）。
+NO_COMPLAINT_ANSWERS: Final[frozenset[str]] = frozenset(
+    {"没有", "无", "没什么", "没有不舒服", "没有哪不舒服", "none", "no"}
+)
 
 
 # ------------------------------------------------------------------ 返回值
@@ -152,41 +162,37 @@ def _validate_number(value: int | float | None, *, lo: float, hi: float) -> floa
 
 
 def _grade_systolic(systolic: int | None) -> ComponentGrade:
-    """收缩压分量分级。"""
+    """收缩压分量分级（红 ≥180；黄 140–179 与 <90；绿 90–139）。"""
     valid = _validate_number(systolic, lo=0, hi=300)
     if valid is None:
         return ComponentGrade("systolic", None, SEVERITY_YELLOW, "missing_or_invalid")
-    if valid >= SYSTOLIC_RED_UPPER or valid <= SYSTOLIC_RED_LOWER:
+    if valid >= SYSTOLIC_RED_UPPER:
         return ComponentGrade("systolic", int(valid), SEVERITY_RED, str(int(valid)))
-    if valid >= SYSTOLIC_YELLOW_LOWER:
+    if valid >= SYSTOLIC_YELLOW_LOWER or valid < SYSTOLIC_LOW_YELLOW:
         return ComponentGrade("systolic", int(valid), SEVERITY_YELLOW, str(int(valid)))
     return ComponentGrade("systolic", int(valid), SEVERITY_GREEN, str(int(valid)))
 
 
 def _grade_diastolic(diastolic: int | None) -> ComponentGrade:
-    """舒张压分量分级。"""
+    """舒张压分量分级（红 ≥120；黄 90–119 与 <60；绿 60–89）。"""
     valid = _validate_number(diastolic, lo=0, hi=300)
     if valid is None:
         return ComponentGrade("diastolic", None, SEVERITY_YELLOW, "missing_or_invalid")
-    if valid >= DIASTOLIC_RED_UPPER or valid <= DIASTOLIC_RED_LOWER:
+    if valid >= DIASTOLIC_RED_UPPER:
         return ComponentGrade("diastolic", int(valid), SEVERITY_RED, str(int(valid)))
-    if valid >= DIASTOLIC_YELLOW_LOWER:
+    if valid >= DIASTOLIC_YELLOW_LOWER or valid < DIASTOLIC_LOW_YELLOW:
         return ComponentGrade("diastolic", int(valid), SEVERITY_YELLOW, str(int(valid)))
     return ComponentGrade("diastolic", int(valid), SEVERITY_GREEN, str(int(valid)))
 
 
 def _grade_sleep(sleep_hours: float | None) -> ComponentGrade:
-    """睡眠分量分级。"""
+    """睡眠分量分级（<5h 黄；>24h 无效已在 _validate_number 标缺失；无 12h 自加界）。"""
     valid = _validate_number(sleep_hours, lo=0.0, hi=24.0)
     if valid is None:
         return ComponentGrade("sleep_hours", None, SEVERITY_YELLOW, "missing_or_invalid")
     if valid < SLEEP_YELLOW_HOURS:
         return ComponentGrade(
             "sleep_hours", round(valid, 1), SEVERITY_YELLOW, f"<{SLEEP_YELLOW_HOURS}h"
-        )
-    if valid > SLEEP_GREEN_UPPER:
-        return ComponentGrade(
-            "sleep_hours", round(valid, 1), SEVERITY_YELLOW, f">{SLEEP_GREEN_UPPER}h"
         )
     return ComponentGrade("sleep_hours", round(valid, 1), SEVERITY_GREEN, f"{valid}h")
 
@@ -215,8 +221,15 @@ def grade_health(
     返回分级结果（severity + rule_version + 各分量判定详情）。
     单分量达红即红（AC-21），多项并存取最高。
 
-    :param complaint: 主诉文本，当前版本仅参与日志，不单独触发升级。
+    :param complaint: 主诉文本。**非急症主诉判黄**（PRD line 358）；「没有／无」
+        等否定回答按 ``NO_COMPLAINT_ANSWERS`` 归一化为无主诉（X2 v0.4 口径）；
+        命中急症症状规则的语料在规则层（app/router/safety.py）先行拦截并走
+        红色通路，不会进入本函数——此处不做第二套急症匹配（AGENTS §4.8）。
     """
+    # 主诉归一化：空白与否定回答一律视为无主诉（X2 v0.4）
+    if isinstance(complaint, str):
+        stripped = complaint.strip()
+        complaint = None if stripped.casefold() in NO_COMPLAINT_ANSWERS else (stripped or None)
     comp_s = _grade_systolic(systolic)
     comp_d = _grade_diastolic(diastolic)
     comp_sl = _grade_sleep(sleep_hours)
@@ -240,7 +253,11 @@ def grade_health(
         final_severity = SEVERITY_YELLOW
 
     if complaint:
+        # 非急症主诉判黄（PRD line 358）：急症语料已被规则层拦走，能到这里
+        # 的主诉一律按「非急症主诉」处理；红档分量已存在时红优先。
         logger.debug("grade_health_complaint complaint_len=%d", len(complaint))
+        if final_severity == SEVERITY_GREEN:
+            final_severity = SEVERITY_YELLOW
 
     return HealthGradeResult(
         severity=final_severity,

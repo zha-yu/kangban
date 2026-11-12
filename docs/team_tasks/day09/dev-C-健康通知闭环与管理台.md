@@ -412,7 +412,15 @@ grep -r "three-vrm" frontend/dist/console frontend/dist/family   # 期望零命�
 | 生命周期/审计端点 | A4 | 消费 | N0 | D11 15:00 | 待 |
 | media 调用侧改动 | B（tool_impls 持锁） | 提需求 | — | D11 上午 | 待 |
 
-**高风险文件方案登记**（`safety_service.py`，落代码前必填）：待填。（原 `core/context.py` 随人设裁减不再涉及。）
+**高风险文件方案登记**（`safety_service.py`，落代码前必填）：**已登记 2026-11-12（S0），待主理人确认后才落代码**——
+
+1. **确认联动（写 `acknowledged_at`）**：`notify_service.acknowledge_notification` 确认员工通知成功后，**同事务**检查 `notification.payload.risk_event_id`，存在且对应 `risk_events.acknowledged_at IS NULL` → 写入；`notify_red_dual`（X3）建通知时在 payload 写 `risk_event_id`（`notifications.payload` 为既有 JSON 列，**不新增 schema**）；无 linkage 的既有通知行只更新通知本身，事件字段留空（如实，不编造）。`safety_service.escalate_safety_event` 既有接线**不动**。
+2. **关闭联动（写 `closed_at`）**：`work_order_service.transition_work_order` 在 `to_status=="closed"` 且 `order.event_id` 非空时，**同事务**将关联 `risk_events` 置 `status="closed"`＋写 `closed_at`（幂等：已 closed 跳过）——顺序天然不反（事件只能随工单关闭或经下条入口关闭）。
+3. **直接关事件入口（409 守门）**：`app/api/alerts.py` 增 admin-only `POST /risk-events/{event_id}/close`：关联工单存在且任一非 closed → **409 ORDER_NOT_CLOSED**；工单已 closed → 写事件 `closed_at`。
+4. **扫描与收件人**：`scan_escalations` WHERE 补 `acknowledged_at IS NULL`；`escalate_red_event` 收件人改按 admin 角色查，不建第二事件/第二工单。
+5. **分层**：全改动落在 C 写域三文件（`notify_service`／`work_order_service`／`safety_service` 表定义只读引用），`api` 不 import `graphs`，审计仍由既有 `_forbidden_response` 路径写。
+
+（原 `core/context.py` 随人设裁减不再涉及。）
 
 ---
 

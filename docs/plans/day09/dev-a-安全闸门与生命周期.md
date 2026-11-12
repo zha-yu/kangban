@@ -327,8 +327,8 @@ pnpm --dir frontend build   # tsc/build 由 C/D 主跑，A 确认无因本包改
 
 | 日期 | 步骤 | 提交 | 验收结果 | 等待项/漏洞登记 |
 | --- | --- | --- | --- | --- |
-| 2026-11-12 | S0 | — | ①N0 **未冻结**（contracts.md 仍「待冻结 v0.3」，X1–X12 正文已齐）②迁移单头 0019、DB current 0019、postgres/redis 健康 ③`pytest -q` 全量 **1392 passed**（6:30）④工作区仅本计划两件，无业务改动 | **等待项：N0 冻结评审（B 牵头四方签认）**；X8 正文 v0.3 已定，骨架段可先行 |
-| 2026-11-12 | S1（A1a） | 待提交 | 迁移三连 upgrade→downgrade→upgrade 通过、单头 `0020_day9_medication_enums`；DB 正例（两新值 INSERT 0 1）反例（bogus_value 被 `ck_medication_events_terminal_state` 拒绝）均过；`pg_constraint` 直读两 CHECK 与 ORM 逐字一致；`ruff check/format` 全绿；用药相关 34 tests passed | 观察项：`app/models/__init__.py` 未导入 medication/workorder 等模块 → `alembic check`/autogenerate 元数据缺表（既有噪音，非 0020 引入，**禁止**在元数据补齐前跑 autogenerate）；踩坑留痕：alembic env 会套 naming_convention，op 约束名必须传短名 |
+| 2026-11-12 | S0 | `5f488a0` | ①N0 **未冻结**（contracts.md 仍「待冻结 v0.3」，X1–X12 正文已齐）②迁移单头 0019、DB current 0019、postgres/redis 健康 ③`pytest -q` 全量 **1392 passed**（6:30）④工作区仅本计划两件，无业务改动 | **等待项：N0 冻结评审（B 牵头四方签认）**；X8 正文 v0.3 已定，骨架段可先行 |
+| 2026-11-12 | S1（A1a） | `2602d7d`（feat 0020）＋计划件 `5f488a0`（docs） | 迁移三连 upgrade→downgrade→upgrade 通过、单头 `0020_day9_medication_enums`；DB 正例（两新值 INSERT 0 1）反例（bogus_value 被 `ck_medication_events_terminal_state` 拒绝）均过；`pg_constraint` 直读两 CHECK 与 ORM 逐字一致；`ruff check/format` 全绿；用药相关 34 tests passed | 观察项：`app/models/__init__.py` 未导入 medication/workorder 等模块 → `alembic check`/autogenerate 元数据缺表（既有噪音，非 0020 引入，**禁止**在元数据补齐前跑 autogenerate）；踩坑留痕：alembic env 会套 naming_convention，op 约束名必须传短名 |
 | — | S2（A1b） | — | — | — |
 | — | S3（A2） | — | — | — |
 | — | S4 骨架（A3） | — | — | — |
