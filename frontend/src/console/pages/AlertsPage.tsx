@@ -178,7 +178,15 @@ export function AlertsPage({ principal }: { principal: Principal }) {
               <div className="wo-row">
                 <div className="wo-badges">
                   <span className={statusClass(n.status)}>{NOTIF_STATUS_LABELS[n.status]}</span>
-                  <span className="badge badge-neutral">{NOTIF_TYPE_LABELS[n.type]}</span>
+                  <span
+                    className={
+                      n.type === "escalated_red_event"
+                        ? "badge badge-danger"
+                        : "badge badge-neutral"
+                    }
+                  >
+                    {NOTIF_TYPE_LABELS[n.type]}
+                  </span>
                   {n.is_mock && <span className="badge badge-warning">演示</span>}
                 </div>
                 <div className="wo-title">
