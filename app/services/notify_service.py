@@ -36,6 +36,7 @@ MAX_PAYLOAD_BYTES = 4096
 
 _TYPE_GUARDIAN = "guardian"
 _TYPE_STAFF = "staff"
+_TYPE_MEDICATION_REMINDER: Final = "medication_reminder"
 _STATUS_GENERATED = "generated"
 _STATUS_PENDING = "pending"
 _STATUS_DELIVERED = "delivered"
@@ -616,6 +617,66 @@ _STATUS_TRANSITIONS: dict[str, frozenset[str]] = {
 }
 
 
+async def send_medication_touch_notification(
+    session: AsyncSession,
+    *,
+    elder_id: uuid.UUID,
+    reminder_id: uuid.UUID,
+    attempt_no: int,
+    drug_name: str | None,
+) -> uuid.UUID | None:
+    """用药触达通知行——每个触达尝试一条，pad 回执（X1）据此绑定真值。
+
+    - 幂等键 ``medication_touch:{reminder_id}:{attempt_no}``：重试/重扫返回原行
+      （预查＋部分唯一索引双保险，同 ``send_guardian_notifications``）；
+    - ``target`` 取长者**第一个** active 家属绑定（notifications.target_type 仅
+      guardian/staff 两值）；无绑定 → 返回 None，触达帧 ``notification_id`` 置
+      null，pad 回执按纯播报语义处理；
+    - 创建即置 pending（推送尝试已发生）：回执是 delivered 唯一写入口径（F01），
+      无回执由 X11 扫描 30/60/90s 三次后置 failed，不产生假 delivered。
+    """
+    payload = validate_payload(
+        {"reminder_id": str(reminder_id), "attempt_no": attempt_no, "drug_name": drug_name or ""}
+    )
+    key = f"medication_touch:{reminder_id}:{attempt_no}"
+    guardian_id = (
+        await session.execute(
+            select(ElderGuardian.guardian_id)
+            .where(ElderGuardian.elder_id == elder_id, ElderGuardian.status == "active")
+            .order_by(ElderGuardian.guardian_id)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if guardian_id is None:
+        return None
+
+    notification = Notification(
+        target_type=_TYPE_GUARDIAN,
+        target_id=guardian_id,
+        type=_TYPE_MEDICATION_REMINDER,
+        payload=dict(payload),
+        channel=get_settings().notify_channel,
+        status=_STATUS_GENERATED,
+        is_mock=False,
+        dedupe_key=key,
+    )
+    session.add(notification)
+    try:
+        async with session.begin_nested():
+            await session.flush()
+    except IntegrityError:
+        # 并发同 key 抢插 → 部分唯一索引兜底，回查按幂等返回
+        existing = (
+            await session.execute(select(Notification).where(Notification.dedupe_key == key))
+        ).scalar_one_or_none()
+        if existing is None:
+            raise
+        return existing.notification_id
+
+    await mark_notification_sent(session, notification_id=notification.notification_id)
+    return notification.notification_id
+
+
 async def mark_notification_sent(session: AsyncSession, *, notification_id: uuid.UUID) -> None:
     """generated → pending（客户端已收到推送、等回执）。"""
     notification = (
@@ -631,8 +692,18 @@ async def mark_notification_sent(session: AsyncSession, *, notification_id: uuid
     await session.flush()
 
 
-async def mark_notification_delivered(session: AsyncSession, *, notification_id: uuid.UUID) -> None:
-    """pending → delivered（客户端回执，AC-23）。"""
+async def mark_notification_delivered(
+    session: AsyncSession,
+    *,
+    notification_id: uuid.UUID,
+    receipt_kind: str,
+) -> None:
+    """pending → delivered（客户端回执，AC-23）。
+
+    X1 冻结签名（day09/contracts.md X1 v0.4）：``receipt_kind`` 必填，由信令层
+    校验（card_rendered / tts_finished）后透传，仅入日志留痕（不新增列、不改
+    payload）。回执是 delivered 的唯一写入口径（F01：扫描永不写 delivered）。
+    """
     notification = (
         await session.execute(
             select(Notification).where(Notification.notification_id == notification_id)
@@ -644,8 +715,9 @@ async def mark_notification_delivered(session: AsyncSession, *, notification_id:
     notification.status = _STATUS_DELIVERED
     await session.flush()
     logger.info(
-        "notification_delivered notification_id=%s",
+        "notification_delivered notification_id=%s receipt_kind=%s",
         notification_id,
+        receipt_kind or "-",
     )
 
 

@@ -70,7 +70,7 @@ from typing import Any, Literal, TypedDict
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
-from app.services import medication_service, work_order_service
+from app.services import medication_service, notify_service, work_order_service
 
 # PRD §4.5 硬性数值：每次触达等待长者确认 60s（卡片窗口与图内 retry 间隔一致）
 _REMIND_WINDOW_SECONDS_PRD = 60
@@ -230,6 +230,25 @@ async def _deliver_reminder(
         )
         return "no_bound_device", None
 
+    # X1：触达通知行——pad 回执（notification_id 必填）据此绑定真值；幂等键
+    # medication_touch:{reminder_id}:{attempt_no}。通知行失败不阻断触达（触达是
+    # 安全链路，字幕/语音是底线；无行时帧置 null，pad 回执按纯播报语义处理）。
+    touch_nid: uuid.UUID | None = None
+    try:
+        touch_nid = await notify_service.send_medication_touch_notification(
+            session,
+            elder_id=elder_id,
+            reminder_id=reminder_id,
+            attempt_no=attempt_no,
+            drug_name=drug_name,
+        )
+    except Exception:  # 通知行失败不阻断触达（见上注释）
+        logger.exception(
+            "medication_touch_notification_failed reminder_id=%s attempt_no=%s",
+            reminder_id,
+            attempt_no,
+        )
+
     # TD-1：先合成再下发——合成失败降级纯字幕，触达照常投递（字幕是底线）。
     pcm = await tts_fn(text)
     message: dict[str, Any] = {
@@ -241,6 +260,7 @@ async def _deliver_reminder(
         "touch_id": uuid.uuid4().hex,
         "touch_event_id": str(reminder_id),
         "touch_attempt_no": attempt_no,
+        "notification_id": str(touch_nid) if touch_nid else None,
     }
     if pcm:
         message["audio"] = {
@@ -264,6 +284,7 @@ async def _deliver_reminder(
             "kind": "medication",
             "source": "scheduler",
             "hint": "该吃药了，请看屏幕上的用药提醒",
+            "notification_id": str(touch_nid) if touch_nid else None,
             "payload": {
                 "kind": "medication",
                 "snapshot": {
