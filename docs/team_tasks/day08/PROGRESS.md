@@ -19,6 +19,7 @@
 | `docs/plans/day08/adhoc-20261111-route_degraded契约冻结.md` | 🔒 已冻结 |
 | `docs/plans/day08/adhoc-20261111-三档身份级联演示脚本.md` | 🔒 已冻结 |
 | `docs/plans/day08/adhoc-20261111-声纹互测录音指南.md` | 🔒 已冻结 |
+| `docs/plans/day08/adhoc-20261112-审查缺口修复.md` | 📝 草稿（待主理人裁决 Q1–Q7 后转执行） |
 | `docs/plans/day08/d-推进计划-日报通知与三端.md` | 🚧 进行中（S0–S7/S10 完成；**D1/D3/D4/D5/D6 代码与 UI 取证全部到位**；console 红色置顶/告警确认链、family 三页、pad 七动作 UI、SOS 双通知自跑、D6 route_degraded e2e 均已留证；仅剩多人同场与真模型复跑） |
 | `docs/plans/day08/day-08-健康采集与三端后台.md` | 📝 草稿（待主理人确认后执行） |
 | `docs/plans/day08/dev-a-数据分级规则层.md` | 📝 草稿 |
