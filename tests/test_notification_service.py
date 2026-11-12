@@ -274,6 +274,94 @@ async def test_pending_retry_exhausted_becomes_failed(
 
 
 # ======================================================================
+# F01/X11：退避函数与真链路（delivered 只由回执驱动）
+# ======================================================================
+
+
+def test_next_retry_at_alert_sequence() -> None:
+    """X11 告警退避：30s → 60s → 90s；第 4 次请求返回 None（3 次用尽）。"""
+    base = datetime.datetime(2026, 11, 12, 9, 0, 0, tzinfo=datetime.UTC)
+    assert notify_service.next_retry_at(
+        ntype="health_alert", retry_count=0, now=base
+    ) == base + datetime.timedelta(seconds=30)
+    assert notify_service.next_retry_at(
+        ntype="escalated_red_event", retry_count=1, now=base
+    ) == base + datetime.timedelta(seconds=60)
+    assert notify_service.next_retry_at(
+        ntype="medication_reminder", retry_count=2, now=base
+    ) == base + datetime.timedelta(seconds=90)
+    assert notify_service.next_retry_at(ntype="health_alert", retry_count=3, now=base) is None
+
+
+def test_next_retry_at_report_sequence() -> None:
+    """X11 日报退避：1min → 5min → 15min；medication_* 前缀外的未知类别按告警兜底。"""
+    base = datetime.datetime(2026, 11, 12, 20, 0, 0, tzinfo=datetime.UTC)
+    assert notify_service.next_retry_at(
+        ntype="report_ready", retry_count=0, now=base
+    ) == base + datetime.timedelta(minutes=1)
+    assert notify_service.next_retry_at(
+        ntype="report_updated", retry_count=1, now=base
+    ) == base + datetime.timedelta(minutes=5)
+    assert notify_service.next_retry_at(
+        ntype="report_ready", retry_count=2, now=base
+    ) == base + datetime.timedelta(minutes=15)
+    assert notify_service.next_retry_at(ntype="report_ready", retry_count=3, now=base) is None
+    # 未知类别 → 告警序列兜底（宁快勿迟）
+    assert notify_service.next_retry_at(
+        ntype="unknown_type", retry_count=0, now=base
+    ) == base + datetime.timedelta(seconds=30)
+
+
+async def test_no_receipt_retries_then_failed(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    """F01 真链路：无回执 → 3 次重试（保持 pending）→ failed；全链路永不出现 delivered。"""
+    refs = await notify_service.send_staff_notifications(
+        session,
+        elder_id=seeded["elder_id"],
+        ntype="escalated_red_event",
+        payload={"event_id": str(uuid.uuid4())},
+    )
+    note_id = refs[0].notification_id
+    await session.flush()
+    await notify_service.mark_notification_sent(session, notification_id=note_id)
+    await session.flush()
+
+    # 三个到点时刻：+30s / +90s（+30 后再 60）/ +180s（再 90）
+    first_sent = (
+        (await session.execute(select(Notification).where(Notification.notification_id == note_id)))
+        .scalar_one()
+        .sent_at
+    )
+    assert first_sent is not None
+    base = first_sent
+    for expected_count, offset in ((1, 30), (2, 90), (3, 180)):
+        result = await notify_service.retry_pending_notifications(
+            session, now=base + datetime.timedelta(seconds=offset)
+        )
+        await session.flush()
+        row = (
+            await session.execute(
+                select(Notification).where(Notification.notification_id == note_id)
+            )
+        ).scalar_one()
+        assert row.status == "pending", f"第 {expected_count} 次重试后仍应等待回执"
+        assert row.retry_count == expected_count
+        assert result.retried == 1
+
+    # 第 4 轮（retry_count=3 ≥ MAX_RETRIES）→ failed 终态
+    result = await notify_service.retry_pending_notifications(
+        session, now=base + datetime.timedelta(seconds=181)
+    )
+    await session.flush()
+    row = (
+        await session.execute(select(Notification).where(Notification.notification_id == note_id))
+    ).scalar_one()
+    assert row.status == "failed"
+    assert result.failed == 1
+
+
+# ======================================================================
 # AC-38 双通知（红档 → staff + guardian 各一条）
 # ======================================================================
 

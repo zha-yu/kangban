@@ -49,6 +49,40 @@ MAX_RETRIES: Final[int] = 3
 #: 红色事件升级窗口（分钟）：2 分钟无人确认 → status=escalated（AC-12）
 ESCALATION_WINDOW_MIN: Final[int] = 2
 
+# ------------------------------------------------------------------ X11 退避序列
+# 契约冻结数值（contracts.md X11）：B/C 任何一方都不得调整。
+
+#: 告警类（health_alert／escalated_red_event／medication_*）：30s → 60s → 90s
+_ALERT_RETRY_DELAYS_S: Final[tuple[int, ...]] = (30, 60, 90)
+
+#: 日报推送（report_ready／report_updated）：1min → 5min → 15min（PRD §4.8 FR-RPT-03）
+_REPORT_RETRY_DELAYS_S: Final[tuple[int, ...]] = (60, 300, 900)
+
+_REPORT_PUSH_TYPES: Final[frozenset[str]] = frozenset({"report_ready", "report_updated"})
+
+
+def _retry_delays(ntype: str) -> tuple[int, ...]:
+    """按通知类别取退避序列；未知类别按告警序列兜底（告警占绝对多数，宁快勿迟）。"""
+    return _REPORT_RETRY_DELAYS_S if ntype in _REPORT_PUSH_TYPES else _ALERT_RETRY_DELAYS_S
+
+
+def next_retry_at(
+    *, ntype: str, retry_count: int, now: datetime.datetime
+) -> datetime.datetime | None:
+    """X11 退避函数（**纯函数**，供 B 的 30s tick 调用；C 不改调度文件）。
+
+    - ``now``＝**上次尝试时刻**（持久化锚点：``sent_at``，首试由
+      ``mark_notification_sent`` 写入，重试由 ``retry_pending_notifications`` 刷新；
+      无 sent_at 时回退 ``created_at``——模型注释即「重试计时起点」）；
+    - ``retry_count``＝已完成的**重试**次数（0＝尚未重试过）；
+    - 返回下次应尝试的绝对时刻；``None``＝3 次用尽 → 调用方置 ``failed``（终态）。
+    序列：告警 30s→60s→90s；日报 1min→5min→15min；上限 3 次（契约 X11）。
+    """
+    if retry_count >= MAX_RETRIES:
+        return None
+    delays = _retry_delays(ntype)
+    return now + datetime.timedelta(seconds=delays[retry_count])
+
 
 class NotificationError(Exception):
     """家属通知落库失败基类（失败四分类的上游语义）。"""
@@ -704,9 +738,13 @@ def _require_transition(current: str, target: str) -> None:
 async def scan_pending_notifications(
     session: AsyncSession, *, now: datetime.datetime
 ) -> list[Notification]:
-    """pending 每 30s 重试；retry_count ≥ MAX_RETRIES → failed（失败终态）。
+    """pending 重试扫描（F01 真链路，due 门控）。
 
-    scheduler 每次调本函数，返回需重试的通知列表由调用方执行实际推送。
+    - 超过重试上限（retry_count ≥ MAX_RETRIES）→ failed（失败终态）；
+    - 其余 pending 中只返回「到点该重试」的行（``next_retry_at`` ≤ now），
+      未到点的保持 pending 原样跳过——退避节奏由 X11 数值决定，扫描不抢跑；
+    - 返回需重试的通知列表由调用方执行实际推送；**本函数不写 delivered**
+      （delivered 只由 ``mark_notification_delivered`` 经 X1 回执帧写入）。
     """
     pending = list(
         (
@@ -742,7 +780,23 @@ async def scan_pending_notifications(
     if exhausted:
         await session.flush()
 
-    return pending
+    # due 门控：只交出到点该重试的行（X11 退避；base=sent_at，回退 created_at）
+    due: list[Notification] = []
+    for n in pending:
+        base = n.sent_at or n.created_at
+        next_at = next_retry_at(ntype=n.type, retry_count=n.retry_count, now=base)
+        if next_at is None:
+            n.status = _STATUS_FAILED  # 防御分支：scan 面内不应出现，出现即置失败
+            logger.warning(
+                "notification_failed_no_retry_budget notification_id=%s type=%s",
+                n.notification_id,
+                n.type,
+            )
+        elif next_at <= now:
+            due.append(n)
+    if any(n.status == _STATUS_FAILED for n in pending):
+        await session.flush()
+    return due
 
 
 async def scan_escalations(
@@ -836,45 +890,47 @@ def now_iso_utc() -> str:
 
 @dataclass(frozen=True, slots=True)
 class RetryScanResult:
-    """一轮 30s 重试扫描的结果（AC-23 前半，scheduler 证据留存）。"""
+    """一轮重试扫描的结果（AC-23 前半，scheduler 证据留存；F01 真链路口径）。"""
 
-    delivered: int  # 本轮 Mock 推送成功 → delivered 的条数
+    retried: int  # 本轮到点重试、retry_count+1 的条数（状态保持 pending，等 X1 回执）
     failed: int  # 重试耗尽（retry_count ≥ MAX_RETRIES）置 failed 的条数
-    remaining_pending: int  # 仍处 pending（等待下一轮）的条数
+    remaining_pending: int  # 仍处 pending（含未到点被跳过的）的条数
 
 
 async def retry_pending_notifications(
     session: AsyncSession, *, now: datetime.datetime
 ) -> RetryScanResult:
-    """调度驱动入口（AC-23 前半）：pending 每 30s 重试，3 次失败 → failed。
+    """调度驱动入口（AC-23 前半 · F01 送达真链路）。
 
-    内部先跑 ``scan_pending_notifications``（超限者已置 failed），其余 pending
-    逐条 **Mock 推送成功 → delivered + sent_at**（retry_count += 1 记尝试次数）。
-    真实渠道接入后只替换「推送」这一步：失败就不置 delivered，留在 pending
-    让下一轮再试——状态机迁移本身不变。
+    - 每轮对「到点该重试」的 pending：``retry_count += 1``、刷新 ``sent_at``
+      （上次尝试时刻锚点，供下轮 ``next_retry_at`` 计算）、**状态保持 pending**；
+    - ``delivered`` **永远不在本函数写入**——只由 ``mark_notification_delivered``
+      经 X1 回执帧（pad 客户端回执，D1 生产）驱动；无回执 3 次后 failed；
+    - 日报类（report_ready/report_updated）走 1/5/15min 退避，告警类 30/60/90s。
     """
-    pending = await scan_pending_notifications(session, now=now)
-    delivered = 0
-    for notification in pending:
-        notification.retry_count += 1
-        notification.status = _STATUS_DELIVERED
-        notification.sent_at = now
-        delivered += 1
-    if pending:
-        await session.flush()
-
-    failed = int(
+    # 本轮将被置 failed 的条数：扫描面前就已超限（retry_count ≥ MAX）的行，
+    # scan_pending_notifications 会将它们全部置 failed（旧「sent_at IS NULL」
+    # 口径在重试写 sent_at 后失真，F01 一起修正）；必须在 scan **之前**取快照
+    exhausted_ids = set(
         (
             await session.execute(
-                select(func.count())
-                .select_from(Notification)
-                .where(
-                    Notification.status == _STATUS_FAILED,
-                    Notification.sent_at.is_(None),
+                select(Notification.notification_id).where(
+                    Notification.status == _STATUS_PENDING,
+                    Notification.retry_count >= MAX_RETRIES,
                 )
             )
-        ).scalar_one()
+        ).scalars()
     )
+    due = await scan_pending_notifications(session, now=now)
+    retried = 0
+    for notification in due:
+        notification.retry_count += 1
+        notification.sent_at = now  # 上次尝试时刻锚点（status 保持 pending）
+        retried += 1
+    if due:
+        await session.flush()
+
+    failed = len(exhausted_ids - {n.notification_id for n in due})
     remaining = int(
         (
             await session.execute(
@@ -884,9 +940,9 @@ async def retry_pending_notifications(
             )
         ).scalar_one()
     )
-    if delivered or failed:
-        logger.info("notification_retry_scan delivered=%d failed=%d", delivered, failed)
-    return RetryScanResult(delivered=delivered, failed=failed, remaining_pending=remaining)
+    if retried or failed:
+        logger.info("notification_retry_scan retried=%d failed=%d", retried, failed)
+    return RetryScanResult(retried=retried, failed=failed, remaining_pending=remaining)
 
 
 # ------------------------------------------------------------------ X12 域清理钩子
@@ -966,6 +1022,7 @@ __all__ = [
     "mark_notification_delivered",
     "mark_notification_sent",
     "mark_staff_notification_read",
+    "next_retry_at",
     "purge_elder_data",
     "retry_pending_notifications",
     "scan_escalations",
