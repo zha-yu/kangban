@@ -805,7 +805,7 @@ async def _handle_touch_played(conn: ConnectionContext, message: Mapping[str, An
 # C→S client_receipt（day09/contracts.md X1，v0.4 冻结口径）：pad 卡片渲染/播报完成回执。
 # 分层：字段形状校验与幂等在本层；task_id 归属校验经 medication_service（audio → services
 # 单向依赖，本层不 import ORM）；delivered 落库调 notify_service.mark_notification_delivered
-# （C 持锁；X1 冻结签名带 receipt_kind，C3 未升级前 TypeError 降级并 warn 留痕，D10 12:00 联调）。
+# （C 持锁；X1 冻结签名 receipt_kind 必填——C3 已于 2026-11-12 收紧，降级分支已移除）。
 # 身份铁律：elder_id/device_id 一律服务端注入，帧内出现同名字段一律不读、不作为授权依据。
 
 
@@ -927,17 +927,11 @@ async def _handle_client_receipt(conn: ConnectionContext, message: Mapping[str, 
             return
 
         try:
-            try:
-                # X1 冻结签名（带 receipt_kind）；C3 未升级前的 TypeError 降级 + warn 留痕
-                await notify_service.mark_notification_delivered(
-                    session, notification_id=nid, receipt_kind=receipt_kind
-                )
-            except TypeError:
-                logger.warning(
-                    "notify_service_receipt_kind_not_aligned",
-                    extra=_log_extra(conn),
-                )
-                await notify_service.mark_notification_delivered(session, notification_id=nid)
+            # X1 冻结签名（receipt_kind 必填；C3 已收紧，2026-11-12 转告确认，
+            # 原 TypeError 降级分支为死代码已移除）
+            await notify_service.mark_notification_delivered(
+                session, notification_id=nid, receipt_kind=receipt_kind
+            )
         except NotificationNotFound:
             logger.warning(
                 "client_receipt_rejected",

@@ -4,8 +4,8 @@
 1. 形状校验：缺字段 / 非法 receipt_kind → error 帧，不进处理链；
 2. 归属校验：task_id 归属长者与设备绑定不符 → receipt_ack(rejected)，不落库；
 3. 幂等：重复回执返回原结果 duplicate=true，不再调 mark（X1 契约：不重复写 sent_at）；
-4. delivered 落库走 notify_service.mark_notification_delivered（X1 冻结签名带 receipt_kind），
-   C3 未升级前的 TypeError 降级路径仍可用；
+4. delivered 落库走 notify_service.mark_notification_delivered（X1 冻结签名
+   receipt_kind 必填——C3 已于 2026-11-12 收紧，原 TypeError 降级分支已移除）；
 5. 纯播报回执（notification_id=null）只 ack accepted，不写库；
 6. 状态机拒绝（illegal transition）→ receipt_ack(rejected) 且不入幂等缓存（允许真实重试）。
 
@@ -70,21 +70,18 @@ class _StubMedicationService:
 
 
 class _StubNotifyService:
-    """mark_notification_delivered 桩：可配置 TypeError（旧签名）与状态机拒绝。"""
+    """mark_notification_delivered 桩：X1 冻结签名（receipt_kind 必填）＋状态机拒绝。"""
 
-    def __init__(self, *, legacy_signature: bool = False, fail_transition: bool = False) -> None:
-        self.legacy_signature = legacy_signature
+    def __init__(self, *, fail_transition: bool = False) -> None:
         self.fail_transition = fail_transition
         self.calls: list[tuple[str, str | None]] = []
 
     async def mark_notification_delivered(
-        self, session: Any, *, notification_id: uuid.UUID, receipt_kind: str | None = None
+        self, session: Any, *, notification_id: uuid.UUID, receipt_kind: str
     ) -> None:
         if self.fail_transition:
             raise signaling.NotificationIllegalTransition("generated → delivered 不合法")
         self.calls.append((str(notification_id), receipt_kind))
-        if self.legacy_signature and receipt_kind is not None:
-            raise TypeError("unexpected keyword argument 'receipt_kind'")  # 模拟 C3 未升级
 
 
 class _FakeConn:
@@ -210,25 +207,6 @@ async def test_health_task_ownership_matches_bound_elder(patched: tuple[Any, Any
     )
     rejected = conn.downstream.get_nowait()
     assert rejected["status"] == "rejected"
-
-
-async def test_legacy_signature_fallback_still_delivers(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """C3 未升级 receipt_kind 参数前的 TypeError 降级：仍按旧签名 mark（X1 联调前过渡）。"""
-    factory = _FakeSessionFactory()
-    notify = _StubNotifyService(legacy_signature=True)
-    med = _StubMedicationService({_REMINDER: _ELDER})
-    monkeypatch.setattr(signaling, "session_factory", factory)
-    monkeypatch.setattr(signaling, "notify_service", notify)
-    monkeypatch.setattr(signaling, "medication_service", med)
-    conn = _FakeConn()
-
-    await _handle_client_receipt(conn, _receipt_message())
-
-    assert notify.calls[-1][1] is None  # 降级后第二次调用不带 receipt_kind
-    ack = conn.downstream.get_nowait()
-    assert ack["status"] == "delivered"
 
 
 async def test_illegal_transition_is_rejected_and_not_cached(
