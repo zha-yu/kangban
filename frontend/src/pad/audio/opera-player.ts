@@ -121,9 +121,11 @@ export class OperaPlayer {
     el.volume = this.volume;
     el.addEventListener("playing", () => this.setStatus("playing"));
     el.addEventListener("pause", () => {
-      // ended 也会触发 pause，不能把 ended 覆盖成 paused
-      if (this.status === "ended" || this.disposed) return;
-      this.setStatus(this.ducked ? "paused" : "paused");
+      // ended 也会触发 pause，不能把 ended 覆盖成 paused；
+      // stop() 里的 el.pause() 同理：pause 事件是异步派发的，会晚于 stop 写回的 idle 到达，
+      // 不挡就会把「待机」改回「已暂停」（曲目已清空却显示暂停中）。
+      if (this.status === "ended" || this.status === "idle" || this.disposed) return;
+      this.setStatus("paused");
     });
     el.addEventListener("ended", () => this.setStatus("ended"));
     el.addEventListener("error", () => {
