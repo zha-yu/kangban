@@ -29,12 +29,15 @@ from app.api import (
     health,
     health_records,
     medication,
+    memory,
+    metrics,
     pad,
     pad_undo,
     reports,
     rooms,
     sos,
     staff,
+    stats,
     voiceprints,
     workorders,
 )
@@ -61,6 +64,9 @@ ROUTERS: tuple[tuple[APIRouter, str], ...] = (
     (medication.router, ""),  # 自带 /api/medication-plans 前缀（Day 8 dev-A H+1 药单管理 REST）
     (sos.router, ""),  # 自带 /api/pad 前缀（D3 SOS 一键求助，Day 8 骨架接线）
     (pad_undo.router, ""),  # 自带 /api/pad 前缀（D3 普通确认撤销，FR-UI-08/AC-26）
+    (memory.router, ""),  # 自带 /api/memory 前缀（C4 记忆管理 X5 薄路由，B2 未交付时 503）
+    (stats.router, ""),  # 自带 /api/stats 前缀（C4 FR-ALT-05 运营统计）
+    (metrics.router, ""),  # 自带 /api/metrics 前缀（C4 F26 分层命中率/S1 闭环率，TD:1182）
 )
 
 __all__ = ["ROUTERS"]

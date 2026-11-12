@@ -12,11 +12,13 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import logging
 import uuid
 from typing import Any
 
 from sqlalchemy import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import session_factory
 from app.models.metrics import Metric
@@ -194,3 +196,56 @@ def get_metrics_recorder() -> MetricsRecorder:
     if _recorder is None:
         _recorder = MetricsRecorder(session_factory)
     return _recorder
+
+
+# ------------------------------------------------------------------ F26 /metrics 读侧
+# TD:1182 口径：/metrics 输出分层命中率、S1 闭环率与 token 消耗。本函数只读
+# decision_logs（路由决策只追加表）；token 消耗当前无落库来源（llm_service 未回传
+# usage，B 侧适配器埋点后接入），API 层以 available=false 如实呈现，不编造数值。
+
+
+async def read_decision_metrics(
+    session: AsyncSession,
+    *,
+    since: datetime.datetime | None = None,
+) -> dict[str, Any]:
+    """路由决策聚合（只读）：分层命中率 + S1 闭环率 + S2 升级率。
+
+    口径（TD §8.3 Day 10 技术验收行）：
+    - **分层命中率**：``GROUP BY route_layer`` 计数与占比（含历史 ``laya``）；
+    - **S1 闭环率**：``route_layer='system_one'`` 且**未升级** S2 的轮次 / 总轮次
+      ——S1（Laya）直接闭环说明未惊动大模型；
+    - **S2 升级率**：``escalated_to_s2=true`` 占比（低置信澄清后升级与敏感升级均计）。
+    """
+    from sqlalchemy import select
+
+    from app.models.decision import DecisionLog
+
+    base = select(DecisionLog.route_layer, DecisionLog.escalated_to_s2)
+    if since is not None:
+        base = base.where(DecisionLog.created_at >= since)
+    rows = (await session.execute(base)).all()
+
+    total = len(rows)
+    by_layer: dict[str, int] = {}
+    s1_closed = 0
+    escalated = 0
+    for layer, esc in rows:
+        by_layer[layer] = by_layer.get(layer, 0) + 1
+        if esc:
+            escalated += 1
+        elif layer == "system_one":
+            s1_closed += 1
+
+    def _ratio(n: int) -> float | None:
+        return round(n / total, 4) if total else None
+
+    return {
+        "total": total,
+        "by_layer": {
+            layer: {"count": count, "ratio": _ratio(count)}
+            for layer, count in sorted(by_layer.items())
+        },
+        "s1_close_rate": _ratio(s1_closed),
+        "s2_escalation_rate": _ratio(escalated),
+    }

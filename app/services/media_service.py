@@ -186,6 +186,41 @@ async def get_playback_url(session: AsyncSession, *, media_id: uuid.UUID) -> str
     return row.media_url
 
 
+async def get_next_media(
+    session: AsyncSession, *, current_media_id: uuid.UUID
+) -> MediaLibrary | None:
+    """「换一段」顺序续播（F21/X8 口径③ next_track 的取数实现，B 的 tool_impls 消费）。
+
+    口径（contracts.md X8 §6 冻结：**顺序续播，替代过渡期随机**）：
+
+    - 同 ``genre`` 内按 ``media_id`` 升序取**下一段**（``> current``）；
+    - 已是末尾 → **回绕**到同剧种第一段；
+    - 当前媒体无 ``genre``（歌曲等无剧种条目）→ 在**全库**内按 ``media_id`` 升序回绕；
+    - 当前媒体不存在 → ``None``（调用方如实告知，不编造）；全库仅一条 → 返回自身（循环播放）。
+    """
+    current = await get_media(session, media_id=current_media_id)
+    if current is None:
+        return None
+
+    async def _next_in(scope_genre: str | None) -> MediaLibrary | None:
+        base = select(MediaLibrary)
+        if scope_genre is not None:
+            base = base.where(MediaLibrary.genre == scope_genre)
+        forward = (
+            await session.execute(
+                base.where(MediaLibrary.media_id > current_media_id)
+                .order_by(MediaLibrary.media_id.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if forward is not None:
+            return forward
+        wrap = base.order_by(MediaLibrary.media_id.asc()).limit(1)
+        return (await session.execute(wrap)).scalar_one_or_none()
+
+    return await _next_in(current.genre)
+
+
 # ---------- 点播历史（media_history 唯一写库入口，FR-CON-06 P1） ----------
 
 
@@ -281,6 +316,7 @@ __all__ = [
     "MEDIA_URL_TEMPLATE",
     "finish_playback",
     "get_media",
+    "get_next_media",
     "get_playback_url",
     "list_media",
     "list_media_history",
