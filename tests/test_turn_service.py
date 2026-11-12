@@ -104,6 +104,40 @@ def test_route_degraded_only_for_fallback_agent_normal_reply() -> None:
     assert _is_route_degraded(None, _R(False)) is False
 
 
+def test_tool_speech_play_control_confirmations() -> None:
+    """AC-37：控制动作播简短确认、换一段报曲名，不得落到兜底反问。"""
+
+    class _Result:
+        def __init__(self, data: Mapping[str, Any], *, message: str | None = None) -> None:
+            self.data = data
+            self.message = message
+            self.ok = message is None
+
+    expect = {
+        "pause": "先停在这里",
+        "resume": "继续播放",
+        "stop": "已停止播放",
+        "replay": "重新播放一遍",
+        "volume_up": "音量调大了",
+        "volume_down": "音量调小了",
+    }
+    for control, needle in expect.items():
+        text = TurnService._tool_speech("play_opera", _Result({"control": control}))
+        assert needle in text, (control, text)
+        assert "没太看懂" not in text, (control, text)
+
+    next_text = TurnService._tool_speech(
+        "play_opera", _Result({"found": True, "media": {"title": "霸王别姬"}})
+    )
+    assert "霸王别姬" in next_text
+
+    assert TurnService._tool_speech("play_opera", _Result({"control": "unknown"})) == "好的。"
+    assert (
+        TurnService._tool_speech("play_opera", _Result({}, message="没找到这段戏曲"))
+        == "没找到这段戏曲"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 会话与数据夹具（同 test_history_store：db_engine + savepoint，结束整体回滚）
 # ---------------------------------------------------------------------------
