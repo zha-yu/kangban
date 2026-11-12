@@ -7,6 +7,9 @@
       → 参数校验 → 幂等查重 → 落 running 行 → 执行（transient 退避≤2）→ 收口
 ```
 
+`transport` 只决定第 7 步调哪套执行（MCP 客户端 / 本地 executor）：
+**幂等查重与 `tool_executions` 记账对两者完全共用**，否则 MCP 工具会绕过幂等与记账。
+
 四个决定的理由：
 
 1. **身份只从 `runtime` 读**。`args` 里出现 `elder_id` / `thread_id` / `device_id`，
@@ -29,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -128,7 +132,8 @@ class ToolForbiddenError(ToolError):
 def _validate_args(schema: dict[str, Any], args: dict[str, Any]) -> str | None:
     """最小 JSON Schema 子集校验；返回错误说明，`None` 表示通过。
 
-    只认 `type` / `required` / `properties` / `additionalProperties` / `minLength`。
+    只认 `type` / `required` / `properties` / `additionalProperties` / `minLength` /
+    `pattern`。
     多传字段默认拒绝（`additionalProperties: False`）：模型很喜欢补一个 `elder_id` 或
     `reason`，放过去就会在半年后变成「谁都能传点什么」。
     """
@@ -151,6 +156,9 @@ def _validate_args(schema: dict[str, Any], args: dict[str, Any]) -> str | None:
             min_len = rule.get("minLength")
             if isinstance(min_len, int) and len(value) < min_len:
                 return f"{key} is too short (min {min_len})"
+            pattern = rule.get("pattern")
+            if isinstance(pattern, str) and re.fullmatch(pattern, value) is None:
+                return f"{key} does not match the required pattern"
         elif expected == "integer":
             if isinstance(value, bool) or not isinstance(value, int):
                 return f"{key} must be an integer"
@@ -312,11 +320,7 @@ class ToolExecutor:
                 message=f"{MESSAGES['bad_args']}（{problem}）",
             )
 
-        # 4) MCP 工具走客户端（失败分类由 mcp_client.tool_error_class 统一决定）
-        if spec.transport == "mcp":
-            return await self._run_mcp(spec=spec, args=cleaned, runtime=runtime)
-
-        # 5) 本地工具：已注册但未绑定实现
+        # 4) 本地工具：已注册但未绑定实现（MCP 工具 wired 恒真，未注入客户端由 _run_mcp 判）
         if not spec.wired:
             return ToolResult(
                 status="failed",
@@ -324,7 +328,7 @@ class ToolExecutor:
                 message=MESSAGES["not_found"],
             )
 
-        # 5) 幂等查重（只对有副作用的工具）
+        # 5) 幂等查重（只对有副作用的工具；MCP 与本地走同一段）
         if spec.side_effect:
             replay = await self._replay_if_duplicated(
                 spec=spec,
@@ -392,8 +396,11 @@ class ToolExecutor:
                     message=MESSAGES["transient"],
                 )
 
-        # 7) 执行（transient 退避重试，其余失败一次即出）
-        result = await self._run(spec=spec, args=cleaned, runtime=runtime)
+        # 7) 执行：MCP 只做「调用 + 失败分类」，本地走退避重试；记账在下一步共用
+        if spec.transport == "mcp":
+            result = await self._run_mcp(spec=spec, args=cleaned, runtime=runtime)
+        else:
+            result = await self._run(spec=spec, args=cleaned, runtime=runtime)
 
         # 8) 收口记账
         if row is not None:

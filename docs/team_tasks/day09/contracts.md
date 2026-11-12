@@ -1,4 +1,4 @@
-> 状态：待冻结（N0 · D9 09:30 冻结评审；X6/X10 已裁减作废）　｜　版本：v0.6　｜　日期：2026-11-12
+> 状态：已冻结（N0 四方回执签认，2026-11-12；签字原件待补）　｜　版本：v1.0（冻结版）　｜　日期：2026-11-12
 > 关联：docs/team_tasks/day09/day09-任务总览与DAG.md v1.3 §5（对接点总表）
 > 上游依据：PRD line 387（只有客户端回执算 delivered）、line 357–361（分级与校验）、line 320–325（用药终态）、line 436/441/443（重置/人设/退房）、line 440（三道闸门）｜技术设计文档 line 1166–1174（Day 9 落地）｜《接口契约_照护台业务数据.md》v1.3 §3.2（通知 5 值＋is_mock 冻结）/§6.1（稳定路径）/§6.4（种子规范）｜《接口契约_家属端数据.md》v1.2 S-01（用药统计键名）
 > 变更记录见文末
@@ -105,7 +105,7 @@ def grade_health(
 
 > **v0.6 语义修订（B3 提案，主理人批准，2026-11-12）**：**红档先落库，`notify_red_dual` 只做双通知、不建单。**
 
-**落库步骤（先）**：record＋risk_event＋工单**同一事务**由 C 的 service 函数承担——建单走 `open_work_order`（唯一建单口 A12），`dedupe_token = f"health_record:{record_id}:red"`。语音路径的落库步骤必须**调 C 提供的包装函数**（B 注入调用），**B 不得直写 `work_orders`**；REST 路径即 `create_health_record` 既有内联路径。
+**落库步骤（先）**：record＋risk_event＋工单**同一事务**由 C 的 service 函数承担——建单走 `open_work_order`（唯一建单口 A12），`dedupe_token = f"health_record:{record_id}:red"`。语音路径的落库步骤必须**调 C 提供的包装函数**（B 注入调用），**B 不得直写 `work_orders`**；REST 路径即 `create_health_record` 既有内联路径。**包装函数已于 v0.7 定名为 `create_red_landing`（B 命名实现，§7 v0.7 留痕）**。
 
 **通知步骤（后）**：
 
@@ -141,7 +141,7 @@ class NotifyRef:
 async def purge_elder_memories(session, *, elder_id: uuid.UUID, reason: str) -> PurgeRef: ...
 ```
 
-`PurgeRef(deleted_chunks: int, deleted_vectors: int, audit_id: uuid)`。
+`PurgeRef(affected_rows: int, archived_rows: int, domain: str)`，memory 域固定 `domain='memory'`；`deleted_chunks`/`deleted_vectors` 映射为 `affected_rows`/`archived_rows`；`audit_id` 不再返回（审计由 A 流水线统一写）。
 
 | 项 | 口径 |
 | --- | --- |
@@ -303,6 +303,8 @@ def next_retry_at(*, ntype: str, retry_count: int, now: datetime) -> datetime | 
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.0 | 2026-11-12 | **N0 四方回执签认冻结版**：X1–X12 冻结；X6/X10 作废、编号保留不复用；X3 并入 v0.6 四条件 + v0.7 `create_red_landing` 定名；X4 `PurgeRef` 统一为 X12 口径（`domain='memory'`，`deleted_chunks`/`deleted_vectors` → `affected_rows`/`archived_rows`，`audit_id` 归 A 流水线）；X8 迁移 0020 已交付；X1–X12 其余按原文。四方电子回执见 `docs/plans/day09/adhoc-20261112-X10作废与N0签认单.md` §3.5；手签/日期待补，不改变冻结效力。 |
+| v0.7 | 2026-11-12 | **P10 落库包装定名 + P12 幂等键留痕**（主理人 19:10 裁决 D13；状态仍「待冻结」，N0 签认后再改「已冻结」）：① X3 v0.6 所述「C 的红档落库包装」由 **B 命名并实现**为 `create_red_landing(session, *, elder_id, source, systolic, diastolic, sleep_hours, mood_score, mood_note, complaint, operator_id, graph_thread_id=None) -> HealthRecordRef`，位于 `app/services/health_service.py`；与 `create_health_record` 共用同一落库流程（`_land_health_record(..., notify_red=False)`），**只落库不通知、不 commit**，返回 `HealthRecordRef(record_id, severity, version, risk_event_id, work_order_id)`；双通知仍由 `notify_red_dual` 在图内 `notify_red` 节点执行（先落库后通知不变）。装配点：`app/scheduler/health_jobs.py::_build_graph`、`app/services/tool_impls.py` 的语音执行器均注入 `create_red_landing_adapter`；图内 `create_red_order_fn` 未注入即抛 `RuntimeError`，**已无降级桩**。② B1 的两个 ops schema 幂等键同批留痕：`create_work_order.dedupe_token`、`send_family_notification.dedupe_key`，均为**可选 string**（pattern 与 `mcp-servers/mock-operations/operations_core.py:52-54` 一致），消费方=mock-operations；不传即按无幂等键执行。 |
 | v0.6 | 2026-11-12 | **X3 语义修订：红档先落库，notify_red_dual 只做双通知、不建单**（B3 提案，主理人批准）：落库（record＋risk_event＋工单同事务）由 C 的 service 函数承担、语音路径经注入调用 C 的落库包装（B 不得直写 work_orders）；`notify_red_dual` 签名增 `risk_event_id` 入参、`NotifyRef` 移除 `work_order_id`；通知幂等键改三段式 `risk_event:{event_id}:staff`／`:guardian`（替换旧 `health_red_alert:{record_id}`）；顺序硬口径「先落库→后通知、通知失败不回滚落库」。验收判据不变（2 条通知、无第二事件/工单、幂等 409）。 |
 | v0.5 | 2026-11-12 | **X10 戏曲素材契约裁减作废**（团队一致决定，主理人留痕中，详情见 dev-d 计划 v1.1 §2.2）：Day 9 不再加戏曲素材，媒体库以现有歌单为准；《照护台契约》§6.4 不再适用，现有 media_manifest.json 不构成违规；编号 X10 保留不复用。C 侧：seed_media_library 接线改以现有媒体库为对象、X10 联调（D11 10:00）取消，F21 service 侧义务（media_history 归 C、顺序续播）不变；B3 rules 剧种词改法归 dev-B；AC-37 调整为「点播现有媒体库条目可播、可控制」。N0 签认时跳过 X10。注：本条按「现有最大版本 +1」编为 v0.5——裁决通知所称 v0.4 在磁盘上已是 X2 主诉归一化增补，不回改历史版本号。 |
 | v0.4 | 2026-11-12 | **X2 增补主诉归一化口径**（C1 执行中发现，主理人裁决选项 A）：g2「非急症主诉判黄」若不归一化，会把采集第 5 问的否定回答（如「没有」）全量误判黄。落地：`health_service.NO_COMPLAINT_ANSWERS` 精确匹配否定表（没有/无/没什么/没有不舒服/没有哪不舒服/none/no，ASCII 忽略大小写）→ 视为无主诉；归一化在 `grade_health` 内完成，调用方传参口径不变，B3 零改动。急症匹配仍归规则层，本表不构成第二套急症判定。 |

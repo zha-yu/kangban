@@ -160,6 +160,11 @@ def default_registry() -> ToolRegistry:
                         "order_type": {"type": "string", "minLength": 1},
                         "severity": {"type": "string", "minLength": 1},
                         "note": {"type": "string"},
+                        # 工单幂等键：形态与 mock-operations `_TOKEN_PATTERN` 一致
+                        "dedupe_token": {
+                            "type": "string",
+                            "pattern": r"^[\w:.-]{1,128}$",
+                        },
                     },
                     "required": ["order_type", "severity"],
                     "additionalProperties": False,
@@ -178,6 +183,11 @@ def default_registry() -> ToolRegistry:
                         "notification_type": {"type": "string", "minLength": 1},
                         "payload": {"type": "object"},
                         "channel": {"type": "string"},
+                        # 通知幂等键：键名与工单的 dedupe_token **不同**，不要混用
+                        "dedupe_key": {
+                            "type": "string",
+                            "pattern": r"^[\w:.-]{1,128}$",
+                        },
                     },
                     "required": ["notification_type", "payload"],
                     "additionalProperties": False,
@@ -218,6 +228,24 @@ def default_registry() -> ToolRegistry:
                 },
                 side_effect=False,  # 只读检索；media_history 归 C4 media_service（X8 ②）
                 idempotent=True,
+            ),
+            ToolSpec(
+                name="health_checkup",
+                description=(
+                    "长者主动说身体不舒服、要量血压或做每日健康采集时，进入健康采集五问。"
+                    "首次调用不传 answer（返回第一问）；之后把长者的回答放进 answer 继续。"
+                ),
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        # 可选：首次进入不带回答；后续每轮带一句长者原话
+                        "answer": {"type": "string", "maxLength": 200},
+                    },
+                    "additionalProperties": False,
+                },
+                side_effect=True,  # 写 health_records/risk_events/工单，推进 interrupt 子图
+                idempotent=False,  # 五问是有状态的：同一句话在不同轮次含义不同
+                transport="local",  # 进程内执行器（graphs 接缝），不走 MCP
             ),
         )
     )

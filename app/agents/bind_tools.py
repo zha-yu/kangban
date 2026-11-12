@@ -94,14 +94,14 @@ def bind_dev_c_tools(
 
 
 class MultiServerMCPClient:
-    """按工具名路由到对应 MCP server 的客户端适配（Day 8 B4）。
+    """按工具名路由到对应 MCP server 的客户端适配（Day 8 B4，Day 9 F18 启用）。
 
     ToolExecutor 只持有**一个** mcp_client（`self._mcp.call_tool(...)`），而 Day 8
     有两个 MCP server：weather（7101，get_weather）与 mock-operations（7102，
     create_work_order / send_family_notification）。本类**不新增执行路径**——只是把
     同协议、不同基地址的两个 `MCPClient` 按工具名分发；失败分类仍由各自
     `MCPClient.call_tool` 内的 `tool_error_class()` 决定（G2：同一工具不得有两套
-    失败语义）。A3 装配时传给 `_SessionToolExecutor(mcp_client=...)` 即可。
+    失败语义）。`app/main.py` 装配时传给 `_SessionToolExecutor(mcp_client=...)`。
 
     路由必须显式登记（含 get_weather）；未登记的 MCP 工具 → `bad_response` 短路
     （「未接线」口径，绝不让模型自己编答案）。
@@ -129,8 +129,7 @@ def bind_dev_b_tools(registry: ToolRegistry, *, session_factory: Callable[[], An
 
     只绑 `play_opera`。MCP 两工具（create_work_order / send_family_notification）
     **不在本函数绑定**——`transport="mcp"` 的工具由 ToolExecutor 注入的 mcp_client
-    执行；A3 装配时用 `MultiServerMCPClient` 包装 weather 与 operations 两个
-    MCPClient 传给 `_SessionToolExecutor(mcp_client=...)`：
+    执行；`app/main.py` 的 lifespan 按下面的配方装配（Day 9 F18 已落地）：
 
     ```python
     from app.mcp_client.client import MCPClient

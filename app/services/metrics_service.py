@@ -7,6 +7,11 @@
 - **非法值不入库**：stage 不在八值白名单、trace_id 缺失、duration_ms < 0 的行
   直接丢弃记日志（对齐 ER §4.4.7 CHECK 约束，不让 DB 报错回流调用方）；
 - **只写指标不写内容**：调用方不应传转写全文/隐私字段；本服务不主动截取任何业务内容。
+
+**LLM token 用量（P15 / dev-C 需求）**：`record_llm_usage()` 只做「结构化日志 +
+进程内计数」，**不写库**——`metrics.stage` 的 CHECK 白名单里没有 `llm_tokens`，
+加值需 A 的迁移；`duration_ms` 是毫秒列，**不得把 token 数塞进去**。
+跨重启 / 多 worker 的聚合必须等迁移落地，本进程内计数只能服务单实例看板与日志回捞。
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from typing import Any
 from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.context import get_trace_id
 from app.db import session_factory
 from app.models.metrics import Metric
 
@@ -249,3 +255,85 @@ async def read_decision_metrics(
         "s1_close_rate": _ratio(s1_closed),
         "s2_escalation_rate": _ratio(escalated),
     }
+
+
+# ------------------------------------------------------------------ LLM token 用量（P15）
+
+
+#: 进程内累计（**非持久**）：单进程可见，跨重启/多 worker 必须等 `llm_tokens` 迁移。
+_llm_usage: dict[str, int] = {
+    "calls": 0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0,
+}
+#: 至少有一次调用带回了 usage 才置 True——C 侧的 `available` 只看这个，不看 calls。
+_llm_usage_seen = False
+
+
+def _token_or_none(value: Any) -> int | None:
+    """token 值校验：`bool` 是 `int` 子类必须排除；负数/非法/缺失 → None（不补零）。"""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value >= 0 else None
+
+
+def record_llm_usage(
+    *,
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+    provider: str | None = None,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """记一次成功 LLM 调用的 token 用量：**一条结构化日志 + 进程内计数**。
+
+    - 缺 usage（双 None）也计入 `calls`，但 token 计数不动（0 与「不知道」不可混同）；
+    - 返回 `snapshot()`，便于调用方即时读取或测试断言；
+    - 不写 `metrics` 表：`llm_tokens` stage 未进 CHECK 白名单（等 A 的迁移）。
+
+    日志字段固定为 `trace_id/provider/model/prompt_tokens/completion_tokens/total_tokens`，
+    `total_tokens` 只在两侧都已知时给出，否则 None。
+    """
+    global _llm_usage_seen
+    prompt = _token_or_none(prompt_tokens)
+    completion = _token_or_none(completion_tokens)
+    total = prompt + completion if prompt is not None and completion is not None else None
+
+    _llm_usage["calls"] += 1
+    if prompt is not None:
+        _llm_usage["prompt_tokens"] += prompt
+    if completion is not None:
+        _llm_usage["completion_tokens"] += completion
+    if total is not None:
+        _llm_usage["total_tokens"] += total
+        _llm_usage_seen = True
+
+    logger.info(
+        "llm_usage",
+        extra={
+            "trace_id": get_trace_id() or "-",
+            "provider": provider,
+            "model": model,
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": total,
+        },
+    )
+    return snapshot_llm_usage()
+
+
+def snapshot_llm_usage() -> dict[str, Any]:
+    """进程内 token 计数快照（拷贝）：`calls/prompt_tokens/completion_tokens/total_tokens`。
+
+    `tokens_available` 表示**至少一次**调用带回了 usage——dev-C 的 `/api/metrics`
+    用它决定 `available`，不要用 `calls > 0` 代替。
+    """
+    return {**_llm_usage, "tokens_available": _llm_usage_seen}
+
+
+def reset_llm_usage() -> None:
+    """清零进程内计数（测试与演示用；生产无调用方，重启即自然归零）。"""
+    global _llm_usage_seen
+    for key in _llm_usage:
+        _llm_usage[key] = 0
+    _llm_usage_seen = False

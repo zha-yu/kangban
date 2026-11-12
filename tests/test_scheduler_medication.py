@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import datetime
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from typing import Any
 
 import pytest
@@ -42,7 +43,7 @@ from app.models.organization import Device, Elder, Room
 from app.models.staff import StaffAccount
 from app.scheduler.medication_jobs import SchedulerRuntime
 from app.services import medication_service
-from app.services.medication_due_service import list_due_plans
+from app.services.medication_due_service import list_due_plans, list_waiting_confirm_events
 
 # ------------------------------------------------------------------ fixture 复用
 
@@ -501,3 +502,188 @@ async def test_A2_8_list_due_plans_cron_match(session, seeded):
     await session.flush()
     due3 = await list_due_plans(session, now=now)
     assert not any(dp.plan_id == plan_id for dp in due3)
+
+
+# ------------------------------------------------------------------ F09 终态死锁（Day 9 B4）
+
+
+@contextmanager
+def _runtime_with(session: AsyncSession, saver: AsyncPostgresSaver) -> Iterator[SchedulerRuntime]:
+    """构造一个只用于 `_maybe_resume` 的 runtime：会话工厂 yield 现有 savepoint 会话。"""
+
+    @asynccontextmanager
+    async def _sf() -> AsyncIterator[AsyncSession]:
+        yield session
+
+    rt = SchedulerRuntime(session_factory=_sf, checkpointer_dsn=_test_psycopg_dsn())
+    rt._checkpointer = saver  # 跳过 start 的独立连接池，复用测试 saver
+    try:
+        yield rt
+    finally:
+        rt._checkpointer = None
+
+
+async def _seed_missed_event(
+    session: AsyncSession,
+    seeded: dict[str, Any],
+    saver: AsyncPostgresSaver,
+    *,
+    deliver_ok: bool,
+    minutes_ago: int = 21,
+) -> tuple[uuid.UUID, Any, datetime.datetime]:
+    """造一条「已触达 4 次、仍在 wait_confirm」的事件，并把 T0 挪到过去。"""
+    now = _utc_now().replace(second=0, microsecond=0)
+    t0 = now - datetime.timedelta(minutes=minutes_ago)
+    rid = await medication_service.create_event(
+        session,
+        plan_id=seeded["plan_id"],
+        elder_id=seeded["elder_id"],
+        scheduled_at=t0,
+        drug_snapshot={"drug_name": "硝苯地平", "dose": "10mg 一片"},
+        triggered_by="scheduler",
+    )
+    await session.flush()
+
+    graph = build_medication_graph(
+        session=session,
+        checkpointer=saver,
+        deliver_fn=(lambda *_a, **_k: True) if deliver_ok else (lambda *_a, **_k: False),
+    )
+    await start_medication_task(
+        graph,
+        reminder_id=rid,
+        plan_id=seeded["plan_id"],
+        elder_id=seeded["elder_id"],
+        deadline=(now + datetime.timedelta(minutes=15)).isoformat(),
+        triggered_by="scheduler",
+    )
+    for _ in range(3):
+        await resume_medication_task(graph, reminder_id=rid, answer="")
+    return rid, graph, now
+
+
+async def test_medication_scheduler_finalizes_missed_unconfirmed_after_fourth_attempt(
+    session: AsyncSession, seeded: dict[str, Any], saver: AsyncPostgresSaver
+) -> None:
+    """F09：第 4 次窗口结束后调度器仍 resume → finalize 落 missed_unconfirmed。
+
+    修复前 `attempt_no >= MAX_ATTEMPTS` 会跳过这次 resume，事件永远停在
+    waiting_confirm（终态死锁）；修复后由子图 retry 收口，且**不发第 5 次**。
+    """
+    from app.graphs.medication_confirmation_graph import MAX_ATTEMPTS
+    from app.scheduler.medication_jobs import _ATTEMPT_INTERVAL_MINUTES
+
+    assert MAX_ATTEMPTS == 4, "PRD §4.5 的四次触达不得改动"
+    assert _ATTEMPT_INTERVAL_MINUTES == 5, "T0/+5/+10/+15 不得改动"
+
+    rid, graph, now = await _seed_missed_event(session, seeded, saver, deliver_ok=True)
+
+    state = await graph.aget_state(graph_config(rid))
+    assert state.values.get("attempt_no") == 4
+    assert state.values.get("terminal") is None  # 4 次触达后仍在等第 5 次 resume
+
+    with _runtime_with(session, saver) as rt:
+        await rt._maybe_resume(rid, now)
+
+    event = await medication_service.get_event(session, event_id=rid)
+    assert event["terminal_state"] == "missed_unconfirmed"
+    assert event["status"] == "escalated"
+    assert event["retry_count"] == 3
+
+    attempts = await medication_service.list_attempts(session, event_id=rid)
+    assert [a["attempt_no"] for a in attempts] == [1, 2, 3, 4], "不得出现第 5 次触达"
+
+    # 再跑一个 tick：已落终态 → 跳过，不重复 resume / 不重复建单
+    with _runtime_with(session, saver) as rt2:
+        await rt2._maybe_resume(rid, now + datetime.timedelta(hours=1))
+
+    attempts_after = await medication_service.list_attempts(session, event_id=rid)
+    assert len(attempts_after) == 4
+    orders = (
+        (await session.execute(select(WorkOrder).where(WorkOrder.elder_id == seeded["elder_id"])))
+        .scalars()
+        .all()
+    )
+    assert len(orders) == 1
+    assert orders[0].type == "missed_medication"
+
+
+async def test_medication_scheduler_finalizes_notification_failed_after_fourth_attempt(
+    session: AsyncSession, seeded: dict[str, Any], saver: AsyncPostgresSaver
+) -> None:
+    """F09 + AC-20 分流：四次全没出过门 → notification_failed + failure_reason=offline。"""
+    rid, graph, now = await _seed_missed_event(session, seeded, saver, deliver_ok=False)
+
+    state = await graph.aget_state(graph_config(rid))
+    assert state.values.get("attempt_no") == 4
+
+    with _runtime_with(session, saver) as rt:
+        await rt._maybe_resume(rid, now)
+
+    event = await medication_service.get_event(session, event_id=rid)
+    assert event["terminal_state"] == "notification_failed"
+    assert event["retry_count"] == 3
+    failure_reason = (
+        await session.execute(
+            select(MedicationEvent.failure_reason).where(MedicationEvent.reminder_id == rid)
+        )
+    ).scalar_one()
+    assert failure_reason == "offline"
+
+    attempts = await medication_service.list_attempts(session, event_id=rid)
+    assert len(attempts) == 4
+    assert {a["receipt"] for a in attempts} <= {"device_offline", "no_bound_device"}
+
+
+# ------------------------------------------------------------------ Z-A4d：away 暂离暂停提醒触达（2026-11-12 dev-A 交接）
+
+
+async def test_za4d_away_elder_paused_from_due_and_waiting(session, seeded):
+    """长者 `away` 期间：到期药单不触发、等待中事件不被 resume 推进；恢复 active 后重新可见。
+
+    A3 只做状态流转＋审计；调度链在 `medication_due_service` 统一读 `elder.status`，
+    不另设第二套判断（dev-A 交接件，X4/X12 同批联调口径）。
+    """
+    from app.models.medication import MedicationEvent
+    from app.models.organization import Elder
+
+    elder_id = seeded["elder_id"]
+    plan_id = seeded["plan_id"]
+    now = _utc_now()
+
+    # 基线：active 长者可见
+    due = await list_due_plans(session, now=now)
+    assert any(dp.plan_id == plan_id for dp in due)
+
+    # 置 away：到期列表立即不含该药单
+    await session.execute(
+        Elder.__table__.update().where(Elder.elder_id == elder_id).values(status="away")
+    )
+    await session.flush()
+    due_away = await list_due_plans(session, now=now)
+    assert not any(dp.plan_id == plan_id for dp in due_away)
+
+    # 等待中的事件：away 长者不被 resume 扫到（不再触达）
+    event = MedicationEvent(
+        plan_id=plan_id,
+        elder_id=elder_id,
+        scheduled_at=now,
+        plan_version=1,
+        triggered_by="scheduler",
+        status="waiting_confirm",
+        retry_count=0,
+        drug_snapshot={"drug_name": "硝苯地平", "dose": "10mg 一片"},
+        payload_hash="za4d-test-hash",
+    )
+    session.add(event)
+    await session.flush()
+    waiting_away = await list_waiting_confirm_events(session)
+    assert not any(w.reminder_id == event.reminder_id for w in waiting_away)
+
+    # 恢复 active：既有事件重新进入 resume 扫描（由 attempts/终态逻辑自然收口，不伪造应答）
+    await session.execute(
+        Elder.__table__.update().where(Elder.elder_id == elder_id).values(status="active")
+    )
+    await session.flush()
+    waiting_back = await list_waiting_confirm_events(session)
+    assert any(w.reminder_id == event.reminder_id for w in waiting_back)

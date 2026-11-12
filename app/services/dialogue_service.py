@@ -51,6 +51,7 @@ from app.core.context import (
 )
 from app.core.metrics import Stopwatch, record_stage
 from app.core.runtime_context import Identity
+from app.router.injection import CATEGORY_PROMPT_INJECTION, INJECTION_REFUSED_TEXT
 from app.router.medical_refusal import MEDICAL_REFUSAL_TEXT, medical_refusal_check
 from app.router.safety import SEVERITY_RED, SafetyDecision, safety_check
 from app.services.llm_service import LLMService
@@ -226,10 +227,19 @@ class DialogueService:
         llm: LLMService,
         store: RedisTurnStore,
         now_provider: Callable[[], datetime] | None = None,
+        injection_auditor: Callable[..., Awaitable[None]] | None = None,
     ) -> None:
         self._llm = llm
         self._store = store
         self._now_provider = now_provider or (lambda: datetime.now(UTC))
+        #: AC-36 注入拦截审计口（P14）：装配层注入「短会话 + 自 commit」的实现；
+        #: None 时只拒答不落审计（单测/未接线期），**不伪造审计行**。
+        self._injection_auditor = injection_auditor
+
+    @property
+    def injection_auditor(self) -> Callable[..., Awaitable[None]] | None:
+        """给编排层复用同一实例：`DialogueOrchestrator` 未显式注入时回落到这里。"""
+        return self._injection_auditor
 
     async def respond(
         self,
@@ -489,6 +499,7 @@ class DialogueOrchestrator:
         persona_provider: PersonaProvider | None = None,
         turn_service: TurnService | None = None,
         safety_escalator: SafetyEscalator | None = None,
+        injection_auditor: Callable[..., Awaitable[None]] | None = None,
     ) -> None:
         self._service = service
         self._identity_thread_resolver = identity_thread_resolver
@@ -497,6 +508,14 @@ class DialogueOrchestrator:
         self._turn_service = turn_service
         # N27：红档命中时的三表落库面；None 时只短路不落库（测试桩期）
         self._safety_escalator = safety_escalator
+        # AC-36 / P14：注入拦截审计口；未显式注入时回落到 DialogueService 上的同一实例，
+        # **只留一个构造点**（main.py 装配 DialogueService 即同时生效）。
+        # getattr：测试用 duck-typed service 桩没有该属性，不能因此炸掉整条编排。
+        self._injection_auditor = (
+            injection_auditor
+            if injection_auditor is not None
+            else getattr(service, "injection_auditor", None)
+        )
         # 同 (device_id, turn_id) 只编排一次；进程内去重，不做分布式锁
         self._seen_turns: OrderedDict[tuple[str, str], None] = OrderedDict()
 
@@ -583,6 +602,19 @@ class DialogueOrchestrator:
 
                 # ---------- L0 安全一票否决（N27；先于一切路由，FR-DLG-01/AC-04） ----------
                 decision = safety_check(final_text)
+                # ---------- AC-36 / P14 注入拒答（**先于**急症落库分支） ----------
+                # 注入结论与急症结论共用 safety_check 单一入口，但处置不同：注入只拒答 +
+                # 审计 1 行，**不得**送进 _veto_on_safety（那是急症三表落库路径，
+                # escalate_safety_event 会因非法 category 拒绝）。
+                if decision.category == CATEGORY_PROMPT_INJECTION:
+                    return await self._refuse_injection(
+                        decision=decision,
+                        identity=identity,
+                        thread_id=thread_id,
+                        device_id=device_id,
+                        turn_id=turn_id,
+                        trace_id=trace_id,
+                    )
                 if decision.is_sensitive and decision.severity == SEVERITY_RED:
                     return await self._veto_on_safety(
                         identity=identity,
@@ -642,6 +674,66 @@ class DialogueOrchestrator:
             # A1 identity/thread 或下游异常（含取消）时允许同一 FINAL 重试，不永久吞 turn
             self._seen_turns.pop(dedupe_key, None)
             raise
+
+    async def _refuse_injection(
+        self,
+        *,
+        decision: SafetyDecision,
+        identity: DialogueIdentity,
+        thread_id: str,
+        device_id: str,
+        turn_id: str,
+        trace_id: str,
+    ) -> DialogueReply:
+        """AC-36 注入命中：固定拒答 + 审计 1 行，不调 Agent（escalated_to_agent=False）。
+
+        - **不走 `_veto_on_safety`**：那条路是三表落库（急症），注入不是急症事件，
+          送进去会因非法 category 抛错，也绝不能通知家属「长者急症」；
+        - 审计失败只记日志，不让防线自身故障变成「长者听不到拒答」；
+        - `matched` 取 `decision.matched_rule`（命中原文），供人工复盘与 bad case 回流。
+        """
+        if self._injection_auditor is not None:
+            try:
+                await self._injection_auditor(
+                    matched=decision.matched_rule or "",
+                    trace_id=trace_id,
+                    elder_id=identity.elder_id,
+                    thread_id=thread_id,
+                    device_id=device_id,
+                )
+            except Exception as exc:
+                logger.error(
+                    "injection_audit_failed",
+                    extra={
+                        "trace_id": trace_id,
+                        "device_id": device_id,
+                        "turn_id": turn_id,
+                        "thread_id": thread_id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+        else:
+            logger.warning(
+                "injection_auditor_missing",
+                extra={"trace_id": trace_id, "device_id": device_id, "thread_id": thread_id},
+            )
+        logger.warning(
+            "prompt_injection_refused",
+            extra={
+                "trace_id": trace_id,
+                "device_id": device_id,
+                "turn_id": turn_id,
+                "thread_id": thread_id,
+                "matched": decision.matched_rule,
+                "category": decision.category,
+                "escalated_to_agent": False,
+            },
+        )
+        return DialogueReply(
+            text=INJECTION_REFUSED_TEXT,
+            degraded=False,
+            escalated_to_agent=False,
+        )
 
     async def _veto_on_safety(
         self,

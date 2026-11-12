@@ -39,6 +39,7 @@ class FakeRuntime:
     current_task: str | None = None
     media_status: str | None = None
     identity: Any = None
+    turn_id: str | None = "turn-1"
 
 
 @dataclass
@@ -414,3 +415,115 @@ def test_decision_module_has_no_db_http_or_executor_import() -> None:
         "sqlalchemy",
     )
     assert not [name for name in imported if name.startswith(forbidden)], sorted(imported)
+
+
+# ------------------------------------------------------------------ B3：health_checkup 放开 / F22 判黄
+
+
+async def test_health_checkup_no_longer_capability_not_ready() -> None:
+    """F14：health_checkup 已移出 NOT_READY_INTENTS；opera/movie 仍不放開。"""
+    router, _, _ = _router(
+        system_one=FakeSystemOne(fast=SystemOneResult(intent="health_checkup", confidence=0.96))
+    )
+    decision = await router.decide("我要量血压", thread_id="th-1", runtime=FakeRuntime())
+    assert decision.intent == "health_checkup"
+    assert decision.reason != "capability_not_ready"
+    assert decision.action == "agent"  # 交 Agent → 调 health_checkup 工具（参数由模型组织）
+
+
+async def test_opera_and_movie_still_capability_not_ready() -> None:
+    for intent in ("opera", "movie"):
+        router, _, _ = _router(
+            system_one=FakeSystemOne(fast=SystemOneResult(intent=intent, confidence=0.96))
+        )
+        decision = await router.decide("随便放点什么", thread_id="th-1", runtime=FakeRuntime())
+        assert decision.reason == "capability_not_ready", intent
+
+
+async def test_boundary_review_opens_follow_up_with_turn_dedupe() -> None:
+    """F22：历史/他人/模糊 → 黄档复核单（follow_up/yellow/boundary:<turn_id>）。"""
+    calls: list[dict[str, Any]] = []
+
+    async def boundary_review(**payload: Any) -> None:
+        calls.append(payload)
+
+    router, _, escalations = _router(
+        system_one=FakeSystemOne(fast=SystemOneResult(intent="chat", confidence=0.93)),
+        boundary_review=boundary_review,
+    )
+    decision = await router.decide(
+        "昨天胸口疼，现在好了", thread_id="th-1", runtime=FakeRuntime(turn_id="turn-9")
+    )
+
+    # 判黄不放行、也不判红：本轮继续正常路由，不打断进行中的任务
+    assert decision.action != "escalate"
+    assert not escalations
+    assert len(calls) == 1
+    assert calls[0]["dedupe_token"] == "boundary:turn-9"
+    assert calls[0]["reason"] == "recovery"
+    assert calls[0]["elder_id"] == "elder-1"
+
+
+async def test_negation_does_not_open_boundary_review() -> None:
+    """否定（没有胸痛）不建复核单，也不判红。"""
+    calls: list[Any] = []
+
+    async def boundary_review(**payload: Any) -> None:
+        calls.append(payload)
+
+    router, _, _ = _router(boundary_review=boundary_review)
+    await router.decide("没有胸痛，就是有点累", thread_id="th-1", runtime=FakeRuntime())
+    assert calls == []
+
+
+# ------------------------------------------------------------------ p95：shadow 等待预算硬化
+
+
+async def test_shadow_wait_is_capped_at_budget() -> None:
+    """调用方把 grace 配成 400ms 时，等待仍被 80ms 硬上限截断（保住 200ms 路由预算）。"""
+    import asyncio
+    import time
+
+    class _SlowShadow:
+        def __init__(self) -> None:
+            self.fast_calls = 0
+
+        async def decide_fast(self, text: str, *, trace_id: str | None = None, state: Any = None):
+            self.fast_calls += 1
+            return SystemOneResult(intent="chat", confidence=0.93)
+
+        async def decide_shadow(self, text: str, *, trace_id: str | None = None, state: Any = None):
+            await asyncio.sleep(0.3)  # 远慢于 80ms 预算
+            return SystemOneResult(
+                intent="other", confidence=0.0, is_sensitive=True, sensitive_probability=0.99
+            )
+
+    router, _, _ = _router(
+        system_one=_SlowShadow(),
+        shadow_grace_s=0.4,  # 模拟 /eval 与误配：不得等满 400ms
+    )
+
+    started = time.perf_counter()
+    decision = await router.decide(
+        "明天出门用不用加件外套", thread_id="th-1", runtime=FakeRuntime()
+    )
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.2, f"shadow 等待未被截断：{elapsed * 1000:.0f}ms"
+    # 超时即「当没问过」：不得用迟到的敏感信号把本轮判红
+    assert decision.is_sensitive is False
+
+
+async def test_shadow_fast_result_still_escalates() -> None:
+    """预算内返回的 shadow 敏感信号照旧生效（缩小等待不等于取消 G1）。"""
+    router, _, escalations = _router(
+        system_one=FakeSystemOne(
+            fast=SystemOneResult(intent="chat", confidence=0.93),
+            shadow=SystemOneResult(
+                intent="other", confidence=0.0, is_sensitive=True, sensitive_probability=0.95
+            ),
+        ),
+    )
+    decision = await router.decide("我心里难受得很", thread_id="th-1", runtime=FakeRuntime())
+    assert decision.action == "escalate"
+    assert escalations

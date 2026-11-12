@@ -42,7 +42,7 @@ from app.router.rules import (
     extract_city,
     match_rule,
 )
-from app.router.safety import safety_check
+from app.router.safety import SEVERITY_YELLOW, safety_check
 from app.system_one.schemas import Intent, SystemOneResult
 
 logger = logging.getLogger("app.router.decision")
@@ -60,6 +60,12 @@ RouteAction = Literal["tool", "agent", "clarify", "escalate"]
 #: 其实判对了，正确样本的闲聊置信度系统性偏低（0.3~0.6，熵大）。
 #: 这几类低置信时直接下沉 Agent（它本来就是话术兜底），0.85 阈值只约束**动作型**意图。
 NO_CLARIFY_INTENTS: Final[frozenset[str]] = frozenset({"chat", "other"})
+
+#: shadow 等待硬上限（秒）。PRD:547 的 200ms 是**整条路由**的预算，等待预算不得吃掉它。
+#: 2026-11-12 实测（jev/cpu）：fast 单问 p50 187ms、shadow 单问 p50 100ms；两者并发时
+#: fast 被 CPU 争抢推到 214ms，而 shadow 每次都先于 fast 完成——即「等 shadow」几乎不耗时，
+#: 真正的尾部是 fast 本身。因此本上限只需兜住长文本/抖动的极端尾巴，不能靠放大等待换准确率。
+_SHADOW_WAIT_BUDGET_S: Final[float] = 0.080
 
 #: 低置信澄清话术（**不调 LLM**：澄清本身不该再花 200ms 和一次模型调用）
 CLARIFY_TEXT: Final[str] = "我没太听明白，您是想听段戏、问问天气，还是想让我陪您说说话？"
@@ -80,10 +86,10 @@ REASON_MULTI_INTENT: Final[str] = "multi_intent_dynamic"
 #:   C1 尚未给出该契约（J4 待定），在 Router 里用关键词猜参数就是第二套规则表。
 DIRECT_TOOL_BY_INTENT: Final[dict[str, str]] = {"weather": "get_weather"}
 
-#: 能力未就绪的意图：识别得出来，但本日没有可执行端点（媒体库/健康子图/用药查询）。
-NOT_READY_INTENTS: Final[frozenset[str]] = frozenset(
-    {"opera", "movie", "health_checkup", "medication"}
-)
+#: 能力未就绪的意图：识别得出来，但本日没有可执行端点（媒体库/用药查询）。
+#: `health_checkup` 已于 B3 放开（F14：健康语音入口经 Agent 调 `health_checkup` 工具）；
+#: `opera`/`movie` 仍不动——是否放开取决于 C4/D5 的 media 接线完成情况，不许顺手全放开。
+NOT_READY_INTENTS: Final[frozenset[str]] = frozenset({"opera", "movie", "medication"})
 
 #: 多意图子句分隔符（保守：只认明确的顺承词与标点）
 _CLAUSE_SEPARATORS: Final[tuple[str, ...]] = ("然后", "接着", "顺便", "；", ";", "，", ",")
@@ -169,6 +175,26 @@ class ToolExecutorLike(Protocol):
 ToolExecutorFactory = Callable[[], ToolExecutorLike]
 
 
+class BoundaryReviewLike(Protocol):
+    """FR-DLG-07 黄档复核出口（装配层注入 `work_order_service.open_work_order` 包装）。
+
+    Router 不持有 session、不 import services：黄档复核的落库只走这一个注入口。
+    `dedupe_token` 由 Router 生成（`boundary:<turn_id>`），保证同一轮只建一单；
+    **不建 risk_events**（避免污染红色统计）。
+    """
+
+    async def __call__(
+        self,
+        *,
+        elder_id: str | None,
+        thread_id: str,
+        turn_id: str,
+        dedupe_token: str,
+        reason: str,
+        matched_rule: str | None,
+    ) -> Any: ...
+
+
 # ------------------------------------------------------------------ 多意图工具函数
 
 
@@ -204,14 +230,17 @@ class Router:
     tool_executor_factory: ToolExecutorFactory | None = None
     confidence_threshold: float = 0.85
     #: shadow 等多久：快路径已并行发出，这里只是「愿不愿意为安全多等一点」。
-    #: 默认 150ms（单问实测 p95 167ms，多数情况下 shadow 早已返回）。
-    shadow_grace_s: float = 0.150
+    #: 默认 80ms（2026-11-12 从 150ms 下调；实测 shadow 单问 ~100ms 且总先于 fast 完成，
+    #: 等待上限只兜尾部，压到 80ms 后敏感召回在 110 条固定集上仍 20/20）。
+    shadow_grace_s: float = 0.080
     enabled: bool = True
     #: 测试注入点（生产用 `time.perf_counter`）
     clock: Callable[[], float] = field(default=time.perf_counter)
     #: D4（X8 口径③）：直连播放控制下行回调 ``(device_id, 完整帧)``。
     #: play_opera 控制动作/换源 → media_control 帧推 pad（装配层接 signaling.deliver）
     media_frame_sink: Callable[[str, Mapping[str, object]], Awaitable[None]] | None = None
+    #: F22 黄档复核出口（FR-DLG-07 历史/他人/模糊）：装配层注 `open_work_order` 包装。
+    boundary_review: BoundaryReviewLike | None = None
 
     # -------------------------------------------------------------- 决策主流程
 
@@ -226,6 +255,11 @@ class Router:
         started = self.clock()
         trace_id = get_trace_id()
         cleaned = (text or "").strip()
+
+        # ---- FR-DLG-07 黄档复核（历史/他人/模糊）：建 follow_up，不打断本轮 ----
+        # 位置在 L1 之前：这三类表达可能同时命中固定意图（如「我爸爸胸痛，暂停一下」），
+        # 复核任务与继续路由互不排斥；**不 return**，避免把进行中的用药/健康任务打断。
+        await self._maybe_open_boundary_review(cleaned, thread_id=thread_id, runtime=runtime)
 
         # ---- L1 规则层：命中即返回，0 次模型调用（验收：命中时 System One 调用 = 0） ----
         rule_decision = self._decide_by_rules(cleaned, started)
@@ -317,6 +351,48 @@ class Router:
         )
         self._log(decision, trace_id, thread_id)
         return decision
+
+    # -------------------------------------------------------------- F22 黄档复核
+
+    async def _maybe_open_boundary_review(self, text: str, *, thread_id: str, runtime: Any) -> None:
+        """安全边界（历史/他人/模糊）→ 黄档 follow_up 复核任务。
+
+        - **否定不建单**：`severity != "yellow"` 一律跳过（否定是 `severity=None`）；
+        - **不建 risk_events**：出口只调 `open_work_order`（order_type=follow_up）；
+        - 失败只记日志：复核单建不出来不能拖垮这一轮对话；
+        - `dedupe_token=boundary:<turn_id>`：同一轮重复路由/重试只建一单。
+        """
+        if self.boundary_review is None or not text:
+            return
+        guard = safety_check(text)
+        if guard.severity != SEVERITY_YELLOW or guard.reason is None:
+            return
+        turn_id = getattr(runtime, "turn_id", None) or thread_id
+        try:
+            await self.boundary_review(
+                elder_id=getattr(runtime, "elder_id", None),
+                thread_id=thread_id,
+                turn_id=turn_id,
+                dedupe_token=f"boundary:{turn_id}",
+                reason=guard.reason,
+                matched_rule=guard.matched_rule,
+            )
+        except Exception as exc:
+            logger.warning(
+                "router_boundary_review_failed trace_id=%s thread_id=%s reason=%s error=%s",
+                get_trace_id() or "-",
+                thread_id,
+                guard.reason,
+                type(exc).__name__,
+            )
+            return
+        logger.info(
+            "router_boundary_review_opened trace_id=%s thread_id=%s reason=%s matched=%s",
+            get_trace_id() or "-",
+            thread_id,
+            guard.reason,
+            guard.matched_rule or "-",
+        )
 
     # -------------------------------------------------------------- 直连工具
 
@@ -605,11 +681,17 @@ class Router:
     async def _consume_shadow(
         self, task: asyncio.Task[SystemOneResult | None] | None
     ) -> SystemOneResult | None:
-        """等 shadow 最多 `shadow_grace_s`：有果才用，没果就当没问过（不阻塞路由）。"""
+        """等 shadow 最多 `shadow_grace_s`（且不超过 `_SHADOW_WAIT_BUDGET_S`）。
+
+        为什么要有硬上限：调用方可能把它配成 sidecar 的请求超时（如 400ms），
+        那会把「等安全信号」变成吃掉整条 200ms 路由预算的黑洞。实测 shadow 通常
+        先于 fast 完成，真正的尾部是 fast 本身，故缩小等待不损召回。
+        """
         if task is None:
             return None
+        budget = min(self.shadow_grace_s, _SHADOW_WAIT_BUDGET_S)
         try:
-            done, _ = await asyncio.wait({task}, timeout=self.shadow_grace_s)
+            done, _ = await asyncio.wait({task}, timeout=budget)
         except asyncio.CancelledError:
             task.cancel()
             raise
@@ -687,6 +769,7 @@ __all__ = [
     "REASON_OUT_OF_DOMAIN",
     "REASON_SENSITIVE_G1",
     "REASON_SIDECAR_FAILED",
+    "BoundaryReviewLike",
     "RouteAction",
     "RouteDecision",
     "RouteLayer",

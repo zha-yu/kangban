@@ -409,17 +409,18 @@ def test_default_tools_matches_registry_names() -> None:
 
     Day 7 C1：从 1 个扩到 3 个；Day 8 B4（dev-B）：再扩到 6 个——
     mock-operations 两工具（create_work_order / send_family_notification）与
-    戏曲点播（play_opera）。companion.py 的 ToolSpec 只有 name + description
+    戏曲点播（play_opera）；Day 9 B3（dev-B）：加健康采集（health_checkup）到 7 个。
+    companion.py 的 ToolSpec 只有 name + description
     （给 LLM 看 ReAct prompt）；tool_registry 那套有完整 schema + executor
     （给执行器用）。两边**同名**，不同步。
     """
     from app.agents.companion import DEFAULT_TOOLS
     from app.agents.tool_registry import default_registry
 
-    # 数量：weather + memory_recall + medication_confirm + 工单 + 家属通知 + play_opera
-    assert len(DEFAULT_TOOLS) == 6, f"DEFAULT_TOOLS count={len(DEFAULT_TOOLS)}, expect 6"
+    # 数量：weather + memory_recall + medication_confirm + 工单 + 家属通知 + play_opera + health_checkup
+    assert len(DEFAULT_TOOLS) == 7, f"DEFAULT_TOOLS count={len(DEFAULT_TOOLS)}, expect 7"
 
-    # 名称：六条工具都在
+    # 名称：七条工具都在
     default_names = {t.name for t in DEFAULT_TOOLS}
     assert default_names == {
         "get_weather",
@@ -428,6 +429,7 @@ def test_default_tools_matches_registry_names() -> None:
         "create_work_order",
         "send_family_notification",
         "play_opera",
+        "health_checkup",
     }, default_names
 
     # 与 tool_registry.default_registry() 的 spec 同名对齐

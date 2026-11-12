@@ -193,7 +193,7 @@ async def test_decay_skips_non_active(session: AsyncSession, elder_id: str) -> N
 
 
 async def test_consolidation_outputs_merge_record_for_similar_pair(
-    session: AsyncSession, elder_id: str
+    session: AsyncSession, elder_id: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """FR-MEM-07 验证口径：两条高度相似记忆触发归并，输出归并记录。
 
@@ -235,8 +235,14 @@ async def test_consolidation_outputs_merge_record_for_similar_pair(
     # 两版本均保留，召回只剩保留条
     assert await _all_chunks(session, elder_id) is not None
     assert len(await _all_chunks(session, elder_id)) == 2
+
+    # Day 9 B2：召回改 cosine，query 必填 + embedding 桩（不连外网）
+    async def fake_embed(texts, **_kwargs):
+        return [[0.0] * 1535 + [1.0] for _ in texts]
+
+    monkeypatch.setattr(memory_service_module, "_embed_texts", fake_embed)
     notes = await memory_service_module.recall_active_chunks(
-        elder_id=elder_id, is_generic=False, session=session
+        elder_id=elder_id, is_generic=False, query="越剧", session=session
     )
     assert [str(r.content) for r in notes] == ["长者喜欢越剧"]
 

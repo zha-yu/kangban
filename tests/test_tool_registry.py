@@ -129,6 +129,26 @@ def test_registry_has_day8_specs() -> None:
     assert "query" not in po.parameters_schema.get("required", [])
 
 
+def test_ops_schemas_declare_distinct_idempotency_keys() -> None:
+    """F19：工单 `dedupe_token` / 通知 `dedupe_key` 两个键名不得混用。"""
+    registry = default_registry()
+    wo_schema = registry.require("create_work_order").parameters_schema
+    fn_schema = registry.require("send_family_notification").parameters_schema
+
+    assert wo_schema["properties"]["dedupe_token"] == {
+        "type": "string",
+        "pattern": r"^[\w:.-]{1,128}$",
+    }
+    assert fn_schema["properties"]["dedupe_key"] == {
+        "type": "string",
+        "pattern": r"^[\w:.-]{1,128}$",
+    }
+    assert "dedupe_key" not in wo_schema["properties"]
+    assert "dedupe_token" not in fn_schema["properties"]
+    assert wo_schema["additionalProperties"] is False
+    assert fn_schema["additionalProperties"] is False
+
+
 # ------------------------------------------------------------------ 必过用例
 
 

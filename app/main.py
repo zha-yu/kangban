@@ -261,7 +261,64 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     llm_service = LLMService(settings)
     tts_provider = build_tts(settings)
     turn_store = RedisTurnStore(client=redis_client, key_prefix=settings.redis_key_prefix)
-    dialogue_service = DialogueService(llm=llm_service, store=turn_store)
+
+    # ---- AC-36 / P14：注入防线接进 safety 单一入口（急症优先，顺序在 safety.py 内保证） ----
+    # 局部 import：injection → audit_log_service → models，模块级导入会把观测层拉进
+    # 本文件导入期（且 safety.py 刻意不 import injection，保持 L0 零横向依赖）。
+    from app.router.injection import (
+        CATEGORY_PROMPT_INJECTION,
+        detect_injection,
+        record_injection_blocked,
+    )
+    from app.router.safety import SEVERITY_RED as _SAFETY_RED
+    from app.router.safety import set_injection_hook
+
+    def _injection_hook(text: str) -> SafetyDecision | None:
+        """注入探测的**唯一挂载点**：命中即复用安全一票否决路径（不新造第二条链路）。"""
+        hit = detect_injection(text)
+        if hit is None:
+            return None
+        return SafetyDecision(
+            is_sensitive=True,
+            severity=_SAFETY_RED,
+            category=CATEGORY_PROMPT_INJECTION,
+            matched_rule=hit,
+            reason="prompt_injection",
+        )
+
+    async def _injection_auditor(
+        *,
+        matched: str,
+        trace_id: str | None,
+        elder_id: str | None,
+        thread_id: str | None,
+        device_id: str | None,
+    ) -> None:
+        """注入拦截审计：短会话 + 自 commit（不占轮次事务，拒答不等落库）。"""
+        elder_uuid: UUID | None = None
+        if elder_id:
+            try:
+                elder_uuid = UUID(elder_id)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "injection_audit_elder_id_invalid",
+                    extra={"trace_id": trace_id or "-", "thread_id": thread_id or "-"},
+                )
+        async with session_factory() as session:
+            await record_injection_blocked(
+                session,
+                matched=matched,
+                trace_id=trace_id,
+                elder_id=elder_uuid,
+                thread_id=thread_id,
+                device_id=device_id,
+            )
+            await session.commit()
+
+    set_injection_hook(_injection_hook)
+    dialogue_service = DialogueService(
+        llm=llm_service, store=turn_store, injection_auditor=_injection_auditor
+    )
 
     # 每 (device_id, trace_id) 缓存已打开的 thread + 身份：同一 WS 会话内复用，
     # 避免每个 FINAL 都新建 conversation_thread；换连接由新 trace_id 重新首轮校验。
@@ -369,8 +426,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # ---- D2 工具注册表：一次构造，后续复用（`default_registry()` 每次返回新实例，
     #      bind 到临时对象上等于没绑，见 `_SessionToolExecutor` docstring） ----
+    # ---- F18 双 server：weather(7101, 默认地址) / mock-operations(7102) 显式登记路由 ----
+    from app.agents.bind_tools import MultiServerMCPClient, bind_dev_b_tools
+
     tool_registry = default_registry()
-    mcp_client = MCPClient(settings)
+    weather_client = MCPClient(settings)
+    ops_client = MCPClient(settings, server_url=settings.mcp_operations_server_url)
+    mcp_client = MultiServerMCPClient(
+        {
+            "get_weather": weather_client,
+            "create_work_order": ops_client,
+            "send_family_notification": ops_client,
+        },
+    )
     session_tool_executor = _SessionToolExecutor(
         session_factory, registry=tool_registry, mcp_client=mcp_client
     )
@@ -378,8 +446,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ---- B4：play_opera 本地执行器绑定（X8 口径②）----
     # 只 registry.bind，不连库（session 在工具调用时才开），test 环境也无条件绑。
     # 漏绑的症状：LLM 调 play_opera 一律 unwired/bad_response →「帮您记下来」话术。
-    from app.agents.bind_tools import bind_dev_b_tools
-
     bind_dev_b_tools(tool_registry, session_factory=session_factory)
 
     # ---- D2/D3：checkpointer（与调度侧同一 DSN + 同一 schema）+ 绑定 C1 执行器 ----
@@ -906,6 +972,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        # P14：卸载注入防线，避免测试/多 app 场景串味（hook 是模块级全局）
+        set_injection_hook(None)
         await medication_scheduler.stop()
         await health_scheduler.stop()
         signaling.set_dialogue_final_handler(None)

@@ -188,3 +188,72 @@ async def test_stop_drains_remaining(np_conn, recorder) -> None:  # type: ignore
     assert recorder.record_stage(TRACE, None, "route", 25, "rules") is True
     await recorder.stop()
     assert await _count(np_conn) == 1
+
+
+# ------------------------------------------------------------------ P15：LLM token 进程内计数
+
+
+def test_record_llm_usage_counts_and_snapshot(caplog: pytest.LogCaptureFixture) -> None:
+    """`record_llm_usage` 累加 calls/prompt/completion/total，并落一条 llm_usage 日志。"""
+    from app.services.metrics_service import record_llm_usage, reset_llm_usage, snapshot_llm_usage
+
+    reset_llm_usage()
+    with caplog.at_level(logging.INFO, logger="app.services.metrics"):
+        record_llm_usage(prompt_tokens=100, completion_tokens=40, provider="minimax", model="m1")
+        record_llm_usage(prompt_tokens=50, completion_tokens=10, provider="minimax", model="m1")
+
+    snap = snapshot_llm_usage()
+    assert snap["calls"] == 2
+    assert snap["prompt_tokens"] == 150
+    assert snap["completion_tokens"] == 50
+    assert snap["total_tokens"] == 200
+    assert snap["tokens_available"] is True
+
+    logs = [r for r in caplog.records if r.getMessage() == "llm_usage"]
+    assert len(logs) == 2
+    assert logs[0].provider == "minimax"
+    assert logs[0].model == "m1"
+    assert logs[0].prompt_tokens == 100
+    assert logs[0].completion_tokens == 40
+    assert logs[0].total_tokens == 140
+    reset_llm_usage()
+
+
+def test_record_llm_usage_without_usage_counts_calls_only() -> None:
+    """缺 usage：calls 仍 +1，token 计数不动，`tokens_available` 保持 False。"""
+    from app.services.metrics_service import record_llm_usage, reset_llm_usage, snapshot_llm_usage
+
+    reset_llm_usage()
+    record_llm_usage(prompt_tokens=None, completion_tokens=None)
+    snap = snapshot_llm_usage()
+    assert snap["calls"] == 1
+    assert snap["prompt_tokens"] == 0
+    assert snap["completion_tokens"] == 0
+    assert snap["total_tokens"] == 0
+    assert snap["tokens_available"] is False
+    reset_llm_usage()
+
+
+def test_record_llm_usage_rejects_non_integer_values() -> None:
+    """非整数/负数/bool 一律按 None 处理（不补零、不四舍五入）。"""
+    from app.services.metrics_service import record_llm_usage, reset_llm_usage, snapshot_llm_usage
+
+    reset_llm_usage()
+    record_llm_usage(prompt_tokens="100", completion_tokens=True)  # type: ignore[arg-type]
+    snap = snapshot_llm_usage()
+    assert snap["prompt_tokens"] == 0
+    assert snap["completion_tokens"] == 0
+    assert snap["tokens_available"] is False
+    reset_llm_usage()
+
+
+def test_snapshot_is_copy_not_live_reference() -> None:
+    """`snapshot()` 返回拷贝：调用方改它不会污染累计值。"""
+    from app.services.metrics_service import record_llm_usage, reset_llm_usage, snapshot_llm_usage
+
+    reset_llm_usage()
+    record_llm_usage(prompt_tokens=10, completion_tokens=5)
+    snap = snapshot_llm_usage()
+    snap["prompt_tokens"] = 999_999
+    assert snapshot_llm_usage()["prompt_tokens"] == 10
+    reset_llm_usage()

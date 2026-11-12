@@ -182,9 +182,18 @@ PLAY_OPERA_TOOL: Final[ToolSpec] = ToolSpec(
     description="按剧目或剧种检索戏曲并返回播放地址，给长者点播戏曲选段；查不到时如实告知。",
 )
 
-#: 默认工具清单：六个 —— 天气（MCP）+ 用药确认 + 记忆召回 + 工单/家属通知（MCP，
-#: Day 8 B4）+ 戏曲点播（本地，Day 8 B4）。
-#: 与 tool_registry.default_registry() 里的 ToolSpec 六条**同名**（两边独立定义，
+# Day 9 B3（dev-B）：健康采集五问（F14），与 tool_registry 的 health_checkup 同名
+HEALTH_CHECKUP_TOOL: Final[ToolSpec] = ToolSpec(
+    name="health_checkup",
+    description=(
+        "长者主动说身体不舒服、要量血压或做每日健康采集时，进入健康采集五问。"
+        "首次调用不传 answer（返回第一问）；之后把长者的回答放进 answer 继续。"
+    ),
+)
+
+#: 默认工具清单：七个 —— 天气（MCP）+ 用药确认 + 记忆召回 + 工单/家属通知（MCP，
+#: Day 8 B4）+ 戏曲点播（本地，Day 8 B4）+ 健康采集（本地，Day 9 B3）。
+#: 与 tool_registry.default_registry() 里的 ToolSpec 七条**同名**（两边独立定义，
 #: companion.py 这一套只有 name + description，服务于 ReAct prompt 描述；
 #: tool_registry 那套有完整 schema + executor，服务于实际执行）。
 DEFAULT_TOOLS: Final[tuple[ToolSpec, ...]] = (
@@ -194,6 +203,7 @@ DEFAULT_TOOLS: Final[tuple[ToolSpec, ...]] = (
     WORK_ORDER_TOOL,
     FAMILY_NOTIFICATION_TOOL,
     PLAY_OPERA_TOOL,
+    HEALTH_CHECKUP_TOOL,
 )
 
 
@@ -671,6 +681,7 @@ __all__ = [
     "BUDGET_EXHAUSTED_TEXT",
     "DEFAULT_TOOLS",
     "FORBIDDEN_FALLBACK_TEXT",
+    "HEALTH_CHECKUP_TOOL",
     "HIGH_RISK_REFUSED_TEXT",
     "HIGH_RISK_TOOL_NAMES",
     "MEDICATION_CONFIRM_TOOL",

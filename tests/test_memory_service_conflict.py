@@ -116,6 +116,28 @@ def _patch_judge(monkeypatch: pytest.MonkeyPatch, verdict: str | None) -> list[t
     return calls
 
 
+def _patch_embedding(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """桩掉 embedding（Day 9 B2）：召回/写入都不真连外网，返回固定 1536 维向量。"""
+    calls: list[list[str]] = []
+
+    async def fake_embed(texts: Any, **_kwargs: Any) -> list[list[float]]:
+        calls.append(list(texts))
+        # 固定单位向量：种子行无向量（NULLS LAST），排序不影响本组断言
+        return [[0.0] * 1535 + [1.0] for _ in texts]
+
+    monkeypatch.setattr(memory_service_module, "_embed_texts", fake_embed)
+    return calls
+
+
+async def _recall(session: AsyncSession, elder: str, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """召回统一入口：带 query（cosine 需要向量）+ 已桩 embedding。"""
+    _patch_embedding(monkeypatch)
+    rows = await recall_active_chunks(
+        elder_id=elder, is_generic=False, query="越剧", session=session
+    )
+    return [str(r.content) for r in rows]
+
+
 # ------------------------------------------------------------------ 必过用例
 
 
@@ -150,12 +172,14 @@ async def test_conflict_flips_preference_keeps_two_versions(
     assert new_row.supersedes_id == old_chunk.chunk_id
     assert "superseded" in by_status and "active" in by_status  # 当前生效值唯一
 
-    # 召回只注入新值
-    notes = await recall_active_chunks(elder_id=elder_id, is_generic=False, session=session)
-    assert [str(r.content) for r in notes] == ["长者不喜欢越剧了"]
+    # 召回只注入新值（Day 9 B2：cosine 检索，embedding 已桩）
+    notes = await _recall(session, elder_id, monkeypatch)
+    assert notes == ["长者不喜欢越剧了"]
 
 
-async def test_superseded_not_recalled(session: AsyncSession, elder_id: str) -> None:
+async def test_superseded_not_recalled(
+    session: AsyncSession, elder_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """superseded / disputed 条目退出召回（FR-MEM-05）。"""
     await _seed_active_chunk(session, elder_id, value="越剧", content="长者喜欢越剧")
     await _seed_active_chunk(
@@ -164,18 +188,20 @@ async def test_superseded_not_recalled(session: AsyncSession, elder_id: str) -> 
     await _seed_active_chunk(
         session, elder_id, value="黄梅戏", content="长者喜欢黄梅戏", status="disputed"
     )
-    notes = await recall_active_chunks(elder_id=elder_id, is_generic=False, session=session)
-    assert [str(r.content) for r in notes] == ["长者喜欢越剧"]
+    notes = await _recall(session, elder_id, monkeypatch)
+    assert notes == ["长者喜欢越剧"]
 
 
-async def test_deleted_not_recalled(session: AsyncSession, elder_id: str) -> None:
+async def test_deleted_not_recalled(
+    session: AsyncSession, elder_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """删除记忆不再被召回注入（回归，AC-14 语义：deleted=软删，召回过滤）。"""
     await _seed_active_chunk(session, elder_id, value="越剧", content="长者喜欢越剧")
     await _seed_active_chunk(
         session, elder_id, value="京剧", content="长者喜欢京剧", status="deleted"
     )
-    notes = await recall_active_chunks(elder_id=elder_id, is_generic=False, session=session)
-    assert [str(r.content) for r in notes] == ["长者喜欢越剧"]
+    notes = await _recall(session, elder_id, monkeypatch)
+    assert notes == ["长者喜欢越剧"]
 
 
 # ------------------------------------------------------------------ 补充用例
@@ -199,8 +225,8 @@ async def test_llm_failure_degrades_to_pending_review_keeps_both(
     assert new_row.status == "pending_review"
     assert new_row.conflicts_with_id == old_chunk.chunk_id  # 指向冲突对象，供人工复核
 
-    notes = await recall_active_chunks(elder_id=elder_id, is_generic=False, session=session)
-    assert [str(r.content) for r in notes] == ["长者喜欢越剧"]  # pending_review 不进召回
+    notes = await _recall(session, elder_id, monkeypatch)
+    assert notes == ["长者喜欢越剧"]  # pending_review 不进召回
 
 
 async def test_low_similarity_coexists_two_active(

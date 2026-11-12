@@ -28,6 +28,20 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from sqlalchemy import desc, func, or_, select
 
 from app.core.runtime_context import Identity
+from app.graphs.health_checkup_graph import (
+    RED_ALERT_TTS_TEXT,
+    build_health_checkup_graph,
+    default_validate_answers,
+    notify_red_dual_adapter,
+    resume_health_checkup,
+    start_health_checkup,
+)
+from app.graphs.health_checkup_graph import (
+    default_thread_id as health_default_thread_id,
+)
+from app.graphs.health_checkup_graph import (
+    graph_config as health_graph_config,
+)
 from app.graphs.medication_confirmation_graph import (
     build_medication_graph,
     graph_config,
@@ -183,6 +197,288 @@ def _terminal_to_speech(terminal: Any) -> str:
     if not isinstance(terminal, str):
         return "好的，我帮您记下来了。"
     return mapping.get(terminal, "好的，我帮您记下来了。")
+
+
+# ------------------------------------------------------------------ health_checkup（B3 · F14）
+
+#: 语音健康采集活跃线程的 Redis TTL（主理人裁决 D9：15 分钟，每次 resume 续期）
+_HEALTH_ACTIVE_TTL_SECONDS: Final[int] = 15 * 60
+
+#: 健康子图停在 HITL（等护工/医生确认）时的 interrupt kind：
+#: 对长者而言这轮采集已结束，**不能**再用下一句回答去 resume（会把确认 payload 冲掉）。
+_HEALTH_HITL_KINDS: Final[frozenset[str]] = frozenset({"yellow_review", "red_confirm"})
+#: 图侧 HITL 节点名（用于 resume 前的二次防护：陈旧 key 指向 HITL 时直接收口）
+_HEALTH_HITL_NODES: Final[frozenset[str]] = frozenset({"hitl_yellow", "hitl_red"})
+
+
+def make_health_checkup_executor(
+    *,
+    session_factory: Callable[[], Any],
+    checkpointer: AsyncPostgresSaver,
+    redis_client: Any,
+) -> Callable[[dict[str, Any], Identity], Awaitable[dict[str, Any]]]:
+    """返回 `health_checkup` 工具的本地执行器（AC-09/10/21/22/34 · F14）。
+
+    多轮状态**只放 Redis**：key `<redis_key_prefix>:health:active:<elder_id>` → `thread_id`，
+    TTL 15 分钟，每次 resume 续期。`thread_id` 只从这里读，**不从模型/客户端入参取**
+    （AGENTS §4.9 身份铁律）。
+
+    三跳语义：
+    1. 无活跃线程 → `start_health_checkup(source="voice_active")`，把第一问返回给模型；
+    2. 有活跃线程且传了 `answer` → `resume_health_checkup(thread_id, payload=answer)`；
+    3. 到终态（无 `__interrupt__`）或停在 HITL → 删 key，返回 `severity`/`record_id`；
+       停在 HITL 时删 key 是安全需要：后续对话句不能再 resume 进确认分支。
+    """
+
+    def _key(elder_id: Any) -> str:
+        from app.core.config import get_settings
+
+        return f"{get_settings().redis_key_prefix}:health:active:{elder_id}"
+
+    async def _redis_get(key: str) -> str | None:
+        try:
+            raw = await redis_client.get(key)
+        except Exception as exc:
+            logger.warning("health_checkup_redis_get_failed error_type=%s", type(exc).__name__)
+            raise ToolTransientError("健康采集会话存储暂时不可用") from exc
+        if raw is None:
+            return None
+        return raw.decode() if isinstance(raw, (bytes, bytearray)) else str(raw)
+
+    async def _redis_set(key: str, thread_id: str) -> None:
+        try:
+            await redis_client.set(key, thread_id, ex=_HEALTH_ACTIVE_TTL_SECONDS)
+        except Exception as exc:
+            logger.warning("health_checkup_redis_set_failed error_type=%s", type(exc).__name__)
+            raise ToolTransientError("健康采集会话存储暂时不可用") from exc
+
+    async def _redis_delete(key: str) -> None:
+        try:
+            await redis_client.delete(key)
+        except Exception as exc:  # 删不掉只会多留 15 分钟，不影响本轮结论
+            logger.warning("health_checkup_redis_delete_failed error_type=%s", type(exc).__name__)
+
+    def _build_graph(session: Any) -> Any:
+        # 语音路径与调度路径共用同一套注入：双通知走 X3 v0.6；
+        # 红档落库走 P10 已闭合的 `create_red_landing_adapter`（只落库、不通知）。
+        from app.graphs.health_checkup_graph import create_red_landing_adapter
+
+        return build_health_checkup_graph(
+            session=session,
+            checkpointer=checkpointer,
+            validate_fn=default_validate_answers,
+            notify_red_fn=notify_red_dual_adapter,
+            create_red_order_fn=create_red_landing_adapter,
+        )
+
+    def _awaiting(value: Any) -> dict[str, Any]:
+        payload = value if isinstance(value, dict) else {}
+        prompt = str(payload.get("prompt") or "您再说一下这个数就好。")
+        return {
+            "status": "awaiting_answer",
+            "question": payload.get("question"),
+            "prompt": prompt,
+            "attempt_no": payload.get("attempt_no"),
+            "message": prompt,
+        }
+
+    def _terminal_message(result: dict[str, Any]) -> str:
+        severity = str(result.get("grade_level") or "")
+        notified = result.get("notified") or {}
+        if severity == "red":
+            return str(notified.get("tts_text") or RED_ALERT_TTS_TEXT)
+        if severity == "yellow":
+            return "记下来了，我让护士再看一眼。"
+        return "好，我记下来了。"
+
+    async def _finish(result: dict[str, Any], *, key: str, thread_id: str) -> dict[str, Any]:
+        interrupts = tuple(result.get("__interrupt__") or ())
+        severity = str(result.get("grade_level") or "")
+        record_ref = dict(result.get("record_ref") or {})
+        order_ref = dict(result.get("order_ref") or {})
+        record_id = record_ref.get("record_id") or order_ref.get("record_id")
+
+        if interrupts:
+            payload = interrupts[0].value
+            kind = payload.get("kind") if isinstance(payload, dict) else None
+            if kind in _HEALTH_HITL_KINDS:
+                await _redis_delete(key)
+                message = (
+                    RED_ALERT_TTS_TEXT if kind == "red_confirm" else "记下来了，我让护士再看一眼。"
+                )
+                return {
+                    "status": "handed_off",
+                    "severity": severity or ("red" if kind == "red_confirm" else "yellow"),
+                    "record_id": str(record_id) if record_id else None,
+                    "message": message,
+                }
+            await _redis_set(key, thread_id)  # 还有下一问：续期
+            return _awaiting(payload)
+
+        await _redis_delete(key)  # 终态：清活跃线程
+        return {
+            "status": "completed",
+            "severity": severity,
+            "record_id": str(record_id) if record_id else None,
+            "rule_version": result.get("rule_version"),
+            "message": _terminal_message(result),
+        }
+
+    async def _executor(args: dict[str, Any], runtime: Identity) -> dict[str, Any]:
+        elder_id = runtime.elder_id
+        if elder_id is None:
+            raise ToolForbiddenError("无法识别长者身份")
+
+        raw_answer = args.get("answer")
+        if raw_answer is not None:
+            if not isinstance(raw_answer, str):
+                raise ToolArgumentError("answer 必须是字符串")
+            answer = raw_answer.strip()
+            if len(answer) > 200:
+                raise ToolArgumentError("answer 最多 200 字")
+        else:
+            answer = None
+
+        key = _key(elder_id)
+        thread_id = await _redis_get(key)
+
+        # --- 有活跃线程但本轮没带回答：不推进，把当前问题再交给模型（幂等） ---
+        if thread_id and not answer:
+            async with session_factory() as session:
+                graph = _build_graph(session)
+                state = await graph.aget_state(health_graph_config(thread_id))
+                if not state.values:
+                    await _redis_delete(key)  # 陈旧 key（线程已不存在）→ 重新开始
+                    thread_id = None
+                elif state.interrupts:
+                    await _redis_set(key, thread_id)
+                    return _awaiting(state.interrupts[0].value)
+                else:
+                    # 图已跑完但 key 未清（异常窗口）→ 收口
+                    values = dict(state.values)
+                    await _redis_delete(key)
+                    return {
+                        "status": "completed",
+                        "severity": values.get("grade_level"),
+                        "record_id": (values.get("record_ref") or {}).get("record_id")
+                        or (values.get("order_ref") or {}).get("record_id"),
+                        "message": _terminal_message(values),
+                    }
+
+        # --- 无活跃线程：开新一轮（answer 丢弃，第一问才是采集起点） ---
+        if not thread_id:
+            thread_id = health_default_thread_id(elder_id, "voice_active")
+            async with session_factory() as session:
+                graph = _build_graph(session)
+                result = await start_health_checkup(
+                    graph,
+                    elder_id=elder_id,
+                    source="voice_active",
+                    thread_id=thread_id,
+                )
+                await session.commit()  # 会话管理豁免：节点写库在 session 上
+            await _redis_set(key, thread_id)
+            outcome = await _finish(result, key=key, thread_id=thread_id)
+            logger.info(
+                "health_checkup_started elder_id=%s thread=%s status=%s",
+                elder_id,
+                thread_id,
+                outcome.get("status"),
+            )
+            return outcome
+
+        # --- 有活跃线程且带回答：resume 下一问/终态 ---
+        async with session_factory() as session:
+            graph = _build_graph(session)
+            # 二次防护：key 尚未过期但图已停在 HITL（异常窗口）→ 不能把长者的话
+            # 当成护工/医生的确认 payload
+            state = await graph.aget_state(health_graph_config(thread_id))
+            if state.values and set(state.next) & _HEALTH_HITL_NODES:
+                await _redis_delete(key)
+                return {
+                    "status": "handed_off",
+                    "severity": state.values.get("grade_level"),
+                    "record_id": (state.values.get("order_ref") or {}).get("record_id"),
+                    "message": "这轮已经交给护士/医生确认了，您先歇会儿。",
+                }
+            try:
+                result = await resume_health_checkup(graph, thread_id=thread_id, payload=answer)
+            except Exception as exc:
+                logger.warning(
+                    "health_checkup_resume_failed elder_id=%s thread=%s error_type=%s",
+                    elder_id,
+                    thread_id,
+                    type(exc).__name__,
+                )
+                raise ToolTransientError(str(exc)) from exc
+            await session.commit()
+        outcome = await _finish(result, key=key, thread_id=thread_id)
+        logger.info(
+            "health_checkup_resumed elder_id=%s thread=%s status=%s",
+            elder_id,
+            thread_id,
+            outcome.get("status"),
+        )
+        return outcome
+
+    return _executor
+
+
+# ------------------------------------------------------------------ F22 黄档复核出口
+
+
+def make_boundary_review_executor(
+    *,
+    session_factory: Callable[[], Any],
+) -> Callable[..., Awaitable[Any]]:
+    """返回 Router 的 `boundary_review` 注入件（FR-DLG-07 历史/他人/模糊）。
+
+    Router 不持有 session、不 import services；本工厂把「黄档 follow_up 建单」
+    收在 B 侧，装配时一行注入：
+
+    ```python
+    Router(..., boundary_review=make_boundary_review_executor(session_factory=session_factory))
+    ```
+
+    - `order_type="follow_up"`、`severity="yellow"`、`dedupe_token="boundary:<turn_id>"`；
+    - **不建 risk_events**（避免污染红色统计）；
+    - `elder_id` 缺省（generic）→ 不建单，返回 None。
+    """
+
+    async def _review(
+        *,
+        elder_id: str | None,
+        thread_id: str,
+        turn_id: str,
+        dedupe_token: str,
+        reason: str,
+        matched_rule: str | None,
+    ) -> Any:
+        if elder_id is None:
+            return None
+        from app.services.work_order_service import open_work_order
+
+        async with session_factory() as session:
+            ref = await open_work_order(
+                session,
+                elder_id=uuid.UUID(str(elder_id)),
+                order_type="follow_up",
+                severity="yellow",
+                dedupe_token=dedupe_token,
+            )
+            await session.commit()
+        logger.info(
+            "boundary_review_order_opened elder_id=%s thread_id=%s turn_id=%s "
+            "reason=%s order_id=%s",
+            elder_id,
+            thread_id,
+            turn_id,
+            reason,
+            ref.order_id,
+        )
+        return ref
+
+    return _review
 
 
 # ------------------------------------------------------------------ memory_recall
@@ -437,6 +733,8 @@ def make_play_opera_executor(
 
 
 __all__ = [
+    "make_boundary_review_executor",
+    "make_health_checkup_executor",
     "make_medication_confirm_executor",
     "make_memory_recall_executor",
     "make_play_opera_executor",
