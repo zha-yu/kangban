@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import csv
+import datetime
 import io
 import json
 import uuid
@@ -144,16 +145,54 @@ def _parse_csv(body: str) -> list[dict[str, str]]:
 
 
 async def test_export_rejects_non_admin(client: AsyncClient) -> None:
-    resp = await client.get("/api/audit-logs/export", headers=_bearer(_care_token()))
-    assert resp.status_code == 403, resp.text
-    assert resp.json()["code"] == "ROLE_FORBIDDEN"
+    for path in ("/api/audit-logs", "/api/audit-logs/export.csv"):
+        resp = await client.get(path, headers=_bearer(_care_token()))
+        assert resp.status_code == 403, resp.text
+        assert resp.json()["code"] == "ROLE_FORBIDDEN"
+
+
+# ------------------------------------------------------------------ 列表（json）
+
+
+async def test_list_returns_items_and_total(client: AsyncClient) -> None:
+    resp = await client.get("/api/audit-logs", headers=_bearer(_admin_token()))
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total"] == 3
+    assert len(body["items"]) == 3
+    actions = [item["action"] for item in body["items"]]
+    assert actions == ["elder.read", "elder.assign_bed", "work_order.create"]
+    # 行形态对齐前端 AuditLogItem（可选字段＋透传）
+    item = body["items"][0]
+    assert set(item) >= {"id", "action", "actor_id", "actor_name", "created_at", "detail"}
+    assert item["actor_name"] == "管理员", "actor_name 由账号表联查填充"
+    assert item["detail"], "detail 为脱敏后 JSON 文本"
+
+
+async def test_list_actor_name_fuzzy_filter(client: AsyncClient) -> None:
+    """actor 支持姓名模糊匹配（联查 staff/guardian）。"""
+    resp = await client.get("/api/audit-logs?actor=管理", headers=_bearer(_admin_token()))
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total"] == 2, "管理员的两条审计"
+    assert all(item["action"] != "work_order.create" for item in body["items"])
+
+
+async def test_list_and_csv_share_filters(client: AsyncClient) -> None:
+    """列表与 CSV 走同一筛选条件族（行数一致口径）。"""
+    q = "?actor=管理"
+    list_resp = await client.get(f"/api/audit-logs{q}", headers=_bearer(_admin_token()))
+    csv_resp = await client.get(f"/api/audit-logs/export.csv{q}", headers=_bearer(_admin_token()))
+    assert list_resp.status_code == 200 and csv_resp.status_code == 200
+    rows = _parse_csv(csv_resp.content.decode("utf-8-sig"))
+    assert list_resp.json()["total"] == len(rows) == 2
 
 
 # ------------------------------------------------------------------ 导出与一致性
 
 
 async def test_export_rows_match_table(client: AsyncClient, db_session: AsyncSession) -> None:
-    resp = await client.get("/api/audit-logs/export", headers=_bearer(_admin_token()))
+    resp = await client.get("/api/audit-logs/export.csv", headers=_bearer(_admin_token()))
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"].startswith("text/csv")
 
@@ -187,7 +226,7 @@ async def test_export_rows_match_table(client: AsyncClient, db_session: AsyncSes
 
 async def test_export_redacts_pii_in_detail(client: AsyncClient) -> None:
     """detail 里的明文手机号在 CSV 中必须为掩码（验收 grep 零命中）。"""
-    resp = await client.get("/api/audit-logs/export", headers=_bearer(_admin_token()))
+    resp = await client.get("/api/audit-logs/export.csv", headers=_bearer(_admin_token()))
     assert resp.status_code == 200
     text = resp.content.decode("utf-8-sig")
     assert "13812345678" not in text, "明文手机号不得出现在 CSV"
@@ -195,8 +234,9 @@ async def test_export_redacts_pii_in_detail(client: AsyncClient) -> None:
 
 
 async def test_export_filter_by_actor(client: AsyncClient) -> None:
+    """actor 支持 uuid 精确匹配。"""
     resp = await client.get(
-        f"/api/audit-logs/export?actor_id={ACTOR_OTHER}", headers=_bearer(_admin_token())
+        f"/api/audit-logs/export.csv?actor={ACTOR_OTHER}", headers=_bearer(_admin_token())
     )
     assert resp.status_code == 200
     rows = _parse_csv(resp.content.decode("utf-8-sig"))
@@ -205,10 +245,19 @@ async def test_export_filter_by_actor(client: AsyncClient) -> None:
 
 
 async def test_export_filter_by_time_window(client: AsyncClient) -> None:
-    """时间窗早于所有种子行 → 空导出；无种子行的未来时间也返回合法 CSV 表头。"""
+    """时间窗早于所有种子行 → 空导出；start_date/end_date 为 yyyy-mm-dd 口径。"""
     resp = await client.get(
-        "/api/audit-logs/export?start=2099-01-01T00:00:00Z", headers=_bearer(_admin_token())
+        "/api/audit-logs/export.csv?start_date=2099-01-01", headers=_bearer(_admin_token())
     )
     assert resp.status_code == 200
     rows = _parse_csv(resp.content.decode("utf-8-sig"))
     assert rows == []
+
+    # 覆盖今天整窗 → 全部行
+    today = datetime.datetime.now(datetime.UTC).date().isoformat()
+    resp = await client.get(
+        f"/api/audit-logs/export.csv?start_date={today}&end_date={today}",
+        headers=_bearer(_admin_token()),
+    )
+    assert resp.status_code == 200
+    assert len(_parse_csv(resp.content.decode("utf-8-sig"))) == 3
