@@ -25,6 +25,7 @@ export type NotificationTargetType = "guardian" | "staff";
 
 export type NotificationType =
   | "emergency_health" // 健康红标紧急通知
+  | "escalated_red_event" // 红档事件 2 分钟无人确认升级（AC-12，notify_service）
   | "sensitive" // 敏感告警
   | "missed_medication" // 漏服药
   | "report_ready" // 家属日报就绪
@@ -76,6 +77,7 @@ export interface NotificationItem {
 
 export const NOTIF_TYPE_LABELS: Record<NotificationType, string> = {
   emergency_health: "健康紧急",
+  escalated_red_event: "红档升级",
   sensitive: "敏感告警",
   missed_medication: "漏服药",
   report_ready: "日报就绪",
