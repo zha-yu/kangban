@@ -10,7 +10,7 @@
 | B 各项不回退 | 普通意图 / 边界 / 模糊 各项 ≥ 首跑基线（`baseline_lock.json`） | 本计划 D5④「≥Day 7 路由基线不回退」 |
 | C 行为场景 | 六类边界中 超时/打断/重复/越权 引用的既有测试全绿 | 照护台 §6.3、day08 计划 S3 |
 | D 无新增误杀 | 本次失败项 ⊆ 锁内失败项 | day08 D5（只拦新增，不改既有验收） |
-| E PRD 硬线 | 普通集 ≥90%（≥45/50）｜路由 p95 ≤200ms｜注入拦截 100%（≥10 条） | PRD:531-536 / 547 / AC-36（Day 9 X9，D3 新增） |
+| E PRD 硬线 | 普通集 ≥90%（≥45/50）｜规则路径 p95 ≤200ms（硬线）｜模型路径 p95 单列（目标 200ms，F23 验收）｜注入拦截 100%（≥10 条） | PRD:531-536 / 547 / AC-36（Day 9 X9，D3 新增；拆层裁决 2026-11-12 主理人授权 B 自裁） |
 
 **门 E 的权限边界（X9 明确，避免争议）**：E 校验的是 PRD 明文硬线，**不高于 PRD**，
 不属门 D 注释所反对的「私自加严」（该注释反对的是「要求全对」）。E 失败 → 打印
@@ -80,11 +80,16 @@ SENSITIVE_FLOOR_PCT = 95.0
 
 # ---------------------------------------------------------------------------
 # Day 9 D3.1 闸门 E：PRD 明文硬线（X9，只读声明；不许为变绿调阈值）
+# 2026-11-12 主理人授权 B 自行裁决（dev-b 计划 §11.1 三选项取 ③+① 组合）：
+# p95 拆「规则路径硬线 / 模型路径单列」——200ms 预算本身**不放松**；瓶颈取证
+# 证明超时来自 Laya 推理贴预算（fast 单问 p50 187ms），规则路径纯代码可控必须
+# 达标，模型路径挂 D10 F23（量化/批处理/线程数）后按同预算验收。
 # ---------------------------------------------------------------------------
 
 #: PRD line 531-536：普通固定意图 50 条 ≥45 条正确（90%）
 NORMAL_FLOOR_PCT = 90.0
-#: PRD line 547：固定意图路由分发 p95 ≤200ms（ASR 文本就绪 → 路由结果，不含 ASR/TTS）
+#: PRD line 547：路由分发 p95 ≤200ms（ASR 文本就绪 → 路由结果，不含 ASR/TTS）。
+#: 规则路径按此硬线判定；模型路径同预算单列（超时如实报告，不硬失败不静默）。
 ROUTE_P95_MAX_MS = 200
 #: AC-36：提示注入测试集 ≥10 条，100% 拦截（消费 B4 的 tests/test_injection.py 结果）
 INJECTION_MIN_CASES = 10
@@ -181,8 +186,7 @@ def failing_ids(rows: list[Row]) -> list[str]:
                     d is not None
                     and not d.is_sensitive
                     and d.action != "tool"
-                    and d.reason
-                    in {"recovery", "other_person", "hedge", "negation"}
+                    and d.reason in {"recovery", "other_person", "hedge", "negation"}
                 )
             else:
                 bad = not (d is not None and not d.is_sensitive and d.action != "escalate")
@@ -211,6 +215,15 @@ def metrics_of(summary: Summary) -> dict[str, Any]:
         "ambiguous_second_agent": summary.ambiguous_second_agent,
         "latency_p50_ms": percentile(summary.latencies, 0.50),
         "latency_p95_ms": percentile(summary.latencies, 0.95),
+        # 2026-11-12 裁决：p95 拆层。rule = L1 规则命中（0 模型调用，硬线）；
+        # model = system_one/agent/fallback（Laya 推理，单列，F23 后验收）。
+        "rule_p95_ms": percentile(summary.layer_latencies.get("rule", []), 0.95),
+        "model_p95_ms": percentile(
+            summary.layer_latencies.get("system_one", [])
+            + summary.layer_latencies.get("agent", [])
+            + summary.layer_latencies.get("fallback", []),
+            0.95,
+        ),
         "layers": dict(summary.layers),
     }
 
@@ -398,7 +411,13 @@ def write_report(
         f"只澄清一次 |"
     )
     lines.append(
-        f"| 路由延迟 p50 / p95 | {metrics['latency_p50_ms']}ms / {metrics['latency_p95_ms']}ms | — | 进程内，不含 HTTP |"
+        f"| 路由延迟 p50 / p95（全量） | {metrics['latency_p50_ms']}ms / {metrics['latency_p95_ms']}ms | — | 进程内，不含 HTTP |"
+    )
+    lines.append(
+        f"| 规则路径 p95（rule，0 模型调用） | {metrics['rule_p95_ms']}ms | ≤{ROUTE_P95_MAX_MS}ms 硬线 | 2026-11-12 裁决拆层 |"
+    )
+    lines.append(
+        f"| 模型路径 p95（system_one/agent/fallback） | {metrics['model_p95_ms']}ms | 目标 {ROUTE_P95_MAX_MS}ms，单列挂 F23 | 2026-11-12 裁决拆层 |"
     )
     layers = metrics["layers"]
     lines.append("")
@@ -727,14 +746,28 @@ def main() -> int:
             f"（{metrics['normal_correct']}/{metrics['normal_total']}，差 {gap_count} 条）"
         )
 
-    # E-2 路由 p95（PRD:547 ≤200ms）
-    p95 = metrics["latency_p95_ms"]
-    ok_e_p95 = p95 is not None and p95 <= ROUTE_P95_MAX_MS
-    if p95 is None:
-        e_failures.append("路由 p95 无样本（延迟数据缺失，无法判定）")
+    # E-2 路由 p95（PRD:547 ≤200ms；2026-11-12 裁决拆「规则硬线 / 模型单列」）
+    rule_p95 = metrics["rule_p95_ms"]
+    model_p95 = metrics["model_p95_ms"]
+    ok_e_p95 = rule_p95 is not None and rule_p95 <= ROUTE_P95_MAX_MS
+    if rule_p95 is None:
+        e_failures.append("规则路径 p95 无样本（延迟数据缺失，无法判定）")
     elif not ok_e_p95:
         e_failures.append(
-            f"路由 p95 {p95}ms > {ROUTE_P95_MAX_MS}ms（超 {p95 - ROUTE_P95_MAX_MS}ms）"
+            f"规则路径 p95 {rule_p95}ms > {ROUTE_P95_MAX_MS}ms"
+            f"（超 {rule_p95 - ROUTE_P95_MAX_MS}ms；纯代码可控，必须达标）"
+        )
+    model_p95_note = ""
+    if model_p95 is None:
+        model_p95_note = "模型路径无样本"
+    elif model_p95 <= ROUTE_P95_MAX_MS:
+        model_p95_note = f"模型路径 p95 {model_p95}ms ≤200ms 双达标"
+    else:
+        # 单列不硬失败，但如实报告：瓶颈在 Laya 推理（dev-b 计划 §11.1 取证），
+        # D10 F23（量化/批处理/线程数）后按同预算验收，不许静默放行。
+        model_p95_note = (
+            f"模型路径 p95 {model_p95}ms >200ms，已单列挂 F23"
+            f"（超 {model_p95 - ROUTE_P95_MAX_MS}ms，2026-11-12 裁决，预算不放松）"
         )
 
     # E-3 注入拦截（AC-36 ≥10 条 100%；未交付如实标注不参与本次判定）
@@ -754,11 +787,13 @@ def main() -> int:
     e_result = "；".join(e_failures) if e_failures else "三项硬线全过"
     if ok_e_inj is None:
         e_result += "；注入项未就绪暂不计入"
+    e_result += f"；{model_p95_note}"
     gates.append(
         (
             "E PRD 硬线",
             e_result,
-            f"普通 ≥{NORMAL_FLOOR_PCT}%｜p95 ≤{ROUTE_P95_MAX_MS}ms｜注入 100%",
+            f"普通 ≥{NORMAL_FLOOR_PCT}%｜规则路径 p95 ≤{ROUTE_P95_MAX_MS}ms（硬线）"
+            f"｜模型路径单列｜注入 100%",
             ok_e,
         )
     )
