@@ -508,7 +508,7 @@ uv run python scripts/update_progress.py --check-plans
 | FR-TC-09 bad case 回流 | 失败项落盘有记录 | `eval/fixtures/badcase_backlog.jsonl`（15 条，run_id `20261111-145521`） | ✅ |
 | 评测基线不回退 | 各项 ≥ 首跑锁 | `eval/reports/day8_baseline_lock.json`（41/50、20/20、25/30、19/20）；gate B 门 PASS | ✅ |
 | 375px 家属端无障碍 | 无横向滚动、正文 ≥16px | 真实数据断言 list=375/detail=360/notif=375、overflowEls=0；截图 `eval/artifacts/family-375-real-data.png`（本地，gitignore） | ✅ |
-| 全量回归 | `pytest` 零失败 | **1391 passed / 0 failed**（2026-11-12 复跑，171s） | ✅ |
+| 全量回归 | `pytest` 零失败 | **1392 passed / 0 failed**（2026-11-12 合并 origin/develop 后复跑，192s；合并前 1391） | ✅ |
 | 前端编译 | `tsc --noEmit` ＋ `build` | 双绿（2026-11-12，播放器 stop 修复后复跑） | ✅ |
 
 **诚实结论（2026-11-12 二次更新）**：D 的完成定义项中，**门禁 / 通知状态机（API＋UI）/ 戏曲播放器（代码、帧、七动作 UI）/ 家属日报与 375px / 后台红色置顶与确认链 UI / 回归** 均有实证据；仅剩 **AC-38 双通知同场演练（X5/X7 窗口）**、**AC-37 CP4 四方同场联演**、**D6 e2e（缺 LLM key 与 sidecar）** 三项同场/环境项，不再有被上游代码或本机工具卡住的取证项。
