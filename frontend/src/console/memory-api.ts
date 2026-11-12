@@ -10,7 +10,7 @@
  * 不臆造字段），展示文本取 text/content 其一，均缺省时 JSON 串兜底。
  */
 
-import { apiDelete, apiGet, apiPatch } from "./api";
+import { apiDelete, apiGetRaw, apiPatch } from "./api";
 
 // ---------------------------------------------------------------------------
 // 类型
@@ -76,7 +76,12 @@ async function parseOrThrow<T>(res: Response): Promise<T> {
 // 三个端点
 // ---------------------------------------------------------------------------
 
-/** 查看某长者记忆（隔离在 service 层强制 WHERE elder_id） */
+/**
+ * 查看某长者记忆（隔离在 service 层强制 WHERE elder_id）。
+ *
+ * 必须取原始 Response：apiGet 会把所有非 2xx（除 401）统一吞成「网络异常，请稍后重试」，
+ * 导致 503「X5 未交付」/403 越权 /404 不存在的分支永远走不到，页面只显示误导性文案。
+ */
 export async function listMemories(
   elderId: string,
   opts: { limit?: number; offset?: number } = {},
@@ -85,10 +90,10 @@ export async function listMemories(
     limit: String(opts.limit ?? 50),
     offset: String(opts.offset ?? 0),
   });
-  const res = await apiGet<MemoryListResult>(
+  const res = await apiGetRaw(
     `/api/memory/${encodeURIComponent(elderId)}/memories?${params.toString()}`,
   );
-  return res;
+  return parseOrThrow<MemoryListResult>(res);
 }
 
 /** 纠正一条记忆（旧值 superseded、新值生效，FR-MEM-03/06） */
