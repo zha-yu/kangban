@@ -1,5 +1,5 @@
-> 状态：未开始　｜　版本：v1.0　｜　日期：2026-11-12
-> 负责人：**dev-D（唯一）**　｜　任务包：**D · 长者端语音补全与评测门禁**　｜　容量：**20h ＝ 2.5 人日**
+> 状态：未开始　｜　版本：v1.3　｜　日期：2026-11-12
+> 负责人：**dev-D（唯一）**　｜　任务包：**D · 长者端语音补全与评测门禁**　｜　容量：**19h ＝ 2.375 人日**（Laya/Jev 对比裁减后）
 > 关联：docs/team_tasks/day09/day09-任务总览与DAG.md v1.0（§4.4 分工、§5 对接点、§6 写域）｜docs/team_tasks/day09/contracts.md（X1/X8/X9/X10 提供与消费）
 > 上游依据：PRD line 247（FR-UI-01 降级须进路由、单次最长 120 秒）、line 257（FR-UI-11 唤醒词 P0）、line 336（FR-MED-06 反向外呼＋`rtc_failed`）、line 254（FR-UI-08 撤销）、line 401（FR-ALT-06 SOS）、line 405–412（FR-RPT-01~04）、line 531–536（固定测试集 ≥45/50）、line 547（路由 ≤200ms）、line 95（家属端正文 ≥16px）、line 286（FR-VPR-04）、line 489/497/505/519/523（AC-08/20/23/37/41/42）、line 590（不得裁减：反向外呼与唤醒词）｜技术设计文档 line 1173（声纹 FAR/FRR 表、Laya 与 Chinese-Jev 对比报告、接口覆盖率 ≥70%）、line 1182（`/metrics` 口径由 C 承接）
 > 遗留承接：**F01（pad 回执）F02 F03（pad SOS）F10（family 第五类）F15 F16 F17 F21（素材）F22（夹具 gold）F24 F28 F29 F30（播放）F31** —— 13 项
@@ -93,6 +93,7 @@ PRD line 590 明列**不得裁减**：「WebRTC 全双工对话与**反向 WebRT
 | KWS 三资产 | `sherpa-onnx-kws.js`／`.wasm`／`.data` **全 200** | F16 |
 | 说「小伴」 | 唤醒 **≤1.5s**，**20 次中 ≥18 次**达标 | AC-42／PRD:257 |
 | 故意改错资产路径 | 页面**显式降级提示**（不再静默 return null） | F16 |
+| **退房被动链路（M5.4 联调，配合 A3/C6）** | A3 触发退房后：pad 持旧设备 token → **401 且回登录/未授权态**（既有 `pad/api.ts:58-63` 口径，**不需新代码，只验证**）；原绑定家属查该长者日报 → **403 且「无权查看该长者的数据」/「未绑定长者」空态**（`family/api.ts:265`、`HomePage.tsx:91`，family 侧与 D4 同场确认）。**D 负责前端表现断言，不改后端** | FR-ADM-09／AC-24／FR-RPT-02 |
 
 ```bash
 pnpm --dir frontend exec tsc --noEmit
@@ -227,7 +228,7 @@ bash .githooks/pre-push                                 # 无 python 时非 0
 
 ---
 
-## 4. 节点 D4 · family 第五类 ＋ 语音条播放 ＋ 声纹定稿 ＋ 对比报告（3h）
+## 4. 节点 D4 · family 第五类 ＋ 语音条播放 ＋ 声纹定稿（2h：骨架 1h＋联调 1h）
 
 **前置**：D3。**软依赖**：C3（通知/日报就绪）、C4（`audio_url`）。
 **对接**：消费 C4 的 `audio_url`、B4 的 `late_taken_reported`（X8）。
@@ -239,7 +240,7 @@ bash .githooks/pre-push                                 # 无 python 时非 0
 - `frontend/src/family/index.css` 正文均 **16px** ✓，但 **8 处 14px**：`.helper-error:134`、`.app-footer-note:322`、`.badge:334`、`.section-note:385`、**`.report-preview:441`**、`.detail-note:503`、`.event-time:533`、`.notif-meta:585`。多为辅助标签，**`.report-preview` 是日报预览正文，疑违 PRD line 95「正文 ≥16px」**。
 - `.env:148 VOICEPRINT_SIMILARITY_THRESHOLD=**0.55**`；`.env.example:155` 与 `app/core/config.py:227` 均 **0.62**（`config.py:223-226` 注释记录 PRD v3.1 裁决沿革）；`voiceprint_service.py:323` 读 settings → **运行时生效 0.55**。`.env` **未被 git 跟踪**（`.gitignore:13-14`），**不构成密钥泄露**。
 - `eval/reports/声纹调优报告.md` **已产出**：§四 FAR/FRR 扫描表（主区间 0.45–0.70）＋`voiceprint_sweep_raw.json` 可复跑；PRD v3.1 已据此裁 **0.62**（FAR 3.7%／FRR 0）。**报告正文仍以 0.55 为基线叙述，需补 0.62 定稿节**。
-- `eval/reports/day07_q2_eval.md` 是**单 backend 路由基线**（ChineseJevBackend），**不是 Laya/Jev 两 backend 对比**（TD:1173 要求）。
+- `eval/reports/day07_q2_eval.md` 即 **Laya 单基线**（运行时唯一分类器，类名已由 `ChineseJevBackend` 更名 `LayaBackend`）。**Laya/Chinese-Jev 两 backend 对比已裁减**——不存在第二个 backend，对比无对象（TD:1173 该条失去意义，见总览 §8.1）。该文件保留作路由基线，**不需新建对比报告**。
 
 ### 4.2 要做什么
 
@@ -248,7 +249,7 @@ bash .githooks/pre-push                                 # 无 python 时非 0
 3. **375px 字号复核**：`.report-preview` 改 **≥16px**；其余 7 处辅助标签逐一判定是否属「正文」，属正文的一并改；产出 **375px 无横向滚动截图**。
 4. **F28 `.env` 阈值**：改本机 `.env` 为 **0.62**（**环境项，不入库**）；启动自检确认生效值。
 5. **声纹报告定稿**：补 **0.62 定稿节**（FAR 3.7%／FRR 0、样本量 3 人 9 段、模型 CAM++ fp=f682b514、阈值结论），保留 0.55 历史数据作反证。
-6. **Laya/Jev 对比报告**：新建 `eval/reports/laya_jev_compare.md`——**同一 110 条固定集**、两 backend 各跑一遍，对比准确率／延迟／分层命中率（TD:1173）。
+6. ~~Laya/Jev 对比报告~~ **已裁减，不做**（无第二 backend；见总览 §8.1）。
 
 ### 4.3 交付物清单
 
@@ -259,7 +260,6 @@ bash .githooks/pre-push                                 # 无 python 时非 0
 | 3 | 375px 走查截图（无横向滚动） |
 | 4 | `.env` 阈值 0.62（不入库）＋启动自检输出 |
 | 5 | `eval/reports/声纹调优报告.md` 0.62 定稿节 |
-| 6 | `eval/reports/laya_jev_compare.md`（新） |
 
 ### 4.4 量化验收
 
@@ -270,7 +270,6 @@ bash .githooks/pre-push                                 # 无 python 时非 0
 | 375px | **无横向滚动**（截图为证）；`.report-preview` **≥16px** | PRD:95 |
 | 生效声纹阈值 | 启动自检显示 **0.62** | PRD v3.1／AGENTS §7 |
 | 声纹报告 | 含 **0.62 定稿节**：FAR **3.7%**／FRR **0**、样本量、模型版本、阈值结论 | FR-VPR-04／TD:1173 |
-| 对比报告 | 两 backend × **同 110 条集**，含准确率/延迟/分层命中率三项对比 | TD:1173 |
 | 三档身份级联 | 演示脚本开场自检（阈值 0.62 生效确认）通过 | day08 演示脚本先例 |
 
 ```bash
@@ -373,7 +372,7 @@ uv run python scripts/generate_opera_seed.py
 | R-D4 | KWS 资产改布局后新克隆机器无法重建 | 同步更新 `scripts/build-kws-wasm.md`；资产不入库属合规，**重建流程必须可跑**（D5 同口径） |
 | R-D5 | 夹具 gold 改判黄后敏感集召回回退 | 与 B3 的 `safety.py` 改动**同场联调**；≥19/20 是硬线，回退即撤销该次改动 |
 | R-D6 | 素材时长不足 15s（程序生成 ~3s wav） | 补足音频长度或按契约 §6.4 调整生成参数；**不得虚报 duration 元数据** |
-| R-D7 | 日历口径压缩（总览 Q1） | 先裁顺位：**D4 的 Laya/Jev 对比报告（TD 技术验收，可后补）→ D5 素材（若 C4 未就绪）→ F29 ICE（coturn 本体本就归 Day 10）**；**D1 的 F16 唤醒词、D2 的 F15/F17、D3 的 F02 门禁属 P0/不得裁减，不容顺延** |
+| R-D7 | 日历口径压缩（总览 Q1） | 先裁顺位：**D5 素材（若 C4 未就绪）→ F29 ICE（coturn 本体本就归 Day 10）**；Laya/Jev 对比报告已裁减不占顺位；**D1 的 F16 唤醒词、D2 的 F15/F17、D3 的 F02 门禁属 P0/不得裁减，不容顺延** |
 
 ---
 
@@ -381,5 +380,7 @@ uv run python scripts/generate_opera_seed.py
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.3 | 2026-11-12 | **Laya/Chinese-Jev 对比报告裁减**（主理人决定：运行时唯一分类器即 Laya，无第二 backend，对比无对象）：D4 删除对比报告交付物与验收、3h→**2h**，D 包 20h→**19h**；`day07_q2_eval.md` 保留作 Laya 单基线。配套代码侧已将 `ChineseJevBackend` 更名 `LayaBackend`（功能不变，ruff＋66 测试通过）；conda 环境名 `jev` 与 `spikes/chinese_jev_hello` 为机器事实/历史留痕，保留。 |
+| v1.2 | 2026-11-12 | D1 验收补**退房被动链路联调判据**（M5.4，配合 A3/C6）：pad 旧 token→401 回登录/未授权态、原绑定家属→403 空态。**D 负责前端表现断言，不需新前端代码、不改后端**（两端兜底已存在：`pad/api.ts:58-63`、`family/api.ts:265`、`HomePage.tsx:91`）。 |
 | v1.1 | 2026-11-12 | 全量校验后修正：① **F29 ICE 配置下发端点落点明确为 `app/api/audio.py`**（你持锁），消除「服务端取」的模糊表述；② X1 联调时点随 C 队列调整为 **D10 12:00**（C3 骨架 10.5h 完成，D1 骨架 4.5h 完成，双方均就绪）；③ 排程校验后队列确定为 **D1→D5→D2→D3→D4**（D5 素材提前到 D9 下午，确保 C4 在 D11 10:00 X10 联调时可用）。程序校验：硬前置 11 边、软依赖 18 边**零违例**，五里程碑全达标；包容量 20h＝2.5 人日不变。 |
 | v1.0 | 2026-11-12 | 首版。承接 day08 遗留 13 项（F01 pad 回执/F02/F03 pad SOS/F10 family 第五类/F15/F16/F17/F21 素材/F22 夹具 gold/F24/F28/F29/F30 播放/F31）＋ Day 9 原生声纹报告定稿与 Laya/Jev 对比报告、接口覆盖率 ≥70%；5 节点 20h＝2.5 人日。**明确两项不得裁减**（F16 唤醒词、F17 反向外呼，依据 PRD:590），**否决 day08 审查计划 Q1 的顺延建议**。实测校准：`TaskPanel.tsx:31-37` 确实不传 `onRendered`、撤销确为纯 `setState`、SOS 三格确为硬编码、KWS 资产确多一层目录、声纹 FAR/FRR 报告**已产出**（只补 0.62 定稿节）、`day07_q2_eval.md` 是单 backend 基线**非对比报告**、ASR 置信度**已埋点**（七层归因须接真实数据而非写「无数据」）。 |
