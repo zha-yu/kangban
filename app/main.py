@@ -35,6 +35,7 @@ from app.api import ROUTERS
 from app.api.elders import _is_request_format_error
 from app.api.schemas.auth import ErrorResponse
 from app.audio import signaling  # Day 3 T2：WS 信令路由（/ws/signal）
+from app.audio.outbound import initiate_outbound_call  # Day 9 F17：反向 WebRTC 外呼
 from app.audio.signaling import _ERROR_TALKBACK  # 失败终态话术表（C-1/C-D4）
 from app.audio.tts import TTSUnavailable, build_tts
 from app.audio.webrtc import (  # Day 3 T3：A3 媒体层接线
@@ -59,6 +60,9 @@ from app.db import session_factory
 from app.mcp_client import MCPClient
 from app.router.decision import Router
 from app.router.safety import SafetyDecision
+from app.scheduler.audio_retention_jobs import (
+    install_audio_retention_scheduler,  # Day 9 B4：F27 72h 清理
+)
 from app.scheduler.health_jobs import install_health_scheduler  # Day 8 B3：健康域调度接线
 from app.scheduler.medication_jobs import install_scheduler  # Day 7 C2：用药到点调度接线
 from app.services import (
@@ -953,6 +957,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         checkpointer_dsn=settings.langgraph_checkpoint_database_url,
         checkpointer_schema=settings.langgraph_checkpoint_schema,
         timezone_name=settings.scheduler_timezone,
+        # Day 9 F17（AC-41 外呼端到端）：用药触达链反向 WebRTC 外呼接线——
+        # 之前全仓零调用；失败归因（rtc_failed）由图 finalize 落 failure_reason。
+        outbound_fn=initiate_outbound_call,
     )
     await medication_scheduler.start()
 
@@ -968,6 +975,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     await health_scheduler.start()
 
+    # Day 9 B4（F27）：原始音频 72h 清理调度接线——零数据库依赖的独立 runtime，
+    # 手动 start/stop 与用药/健康调度同款（FastAPI lifespan 与 @app.on_event 互斥）。
+    audio_retention_scheduler = install_audio_retention_scheduler(
+        app, timezone_name=settings.scheduler_timezone
+    )
+    await audio_retention_scheduler.start()
+
     logger.info("application starting", extra={"app_env": settings.app_env})
     try:
         yield
@@ -976,6 +990,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         set_injection_hook(None)
         await medication_scheduler.stop()
         await health_scheduler.stop()
+        await audio_retention_scheduler.stop()
         signaling.set_dialogue_final_handler(None)
         signaling.set_identity_confirm_handler(None)
         signaling.set_identity_timeout_handler(None)

@@ -270,9 +270,10 @@ def _parse_completion(response: httpx.Response) -> tuple[str | None, int | None,
         return None, None, None
     content = content.strip()
     # 推理型模型（MiniMax M 系等）会在 content 内联 <think>…</think> 思考块，
-    # 不剥离会进 TTS 播报；max_tokens 截断时可能残留未闭合的 <think> 头，一并去掉。
+    # 不剥离会进 TTS 播报；max_tokens 截断时可能残留未闭合的 <think> 头（可在
+    # 任意位置，不只在开头），一并去掉——从 <think> 到字符串末尾按截断残片处理。
     content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
-    content = re.sub(r"^<think>.*$", "", content, flags=re.DOTALL).strip()
+    content = re.sub(r"<think>.*\Z", "", content, flags=re.DOTALL).strip()
     if not content:
         return None, None, None
     prompt_tokens, completion_tokens = _parse_usage(payload)

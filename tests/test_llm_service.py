@@ -416,3 +416,25 @@ async def test_missing_config_path_has_no_tokens() -> None:
     assert reply.degraded is True
     assert reply.prompt_tokens is None and reply.completion_tokens is None
     await client.aclose()
+
+
+def _make_response(content: str) -> httpx.Response:
+    """构造 OpenAI 兼容成功响应（无 usage）。"""
+    return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+
+def test_think_residue_stripped_from_any_position() -> None:
+    """2026-11-12 修正：未闭合 <think> 可出现在任意位置（原实现 `^` 锚定只剥开头）。
+
+    - 成对 <think>…</think> 照旧剥离；
+    - `答案<think>截断…`（max_tokens 截断）→ 残片整段去掉，只剩正文；
+    - 整段都是未闭合思考 → 无正文，返回 None（invalid_response）。
+    """
+    content, _, _ = llm_service._parse_completion(_make_response("前<think>x</think>后"))
+    assert content == "前后"
+
+    content, _, _ = llm_service._parse_completion(_make_response("好的<think>思考被截断"))
+    assert content == "好的"
+
+    content, _, _ = llm_service._parse_completion(_make_response("<think>开头截断"))
+    assert content is None

@@ -21,6 +21,7 @@ from __future__ import annotations
 import datetime
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
@@ -446,6 +447,95 @@ async def test_all_devices_offline_yields_notification_failed(
         ).scalars()
     )
     assert len(orders) == 1, "设备全离线的漏服照样升级工单（人工兜底）"
+
+
+async def test_outbound_rtc_failed_lands_failure_reason(
+    session: AsyncSession, seeded: dict[str, Any], saver: AsyncPostgresSaver
+) -> None:
+    """F17（FR-MED-06 / PRD:336）：外呼接通失败 rtc_failed + WS 也未出门 → 归因落 rtc_failed。
+
+    注入假 outbound_fn 全部返回 rtc_failed（connected=False）；WS deliver 全 False。
+    四次触达后 finalize 经 `_split_missed_by_receipt` 把更精确的建连失败归因
+    （rtc_failed）落进 `medication_events.failure_reason`，替代笼统 offline。
+    """
+
+    @dataclass(frozen=True)
+    class _FakeCall:
+        device_id: str = "dev-1"
+        connected: bool = False
+        failure_reason: str | None = "rtc_failed"
+        elapsed_ms: int = 0
+
+    async def _outbound(device_id: str) -> _FakeCall:
+        return _FakeCall(device_id=device_id)
+
+    await _bind_device(session, seeded)
+    reminder_id = await _new_event(session, seeded)
+    calls: list[tuple[str, dict[str, Any]]] = []
+    graph = build_medication_graph(
+        session=session,
+        checkpointer=saver,
+        deliver_fn=_fake_deliver(calls, ok=False),
+        outbound_fn=_outbound,
+    )
+
+    await start_medication_task(
+        graph,
+        reminder_id=reminder_id,
+        plan_id=seeded["plan_id"],
+        elder_id=seeded["elder_id"],
+        deadline="2026-11-09T08:15:00+00:00",
+    )
+    for _ in range(MAX_ATTEMPTS):
+        await resume_medication_task(graph, reminder_id=reminder_id, answer="no_response")
+
+    event = await medication_service.get_event(session, reminder_id)
+    assert event is not None and event["terminal_state"] == "notification_failed"
+
+    from sqlalchemy import select
+
+    reason = (
+        await session.execute(
+            select(MedicationEvent.failure_reason).where(MedicationEvent.reminder_id == reminder_id)
+        )
+    ).scalar_one()
+    assert reason == "rtc_failed", "外呼归因 rtc_failed 优先于笼统 offline（FR-MED-06）"
+
+    # 外呼接通 / in_session 不产生归因，WS 投递照常成立
+    @dataclass(frozen=True)
+    class _ConnectedCall:
+        device_id: str = "dev-1"
+        connected: bool = True
+        failure_reason: str | None = None
+        elapsed_ms: int = 5
+
+    async def _outbound_ok(device_id: str) -> _ConnectedCall:
+        return _ConnectedCall(device_id=device_id)
+
+    reminder_id2 = await medication_service.create_event(
+        session,
+        plan_id=seeded["plan_id"],
+        elder_id=seeded["elder_id"],
+        scheduled_at=datetime.datetime(2026, 11, 9, 9, 0, tzinfo=datetime.UTC),
+        drug_snapshot={"drug_name": "氨氯地平", "dose": "5mg 一片"},
+        triggered_by="scheduler",
+    )
+    calls2: list[tuple[str, dict[str, Any]]] = []
+    graph2 = build_medication_graph(
+        session=session,
+        checkpointer=saver,
+        deliver_fn=_fake_deliver(calls2, ok=True),
+        outbound_fn=_outbound_ok,
+    )
+    await start_medication_task(
+        graph2,
+        reminder_id=reminder_id2,
+        plan_id=seeded["plan_id"],
+        elder_id=seeded["elder_id"],
+        deadline="2026-11-09T08:15:00+00:00",
+    )
+    attempts2 = await medication_service.list_attempts(session, reminder_id2)
+    assert [a["receipt"] for a in attempts2] == ["voice_dispatched"], "外呼接通后 WS 字幕照投"
 
 
 # ------------------------------------------------------------------ 8. TD-1/TD-2 触达语音与 played 闭环

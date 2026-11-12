@@ -154,6 +154,33 @@ def test_yellow_boundary_is_review_not_pass_through() -> None:
         assert decision.matched_rule  # 保留命中证据供护工研判
 
 
+def test_red_wins_when_self_emergency_follows_boundary_clause() -> None:
+    """2026-11-12 修正：黄档护栏不在首个部位命中处提前返回。
+
+    同句里他人/模糊子句之后的**本人**红档表达必须判红（漏黄不漏红，R-5）：
+    「我爸胸口疼」单独说仍是黄档，但「……我自己胸口疼得厉害」是本人急症，
+    整句判红——原实现在第一个 occurrence 处 return 黄档，本人红档被漏掉。
+    """
+    decision = safety_check("我爸胸口疼，我自己胸口疼得厉害")
+    assert decision.is_sensitive is True
+    assert decision.severity == "red"
+    assert decision.category == "chest_pain"
+
+    # 纯他人主体表达照旧黄档，不被本次修正误伤成红档
+    solo = safety_check("我爸摔倒在地上")
+    assert solo.is_sensitive is False
+    assert solo.severity == "yellow"
+    assert solo.reason == "other_person"
+
+
+def test_red_wins_across_section_when_boundary_in_chest_clause() -> None:
+    """黄档候选不再阻断短语段扫描：部位子句判黄后，后段低歧义短语仍可判红。"""
+    decision = safety_check("我爸胸口疼，我喘不上气")
+    assert decision.is_sensitive is True
+    assert decision.severity == "red"
+    assert decision.category == "breathing"
+
+
 def test_injection_hook_is_the_single_wiring_point() -> None:
     """B4 注入防线的接线点：挂载后先于急症判定生效，卸载后恢复原状。"""
     from app.router.safety import (
