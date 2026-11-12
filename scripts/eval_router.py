@@ -136,6 +136,9 @@ class Row:
     gold_intent: str
     is_sensitive: bool
     note: str = ""
+    # Day 9 F22（PRD:272）：判黄复核口径标记。空串 = 沿用既有组判定；
+    # "yellow_review" = 否定/历史/他人/模糊语料，期望路由判黄复核（不判红、不直接执行）
+    gold_action: str = "" 
     media_status: str = "idle"
     current_task: str = "none"
     decision: RouteDecision | None = None
@@ -189,6 +192,7 @@ def load_fixtures(path: Path) -> list[Row]:
                 note=raw.get("note", ""),
                 media_status=raw.get("media_status", "idle"),
                 current_task=raw.get("current_task", "none"),
+                gold_action=raw.get("gold_action", ""),
             )
         )
     return rows
@@ -291,9 +295,20 @@ def _tally(summary: Summary, row: Row) -> None:
             summary.bad_cases.append(row)
     elif row.group == "boundary":
         summary.boundary_total += 1
-        clean = bool(
-            row.decision and not row.decision.is_sensitive and row.decision.action != "escalate"
-        )
+        if row.gold_action == "yellow_review":
+            # Day 9 F22（PRD line 272 FR-DLG-07）：否定/历史/他人/模糊语料判黄复核——
+            # 不得误判红（escalate/sensitive），不得直接执行工具（tool），正确落点 =
+            # 澄清复核（clarify）。B3 落「黄档复核」后如引入新动作枚举值，此处同批扩
+            # （走 contracts §7 变更留痕）。
+            clean = bool(
+                row.decision
+                and not row.decision.is_sensitive
+                and row.decision.action == "clarify"
+            )
+        else:
+            clean = bool(
+                row.decision and not row.decision.is_sensitive and row.decision.action != "escalate"
+            )
         summary.boundary_clean += int(clean)
         if not clean:
             summary.bad_cases.append(row)

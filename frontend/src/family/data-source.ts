@@ -11,12 +11,20 @@
 /** 403 越权文案（FR-RPT-02：家属只能查看绑定长者，服务端 403 + 审计） */
 export const SCOPE_FORBIDDEN_TEXT = "无权查看该长者的数据";
 
-/** 用药四类统计（契约 S-01：键名与用药回执终态逐字对齐，禁止合并为「实际漏服」） */
+/**
+ * 用药五类统计（契约 S-01：键名与用药回执终态逐字对齐，禁止合并为「实际漏服」）。
+ *
+ * Day 9 D4（F10）：《接口契约_家属端数据.md》§7 v1.3 留痕——第五键
+ * `late_taken_reported`（窗口外补报）依据 PRD line 320-325 终态表
+ * 「补确认 追加 late_taken_reported，不覆盖原终态」+ 迁移 0020（X8）第五值；
+ * 后端 jsonb 无该键时为 0（安全降级），不合并进任何既有键。
+ */
 export interface MedicationStats {
   taken_reported: number;
   refused: number;
   missed_unconfirmed: number;
   notification_failed: number;
+  late_taken_reported: number;
 }
 
 /** F0 授权长者（切换器数据源，服务端 WHERE guardian_id=:current AND status='active'） */

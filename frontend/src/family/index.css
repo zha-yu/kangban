@@ -438,7 +438,10 @@ body {
 }
 
 .report-preview {
-  font-size: 14px;
+  /* Day 9 D4.3（F30 复核）：日报预览是正文——PRD line 95「正文字号 ≥16px」，
+   * 原 14px 违规，改 16px；其余 7 处 14px（helper-error/footer-note/badge/
+   * section-note/detail-note/event-time/notif-meta）逐一判定为辅助标签，保留 */
+  font-size: 16px;
   color: var(--color-ink-muted);
   line-height: 1.6;
   display: -webkit-box;
@@ -592,4 +595,12 @@ body {
   min-height: 48px;
   display: inline-flex;
   align-items: center;
+}
+
+/* ---- Day 9 F30（FR-RPT-04）：日报语音条播放器 ----
+ * 原生 <audio controls>，375px 内全宽不溢出；无 audio_url 时不渲染（既有降级口径） */
+.audio-player {
+  width: 100%;
+  height: 48px;
+  margin-top: 8px;
 }
