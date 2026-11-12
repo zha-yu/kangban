@@ -128,11 +128,12 @@ class MedicationEvent(Base):
         ),
         CheckConstraint(
             "terminal_state IS NULL OR terminal_state IN ('taken_reported', 'refused', "
-            "'missed_unconfirmed', 'notification_failed')",
+            "'missed_unconfirmed', 'notification_failed', 'late_taken_reported')",
             name="terminal_state",
         ),
         CheckConstraint(
-            "failure_reason IS NULL OR failure_reason IN ('no_answer', 'denied', 'tts_failed', 'offline')",
+            "failure_reason IS NULL OR failure_reason IN ('no_answer', 'denied', 'tts_failed', "
+            "'offline', 'rtc_failed')",
             name="failure_reason",
         ),
         CheckConstraint(
