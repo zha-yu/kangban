@@ -314,7 +314,8 @@ async def submit_health_record(
       `risk_event:{event_id}:guardian` / 升级 `risk_event:{event_id}:escalated`
       —— 锚点是 event_id 而非 elder_id+日期（AC-12：同一事件不建第二
       risk_event；同日两次独立红档各自成事件，按日期去重会吞第二条）；
-    - 长者负责范围过滤在服务层（护工仅可代填名下长者，AC-32）。
+    - 长者负责范围过滤在服务层：仅 care_worker 限名下长者（AC-32），
+      doctor/admin 不限名下范围（与 H-3 补启动同口径）。
     """
     try:
         ref = await health_service.create_health_record(
@@ -328,6 +329,7 @@ async def submit_health_record(
             mood_note=body.mood_note,
             complaint=body.complaint,
             operator_id=UUID(identity.staff_id),
+            operator_role=identity.role,
         )
     except PermissionError as exc:
         await _audit_denial(

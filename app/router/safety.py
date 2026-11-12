@@ -17,18 +17,32 @@
   这类无胸部位的表达不触发（风险 R13 反误杀）；
 - 部位词表只收「胸」：头疼/腰酸背疼按 FR-DLG-09 医疗边界拒答或 Day 9 黄档处理，
   不进红色（PRD 急症清单：胸痛/疑似中风/呼吸困难/跌倒/轻生/严重副作用/红色血压阈值）；
-- 四类 FR-DLG-07 边界不判红（各自有护栏，护栏命中即短路返回）：
-  否定（「没有胸痛」「不疼了」）/ 历史（「昨天疼现在好了」，带缓解标记判黄归 Day 9）/
-  他人主体（「我爸爸胸痛」，不为本人建红色）/ 模糊（「好像胸口疼」，推测判黄归 Day 9）；
+- 四类 FR-DLG-07 边界：
+  否定（「没有胸痛」「不疼了」）→ **不判红也不建复核**（`severity=None`）；
+  历史（「昨天疼现在好了」带缓解标记）/ 他人主体（「我爸爸胸痛」）/
+  模糊（「好像胸口疼」）→ **判黄复核**（`severity="yellow"`、`is_sensitive=False`、
+  `reason` 保留 recovery/other_person/hedge）。判黄**不是放行**：调用方必须为
+  这些轮次产出 follow_up 复核任务（decision.py 的 boundary_review 出口），
+  但不打断进行中的用药/健康任务（PRD §2.3 优先级）；
 - 无需部位搭配的低歧义多字短语（呼吸困难/摔倒/中风先兆/轻生）短语级命中即判红。
 
 宁可错杀不可漏杀（R-5）：护栏只拦「确定不该判红」的表达；
 「昨天开始胸痛」这类无缓解标记的历史陈述仍判红，漏黄不漏红。
+
+**注入防线接线点（B4）**：`set_injection_hook()` 是本模块唯一的外部挂载口。
+`app/router/injection.py` 由 B4 创建后，装配步调用一次即可让注入检测复用
+**同一条安全一票否决路径**（AC-36）。顺序固定：**急症判红优先**，注入只在
+「没有急症红」时覆盖结论。
+本文件不 import injection，保持 L0 规则层零横向依赖。
 """
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 # ---------------- 词表与护栏常量（写死在代码，不进 prompt，AGENTS §5） ----------------
 
@@ -73,10 +87,10 @@ CRITICAL_PHRASES: tuple[tuple[str, str], ...] = (
 #: 否定标记：症状/短语命中点向左窗口内出现 → 该处不计数（FR-DLG-07 否定）
 NEGATION_MARKERS: tuple[str, ...] = ("不", "没", "无", "别", "未", "非", "差点")
 
-#: 模糊/推测标记：部位/短语命中点向左窗口内出现 → 判黄不判红（FR-DLG-07 模糊，黄档归 Day 9）
+#: 模糊/推测标记：部位/短语命中点向左窗口内出现 → 黄档复核（FR-DLG-07 模糊）
 HEDGE_MARKERS: tuple[str, ...] = ("好像", "似乎", "可能", "恐怕", "也许", "大概", "是不是")
 
-#: 缓解标记：全文任一命中 → 不判红（FR-DLG-07 历史「昨天疼现在好了」；黄档归 Day 9）
+#: 缓解标记：全文任一命中 → 黄档复核（FR-DLG-07 历史「昨天疼现在好了」）
 RECOVERY_MARKERS: tuple[str, ...] = (
     "现在好了",
     "已经好了",
@@ -123,8 +137,9 @@ CATEGORY_FALL = "fall"
 CATEGORY_STROKE = "stroke"
 CATEGORY_SELF_HARM = "self_harm"
 
-#: 本日最小一票否决只有红档（黄档复核归 Day 9 全量规则集）
+#: 本模块输出两档：红＝一票否决；黄＝边界复核（不判红，但也不放行）
 SEVERITY_RED = "red"
+SEVERITY_YELLOW = "yellow"
 
 
 @dataclass(frozen=True)
@@ -134,14 +149,14 @@ class SafetyDecision:
     字段说明：
     - `is_sensitive`：True 即红色急症——调用方必须短路（escalated_to_agent=false，
       不进 Agent），并经 `app/services/safety_service.escalate_safety_event` 落库；
-      False 则继续走后续路由；
-    - `severity`：判定严重度；命中即 `"red"`（本日只有红档，黄档归 Day 9），未命中 None；
+    - `severity`：`"red"`（急症）/ `"yellow"`（FR-DLG-07 三类边界，需复核）/
+      `None`（未命中或明确否定）；
     - `category`：命中的急症类别（chest_pain/breathing/fall/stroke/self_harm），
       未命中为 None；
     - `matched_rule`：命中证据（如「部位『胸口』×症状『疼』」或命中的短语原文），
       落库时进 work_orders/notifications 供护工研判；护栏命中时也带命中词，未命中 None；
     - `reason`：未判红时的护栏依据（negation/recovery/hedge/other_person），
-      用于 bad case 回流定位；判红时为 None。
+      用于 bad case 回流定位与黄档复核去重；判红时为 None。
     """
 
     is_sensitive: bool
@@ -161,6 +176,22 @@ def _not_sensitive(reason: str | None, matched_rule: str | None = None) -> Safet
     )
 
 
+def _boundary(reason: str, matched_rule: str | None = None) -> SafetyDecision:
+    """FR-DLG-07 边界（历史/他人/模糊）→ 黄档复核。
+
+    `is_sensitive=False` 只表示「不建本人红色事件」；`severity="yellow"` 让调用方
+    必须建 follow_up 复核任务。两者缺一不可——只置 False 是放行，只置 yellow
+    又不区分否定，会把「没有胸痛」也送进复核队列。
+    """
+    return SafetyDecision(
+        is_sensitive=False,
+        severity=SEVERITY_YELLOW,
+        category=None,
+        matched_rule=matched_rule,
+        reason=reason,
+    )
+
+
 def _sensitive(category: str, matched_rule: str) -> SafetyDecision:
     return SafetyDecision(
         is_sensitive=True,
@@ -169,6 +200,29 @@ def _sensitive(category: str, matched_rule: str) -> SafetyDecision:
         matched_rule=matched_rule,
         reason=None,
     )
+
+
+# ------------------------------------------------------------------ 注入防线接线点（B4）
+
+InjectionHook = Callable[[str], SafetyDecision | None]
+
+#: 由装配步注入（`app/router/injection.py` 完成后调用 `set_injection_hook`）。
+#: 约定：返回 None = 未命中注入（继续走急症规则）；返回 SafetyDecision = 短路。
+#: ⚠️ 注入类结论的 `category`（prompt_injection）**不在** `escalate_safety_event`
+#: 接受的急症类别内：调用方必须先按 reason/category 分支到注入拒答＋审计，
+#: 不得把它直接送进红色落库（否则会因非法 category 抛错）。
+#: **不在这里 import injection**：B4 创建该模块前本文件必须可独立测试。
+_injection_hook: InjectionHook | None = None
+
+
+def set_injection_hook(hook: InjectionHook | None) -> None:
+    """挂载/卸载注入防线（装配步调用一次；传 None 即卸载，测试可复位）。"""
+    global _injection_hook
+    _injection_hook = hook
+
+
+def clear_injection_hook() -> None:
+    set_injection_hook(None)
 
 
 def _occurrences(haystack: str, needle: str) -> list[int]:
@@ -189,31 +243,23 @@ def _window_has_marker(text: str, start: int, markers: tuple[str, ...], window: 
     return any(marker in left for marker in markers)
 
 
-def safety_check(text: str) -> SafetyDecision:
-    """急症一票否决判定：纯函数、无 I/O、毫秒级。
-
-    顺序：全文缓解护栏 → 胸部「部位×症状」双命中 → 低歧义短语命中。
-    任何护栏命中即不判红（宁可漏黄不漏红由护栏白名单保证，见模块 docstring）。
-    """
-    cleaned = (text or "").strip()
-    if not cleaned:
-        return _not_sensitive(None)
-
-    # 1. 缓解护栏（全文）：带「已缓解」语义的历史表达不判红（FR-DLG-07 历史）
+def _emergency_decision(cleaned: str) -> SafetyDecision:
+    """急症三组规则（缓解护栏 → 部位×症状 → 低歧义短语）。注入防线不在此处。"""
+    # 1. 缓解护栏（全文）：带「已缓解」语义的历史表达 → 黄档复核（FR-DLG-07 历史）
     for marker in RECOVERY_MARKERS:
         if marker in cleaned:
-            return _not_sensitive("recovery", matched_rule=marker)
+            return _boundary("recovery", matched_rule=marker)
 
     # 2. 胸部「部位 × 症状」双命中
     blocked_reason: str | None = None
     for part in CHEST_PARTS:
         for part_start in _occurrences(cleaned, part):
-            # 他人主体护栏：部位左侧窗口出现他人标记 → 不为本人建红色（FR-DLG-07）
+            # 他人主体护栏：部位左侧窗口出现他人标记 → 黄档复核，不为本人建红色（FR-DLG-07）
             if _window_has_marker(cleaned, part_start, OTHER_PERSON_MARKERS, _PERSON_WINDOW):
-                return _not_sensitive("other_person", matched_rule=part)
-            # 模糊护栏：部位左侧窗口出现推测标记 → 判黄不判红（FR-DLG-07 模糊）
+                return _boundary("other_person", matched_rule=part)
+            # 模糊护栏：部位左侧窗口出现推测标记 → 黄档复核（FR-DLG-07 模糊）
             if _window_has_marker(cleaned, part_start, HEDGE_MARKERS, _HEDGE_WINDOW):
-                return _not_sensitive("hedge", matched_rule=part)
+                return _boundary("hedge", matched_rule=part)
 
             part_end = part_start + len(part)
             for symptom in CHEST_SYMPTOMS:
@@ -234,12 +280,12 @@ def safety_check(text: str) -> SafetyDecision:
     # 3. 低歧义短语命中（呼吸困难/跌倒/中风先兆/轻生，无需部位搭配）
     for phrase, category in CRITICAL_PHRASES:
         for phrase_start in _occurrences(cleaned, phrase):
-            # 他人主体护栏（如「我爸摔倒」不为本人建红色）
+            # 他人主体护栏（如「我爸摔倒」→ 黄档复核，不为本人建红色）
             if _window_has_marker(cleaned, phrase_start, OTHER_PERSON_MARKERS, _PERSON_WINDOW):
-                return _not_sensitive("other_person", matched_rule=phrase)
-            # 模糊护栏（如「好像摔倒了」判黄归 Day 9）
+                return _boundary("other_person", matched_rule=phrase)
+            # 模糊护栏（如「好像摔倒了」→ 黄档复核）
             if _window_has_marker(cleaned, phrase_start, HEDGE_MARKERS, _HEDGE_WINDOW):
-                return _not_sensitive("hedge", matched_rule=phrase)
+                return _boundary("hedge", matched_rule=phrase)
             # 否定护栏（如「没有摔倒」「差点摔倒」）
             if _window_has_marker(cleaned, phrase_start, NEGATION_MARKERS, _NEGATION_WINDOW):
                 blocked_reason = "negation"
@@ -249,6 +295,35 @@ def safety_check(text: str) -> SafetyDecision:
         return _not_sensitive(blocked_reason)
 
     return _not_sensitive(None)
+
+
+def safety_check(text: str) -> SafetyDecision:
+    """急症一票否决判定：纯函数、无 I/O、毫秒级。
+
+    顺序：**急症三组规则（红/黄/否定）→ 注入防线 → 返回急症结论**。
+    急症判红必须优先于注入判红（B4 联调口径：同一句两词并存时判急症）；
+    注入只覆盖「没有急症红」的结论，三类边界（黄）与否定也会被注入结论覆盖——
+    攻击语句不该因为附带一句「昨天疼现在好了」就降级成黄档。
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return _not_sensitive(None)
+
+    decision = _emergency_decision(cleaned)
+    if decision.severity == SEVERITY_RED:
+        return decision
+
+    # 注入防线（B4 挂载；未挂载时零成本跳过）。命中即按注入方给的结论短路，
+    # 走的是同一条一票否决路径，不新造第二套（AC-36 / TD:1173）。
+    if _injection_hook is not None:
+        try:
+            injected = _injection_hook(cleaned)
+        except Exception as exc:  # 防线自身异常不能拖垮安全层，留证后返回急症结论
+            logger.error("safety_injection_hook_raised error=%s", type(exc).__name__)
+        else:
+            if injected is not None:
+                return injected
+    return decision
 
 
 __all__ = [
@@ -265,6 +340,10 @@ __all__ = [
     "OTHER_PERSON_MARKERS",
     "RECOVERY_MARKERS",
     "SEVERITY_RED",
+    "SEVERITY_YELLOW",
+    "InjectionHook",
     "SafetyDecision",
+    "clear_injection_hook",
     "safety_check",
+    "set_injection_hook",
 ]

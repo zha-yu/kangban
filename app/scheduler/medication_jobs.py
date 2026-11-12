@@ -42,7 +42,6 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.graphs.medication_confirmation_graph import (
-    MAX_ATTEMPTS,
     build_medication_graph,
     graph_config,
     resume_medication_task,
@@ -311,9 +310,15 @@ class SchedulerRuntime:
         步骤：
         1. graph.aget_state() 取当前状态 → attempt_no + terminal
         2. 已有终态 → 跳过（双驱动守卫：对话侧可能已经 resume 过了）
-        3. attempt_no >= MAX_ATTEMPTS → 跳过（不应出现在 waiting_confirm，但双保险）
-        4. 算下次触达时点 = T0 + attempt_no * 5min
-        5. 到点 → resume(graph, reminder_id, answer="")
+        3. 算下次触达时点 = T0 + attempt_no * 5min
+        4. 到点 → resume(graph, reminder_id, answer="")
+
+        **不再按「attempt 次数用尽」跳过**（F09 终态死锁修复）：第 4 次触达
+        之后的那次 resume 恰恰是唯一能让子图 `retry` 走到 `attempt_no + 1 > 4`、
+        进而 `finalize` 写终态的一次。跳过它 = 事件永远停在 waiting_confirm。
+        次数耗尽由子图 `retry` 判定并**不再入 remind 边**，所以这里 resume 不会发出
+        第 5 次触达；`MAX_ATTEMPTS=4`（`medication_confirmation_graph.py`）与四时点
+        / 60s 窗口均不变。
         """
         if self._checkpointer is None:
             return
@@ -336,19 +341,12 @@ class SchedulerRuntime:
         terminal = values.get("terminal")
         attempt_no = int(values.get("attempt_no") or 1)
 
-        # ② 双驱动守卫：已有终态或 attempt 已到位 → 跳过
+        # ② 双驱动守卫：已有终态 → 跳过（次数耗尽不在这里判，见 docstring）
         if terminal is not None:
             logger.info(
                 "medication_scheduler_resume_skip_terminal reminder_id=%s terminal=%s",
                 reminder_id,
                 terminal,
-            )
-            return
-        if attempt_no >= MAX_ATTEMPTS:
-            logger.info(
-                "medication_scheduler_resume_skip_exhausted reminder_id=%s attempt_no=%d",
-                reminder_id,
-                attempt_no,
             )
             return
 
@@ -365,7 +363,7 @@ class SchedulerRuntime:
         if now_utc < next_fire:
             return
 
-        # ⑤ 到点 → resume 空 answer（子图会走 retry：attempt_no+1 → remind → wait_confirm）
+        # ⑤ 到点 → resume 空 answer（子图 retry：未耗尽 → 下一次触达；耗尽 → finalize）
         async with self._session_factory() as resume_session:
             graph = build_medication_graph(
                 session=resume_session,

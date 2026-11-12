@@ -108,7 +108,9 @@ async def test_notification_lifecycle_success(
     assert n.sent_at is not None
 
     # pending → delivered
-    await notify_service.mark_notification_delivered(session, notification_id=note_id)
+    await notify_service.mark_notification_delivered(
+        session, notification_id=note_id, receipt_kind="card_rendered"
+    )
     await session.flush()
     n = (
         await session.execute(select(Notification).where(Notification.notification_id == note_id))
@@ -141,7 +143,9 @@ async def test_illegal_transition_rejected(session: AsyncSession, seeded: dict[s
 
     with pytest.raises(notify_service.NotificationError):
         # generated 不能直接到 delivered
-        await notify_service.mark_notification_delivered(session, notification_id=note_id)
+        await notify_service.mark_notification_delivered(
+            session, notification_id=note_id, receipt_kind="card_rendered"
+        )
 
 
 async def test_acknowledge_idempotent(session: AsyncSession, seeded: dict[str, Any]) -> None:
@@ -156,7 +160,9 @@ async def test_acknowledge_idempotent(session: AsyncSession, seeded: dict[str, A
     await session.flush()
 
     await notify_service.mark_notification_sent(session, notification_id=note_id)
-    await notify_service.mark_notification_delivered(session, notification_id=note_id)
+    await notify_service.mark_notification_delivered(
+        session, notification_id=note_id, receipt_kind="card_rendered"
+    )
     await notify_service.acknowledge_notification(
         session, notification_id=note_id, acknowledger_id=seeded["staff_id"]
     )
@@ -183,7 +189,9 @@ async def test_acknowledge_forbidden_wrong_owner(
     await session.flush()
 
     await notify_service.mark_notification_sent(session, notification_id=note_id)
-    await notify_service.mark_notification_delivered(session, notification_id=note_id)
+    await notify_service.mark_notification_delivered(
+        session, notification_id=note_id, receipt_kind="card_rendered"
+    )
     await session.flush()
 
     # 家属持有效工牌但 target_type=staff，不能确认 staff 通知

@@ -9,14 +9,27 @@
 ```
 START → collect（5 问 interrupt 循环：收缩压/舒张压/睡眠/情绪/主诉，
                 每问等 60s（PRD §4.6），无效重问一次，再失败标缺失）
-      → validate（Pydantic HealthRecord 结构化；无效回 collect 重问）
+      → validate（Pydantic HealthRecord 结构化＋跨字段 systolic<=diastolic 校验；
+                  默认与注入 validate_fn 都必经该检查）
       → grade（X1 分级引擎引用，阈值在引擎不在图内）
       ├─ green  → persist → END
       ├─ yellow → create_yellow_order（工单+黄色复核任务）→ hitl_yellow（护工 interrupt）
       │            └─ confirmed → persist ／ corrected → 回 grade 纠错重分级
-      └─ red    → notify_red（护工+监护人双通知）→ create_red_order（紧急工单）
+      └─ red    → create_red_order（record+risk_event+工单，同一事务，注入 C 的包装）
+                   → notify_red（staff+guardian 双通知；失败不回滚落库）
                    → hitl_red（医生 interrupt）→ persist（含实际处置时间）
 ```
+
+**X3 v0.6 顺序硬口径**：红档**先落库、后通知**。`create_red_order_fn` 在图内只依赖
+B 侧 callable 形态 `(session, state) -> {record_id, risk_event_id, work_order_id}`；
+生产装配注入 `create_red_landing_adapter`（调 `health_service.create_red_landing`），
+本图**不 import 具体落库函数名、不直写 work_orders**；**未注入时红档节点直接抛
+`RuntimeError`，不静默降级**（P10 收口后已无适配层桩）。
+`notify_red_fn` 的错误由图内捕获并标记 `degraded/notification_error`，继续 HITL 与 persist，
+重试交给既有 scan 链——通知失败不回滚落库（C 条件 3）。
+
+**X7 复核 resume**：`hitl_yellow` / `hitl_red` 收到 `decision="reviewed_externally"`
+时直接 `END`，不再走 persist（C4 已写复核结果，重复 persist 会二次确认/二次版本）。
 
 四个决定：
 
@@ -26,13 +39,15 @@ START → collect（5 问 interrupt 循环：收缩压/舒张压/睡眠/情绪/�
    仍能读回「问到第几问」。
 2. **分级阈值不进图**（技术设计 §7.2「分级规则在代码不在 prompt」）：
    `grade` 节点只调用可替换的引擎引用（缺省映射 A2 交付的 X1 冻结纯函数
-   `health_service.grade_health`，g1）；图内没有任何红/黄/绿数值。
+   `health_service.grade_health`，g2）；图内没有任何红/黄/绿数值。
    引擎输出非法 level 时直接抛错，绝不让图静默按绿处理。
 3. **结构化校验在图内做结构层**（Pydantic，字段边界与 0017 迁移的 CHECK
-   约束同源：血压 0–300 / 睡眠 0–24 / 情绪 1–5）；口语归一与「收缩压>舒张压」
-   这类跨字段语义校验归 A2（`validate_fn` 可注入替换），图不重复实现。
-4. **图节点零 SQL**：persist / 建单 / 双通知全部经注入式服务出口（缺省
-   lazy import `health_service` / `work_order_service` / `notify_service`）；
+   约束同源：血压 0–300 / 睡眠 0–24 / 情绪 1–5）；跨字段语义校验
+   （两分量均有时 `systolic <= diastolic`）也归图内 `validate` 节点：
+   两项标 invalid → 重问一次 → 仍失败标缺失。**不新增阈值**（校验不是分级，
+   红/黄/绿仍只归 X1 引擎）。注入 `validate_fn` 不得绕过该检查。
+4. **图节点零 SQL**：persist / 建单 / 双通知全部经注入式服务出口
+   （缺省 lazy import `health_service`；红档落库包装由装配注入，未注入即抛错不降级）；
    测试注入假出口即可覆盖三分支，无需真实服务在位。
 
 **HITL**：黄档等护工确认（防 130 输成 180 的误报）、红档等医生确认，
@@ -47,11 +62,13 @@ import datetime
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Any, Literal, TypedDict
+from typing import Any, Final, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field, ValidationError
+
+from app.core.context import get_trace_id
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +77,13 @@ SOURCE_VALUES = ("voice_scheduled", "staff_scheduled", "voice_active", "staff_ac
 
 #: 分级三档（引擎输出值域；阈值不在本模块）
 GRADE_LEVELS = ("green", "yellow", "red")
+
+#: 红档播报话术（TD:1017 / F08）：**写代码常量，不写进 prompt**。
+#: 数字人绝不说「您这是高血压」，只说这一句并走人工告警。
+RED_ALERT_TTS_TEXT: Final[str] = "这个数值有点高，我帮您告诉医生"
+
+#: X7：外部（console）已完成复核，子图直接收口不再 persist 的 resume 决策值。
+DECISION_REVIEWED_EXTERNALLY: Final[str] = "reviewed_externally"
 
 # PRD §4.6：每问等 60s（窗口计时由调度器/客户端执行，图只记录 deadline）
 _QUESTION_WINDOW_SECONDS_PRD = 60
@@ -154,10 +178,10 @@ def _record_fields(state: HealthCheckState) -> dict[str, Any]:
 async def _default_persist(session: Any, state: HealthCheckState) -> dict[str, Any]:
     """落库/收口出口（A2 内聚口径）。
 
-    - 绿/红档（order_ref 无 record_id）→ ``create_health_record``：
-      绿档仅写记录；红档写记录 + risk_event（红工单由 dev-C safety_service 接管）。
-    - 黄档（create_yellow_order 首过已落 v1，review_status=pending）→
-      ``review_health_record(action="confirm")`` 收口复核状态（AC-22 复核留痕）。
+    - 黄/红档（create_*_order 已返回 record_id）→ ``review_health_record(action="confirm")``
+      收口复核状态（AC-22 复核留痕）；红档**不重复落库**（X3 v0.6 先落库后通知）。
+    - 绿档（无 order_ref）→ ``create_health_record``：只写记录，不建单不通知。
+      红档落库包装未注入时已经在 `create_red_order` 节点抛错，不会走到本分支兜底。
     """
     from app.services.health_service import create_health_record, review_health_record
 
@@ -247,49 +271,96 @@ async def _default_create_yellow_order(session: Any, state: HealthCheckState) ->
 
 
 async def _default_notify_red(session: Any, state: HealthCheckState) -> dict[str, Any]:
-    """红档双通知出口（AC-38）：notify_service 尚未交付（dev-C）。
+    """红档双通知出口的**显式降级兜底**（注入缺失时才走到这里）。
 
-    缺省实现**显式降级**：log warning + degraded 标记返回，绝不假装已通知；
-    dev-C 交付后仅替换本函数。
+    生产路径必须注入 `notify_red_dual_adapter`（调 C 的 `notify_red_dual`）：
+    缺省实现只 log warning + degraded 标记，绝不假装已通知。
     """
     logger.warning(
-        "notify_service_unavailable_degraded",
-        extra={"elder_id": state.get("elder_id"), "thread": state.get("graph_thread_id")},
+        "health_notify_red_not_injected_degraded elder_id=%s thread=%s",
+        state.get("elder_id"),
+        state.get("graph_thread_id"),
     )
     return {
         "delivered": False,
         "degraded": True,
         "channels": [],
-        "note": "notify_service 尚未交付（dev-C），护工+监护人双通知待接入",
+        "note": "notify_red_fn 未注入（装配步接 health_service.notify_red_dual）",
     }
 
 
-async def _default_create_red_order(session: Any, state: HealthCheckState) -> dict[str, Any]:
-    """红档紧急工单。
+async def notify_red_dual_adapter(session: Any, state: HealthCheckState) -> dict[str, Any]:
+    """X3 v0.6 双通知适配层：`(session, state)` → 调 C 的 `notify_red_dual`。
 
-    A2 的 create_health_record 只建红 risk_event 不建红单（其注释口径：红档走
-    safety_service，dev-C 未交付）。过渡期用通用出口 ``open_work_order`` 兜底
-    （dedupe_token 绑定 thread_id 幂等，Step 6 集成时裁决是否切换 safety_service）。
+    只读 `state.order_ref` 里**落库步骤**返回的 `record_id` / `risk_event_id`；
+    `work_order_id` 不出现在通知返回（NotifyRef 无该字段）。
+    落库未完成（无 record_id/risk_event_id）→ 显式降级，不伪造通知。
     """
-    from app.services.work_order_service import open_work_order
+    from app.services.health_service import notify_red_dual
 
     order_ref = dict(state.get("order_ref") or {})
-    if order_ref.get("work_order_id"):
-        return order_ref  # 重分级回环重入：不重复建单
-
-    ref = await open_work_order(
+    record_id = order_ref.get("record_id")
+    risk_event_id = order_ref.get("risk_event_id")
+    if not record_id or not risk_event_id:
+        logger.warning(
+            "health_notify_red_missing_persist elder_id=%s thread=%s",
+            state.get("elder_id"),
+            state.get("graph_thread_id"),
+        )
+        return {
+            "delivered": False,
+            "degraded": True,
+            "notification_error": "risk_event_not_persisted",
+            "channels": [],
+        }
+    ref = await notify_red_dual(
         session,
         elder_id=_uuid(state["elder_id"]),
-        order_type="health_alert",
-        severity="red",
-        dedupe_token=f"health_graph:{state.get('graph_thread_id')}:red",
-        event_id=_uuid(order_ref["risk_event_id"]) if order_ref.get("risk_event_id") else None,
-        assignee_id=None,  # 未分派是真实状态（work_order_service §open_work_order 口径）
+        record_id=_uuid(record_id),
+        risk_event_id=_uuid(risk_event_id),
+        severity=str(state.get("grade_level") or "red"),
     )
     return {
-        "order_id": str(ref.order_id),
-        "order_no": getattr(ref, "order_no", None),
-        "severity": "red",
+        "delivered": False,  # 出口发送成功只是 pending，收到客户端回执才算 delivered（X1）
+        "degraded": not ref.notification_ids,
+        "notification_ids": [str(item) for item in ref.notification_ids],
+        "risk_event_id": str(ref.risk_event_id),
+        "channels": ["staff", "guardian"],
+    }
+
+
+async def create_red_landing_adapter(session: Any, state: HealthCheckState) -> dict[str, Any]:
+    """红档落库适配层（P10）：`(session, state)` → 调 C 的 `create_red_landing`。
+
+    图内只依赖 B 侧定义的 callable 形态，**不直写 `work_orders`**（X3 v0.6 条件 1）：
+    record + risk_event + 工单由 `health_service.create_red_landing` 在同一事务落定，
+    通知由下一节点 `notify_red` 单独执行（先落库、后通知）。
+
+    返回图状态需要的三个 id（外加 severity/version 供 persist 收口）：
+    `record_id` / `risk_event_id` / `work_order_id`。
+    """
+    from app.services.health_service import create_red_landing
+
+    record = dict(state.get("record") or {})
+    ref = await create_red_landing(
+        session,
+        elder_id=_uuid(state["elder_id"]),
+        source=str(state["source"]),
+        systolic=record.get("systolic"),
+        diastolic=record.get("diastolic"),
+        sleep_hours=record.get("sleep_hours"),
+        mood_score=record.get("mood_score"),
+        mood_note=record.get("mood_note"),
+        complaint=record.get("complaint"),
+        operator_id=_uuid(state["operator_id"]) if state.get("operator_id") else None,
+        graph_thread_id=state.get("graph_thread_id"),
+    )
+    return {
+        "record_id": str(ref.record_id),
+        "severity": ref.severity,
+        "version": ref.version,
+        "risk_event_id": str(ref.risk_event_id) if ref.risk_event_id else None,
+        "work_order_id": str(ref.work_order_id) if ref.work_order_id else None,
     }
 
 
@@ -320,6 +391,44 @@ def _coerce_field(key: str, raw: Any) -> tuple[Any, str | None]:
     except ValidationError:
         return None, "out_of_range"
     return coerced, None
+
+
+def default_validate_answers(answers: dict[str, Any]) -> dict[str, Any]:
+    """默认结构层校验：5 字段 Pydantic 结构化（与 0017 CHECK 同源）。
+
+    返回 `{"record": {...}, "invalid": [...]}`；未答/空值直接标 None（缺失）。
+    **跨字段校验不在这里**——`validate` 节点在默认与注入路径之后统一执行，
+    保证注入 `validate_fn` 也绕不过 `systolic <= diastolic`（F06 / PRD line 361）。
+    """
+    record: dict[str, Any] = {}
+    invalid: list[str] = []
+    for key, _ in QUESTIONS:
+        raw = answers.get(key)
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            record[key] = None  # 未答/空 → 缺失（缺失判黄是引擎的规则，图不判）
+            continue
+        value, error = _coerce_field(key, raw)
+        if error:
+            invalid.append(key)
+        else:
+            record[key] = value
+    return {"record": record, "invalid": invalid}
+
+
+def _cross_field_conflicts(record: dict[str, Any]) -> list[str]:
+    """两分量均有时 `systolic <= diastolic` → 两项都 invalid（F06 / PRD line 361）。
+
+    这是**校验**不是分级：不引入任何阈值常量，也不产生严重度。
+    非数值由单字段校验负责，这里只比较可比较的整数。
+    """
+    systolic, diastolic = record.get("systolic"), record.get("diastolic")
+    if systolic is None or diastolic is None:
+        return []
+    try:
+        systolic_i, diastolic_i = int(systolic), int(diastolic)
+    except (TypeError, ValueError):
+        return []
+    return ["systolic", "diastolic"] if systolic_i <= diastolic_i else []
 
 
 def _pending_questions(state: HealthCheckState) -> list[str]:
@@ -363,7 +472,10 @@ def build_health_checkup_graph(
     服务出口全部可注入：`validate_fn(answers) -> {"record", "invalid"}`、
     `grade_fn(record) -> {"level", "reasons", "rule_version"}`、
     `persist_fn(session, state)`、`create_yellow_order_fn` / `notify_red_fn` /
-    `create_red_order_fn(session, state)`。缺省用真实 service（lazy import）；
+    `create_red_order_fn(session, state)`。`validate_fn` / `grade_fn` / `persist_fn`
+    缺省走真实 service；`notify_red_fn` 缺省为显式降级兜底，生产装配注
+    `notify_red_dual_adapter`；**`create_red_order_fn` 无缺省**——未注入时红档节点
+    直接抛 `RuntimeError`，不再静默降级（生产装配注 `create_red_landing_adapter`）。
     测试注入假函数即可覆盖三分支与重问循环。
     """
     _validate = validate_fn
@@ -375,9 +487,8 @@ def build_health_checkup_graph(
         else _default_create_yellow_order
     )
     _notify_red = notify_red_fn if notify_red_fn is not None else _default_notify_red
-    _red_order = (
-        create_red_order_fn if create_red_order_fn is not None else _default_create_red_order
-    )
+    #: 红档落库**无降级兜底**：None 即「装配漏了」，由节点显性抛错（不静默改顺序）。
+    _red_order = create_red_order_fn
 
     async def collect(state: HealthCheckState) -> dict[str, Any]:
         """5 问循环：一次 interrupt 问一题；60s 窗口与超时重试由外部执行。"""
@@ -410,25 +521,23 @@ def build_health_checkup_graph(
         }
 
     async def validate(state: HealthCheckState) -> dict[str, Any]:
-        """结构化 5 字段（Pydantic，与 0017 CHECK 同源）；无效且未重问 → 回 collect。"""
+        """结构层校验 + 跨字段校验；无效且未重问 → 回 collect。
+
+        **跨字段检查对所有路径生效**：默认校验与注入 `validate_fn` 的结果都要过
+        `_cross_field_conflicts`，注入实现不能绕过 F06（PRD line 361）。
+        """
         answers = dict(state.get("answers") or {})
         attempts = dict(state.get("attempts") or {})
-        if _validate is not None:
-            result = _validate(answers)
-            record = dict(result.get("record") or {})
-            invalid = [str(k) for k in (result.get("invalid") or [])]
-        else:
-            record, invalid = {}, []
-            for key, _ in QUESTIONS:
-                raw = answers.get(key)
-                if raw is None or (isinstance(raw, str) and not raw.strip()):
-                    record[key] = None  # 未答/空 → 缺失（缺失判黄是引擎的规则，图不判）
-                    continue
-                value, error = _coerce_field(key, raw)
-                if error:
-                    invalid.append(key)
-                else:
-                    record[key] = value
+        validator = _validate if _validate is not None else default_validate_answers
+        result = validator(answers)
+        record = dict(result.get("record") or {})
+        invalid = [str(k) for k in (result.get("invalid") or [])]
+
+        # F06：两分量均有时 systolic <= diastolic → 两项都 invalid（重问一次后再标缺失）
+        for key in _cross_field_conflicts(record):
+            record[key] = None
+            if key not in invalid:
+                invalid.append(key)
         # 无效重问一次（TD §7.2「无效重问一次，再失败标缺失」）；强制收口时不重问
         reask = (
             []
@@ -453,6 +562,13 @@ def build_health_checkup_graph(
         level = str(result.get("level") or "")
         if level not in GRADE_LEVELS:
             raise ValueError(f"grade engine returned invalid level: {level!r}")
+        logger.info(
+            "health_graph_graded trace_id=%s thread_id=%s level=%s rule_version=%s",
+            get_trace_id() or "-",
+            state.get("graph_thread_id"),
+            level,
+            result.get("rule_version"),
+        )
         return {
             "grade_level": level,
             "grade_reasons": [str(r) for r in (result.get("reasons") or [])],
@@ -486,12 +602,57 @@ def build_health_checkup_graph(
         return {"hitl_result": result}
 
     async def notify_red(state: HealthCheckState) -> dict[str, Any]:
-        notified = await _notify_red(session, state)
-        return {"notified": dict(notified or {})}
+        """红档双通知：**异常不回滚落库**，标记 degraded 后继续 HITL/persist。
+
+        重试由既有 scan 链兜底（X3 v0.6 条件 3）；`tts_text` 一律带上代码常量，
+        语音路径与面板帧都消费它（F08 / TD:1017）。
+        """
+        try:
+            notified = await _notify_red(session, state)
+        except Exception as exc:
+            logger.exception(
+                "health_notify_red_failed elder_id=%s thread=%s",
+                state.get("elder_id"),
+                state.get("graph_thread_id"),
+            )
+            notified = {
+                "delivered": False,
+                "degraded": True,
+                "notification_error": type(exc).__name__,
+                "channels": [],
+            }
+        merged = dict(notified or {})
+        merged.setdefault("tts_text", RED_ALERT_TTS_TEXT)
+        logger.info(
+            "health_graph_notify_red trace_id=%s thread_id=%s degraded=%s",
+            get_trace_id() or "-",
+            state.get("graph_thread_id"),
+            bool(merged.get("degraded")),
+        )
+        return {"notified": merged}
 
     async def create_red_order(state: HealthCheckState) -> dict[str, Any]:
+        """先落库（record + risk_event + 工单同一事务，由注入的落库包装承担）。
+
+        重分级回环（黄升红）已有 record_id → 不重复落库，沿用原 order_ref；
+        B 不直写 `work_orders`（X3 v0.6 条件 1 / AGENTS §2.1）。
+        **未注入即装配错误**：显性抛错，不退化成「确认后落库」的静默降级。
+        """
+        existing = dict(state.get("order_ref") or {})
+        if existing.get("record_id"):
+            return {"order_ref": existing}
+        if _red_order is None:
+            raise RuntimeError("create_red_order_fn not wired")
         ref = await _red_order(session, state)
-        return {"order_ref": dict(ref or {})}
+        merged_ref = {**existing, **dict(ref or {})}
+        logger.info(
+            "health_graph_red_order trace_id=%s thread_id=%s record_id=%s work_order_id=%s",
+            get_trace_id() or "-",
+            state.get("graph_thread_id"),
+            merged_ref.get("record_id"),
+            merged_ref.get("work_order_id"),
+        )
+        return {"order_ref": merged_ref}
 
     async def hitl_red(state: HealthCheckState) -> dict[str, Any]:
         payload = interrupt(
@@ -523,19 +684,26 @@ def build_health_checkup_graph(
 
     def route_grade(
         state: HealthCheckState,
-    ) -> Literal["persist", "create_yellow_order", "notify_red"]:
+    ) -> Literal["persist", "create_yellow_order", "create_red_order"]:
         level = state.get("grade_level")
         if level == "green":
             return "persist"
         if level == "yellow":
             return "create_yellow_order"
         if level == "red":
-            return "notify_red"
+            # X3 v0.6：先落库（create_red_order）→ 后通知（notify_red）
+            return "create_red_order"
         raise ValueError(f"unknown grade level in state: {level!r}")
 
-    def route_hitl_yellow(state: HealthCheckState) -> Literal["grade", "persist"]:
+    def route_hitl_yellow(state: HealthCheckState) -> Literal["grade", "persist", "end"]:
         decision = (state.get("hitl_result") or {}).get("decision")
+        if decision == DECISION_REVIEWED_EXTERNALLY:
+            return "end"  # X7：console 已复核，图只收口，不再 persist（防二次确认/二次版本）
         return "grade" if decision == "corrected" else "persist"
+
+    def route_hitl_red(state: HealthCheckState) -> Literal["persist", "end"]:
+        decision = (state.get("hitl_result") or {}).get("decision")
+        return "end" if decision == DECISION_REVIEWED_EXTERNALLY else "persist"
 
     builder = StateGraph(HealthCheckState)
     builder.add_node("collect", collect)
@@ -561,16 +729,19 @@ def build_health_checkup_graph(
         {
             "persist": "persist",
             "create_yellow_order": "create_yellow_order",
-            "notify_red": "notify_red",
+            "create_red_order": "create_red_order",
         },
     )
     builder.add_edge("create_yellow_order", "hitl_yellow")
     builder.add_conditional_edges(
-        "hitl_yellow", route_hitl_yellow, {"grade": "grade", "persist": "persist"}
+        "hitl_yellow",
+        route_hitl_yellow,
+        {"grade": "grade", "persist": "persist", "end": END},
     )
-    builder.add_edge("notify_red", "create_red_order")
-    builder.add_edge("create_red_order", "hitl_red")
-    builder.add_edge("hitl_red", "persist")
+    # X3 v0.6：先落库 → 后通知 → 医生确认 → 归档
+    builder.add_edge("create_red_order", "notify_red")
+    builder.add_edge("notify_red", "hitl_red")
+    builder.add_conditional_edges("hitl_red", route_hitl_red, {"persist": "persist", "end": END})
     builder.add_edge("persist", END)
 
     return builder.compile(checkpointer=checkpointer)
@@ -631,14 +802,19 @@ async def resume_health_checkup(
 
 
 __all__ = [
+    "DECISION_REVIEWED_EXTERNALLY",
     "GRADE_LEVELS",
     "QUESTIONS",
+    "RED_ALERT_TTS_TEXT",
     "SOURCE_VALUES",
     "HealthCheckState",
     "HealthRecordDraft",
     "build_health_checkup_graph",
+    "create_red_landing_adapter",
     "default_thread_id",
+    "default_validate_answers",
     "graph_config",
+    "notify_red_dual_adapter",
     "resume_health_checkup",
     "start_health_checkup",
 ]

@@ -502,6 +502,7 @@ class _MemoryRecallFn(Protocol):
         *,
         elder_id: str | None,
         is_generic: bool,
+        query: str | None = None,
         limit: int = 5,
         min_importance: float | None = None,
         session: Any = None,
@@ -529,7 +530,10 @@ class ContextBuilder(MinimalContextBuilder):
         if runtime.elder_id is not None:
             try:
                 chunks = await self._recall(
-                    elder_id=runtime.elder_id, is_generic=False, limit=self._limit
+                    elder_id=runtime.elder_id,
+                    is_generic=False,
+                    query=runtime.user_text or "",
+                    limit=self._limit,
                 )
                 memory_notes = tuple(str(chunk.content) for chunk in chunks)
             except Exception as exc:  # 召回失败不拖垮轮次（PRD：本轮不加载记忆、绝不臆造）

@@ -1,10 +1,21 @@
-"""MemoryService 骨架（Day 6 N08，任务卡 §3.3 收口）。
+"""MemoryService：长期记忆的**唯一写库出口**（Day 6 N08 起，Day 9 B2 收口）。
 
-**本版只做两步**：提取（preference 候选）+ 召回（闸门②过滤后返回 active）。
-冲突检测、状态迁移（superseded/disputed）、90 天衰减、删除流水、pgvector 向量召回
-全部留 Day 7 —— 见技术债清单 docstring 末尾。
+Day 9 B2 变更（计划 §2.3 / 契约 X4/X5/X12）：
 
-任务卡 §3.3 硬性约束：
+1. **embedding 接线**：`_embed_texts` 走 OpenAI 兼容 `/embeddings`，维度必须恰好 1536
+   （与 `models/memory.py:42` 的 `vector(1536)` 一致），不一致抛 `EmbeddingDimensionError`
+   ——**不截断、不补零**；5xx/超时重试 ≤1 次仍失败抛 `EmbeddingUnavailable`。
+2. **向量读写只走 `text()` + `CAST(:vec AS vector)`**：`Vector1536` 没有 bind processor，
+   ORM 直接传 `list[float]` 会编码失败（AGENTS §9 口径），故不改 `app/models/memory.py`。
+3. **召回改 cosine**：删除字面相似度代用（旧实现的序列匹配已于 Day 9 B2 移除），硬闸门 `WHERE elder_id`、`status='active'`、
+   有效期在 SQL 内，`ORDER BY embedding <=> CAST(:vec AS vector) LIMIT 5`（NULLS LAST），
+   **不新增相似度数值阈值**（PRD/TD 未给）。
+4. **X5 管理三函数**：`list_memories` / `correct_memory` / `delete_memory`，
+   强制 `WHERE elder_id`；越权写审计 + 抛领域异常（本模块不 import fastapi）。
+5. **X4 清理钩子**：`purge_elder_memories`，`reason ∈ {checkout, teaching_reset}`，幂等，
+   **不写审计**（A 的 lifecycle 流水线统一写）。
+
+历史约束（Day 6 任务卡 §3.3）保持：
 1. 只处理 category=preference 一类
 2. 对话结束后**异步**跑（不阻塞主链，调用方 `asyncio.create_task()` 触发）
 3. 入库前三条硬校验：无 source_turn_ids → 拒；generic 身份 → 拒；sensitivity=health/family → 拒
@@ -19,12 +30,14 @@ import asyncio
 import json
 import logging
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Literal, Protocol
 
-from sqlalchemy import func, select
+import httpx
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger("app.services.memory_service")
@@ -70,11 +83,29 @@ _DECAY_FLOOR = Decimal("0.10")
 #: 归并判定：同长者同谓词下内容相似度 > 0.9 视为高度相似重复记忆（FR-MEM-07「高度相似」）
 _CONSOLIDATION_SIMILARITY_THRESHOLD = 0.9
 
+# --- Day 9 B2：embedding 客户端（裁决 D3，OpenAI 兼容 /embeddings）---
+
+#: 单次请求文本条数**硬上限**：Settings 配得再大也夹到 16（计划 §2.3 第 2 条）
+_EMBEDDING_MAX_BATCH = 16
+
+#: 失败重试次数（不含首次）：5xx / 超时 / 连接错误各重试 1 次，仍失败抛不可用
+_EMBEDDING_RETRY_AFTER_FIRST = 1
+
+#: 重试退避基数（秒）；测试 monkeypatch 为 0
+_EMBEDDING_RETRY_BACKOFF_SECONDS = 0.2
+
+#: 召回默认 top-k（TD line 933「pgvector 召回 top5」）
+_RECALL_DEFAULT_LIMIT = 5
+
+#: X5 单页上限（防 console 拉全表；契约未定上限，取 200）
+_LIST_MEMORIES_MAX_LIMIT = 200
+
+#: X4/X12 允许的清理原因（契约 X4/X12 枚举）
+PURGE_REASONS: frozenset[str] = frozenset({"checkout", "teaching_reset"})
+
 # 技术债（后续迭代补）：
-#   - 删除流水（deleted 状态不是真删除）
-#   - pgvector 向量召回（替换 ORDER BY importance DESC）
-#   - embedding 生成（可空 vector(1536)，接入后 _text_similarity 占位实现
-#     替换为向量余弦相似度，阈值口径不变）
+#   - 删除是软删（`deleted` 状态 + valid_to 收口），物理清理由 X4 钩子承担
+#   - 归并/冲突检测仍用**字面**相似度（存量行可能没有向量）；召回已改 pgvector cosine
 
 
 # ------------------------------------------------------------------ 异常
@@ -98,6 +129,226 @@ class MemoryInsertSkipped(ValueError):
         self.elder_id = elder_id
         self.subject = subject
         self.predicate = predicate
+
+
+class MemoryAccessDenied(Exception):
+    """X5 越权：`chunk_id` 不属于该长者（闸门②，AC-39）。
+
+    **不 import fastapi**：本异常是领域异常，由 C 的 `app/api/memory.py` 映射为
+    403 `SCOPE_FORBIDDEN`。⚠️ 越权审计与业务同事务（`record_audit` 只 flush 不 commit），
+    C 在返回 403 前必须先让该事务提交（照 `app/api/alerts.py:_forbidden_response` 的
+    「正常 return 不 raise」口径），否则审计会随异常回滚丢失。
+    """
+
+    def __init__(self, *, elder_id: uuid.UUID, chunk_id: uuid.UUID) -> None:
+        super().__init__(f"memory chunk {chunk_id} does not belong to elder {elder_id}")
+        self.elder_id = elder_id
+        self.chunk_id = chunk_id
+
+
+class EmbeddingError(Exception):
+    """embedding 域异常基类（调用方一律降级，不阻塞主链）。"""
+
+
+class EmbeddingDimensionError(EmbeddingError):
+    """供应商返回维度 != Settings.embedding_dim（1536）。
+
+    **绝不截断、绝不补零**：维度不符说明模型选错或迁移口径不一致，必须停下来换模型
+    或走迁移（计划 R-B6 / AGENTS §4.6）。
+    """
+
+    def __init__(self, *, actual: int, expected: int) -> None:
+        super().__init__(f"embedding dimension {actual} != expected {expected} (no truncate/pad)")
+        self.actual = actual
+        self.expected = expected
+
+
+class EmbeddingUnavailable(EmbeddingError):
+    """未配置 / 5xx / 超时重试耗尽 / 响应结构非法 → 本轮不可用（降级标记）。"""
+
+
+# ------------------------------------------------------------------ Hub：embedding 客户端 + 向量字面量
+
+
+def _embedding_settings() -> Any:
+    """延迟取 Settings（避免配置文件与业务模块在 import 期互相绑定）。"""
+    from app.core.config import get_settings
+
+    return get_settings()
+
+
+def _coerce_uuid(value: uuid.UUID | str) -> uuid.UUID:
+    """绑定原生 SQL 的 UUID 参数必须显式转换（asyncpg 不吃 str）。"""
+    return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+
+
+def _vector_literal(vector: Sequence[float], *, dim: int) -> str:
+    """`list[float]` → pgvector 文本字面量 `[v1,v2,...]`，并校验维度恰好 `dim`。"""
+    if len(vector) != dim:
+        raise EmbeddingDimensionError(actual=len(vector), expected=dim)
+    return "[" + ",".join(str(float(component)) for component in vector) + "]"
+
+
+async def _embed_texts(
+    texts: Sequence[str],
+    *,
+    client: httpx.AsyncClient | None = None,
+    settings: Any | None = None,
+) -> list[list[float]]:
+    """OpenAI 兼容 `POST {embedding_base_url}/embeddings`，返回与入参等长的向量表。
+
+    - 批量 ≤16（`_EMBEDDING_MAX_BATCH` 硬夹紧，配置放大不生效）；
+    - 每条维度必须恰好 `embedding_dim`（默认 1536）→ 否则 `EmbeddingDimensionError`；
+    - 5xx / 超时 / 连接错误各重试 ≤1 次，仍失败 → `EmbeddingUnavailable`；
+    - 未配置 base_url 或 model → 直接 `EmbeddingUnavailable`（不发起请求）；
+    - `client` 可注入（测试用 `httpx.MockTransport`，不连外网）；未注入则自建并关闭。
+    """
+    if not texts:
+        return []
+
+    cfg = settings or _embedding_settings()
+    base_url = str(getattr(cfg, "embedding_base_url", "") or "").strip().rstrip("/")
+    model = str(getattr(cfg, "embedding_model", "") or "").strip()
+    if not base_url or not model:
+        raise EmbeddingUnavailable("embedding provider not configured (base_url/model empty)")
+
+    expected_dim = int(getattr(cfg, "embedding_dim", 1536) or 1536)
+    configured_batch = int(getattr(cfg, "embedding_batch_size", _EMBEDDING_MAX_BATCH) or 0)
+    batch_size = max(1, min(configured_batch or _EMBEDDING_MAX_BATCH, _EMBEDDING_MAX_BATCH))
+
+    url = f"{base_url}/embeddings"
+    api_key = str(getattr(cfg, "embedding_api_key", "") or "")
+    timeout = float(getattr(cfg, "embedding_timeout_seconds", 5.0) or 5.0)
+
+    own_client = client is None
+    http = client or httpx.AsyncClient(timeout=timeout)
+    try:
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), batch_size):
+            batch = list(texts[start : start + batch_size])
+            vectors.extend(
+                await _embed_batch(
+                    http, url=url, model=model, api_key=api_key, batch=batch, dim=expected_dim
+                )
+            )
+        return vectors
+    finally:
+        if own_client:
+            await http.aclose()
+
+
+async def _embed_batch(
+    http: httpx.AsyncClient,
+    *,
+    url: str,
+    model: str,
+    api_key: str,
+    batch: list[str],
+    dim: int,
+) -> list[list[float]]:
+    """单批次请求 + 有限重试；失败分类只进日志（不含 key / 请求体）。"""
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    payload = {"model": model, "input": batch}
+
+    attempts = _EMBEDDING_RETRY_AFTER_FIRST + 1
+    last_error = "unknown"
+    for attempt in range(1, attempts + 1):
+        try:
+            response = await http.post(url, json=payload, headers=headers)
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            last_error = type(exc).__name__
+            retryable = True
+        else:
+            if response.status_code < 400:
+                return _parse_embedding_response(response, expected=len(batch), dim=dim)
+            last_error = f"http_{response.status_code}"
+            # 4xx（除 429）是配置/参数问题，重试无意义——直接判不可用
+            retryable = response.status_code >= 500 or response.status_code == 429
+
+        logger.warning(
+            "memory_embedding_attempt_failed",
+            extra={
+                "attempt": attempt,
+                "max_attempts": attempts,
+                "error": last_error,
+                "batch_size": len(batch),
+                "retryable": retryable,
+            },
+        )
+        if attempt >= attempts or not retryable:
+            break
+        await asyncio.sleep(_EMBEDDING_RETRY_BACKOFF_SECONDS)
+
+    raise EmbeddingUnavailable(f"embedding unavailable after {attempts} attempt(s): {last_error}")
+
+
+def _parse_embedding_response(
+    response: httpx.Response, *, expected: int, dim: int
+) -> list[list[float]]:
+    """解析 `{"data": [{"index": i, "embedding": [...]}]}`，顺序按 index 还原。"""
+    try:
+        items = response.json()["data"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise EmbeddingUnavailable("embedding response malformed") from exc
+    if not isinstance(items, list) or len(items) != expected:
+        actual = len(items) if isinstance(items, list) else "n/a"
+        raise EmbeddingUnavailable(f"embedding response count {actual} != {expected}")
+
+    indexed: list[tuple[int, list[float]]] = []
+    for position, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise EmbeddingUnavailable("embedding item malformed")
+        try:
+            vector = [float(component) for component in item["embedding"]]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise EmbeddingUnavailable("embedding item malformed") from exc
+        if len(vector) != dim:
+            raise EmbeddingDimensionError(actual=len(vector), expected=dim)
+        index = item.get("index", position)
+        indexed.append((index if isinstance(index, int) else position, vector))
+
+    indexed.sort(key=lambda pair: pair[0])
+    return [vector for _, vector in indexed]
+
+
+async def _safe_embed(text_value: str) -> list[float] | None:
+    """写入侧兜底：embedding 不可用只记降级标记并返回 None（行仍落库，向量可后补）。"""
+    try:
+        vectors = await _embed_texts([text_value])
+    except EmbeddingError as exc:
+        logger.warning(
+            "memory_embedding_unavailable",
+            extra={"reason": type(exc).__name__, "detail": str(exc)[:120]},
+        )
+        return None
+    return vectors[0] if vectors else None
+
+
+#: 向量写入：`Vector1536` 无 bind processor，ORM 传 list 会编码失败 → 原生 SQL + CAST。
+_EMBEDDING_UPDATE_SQL = text(
+    "UPDATE memory_chunks SET embedding = CAST(:vec AS vector) "
+    "WHERE chunk_id = :chunk_id AND elder_id = :elder_id"
+)
+
+
+async def _write_embedding(
+    session: AsyncSession,
+    *,
+    chunk_id: uuid.UUID,
+    elder_id: uuid.UUID | str,
+    vector: Sequence[float],
+) -> None:
+    dim = int(getattr(_embedding_settings(), "embedding_dim", 1536) or 1536)
+    await session.execute(
+        _EMBEDDING_UPDATE_SQL,
+        {
+            "vec": _vector_literal(vector, dim=dim),
+            "chunk_id": chunk_id,
+            "elder_id": _coerce_uuid(elder_id),
+        },
+    )
 
 
 # ------------------------------------------------------------------ 候选结构（任务卡 §3.3 第 1 条 JSON 对齐）
@@ -233,21 +484,33 @@ async def extract_preference_candidates(
 
 
 def _text_similarity(a: str, b: str) -> float:
-    """文本相似度占位实现（difflib 序列匹配 + 否定词归一）。
+    """**字面**相似度（字符二元组覆盖率 + 否定词归一），无第三方实现。
 
-    pgvector 向量召回落地后替换为 embedding 余弦相似度，阈值口径不变。
+    Day 9 B2 收窄用途：只服务**冲突检测**与**每周归并**这两条维护路径——它们要扫的
+    存量行可能没有向量（历史行 / 供应商降级期写入行），且这两条路径的阈值口径
+    （>0.9 高度相似）是 Day 8 已固化的语义，不由召回负责。**召回排序已改 pgvector
+    cosine**（`embedding <=> CAST(:vec AS vector)`），字面序列匹配代用已删除（计划 §2.3 第 4 条）。
+
     归一化剥掉否定词（不/没/别）再比对：「长者喜欢越剧」vs「长者不喜欢越剧了」
     是同一对象的正反陈述，应得高相似度从而触发语义矛盾判定；「越剧」vs「京剧」
     是不同对象，相似度低于阈值走可共存路径。
     """
-    from difflib import SequenceMatcher
-
     negations = ("不", "没", "别")
     a_norm = "".join(ch for ch in " ".join(a.split()) if ch not in negations)
     b_norm = "".join(ch for ch in " ".join(b.split()) if ch not in negations)
     if not a_norm or not b_norm:
         return 0.0
-    return SequenceMatcher(None, a_norm, b_norm).ratio()
+    if a_norm == b_norm:
+        return 1.0
+
+    def _bigrams(value: str) -> set[str]:
+        return {value[i : i + 2] for i in range(len(value) - 1)}
+
+    left, right = _bigrams(a_norm), _bigrams(b_norm)
+    if not left or not right:  # 单字串：二元组为空，只能靠相等判定
+        return 0.0
+    # 覆盖率 = 交集 / 较短集合（等价于双向 containment 取大者，对称）
+    return len(left & right) / min(len(left), len(right))
 
 
 _LLM_INSTANCE: Any = None
@@ -435,6 +698,10 @@ async def insert_candidate(
                         },
                     )
 
+        # --- Day 9 B2：先算向量再落库（冲突检测用的仍是字面相似度，与向量无关）---
+        # embedding 不可用 → None 并打降级标记：行照常落库（列可空），不阻塞记忆写入。
+        vector = await _safe_embed(new_content)
+
         chunk = MemoryChunk(
             elder_id=candidate.elder_id,
             subject=candidate.subject,
@@ -454,17 +721,30 @@ async def insert_candidate(
             supersedes_id=supersedes_id,
             conflicts_with_id=conflicts_with_id,
             valid_from=candidate.valid_from or datetime.now(UTC),
-            embedding=None,  # pgvector 接入后填充
+            # 向量**不经 ORM**：`Vector1536` 无 bind processor，传 list 会编码失败；
+            # 落库后用 text() + CAST(:vec AS vector) 回写（见 `_write_embedding`）。
+            embedding=None,
         )
         session.add(chunk)
         await session.flush()
+        if vector is not None:
+            await _write_embedding(
+                session,
+                chunk_id=chunk.chunk_id,
+                elder_id=chunk.elder_id,
+                vector=vector,
+            )
         if link_back_conflict:
             # 双向冲突指针：新条目落库后回填旧条目的 conflicts_with_id
             existing.conflicts_with_id = chunk.chunk_id  # type: ignore[union-attr]
             await session.flush()
         logger.info(
             "memory_chunk_inserted",
-            extra={"chunk_id": str(chunk.chunk_id), "elder_id": candidate.elder_id},
+            extra={
+                "chunk_id": str(chunk.chunk_id),
+                "elder_id": candidate.elder_id,
+                "embedded": vector is not None,
+            },
         )
     finally:
         if own_session:
@@ -479,53 +759,100 @@ async def insert_candidate(
     }
 
 
+#: 召回 SQL：硬闸门全部在 SQL 内（闸门②），排序走 pgvector cosine 距离。
+#: - `<=>` 是 pgvector 的余弦距离（0=同向，2=反向），升序即最相似优先；
+#: - `NULLS LAST`：无向量的存量行排在最后，但仍可被召回（FR-MEM-05 二次过滤兜底）；
+#: - `LIMIT :limit` 为 top-k（默认 5），**不设相似度数值阈值**（PRD/TD 未给）。
+_RECALL_SQL = """
+    SELECT chunk_id, elder_id, content, predicate, object_value, polarity,
+           status, importance, confidence, created_at, valid_to, supersedes_id,
+           embedding <=> CAST(:vec AS vector) AS distance
+    FROM memory_chunks
+    WHERE elder_id = :elder_id
+      AND status = 'active'
+      AND (valid_to IS NULL OR valid_to > now())
+"""
+
+_RECALL_ORDER_SQL = """
+    ORDER BY embedding <=> CAST(:vec AS vector) NULLS LAST,
+             importance DESC,
+             chunk_id
+    LIMIT :limit
+"""
+
+
 async def recall_active_chunks(
     *,
     elder_id: str | None,
     is_generic: bool,
-    limit: int = 5,
+    query: str | None = None,
+    limit: int = _RECALL_DEFAULT_LIMIT,
     min_importance: float | None = None,
     session: AsyncSession | None = None,
 ) -> list[Any]:
-    """召回：闸门② + 有效期过滤 → 返回 status='active' 的条目。
+    """召回：闸门② + 有效期过滤 + cosine 相似度排序（top-k）。
 
-    任务卡 §3.3 第 4 条 + PRD FR-MEM-05 闸门②：
-        WHERE elder_id=:runtime.elder_id
-          AND status='active'
+    PRD FR-MEM-05 / FR-ADM-06② / TD line 933：
+        WHERE elder_id = :elder_id              -- 闸门②，强制，不可省
+          AND status = 'active'                 -- superseded/disputed/deleted/pending_review 全排除
           AND (valid_to IS NULL OR valid_to > now())
-    status='active' 闸门天然排除 superseded / disputed / deleted / pending_review，
-    旧值退出、人工复核未决、软删条目均不进召回（Day 8 B5 回归测试固化）。
-    Day 6 骨架：ORDER BY importance DESC；Day 8 接 pgvector 后替换为向量相似度排序，
-    届时把 `list[Any]` 收紧为 ORM 行类型。
-    """
-    from app.models.memory import MemoryChunk
+        ORDER BY embedding <=> CAST(:vec AS vector) NULLS LAST
+        LIMIT 5
+    返回 SQLAlchemy `Row`（字段见 `_RECALL_SQL`），调用方只读 `.content` 等列。
 
+    降级（AGENTS §6「召回失败 → 本轮不加载记忆，不得臆造」）：
+    - generic / 无 elder_id → `[]`（闸门②）；
+    - `query` 为空 → `[]` + `memory_recall_degraded(no_query)`；
+    - embedding 未配置 / 不可用 → `[]` + `memory_recall_degraded(embedding_unavailable)`。
+    **不使用 importance / 字面匹配冒充语义召回**（那会把旧值当相似结果注入）。
+    """
     if is_generic or elder_id is None:
         # 闸门②：generic 模式不返回个人记忆
         return []
 
-    stmt = select(MemoryChunk).where(
-        MemoryChunk.elder_id == elder_id,
-        MemoryChunk.status == "active",
-    )
-    # 有效期过滤
-    now = datetime.now(UTC)
-    stmt = stmt.where((MemoryChunk.valid_to.is_(None)) | (MemoryChunk.valid_to > now))
+    query_text = (query or "").strip()
+    if not query_text:
+        logger.warning(
+            "memory_recall_degraded",
+            extra={"elder_id": elder_id, "reason": "no_query"},
+        )
+        return []
+
+    try:
+        vectors = await _embed_texts([query_text])
+    except EmbeddingError as exc:
+        logger.warning(
+            "memory_recall_degraded",
+            extra={
+                "elder_id": elder_id,
+                "reason": "embedding_unavailable",
+                "error": type(exc).__name__,
+            },
+        )
+        return []
+
+    dim = int(getattr(_embedding_settings(), "embedding_dim", 1536) or 1536)
+    vec = _vector_literal(vectors[0], dim=dim)
+
+    sql = _RECALL_SQL
+    params: dict[str, Any] = {
+        "elder_id": _coerce_uuid(elder_id),
+        "vec": vec,
+        "limit": max(1, int(limit)),
+    }
     if min_importance is not None:
-        stmt = stmt.where(MemoryChunk.importance >= min_importance)
+        sql += "      AND importance >= :min_importance\n"
+        params["min_importance"] = float(min_importance)
+    sql += _RECALL_ORDER_SQL
 
-    stmt = stmt.order_by(
-        MemoryChunk.importance.desc(), MemoryChunk.last_accessed.desc().nullslast()
-    )
-    stmt = stmt.limit(limit)
-
+    stmt = text(sql)
     if session is None:
         from app.db import session_factory
 
         async with session_factory() as s:
-            rows = (await s.execute(stmt)).scalars().all()
+            rows = (await s.execute(stmt, params)).all()
     else:
-        rows = (await session.execute(stmt)).scalars().all()
+        rows = (await session.execute(stmt, params)).all()
 
     return list(rows)
 
@@ -849,7 +1176,7 @@ async def recall_for_turn(
     *,
     elder_id: str | None,
     query: str,
-    limit: int = 5,
+    limit: int = _RECALL_DEFAULT_LIMIT,
 ) -> list[str]:
     """**C1 交接契约**：`memory_recall` 工具的单轮召回入口。
 
@@ -858,14 +1185,16 @@ async def recall_for_turn(
 
     - 闸门②：generic / 无 elder_id → 空列表，不触发任何查询；
     - 有效性：强制 `status='active'` + 有效期过滤（复用 `recall_active_chunks`）；
-    - `query` 本日不参与排序（pgvector 向量召回留后续迭代），仅作入参占位
-      保证 C1 联调签名稳定；
+    - `query` 参与向量排序（Day 9 B2 起 cosine top-k）；embedding 不可用 → 空列表 +
+      `memory_recall_degraded` 降级标记，**不用 importance 冒充**；
     - 存储故障 → 空列表 + 日志（记忆召回是尽力而为，绝不让回合失败）。
     """
     if not elder_id or not elder_id.strip():
         return []
     try:
-        rows = await recall_active_chunks(elder_id=elder_id, is_generic=False, limit=limit)
+        rows = await recall_active_chunks(
+            elder_id=elder_id, is_generic=False, query=query, limit=limit
+        )
     except Exception:  # 召回容错：与 extract 后台纪律一致
         logger.exception(
             "memory_recall_for_turn_failed",
@@ -875,16 +1204,332 @@ async def recall_for_turn(
     return [str(row.content) for row in rows if getattr(row, "content", None)]
 
 
+# ------------------------------------------------------------------ X5 记忆管理三函数（B → C，契约 X5）
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryView:
+    """`list_memories` 的行视图（C 的 `api/memory.py` / console 记忆页消费）。
+
+    字段口径（D10 上午冻结给 C）：`chunk_id` / `elder_id` / `content` / `predicate` /
+    `object_value` / `polarity` / `status` / `importance` / `confidence` /
+    `created_at` / `updated_at` / `supersedes_id`。**不含** embedding 与 source_turn_ids
+    （向量不外泄；轮次 id 属内部溯源信息）。
+    """
+
+    chunk_id: uuid.UUID
+    elder_id: uuid.UUID
+    content: str
+    predicate: str
+    object_value: str
+    polarity: str
+    status: str
+    importance: float
+    confidence: float
+    created_at: datetime
+    updated_at: datetime
+    supersedes_id: uuid.UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryRef:
+    """`correct_memory` / `delete_memory` 的返回：受影响条目的最小事实集。"""
+
+    chunk_id: uuid.UUID
+    elder_id: uuid.UUID
+    status: str
+    supersedes_id: uuid.UUID | None = None
+
+
+def _to_memory_view(row: Any) -> MemoryView:
+    return MemoryView(
+        chunk_id=row.chunk_id,
+        elder_id=row.elder_id,
+        content=str(row.content),
+        predicate=str(row.predicate),
+        object_value=str(row.object_value),
+        polarity=str(row.polarity),
+        status=str(row.status),
+        importance=float(row.importance),
+        confidence=float(row.confidence),
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        supersedes_id=row.supersedes_id,
+    )
+
+
+async def list_memories(
+    session: AsyncSession,
+    *,
+    elder_id: uuid.UUID | str,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[MemoryView]:
+    """列出该长者的记忆（**强制 `WHERE elder_id`**，闸门②）。
+
+    软删（`deleted`）行不返回——删除后不得再被查看/注入（FR-MEM-05/08）；
+    其余状态（active / superseded / disputed / pending_review）均返回，
+    版本链由 `supersedes_id` 串起来，便于 console 展示「旧值被替代」。
+    """
+    from app.models.memory import MemoryChunk
+
+    eid = _coerce_uuid(elder_id)
+    page_limit = max(1, min(int(limit), _LIST_MEMORIES_MAX_LIMIT))
+    page_offset = max(0, int(offset))
+
+    stmt = (
+        select(MemoryChunk)
+        .where(MemoryChunk.elder_id == eid, MemoryChunk.status != "deleted")
+        .order_by(MemoryChunk.created_at.desc(), MemoryChunk.chunk_id)
+        .limit(page_limit)
+        .offset(page_offset)
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return [_to_memory_view(row) for row in rows]
+
+
+async def _load_owned_chunk(
+    session: AsyncSession,
+    *,
+    elder_id: uuid.UUID,
+    chunk_id: uuid.UUID,
+    action: str,
+) -> Any:
+    """按 `(elder_id, chunk_id)` 取行；不属于该长者 → 写审计 + 抛 `MemoryAccessDenied`。"""
+    from app.models.memory import MemoryChunk
+    from app.services.audit_log_service import record_audit
+
+    row = (
+        (
+            await session.execute(
+                select(MemoryChunk).where(
+                    MemoryChunk.chunk_id == chunk_id, MemoryChunk.elder_id == elder_id
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if row is None:
+        await record_audit(
+            session,
+            actor_type="system",
+            actor_id=None,
+            action="memory_cross_elder_access_denied",
+            resource_type="memory_chunk",
+            resource_id=chunk_id,
+            detail={"requested_elder_id": str(elder_id), "operation": action, "gate": "elder_id"},
+        )
+        raise MemoryAccessDenied(elder_id=elder_id, chunk_id=chunk_id)
+    return row
+
+
+async def correct_memory(
+    session: AsyncSession,
+    *,
+    elder_id: uuid.UUID | str,
+    chunk_id: uuid.UUID | str,
+    new_text: str,
+) -> MemoryRef:
+    """纠正一条记忆（FR-MEM-03/06）：**旧值保留**、新值生效（版本链，不物理删）。
+
+    - 旧行：`status='superseded'`、`valid_to=now()`、保留原 content（历史可回溯）；
+    - 新行：`status='active'`、`supersedes_id=旧 chunk_id`、`valid_from=now()`；
+      结构化三元组（predicate / object_value / polarity）沿用旧行——纠正入口只收自由文本，
+      不猜「新文本改了哪一维」（AGENTS §6 不臆造）；
+    - 新行重新算 embedding（失败则无向量 + 降级标记，不阻塞纠正）。
+    """
+    eid = _coerce_uuid(elder_id)
+    cid = _coerce_uuid(chunk_id)
+    text_value = (new_text or "").strip()
+    if not text_value:
+        raise MemoryValidationError("new_text must be non-empty")
+
+    from app.models.memory import MemoryChunk
+
+    old = await _load_owned_chunk(session, elder_id=eid, chunk_id=cid, action="correct")
+    if old.status == "deleted":
+        raise MemoryValidationError("deleted memory cannot be corrected")
+
+    now = datetime.now(UTC)
+    vector = await _safe_embed(text_value)
+
+    old.status = "superseded"
+    old.valid_to = now
+    old.updated_at = now
+
+    new = MemoryChunk(
+        elder_id=old.elder_id,
+        subject=old.subject,
+        predicate=old.predicate,
+        object_value=old.object_value,
+        polarity=old.polarity,
+        content=text_value,
+        confidence=old.confidence,
+        sensitivity=old.sensitivity,
+        category="private",
+        source_type=old.source_type,
+        source_turn_ids=list(old.source_turn_ids or []),
+        status="active",
+        supersedes_id=old.chunk_id,
+        valid_from=now,
+        embedding=None,  # 同上：向量走 text() + CAST 回写
+    )
+    session.add(new)
+    await session.flush()
+    if vector is not None:
+        await _write_embedding(session, chunk_id=new.chunk_id, elder_id=new.elder_id, vector=vector)
+    logger.info(
+        "memory_corrected",
+        extra={
+            "elder_id": str(eid),
+            "old_chunk_id": str(old.chunk_id),
+            "new_chunk_id": str(new.chunk_id),
+            "embedded": vector is not None,
+        },
+    )
+    return MemoryRef(
+        chunk_id=new.chunk_id,
+        elder_id=new.elder_id,
+        status="active",
+        supersedes_id=old.chunk_id,
+    )
+
+
+async def delete_memory(
+    session: AsyncSession,
+    *,
+    elder_id: uuid.UUID | str,
+    chunk_id: uuid.UUID | str,
+) -> MemoryRef:
+    """软删一条记忆（FR-MEM-05/08）：`status='deleted'` + `valid_to=now()`。
+
+    **立即不再被召回**：召回 SQL 的 `status='active'` + 有效期硬闸门直接排除；
+    向量残留（`embedding` 列）由召回二次过滤兜住，物理清理走 X4 钩子。
+    重复删除同一 `chunk_id` 幂等（返回当前状态，不重复改行）。
+    """
+    eid = _coerce_uuid(elder_id)
+    cid = _coerce_uuid(chunk_id)
+
+    row = await _load_owned_chunk(session, elder_id=eid, chunk_id=cid, action="delete")
+    if row.status == "deleted":
+        return MemoryRef(
+            chunk_id=row.chunk_id,
+            elder_id=row.elder_id,
+            status="deleted",
+            supersedes_id=row.supersedes_id,
+        )
+
+    now = datetime.now(UTC)
+    row.status = "deleted"
+    row.valid_to = now
+    row.updated_at = now
+    await session.flush()
+    logger.info(
+        "memory_deleted",
+        extra={"elder_id": str(eid), "chunk_id": str(row.chunk_id)},
+    )
+    return MemoryRef(
+        chunk_id=row.chunk_id,
+        elder_id=row.elder_id,
+        status="deleted",
+        supersedes_id=row.supersedes_id,
+    )
+
+
+# ------------------------------------------------------------------ X4 / X12 清理钩子（退房 · 教学重置）
+
+
+@dataclass(frozen=True, slots=True)
+class PurgeRef:
+    """清理结果（契约 X4 的 `PurgeRef` 字段 ⊂ 本结构；X12 统一口径在前三个字段）。
+
+    ⚠️ 契约里 X4 与 X12 给了**两套不同**的 `PurgeRef` 字段（X4:
+    `deleted_chunks/deleted_vectors/audit_id`；X12: `affected_rows/archived_rows/domain`）。
+    这里取并集：前三个字段满足 X12，后三个满足 X4，两边都按属性名读取即可。
+    `audit_id` 恒为 None —— 审计由 A 的流水线统一写（契约 X4/X12「B 不重复写」）。
+    """
+
+    domain: str
+    affected_rows: int
+    archived_rows: int = 0
+    deleted_chunks: int = 0
+    deleted_vectors: int = 0
+    audit_id: uuid.UUID | None = None
+
+
+def _validate_purge_reason(reason: str) -> str:
+    value = str(reason or "").strip()
+    if value not in PURGE_REASONS:
+        raise ValueError(f"invalid purge reason {reason!r}; allowed={sorted(PURGE_REASONS)}")
+    return value
+
+
+async def purge_elder_memories(
+    session: AsyncSession, *, elder_id: uuid.UUID | str, reason: str
+) -> PurgeRef:
+    """**X4**：硬删该长者全部 `memory_chunks`（行删即向量索引随之删除）。
+
+    - `reason ∈ {checkout, teaching_reset}`，其余取值直接拒绝；
+    - **幂等**：第二次调用命中 0 行，返回全 0；
+    - **不写审计**：由 A 的 `lifecycle_service` 逐步统一写一条（契约 X4）；
+    - 事务归调用方（只 `execute`，不 commit）。
+    """
+    eid = _coerce_uuid(elder_id)
+    _validate_purge_reason(reason)
+
+    from app.models.memory import MemoryChunk
+
+    vectors = (
+        await session.execute(
+            select(func.count())
+            .select_from(MemoryChunk)
+            .where(MemoryChunk.elder_id == eid, MemoryChunk.embedding.is_not(None))
+        )
+    ).scalar_one()
+
+    result = await session.execute(delete(MemoryChunk).where(MemoryChunk.elder_id == eid))
+    deleted = int(result.rowcount or 0)  # type: ignore[attr-defined]
+    logger.info(
+        "memory_purged",
+        extra={
+            "elder_id": str(eid),
+            "reason": reason,
+            "deleted_chunks": deleted,
+            "deleted_vectors": min(int(vectors or 0), deleted),
+        },
+    )
+    return PurgeRef(
+        domain="memory",
+        affected_rows=deleted,
+        archived_rows=0,
+        deleted_chunks=deleted,
+        deleted_vectors=min(int(vectors or 0), deleted),
+    )
+
+
 __all__ = [
+    "PURGE_REASONS",
+    "EmbeddingDimensionError",
+    "EmbeddingError",
+    "EmbeddingUnavailable",
+    "MemoryAccessDenied",
     "MemoryCandidate",
     "MemoryExtractionPort",
     "MemoryInsertSkipped",
+    "MemoryRef",
     "MemoryValidationError",
+    "MemoryView",
+    "PurgeRef",
     "consolidate_similar",
+    "correct_memory",
     "decay_stale",
+    "delete_memory",
     "extract_after_turn",
     "extract_preference_candidates",
     "insert_candidate",
+    "list_memories",
+    "purge_elder_memories",
     "recall_active_chunks",
     "recall_for_turn",
     "schedule_memory_extraction",

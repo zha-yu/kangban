@@ -426,7 +426,9 @@ async def test_notification_retry_scan(session, seeded, runtime_factory):
     assert failed_row.status == "failed"
 
     # X1 回执驱动送达：pending → delivered → acknowledged（AC-23 全链路）
-    await notify_service.mark_notification_delivered(session, notification_id=pending_id)
+    await notify_service.mark_notification_delivered(
+        session, notification_id=pending_id, receipt_kind="card_rendered"
+    )
     await notify_service.acknowledge_notification(
         session, notification_id=pending_id, acknowledger_id=care_worker_id
     )
@@ -477,3 +479,195 @@ def _minutes_of(hhmm: str) -> int:
 
 def _hhmm_of(minutes: int) -> str:
     return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+# ------------------------------------------------------------------ 用例 ⑥ / X7：复核 resume 扫描
+
+
+_YELLOW_ANSWERS: dict[str, str] = {
+    "systolic": "160",
+    "diastolic": "95",
+    "sleep_hours": "6",
+    "mood_score": "3",
+    "complaint": "有点乏",
+}
+
+#: 红档 5 答（单分量 185 即判红，AC-21）
+_RED_ANSWERS: dict[str, str] = {
+    "systolic": "185",
+    "diastolic": "110",
+    "sleep_hours": "5",
+    "mood_score": "2",
+    "complaint": "头晕",
+}
+
+
+async def test_review_resume_tick_ends_suspended_graph(session, seeded, saver, runtime_factory):
+    """X7/F07：复核已终态 + 线程仍 interrupt → ≤1 tick 内收口，且不二次 persist。"""
+    from app.graphs.health_checkup_graph import (
+        default_thread_id,
+        graph_config,
+        start_health_checkup,
+    )
+    from app.models.health import HealthRecord
+
+    elder_id = seeded["elder_id"]
+    thread_id = default_thread_id(elder_id, "voice_active")
+    rt = runtime_factory(lambda: datetime.datetime.now(datetime.UTC))
+
+    # 先跑一张黄档图，停在 hitl_yellow（真实 create_health_record 已落 v1）
+    graph = rt._build_graph(session)
+    started = await start_health_checkup(
+        graph,
+        elder_id=elder_id,
+        source="voice_active",
+        thread_id=thread_id,
+        initial_answers=_YELLOW_ANSWERS,
+    )
+    assert started["__interrupt__"][0].value["kind"] == "yellow_review"
+    await session.commit()
+
+    records = (
+        (await session.execute(select(HealthRecord).where(HealthRecord.elder_id == elder_id)))
+        .scalars()
+        .all()
+    )
+    assert len(records) == 1
+    record_id = records[0].record_id
+    assert records[0].review_status == "pending"
+
+    # console 侧复核（C4 写库）→ 只改既有列
+    reviewer = await care_worker_id_of(session, elder_id)
+    await session.execute(
+        update(HealthRecord)
+        .where(HealthRecord.record_id == record_id)
+        .values(review_status="confirmed", reviewed_by=reviewer, review_note="已电话核实")
+    )
+    await session.flush()
+
+    rt._checkpointer = saver
+    await rt._tick_review_resume()
+
+    state = await graph.aget_state(graph_config(thread_id))
+    assert not state.next  # 图已 END
+    assert state.values["hitl_result"]["decision"] == "reviewed_externally"
+
+    rows = (
+        (await session.execute(select(HealthRecord).where(HealthRecord.elder_id == elder_id)))
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1  # reviewed_externally 不再 persist → 不产生第二版本
+    assert rows[0].review_status == "confirmed"
+
+    # 再跑一次：线程已不在 interrupt → 幂等跳过
+    await rt._tick_review_resume()
+    assert (
+        len(
+            (await session.execute(select(HealthRecord).where(HealthRecord.elder_id == elder_id)))
+            .scalars()
+            .all()
+        )
+        == 1
+    )
+
+
+def test_x11_tick_rhythm_and_report_time() -> None:
+    """X11：tick 30s；日报 20:00（不改退避数值）。"""
+    from app.scheduler.health_jobs import _DAILY_REPORT_FIRE, _TICK_SECONDS
+
+    assert _TICK_SECONDS == 30
+    assert _DAILY_REPORT_FIRE == "20:00"
+
+
+# ------------------------------------------------------------------ P10：调度侧注入 create_red_landing
+
+
+async def test_build_graph_injects_create_red_landing(
+    session: AsyncSession, seeded: dict[str, Any], saver: AsyncPostgresSaver, runtime_factory
+) -> None:
+    """`_build_graph` 必须注入真实落库包装：红档经调度图落库（record+event+工单）并发出护工通知。
+
+    起图 / 收口 / resume 三处都走同一个 `_build_graph`，本用例证明这条注射链没漏。
+    """
+    from sqlalchemy import func as sa_func
+
+    from app.graphs.health_checkup_graph import start_health_checkup
+    from app.models.health import HealthRecord
+
+    rt = runtime_factory(lambda: datetime.datetime.now(datetime.UTC))
+    graph = rt._build_graph(session)
+    elder_id = seeded["elder_id"]
+    result = await start_health_checkup(
+        graph,
+        elder_id=elder_id,
+        source="voice_active",
+        thread_id=default_thread_id(elder_id, "voice_active"),
+        initial_answers=_RED_ANSWERS,
+    )
+    await session.flush()
+
+    assert result["grade_level"] == "red"
+    order_ref = result["order_ref"]
+    assert order_ref["record_id"] and order_ref["risk_event_id"] and order_ref["work_order_id"]
+    assert result["__interrupt__"][0].value["kind"] == "red_confirm"
+
+    records = (
+        (await session.execute(select(HealthRecord).where(HealthRecord.elder_id == elder_id)))
+        .scalars()
+        .all()
+    )
+    assert len(records) == 1 and records[0].severity == "red"
+    event_id = order_ref["risk_event_id"]
+    staff_rows = await session.execute(
+        select(sa_func.count())
+        .select_from(Notification)
+        .where(Notification.dedupe_key.like(f"risk_event:{event_id}:staff:%"))
+    )
+    assert int(staff_rows.scalar_one()) == 1
+
+
+# ------------------------------------------------------------------ Z-A4d：away 暂离暂停健康采集
+
+
+async def test_za4d_away_elder_skipped_by_health_trigger(
+    session: AsyncSession, seeded: dict[str, Any], saver: AsyncPostgresSaver, runtime_factory
+) -> None:
+    """`away` 长者：19:00 触发不建 checkpoint、20:00 漏采不建单（`status=='active'` 才扫描）。
+
+    暂离期间「暂停采集」由 `health_service.list_active_elder_ids` 的状态过滤保证；
+    恢复 active 后下一个窗口正常采集（本用例只锁暂停语义，不测恢复日的整链路）。
+    """
+    from app.models.health import HealthRecord
+    from app.models.medication import WorkOrder
+    from app.models.organization import Elder
+
+    elder_id = seeded["elder_id"]
+    await session.execute(
+        Elder.__table__.update().where(Elder.elder_id == elder_id).values(status="away")
+    )
+    await session.flush()
+
+    rt = runtime_factory(lambda: _clock_at("19:02"))
+    await rt._tick_evening_trigger()
+    # 没起图：当日 scheduled thread 在 checkpointer 里无任何状态
+    day = datetime.datetime.now(datetime.UTC).astimezone(_TZ_SH).date()
+    thread_id = default_thread_id(elder_id, "voice_scheduled", on_date=day)
+    probe = rt._build_graph(session)
+    state = await probe.aget_state(graph_config(thread_id))
+    assert not state.values
+
+    rt_close = runtime_factory(lambda: _clock_at("20:02"))
+    await rt_close._tick_window_close()
+    orders = (
+        (await session.execute(select(WorkOrder).where(WorkOrder.elder_id == elder_id)))
+        .scalars()
+        .all()
+    )
+    assert orders == []  # 漏采单也不建
+    records = (
+        (await session.execute(select(HealthRecord).where(HealthRecord.elder_id == elder_id)))
+        .scalars()
+        .all()
+    )
+    assert records == []

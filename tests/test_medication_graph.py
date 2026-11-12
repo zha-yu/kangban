@@ -663,3 +663,198 @@ async def test_reminder_skips_delivery_when_attempt_already_recorded(
     assert len(attempts) == 1, "记录仍只有一条（幂等）"
     event = await medication_service.get_event(session, reminder_id)
     assert event is not None and event["status"] == "waiting_confirm", "状态仍要推进到等待确认"
+
+
+# ------------------------------------------------------------------ F10 补报（Day 9 B4）
+#
+# AC-08 / PRD line 320-325 / 迁移 0020（契约 X8）：窗口外补报「已经吃了」时，
+# 终态**追加**为 `late_taken_reported`（第五值），原终态不覆盖、工单不自动关闭，
+# 并同事务写 `audit_logs`（detail 留原终态）。
+
+
+async def _terminal_with_order(
+    session: AsyncSession,
+    seeded: dict[str, Any],
+    terminal_state: str,
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """造一条已落终态的事件 + 一张对应的（未关闭）工单。"""
+    from app.services import work_order_service
+
+    reminder_id = await _new_event(session, seeded)
+    await medication_service.set_terminal(
+        session,
+        event_id=reminder_id,
+        terminal_state=terminal_state,
+        failure_reason="no_answer" if terminal_state == "missed_unconfirmed" else "offline",
+        retry_count=3,
+    )
+    ref = await work_order_service.open_work_order(
+        session,
+        elder_id=seeded["elder_id"],
+        order_type="missed_medication",
+        severity="yellow",
+        dedupe_token=f"medication_event:{reminder_id}",
+    )
+    return reminder_id, ref.order_id
+
+
+async def test_medication_graph_late_taken_appends_fifth_terminal(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    """missed_unconfirmed → 补报 → 第五值 + late_taken=True + 审计留原终态 + 工单仍待处理。"""
+    from app.models.audit import AuditLog
+    from app.models.medication import WorkOrder
+    from app.services.medication_service import LATE_TAKEN_STATE, TERMINAL_STATES
+
+    assert LATE_TAKEN_STATE == "late_taken_reported"
+    assert TERMINAL_STATES[-1] == "late_taken_reported"
+    assert len(TERMINAL_STATES) == 5, "0020 之后终态是五值"
+
+    reminder_id, order_id = await _terminal_with_order(session, seeded, "missed_unconfirmed")
+
+    await medication_service.set_terminal(
+        session,
+        event_id=reminder_id,
+        terminal_state="late_taken_reported",
+        late_taken=True,
+        confirm_channel="voice",
+    )
+
+    event = await medication_service.get_event(session, reminder_id)
+    assert event is not None
+    assert event["terminal_state"] == "late_taken_reported"
+    assert event["late_taken"] is True
+    assert event["status"] == "escalated", "补报不等于确认完成，不得置 confirmed"
+
+    # 原终态的旁证（failure_reason 保留，不被补报清空）
+    from sqlalchemy import select
+
+    from app.models.medication import MedicationEvent
+
+    failure_reason = (
+        await session.execute(
+            select(MedicationEvent.failure_reason).where(MedicationEvent.reminder_id == reminder_id)
+        )
+    ).scalar_one()
+    assert failure_reason == "no_answer"
+
+    logs = (
+        (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "medication_late_taken_reported",
+                    AuditLog.resource_id == reminder_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(logs) == 1, "补报必须同事务留一条审计"
+    assert logs[0].actor_type == "system"
+    assert logs[0].detail is not None
+    assert logs[0].detail["previous_terminal_state"] == "missed_unconfirmed"
+    assert logs[0].detail["terminal_state"] == "late_taken_reported"
+
+    # 工单不自动关闭（核实归护工，AC-08）
+    order = await session.get(WorkOrder, order_id)
+    assert order is not None
+    assert order.status == "new"
+
+
+async def test_medication_graph_late_taken_from_notification_failed(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    """notification_failed 同样可补报（「没通知到」与「没确认」都要接受事后自述）。"""
+    from app.services.medication_service import LATE_TAKEN_SOURCE_STATES
+
+    assert {"missed_unconfirmed", "notification_failed"} == LATE_TAKEN_SOURCE_STATES
+    reminder_id, _ = await _terminal_with_order(session, seeded, "notification_failed")
+
+    await medication_service.set_terminal(
+        session,
+        event_id=reminder_id,
+        terminal_state="late_taken_reported",
+        late_taken=True,
+    )
+
+    event = await medication_service.get_event(session, reminder_id)
+    assert event is not None
+    assert event["terminal_state"] == "late_taken_reported"
+    assert event["late_taken"] is True
+
+
+async def test_medication_graph_late_taken_is_idempotent(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    """重复补报同值：不抛错、不再多写第二条审计（AC-08 重复确认不重复建单）。"""
+    from sqlalchemy import select
+
+    from app.models.audit import AuditLog
+
+    reminder_id, _ = await _terminal_with_order(session, seeded, "missed_unconfirmed")
+
+    for _ in range(2):
+        await medication_service.set_terminal(
+            session,
+            event_id=reminder_id,
+            terminal_state="late_taken_reported",
+            late_taken=True,
+        )
+
+    count = len(
+        (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "medication_late_taken_reported",
+                    AuditLog.resource_id == reminder_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert count == 1, "只有真正的「追加」才写审计"
+
+
+@pytest.mark.parametrize("previous", ["taken_reported", "refused"])
+async def test_medication_graph_late_taken_rejects_other_terminals(
+    session: AsyncSession, seeded: dict[str, Any], previous: str
+) -> None:
+    """互斥不变：已服自报 / 拒服 不接受补报（没有「漏了再补」的语义）。"""
+    reminder_id = await _new_event(session, seeded)
+    await medication_service.set_terminal(
+        session,
+        event_id=reminder_id,
+        terminal_state=previous,
+        retry_count=0,
+    )
+
+    with pytest.raises(TerminalStateConflict):
+        await medication_service.set_terminal(
+            session,
+            event_id=reminder_id,
+            terminal_state="late_taken_reported",
+            late_taken=True,
+        )
+
+
+async def test_medication_graph_late_taken_requires_flag(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    """不带 late_taken=True 写第五值仍是「覆盖终态」→ 冲突（补报必须显式声明）。"""
+    reminder_id = await _new_event(session, seeded)
+    await medication_service.set_terminal(
+        session,
+        event_id=reminder_id,
+        terminal_state="missed_unconfirmed",
+        failure_reason="no_answer",
+        retry_count=3,
+    )
+
+    with pytest.raises(TerminalStateConflict):
+        await medication_service.set_terminal(
+            session,
+            event_id=reminder_id,
+            terminal_state="late_taken_reported",
+        )
