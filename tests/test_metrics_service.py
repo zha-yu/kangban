@@ -77,7 +77,7 @@ async def recorder(np_conn):  # type: ignore[no-untyped-def]
 
 
 async def test_stage_whitelist_matches_model_check() -> None:
-    """八值白名单与 models/metrics.py CHECK 约束一字不差（0014 加值 response_segment）。"""
+    """九值白名单与 models/metrics.py CHECK 约束一字不差（0014 加 response_segment，0021 加 llm_tokens）。"""
     assert (
         frozenset(
             {
@@ -89,6 +89,7 @@ async def test_stage_whitelist_matches_model_check() -> None:
                 "tts_first_packet",
                 "playback",
                 "response_segment",
+                "llm_tokens",
             }
         )
         == STAGES
@@ -257,3 +258,133 @@ def test_snapshot_is_copy_not_live_reference() -> None:
     snap["prompt_tokens"] = 999_999
     assert snapshot_llm_usage()["prompt_tokens"] == 10
     reset_llm_usage()
+
+
+# ------------------------------------------------------------------ P15 · llm_tokens 落库
+
+
+async def test_llm_tokens_stage_persists_token_columns(
+    np_conn,  # type: ignore[no-untyped-def]
+    recorder,  # type: ignore[no-untyped-def]
+) -> None:
+    """0021（P15）：stage=llm_tokens 可落库，token 数进三个可空列，duration_ms 恒 0。"""
+    assert (
+        recorder.record_stage(
+            TRACE,
+            None,
+            "llm_tokens",
+            0,
+            "llm_usage",
+            prompt_tokens=100,
+            completion_tokens=40,
+            total_tokens=140,
+        )
+        is True
+    )
+    assert await recorder.drain_once() == 1
+
+    assert await _count(np_conn) == 1
+    async with _db_session(np_conn) as session:
+        row = (
+            await session.execute(
+                select(Metric).where(Metric.trace_id == TRACE, Metric.stage == "llm_tokens")
+            )
+        ).scalar_one()
+    assert row.duration_ms == 0
+    assert row.source == "llm_usage"
+    assert row.prompt_tokens == 100
+    assert row.completion_tokens == 40
+    assert row.total_tokens == 140
+
+
+async def test_llm_tokens_missing_usage_yields_nulls_not_zero(
+    np_conn,  # type: ignore[no-untyped-def]
+    recorder,  # type: ignore[no-untyped-def]
+) -> None:
+    """「缺 usage 不补零」：双 None → 三列为 NULL（0 与「不知道」语义不可混同）。"""
+    assert recorder.record_stage(TRACE, None, "llm_tokens", 0, "llm_usage") is True
+    assert await recorder.drain_once() == 1
+
+    async with _db_session(np_conn) as session:
+        row = (
+            await session.execute(
+                select(Metric).where(Metric.trace_id == TRACE, Metric.stage == "llm_tokens")
+            )
+        ).scalar_one()
+    assert row.prompt_tokens is None
+    assert row.completion_tokens is None
+    assert row.total_tokens is None
+
+
+async def test_llm_tokens_invalid_token_values_defensive_null(
+    np_conn,  # type: ignore[no-untyped-def]
+    recorder,  # type: ignore[no-untyped-def]
+) -> None:
+    """非法 token 值（bool/负数/非 int）防御性置 None，不炸行、不落非法值。"""
+    assert (
+        recorder.record_stage(
+            TRACE,
+            None,
+            "llm_tokens",
+            0,
+            "llm_usage",
+            prompt_tokens="100",  # type: ignore[arg-type]
+            completion_tokens=-5,
+            total_tokens=True,  # type: ignore[arg-type]
+        )
+        is True
+    )
+    assert await recorder.drain_once() == 1
+
+    async with _db_session(np_conn) as session:
+        row = (
+            await session.execute(
+                select(Metric).where(Metric.trace_id == TRACE, Metric.stage == "llm_tokens")
+            )
+        ).scalar_one()
+    assert row.prompt_tokens is None and row.completion_tokens is None
+    assert row.total_tokens is None
+
+
+async def test_record_llm_usage_enqueues_db_row(
+    np_conn,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """record_llm_usage 现在三层齐活：日志 + 进程内计数 + 经 recorder 落库一行。"""
+    from app.core.context import reset_trace_id, set_trace_id
+    from app.services import metrics_service
+
+    rec = MetricsRecorder(_TxSessionFactory(np_conn), flush_interval_seconds=60)
+    monkeypatch.setattr(metrics_service, "get_metrics_recorder", lambda: rec)
+    token = set_trace_id("trace-llm-usage-p15")
+    try:
+        metrics_service.record_llm_usage(
+            prompt_tokens=100,
+            completion_tokens=40,
+            provider="minimax",
+            model="m1",
+        )
+        assert await rec.drain_once() == 1
+    finally:
+        reset_trace_id(token)
+        await rec.stop()
+
+    async with _db_session(np_conn) as session:
+        row = (
+            await session.execute(select(Metric).where(Metric.stage == "llm_tokens"))
+        ).scalar_one()
+    assert row.trace_id == "trace-llm-usage-p15"
+    assert row.prompt_tokens == 100 and row.completion_tokens == 40
+    assert row.total_tokens == 140 and row.duration_ms == 0
+
+
+async def test_record_llm_usage_without_trace_id_keeps_inproc_only() -> None:
+    """Z4 口径：trace_id 缺失的行不入库，但进程内计数照记（观测不因缺 trace 全丢）。"""
+    from app.services.metrics_service import record_llm_usage, reset_llm_usage
+
+    reset_llm_usage()
+    try:
+        snap = record_llm_usage(prompt_tokens=10, completion_tokens=5)
+        assert snap["calls"] == 1 and snap["total_tokens"] == 15
+    finally:
+        reset_llm_usage()

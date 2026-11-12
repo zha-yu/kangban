@@ -32,7 +32,7 @@ class Metric(Base):
     __table_args__ = (
         CheckConstraint(
             "stage IN ('wakeup', 'connection', 'asr', 'route', "
-            "'llm_first_token', 'tts_first_packet', 'playback', 'response_segment')",
+            "'llm_first_token', 'tts_first_packet', 'playback', 'response_segment', 'llm_tokens')",
             name="stage",
         ),
         CheckConstraint("duration_ms >= 0", name="duration_ms"),
@@ -57,15 +57,31 @@ class Metric(Base):
     stage: Mapped[str] = mapped_column(
         Text(),
         nullable=False,
-        comment="wakeup/connection/asr/route/llm_first_token/tts_first_packet/playback/response_segment",
+        comment="wakeup/connection/asr/route/llm_first_token/tts_first_packet/playback/"
+        "response_segment/llm_tokens",
     )
     duration_ms: Mapped[int] = mapped_column(
-        Integer(), nullable=False, comment="该段耗时（毫秒，≥0）"
+        Integer(), nullable=False, comment="该段耗时（毫秒，≥0；llm_tokens 行恒 0，非耗时打点）"
     )
     source: Mapped[str | None] = mapped_column(
         String(32),
         nullable=True,
         comment="口径区分：client（端侧 wake_ts）/ backend（WS accept 兜底）/ non_stream（LLM/TTS 非流式口径）等",
+    )
+    prompt_tokens: Mapped[int | None] = mapped_column(
+        Integer(),
+        nullable=True,
+        comment="LLM 调用输入 token 数（NULL = 供应商未回 usage，不补零；仅 stage=llm_tokens 有值）",
+    )
+    completion_tokens: Mapped[int | None] = mapped_column(
+        Integer(),
+        nullable=True,
+        comment="LLM 调用输出 token 数（NULL = 供应商未回 usage，不补零；仅 stage=llm_tokens 有值）",
+    )
+    total_tokens: Mapped[int | None] = mapped_column(
+        Integer(),
+        nullable=True,
+        comment="LLM 调用总 token 数（仅两侧都已知时非 NULL；仅 stage=llm_tokens 有值）",
     )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True),

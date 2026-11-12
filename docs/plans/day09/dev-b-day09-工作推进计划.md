@@ -1,6 +1,6 @@
 # dev-B Day 9 工作推进计划 · 智能层接线与注入防线
 
-> 状态：进行中（N0 已签认、contracts v1.0 已冻结；P10/P14 已闭合，剩 p95 与 P15 DB 落点）　｜　版本：v1.10　｜　日期：2026-11-12
+> 状态：进行中（N0 已签认、contracts v1.0 已冻结；P10/P14/F03 已闭合，p95 已裁决收口（闸门 E 拆双线挂 F23），P15 已自行交付（0021 迁移 + record_llm_usage 写库））　｜　版本：v1.12　｜　日期：2026-11-12
 > 关联：`docs/team_tasks/day09/dev-B-智能层接线与注入防线.md` v1.2｜`docs/team_tasks/day09/day09-任务总览与DAG.md` v1.5｜`docs/team_tasks/day09/contracts.md` **v1.0（已冻结，2026-11-12 N0 四方回执签认）**
 > 上游依据：PRD line 266–275（FR-DLG-01/07/10）、318–327（用药终态与补报）、357–361（分级与校验）、383–390（通知状态）、418–427（FR-MEM）、440（FR-ADM-06）、487–524（AC-04/08/09/10/14/20/21/22/29/36/39）、531–536（固定测试集）、547（路由 ≤200ms）｜技术设计文档 line 717（vector(1536) 口径）、778（Day 9 迁移批次）、1017–1018（分级在代码与话术）、1166–1174（Day 9 落地与验收）
 > 变更记录见文末
@@ -1192,6 +1192,8 @@ uv run ruff check app tests && uv run ruff format --check app tests
 | 2026-11-12 | 装配/门禁 | 工作区 | 全量 **1521 passed, 1 xfailed**；ruff 全绿；`alembic current=0020` | `uv run pytest -q`；`ruff check/format`；`alembic current` | P10/P12/P13/P14 |
 | 2026-11-12 | 收口 P10/P14/token/p95 | 工作区 | **P10 闭合**：`create_red_landing`（`_land_health_record(notify_red)` 抽取，REST 旧行为不变）；图内删降级桩，未注入即 `RuntimeError("create_red_order_fn not wired")`；`health_jobs._build_graph` 与 `tool_impls` 语音执行器注入 `create_red_landing_adapter`。验收：health_graph 20 passed / health_jobs 9 passed；`grep pending_create_red_order app/` 零命中；落库后 notifications=0、notify 后 staff/guardian 各 1、通知抛错三件套仍在。**P14 闭合**：`safety_check` 命中注入 → 固定拒答 + 审计 1 行；`main.py` lifespan 装 `_injection_hook`/`_injection_auditor`，finally 卸载；`test_injection_wired_in_safety_single_entry` xfail→pass（test_injection 25 passed，0 xfail）。**token**：`LLMReply.prompt_tokens/completion_tokens`、`record_llm_usage`（日志+进程内计数，不写库）。**p95 未达标**：before p50=215/p95=265 → after p50=235/p95=266（grace 150→80+硬上限后 p95 不降，敏感 20/20 与普通 41/50 不变；瓶颈实测是 fast 单问 187ms 与 shadow 抢 CPU，shadow-OFF 也仅 214ms 且敏感掉到 17/20，见 §11.1） | `uv run pytest tests/test_health_graph.py tests/test_health_jobs.py tests/test_injection.py tests/test_llm_service.py tests/test_metrics_service.py tests/test_router_decision.py -q`；`conda run -n jev python scripts/eval_router.py ... --report tmp/eval_local_jev_before.md / after.md` | P13（已随 contracts v1.0 闭合）、P15 DB 落点（`llm_tokens` 迁移申请已发 A） |
 | 2026-11-12 | Z-A4d away 暂离交接件 | 工作区 | **B 侧「暂停采集与提醒触达」落地**：① 健康链路——`list_active_elder_ids` 只取 `status='active'`，away 长者 19:00 不起图、20:00 不建漏采单（新增用例锁行为）；② 用药链路——`medication_due_service.list_due_plans` / `list_waiting_confirm_events` join `elders.status`，away 不触发首达、不 resume 推进（恢复 active 后由既有 attempts/终态自然收口）；日报仍只扫 active——「日报改暂离告知」是 C2 report_service 的实现项（`report.status` 已有 `away_notice` 值），B 的 `_tick_report` 扫描面等 C 通知后随装配窗口扩 active+away。新增 2 用例（scheduler_medication / health_jobs 各 1） | `uv run pytest tests/test_scheduler_medication.py tests/test_health_jobs.py -q`（21 passed） | C2 日报 away_notice 实现；A3 状态流转＋审计 |
+| 2026-11-12 | D11 联调前置自检（主理人裁决转达 B/C，dev-D 环境情报触发） | — | **登记**：「graph 走到 remind 之前卡住（attempts 空表）」根因是联调机 sidecar/LLM 不可达——Laya 不可用时路由自动降级 L2 不阻塞对话，但 **remind 链路的语音确认腿（ASR FINAL → 路由 → medication_confirm 工具）需要 System One 真连通**。**D11 联调前必须在联调机跑可达性自检：① sidecar `/health` 返回 model_loaded=true；② 一次真实 decide（非 mock）正常返回**。两项确认后再排 remind 链路联调，否则触达后长者语音确认无法闭环。另：`medication_events` 造数口径为「status=流程位置（calling/waiting_confirm/confirmed/escalated 四值）＋ terminal_state=终态结果（五值）」双列分离设计（技术文档 §3），测试造数禁用 terminal 状态直填 status、禁造 triggered_by 白名单（scheduler/dialog）之外的值——已实测与 `set_terminal` 写入值一致，无表结构变更。 |
+| 2026-11-12 | D11 联调前置自检（主理人裁决转达 B/C，dev-D 环境情报触发） | — | **登记**：「graph 走到 remind 之前卡住（attempts 空表）」根因是联调机 sidecar/LLM 不可达——Laya 不可用时路由自动降级 L2 不阻塞对话，但 **remind 链路的语音确认腿（ASR FINAL → 路由 → medication_confirm 工具）需要 System One 真连通**。**D11 联调前必须在联调机跑可达性自检：① sidecar `/health` 返回 model_loaded=true；② 一次真实 decide（非 mock）正常返回**。两项确认后再排 remind 链路联调，否则触达后长者语音确认无法闭环。另：`medication_events` 造数口径为「status=流程位置（calling/waiting_confirm/confirmed/escalated 四值）＋ terminal_state=终态结果（五值）」双列分离设计（技术文档 §3），测试造数禁用 terminal 状态直填 status、禁造 triggered_by 白名单（scheduler/dialog）之外的值——已实测与 `set_terminal` 写入值一致，无表结构变更。 |
 
 ### §11.1 p95 瓶颈取证（2026-11-12，jev/cpu，110 条固定集）
 
@@ -1207,7 +1209,16 @@ uv run ruff check app tests && uv run ruff format --check app tests
 
 **结论**：p95 的构成是「fast 模型推理（贴预算）+ 并发争抢」，不是「等 shadow」。降 grace/上限已做（保留：防止任何调用方把等待放大到 400ms），但数字不达标是**模型推理本身**超预算。选项：① 继续优化 → 动 `app/system_one/**`（本日冻结，Day 10 F23 顺延项一起做：量化/批处理/线程数）；② 走裁决 → 接受现状并复测更稳机器；③ 门禁降级 → 拆「规则命中 ≤200ms / 模型路径单列」，需主理人裁，未裁前闸门 E 记「未通过」。
 
-**本轮收口判定（2026-11-12 晚更新）**：B1/B2 完成；B3/B4 的 **P10、P14 已闭合**（证据见 §11 收口行），**P12 已随 contracts v0.7 留痕**；任务卡改「已完成」只剩 **p95 未达闸门 E**（§11.1 已给瓶颈取证与三个选项）与 P13/P15 两个跨成员待办。
+**p95 处置裁决（2026-11-12 21:45，主理人授权 B 自行裁决，取 ③+① 组合）**：
+
+- **闸门 E 拆双线，200ms 预算本身不放松**：
+  1. **规则路径**（route_layer=rule，0 模型调用）p95 ≤200ms 为**硬线**——纯代码可控，必须达标；未达仍判 E 不通过；
+  2. **模型路径**（system_one/agent/fallback）p95 **单列**：目标仍 200ms，超时**如实报告不硬失败**，挂 **D10 F23**（system_one 量化/批处理/线程数，即选项①）后按同预算验收；复测建议在更稳机器（选项②）执行；
+- **实现**：`scripts/eval_router.py` 增加 `layer_latencies` 分层延迟与报告双线行；`tests/eval_gate.py` 闸门 E 按 rule/model 拆判（`rule_p95_ms` 硬线、`model_p95_ms` 单列留痕），不许静默放行；
+- **留痕**：gate 报告与门禁表格均标注裁决来源与 F23 挂账；本裁决不改变 PRD:547 的 200ms 目标语义，只改**验收记账口径**（超时项从「整门不过」改为「单列挂账」，防止模型硬件瓶颈永久阻塞收口）。
+- **首跑复测（2026-11-12 22:10，jev/cpu，真权重，报告 `eval/reports/eval_jev_dualgate_20261112.md`）**：规则路径 p95 **0ms**（36 条 rule 命中全零）→ **硬线通过** ✅；模型路径 p95 **279ms**（p50 243ms，74 条）→ 单列挂 F23，与 §11.1 的 265/266ms 量级一致；全量 p95 278ms。拆层口径按预期工作，闸门 E 的 p95 项自本跑起不再整门红。
+
+**本轮收口判定（2026-11-12 晚更新）**：B1/B2 完成；B3/B4 的 **P10、P14 已闭合**（证据见 §11 收口行），**P12 已随 contracts v0.7 留痕**；**F03 followup_sink 已补装配（main.py 注入 `make_followup_sink(session_factory)`，假承诺拆除在生产生效）**；**p95 已裁决收口（③+① 组合：闸门 E 拆双线，模型路径挂 F23）**。任务卡改「已完成」只剩 **P15 DB 落点**（`llm_tokens` 迁移申请已发 A，0021 落地后补写库）一个跨成员待办。
 
 ---
 
@@ -1215,6 +1226,8 @@ uv run ruff check app tests && uv run ruff format --check app tests
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.12 | 2026-11-12 | **22:15 P15 DB 落点 B 自行交付（主理人授权）**：`alembic 0021_day9_llm_tokens`——`metrics.stage` 白名单八值→九值（加 `llm_tokens`），新增可空列 `prompt_tokens`/`completion_tokens`/`total_tokens`（NULL = 供应商未回 usage，不补零）；`record_llm_usage()` 补第三层——经 recorder 落 `stage=llm_tokens、duration_ms=0、source='llm_usage'` 一行（trace_id 缺失按 Z4 丢弃，进程内计数照记，落库失败降级不阻塞）；provider/model 明细仍在结构化日志（metrics 表只写指标不写内容）。跨重启/多 worker 的成本统计查库即得，snapshot 进程内计数继续服务单实例即时读数。**B 侧 Day 9 未决全部闭合。** |
+| v1.11 | 2026-11-12 | **21:45 p95 处置裁决（主理人授权 B 自裁，§11.1 三选项取 ③+① 组合）**：闸门 E 拆「规则路径 p95 ≤200ms 硬线 / 模型路径 p95 单列（目标 200ms，挂 D10 F23 验收）」，预算不放松、超时如实报告不硬失败。实现：`eval_router.py` 分层延迟 `layer_latencies` + 报告双线行；`eval_gate.py` 闸门 E 按 `rule_p95_ms` 硬线判、`model_p95_ms` 单列留痕。另：**F03 followup_sink 补装配**（main.py 注入 `make_followup_sink`，状态板「已接线」自本提交起属实）。B 侧收口只剩 P15 DB 落点（等 A 迁移）。 |
 | v1.10 | 2026-11-12 | **临时提示词文件清理**：主理人要求剩余任务提示词「不入远端、作临时文件删除」→ `docs/plans/day09/adhoc-20261112-剩余任务执行提示词.md` 已删除（其内容已于 v1.9 执行完毕并回填），`docs/plans/README.md` 索引行同步删除，Day 9 看板自动刷新。同时清理根目录入库垃圾：`backend-err.txt`（0 字节）、`backend-out.txt`（0 字节）、`tmp_check_db.py`（一次性 DB 探测脚本）、`.coverage`（本地覆盖率产物）；**保留** `docs/prompts/seed-prompt.md`、`docs/plans/task-04-鉴权内核.md`、`docs/plans/adhoc-20261109-房间床位交付存档.md`（均被 README 索引/任务卡引用，属验收留痕），`tmp/`、`vrm-playground/` 未跟踪本地工作区暂不动。 |
 | v1.9 | 2026-11-12 | **收口执行回填（P10/P14/token/p95）**：① P10——`health_service.create_red_landing`（`_land_health_record(notify_red)` 抽取，REST 旧行为不变），图内删 `pending_create_red_order` 降级桩、未注入即 `RuntimeError`，`health_jobs._build_graph` 与 `tool_impls` 语音执行器注入 `create_red_landing_adapter`；② P14——注入防线经 `set_injection_hook` 接进 `safety_check` 单一入口，对话层固定拒答 + 审计 1 行（不走急症三表），xfail 转 pass；③ token——`LLMReply` 增 `prompt_tokens/completion_tokens` + `llm_usage` 日志 + `record_llm_usage` 进程内计数（不写库，迁移申请已发 A）；④ p95——shadow 等待 150→80ms 且加 80ms 硬上限，官方复测 p95 266ms（before 265ms）**仍未达闸门 E**，瓶颈取证见 §11.1（fast 单问 187ms 贴预算、CPU 争抢、shadow-OFF 敏感掉 3 条），三个处置选项已列。P14/P15 状态行同步；本轮新增/修改文件与验收命令见 §11 收口行。 |
 | v1.8 | 2026-11-12 | **N0 四方电子回执签认，contracts v1.0 冻结**：X4 `PurgeRef` 按 dev-A 建议统一为 X12 口径（`domain='memory'`，`audit_id` 归 A）；P9/P10/P11/P12/P13 闭合；§11 N0 行回填；签认单转「已签认」（手签/日期待补）。未决收敛为 **P3–P8、P14、P15 共 8 项**。 |
