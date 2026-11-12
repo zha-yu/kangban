@@ -1,4 +1,4 @@
-"""健康采集域调度（B3 · Day 8）：四类 tick job，独立注册不复用 medication tick。
+"""健康采集域调度（B3 · Day 8/9）：六类 tick job，独立注册不复用 medication tick。
 
 **同一条铁律**（照 `medication_jobs.py` 驱动链模式）：本文件**不做业务写库**，
 `session.add / flush` 一行都不允许，ORM 查表也不行——所有业务写经
@@ -6,7 +6,7 @@
 图运行结束后对会话做一次 `commit()` 是**会话管理豁免**（L6#6 同款裁决），
 不是业务写库。
 
-四类 job（每分钟 cron + 内部时刻窗口守卫，重启/重跑靠状态条件天然幂等）：
+六类 job（30s tick + 内部时刻窗口守卫，重启/重跑靠状态条件天然幂等）：
 
 1. **19:00 采集触发**：对当日 active 长者逐一起健康图（`source=voice_scheduled`，
    scheduled thread 同日幂等）；checkpointer 里已有当日 checkpoint 的长者跳过——
@@ -14,18 +14,20 @@
 2. **20:00 强制结束 + 漏采派单**（PRD §4.6 / FR-HLT-08）：先按「当日无任何记录」
    判定漏采建 `collection_missed` 黄单（幂等 token 按日），再对仍在挂起的
    scheduled 线程 `force_close`——不再发问，未答标缺失直接进判定落库。
-3. **风险扫描（每分钟，无窗口）**：红色事件 2 分钟无人确认 → 原事件标
+3. **风险扫描（30s，无窗口）**：红色事件 2 分钟无人确认 → 原事件标
    `escalated` + 通知管理员，**不建第二个事件/工单**（AC-12）；pending 通知
    30s 重试、3 次失败置 failed（AC-23 前半）。
 4. **日报生成触发**：调 C2 `report_service.generate_daily_report`（当日已有
-   版本幂等返回，不重建不重发）。触发时刻 PRD/TD 均未定义——**自裁口径**
-   （AGENTS 前置铁律 6）：取 20:00 强制结束之后、日切之前的 21:30，调整改
-   模块常量 `_DAILY_REPORT_FIRE` 并在提交说明留痕。
-5. **面板帧补推（每分钟，窗口内）**：对当日无记录的 active 长者重推
+   版本幂等返回，不重建不重发）。时刻按 X11 由 21:30 改为 **20:00**（PRD §4.8）。
+5. **面板帧补推（30s，窗口内）**：对当日无记录的 active 长者重推
    `task_command kind=health` 帧（§C-1，经 `task_dispatch_service`）。与起图
    解耦——起图是 graph/checkpointer 事实（幂等跳过），帧投递是 UI 触达：
-   pad 离线时 deliver 丢失，设备上线后下一分钟 tick 自动补推；taskId 按日
+   pad 离线时 deliver 丢失，设备上线后下一 tick 自动补推；taskId 按日
    固定，pad 端按 taskId 幂等不重启面板（FR-MED-04 同款口径）。
+6. **复核 resume 扫描（30s，F07/X7）**：`health_records.review_status` 已终态
+   （`confirmed`/`corrected`）**且**对应线程仍处 interrupt → `reviewed_externally`
+   直接收口。thread_id 只从 `health_records.graph_thread_id` 取；读接口在
+   `app/services/health_resume_read.py`（**只读、1 条 SELECT**），scheduler 零写库。
 
 采集窗口起止读 Pydantic Settings（`health_checkup_start` / `health_checkup_end`，
 待确认项①裁决：允许经环境变量覆盖为可测试时刻）。
@@ -40,23 +42,32 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import FastAPI
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app.graphs.health_checkup_graph import (
+    DECISION_REVIEWED_EXTERNALLY,
     build_health_checkup_graph,
+    create_red_landing_adapter,
     default_thread_id,
+    default_validate_answers,
     graph_config,
+    notify_red_dual_adapter,
     resume_health_checkup,
     start_health_checkup,
 )
 from app.services import health_service, notify_service, report_service, task_dispatch_service
+from app.services.health_resume_read import list_records_pending_resume
 
 logger = logging.getLogger(__name__)
 
-#: 日报触发时刻（上海时间 HH:MM）。出处见模块 docstring「自裁口径」。
-_DAILY_REPORT_FIRE: str = "21:30"
+#: 日报触发时刻（上海时间 HH:MM）。X11：21:30 → 20:00（PRD §4.8）。
+_DAILY_REPORT_FIRE: str = "20:00"
+
+#: 调度 tick 间隔（秒）。X11：60s → 30s（否则无法表达 30s 通知重试）。
+#: 五个既有 tick 全部翻倍执行，幂等由各自的窗口/状态条件保证（见模块 docstring）。
+_TICK_SECONDS: int = 30
 
 #: 触发/收口 tick 的分钟级守卫窗口宽度：进程在整点附近重启也不漏人；
 #: 幂等不靠窗口收窄，靠 checkpoint 存在性（触发）与 dedupe token（漏采单）。
@@ -72,6 +83,10 @@ _CLOSE_JOB_ID = "health_window_close"
 _RISK_SCAN_JOB_ID = "health_risk_scan"
 _REPORT_JOB_ID = "health_daily_report"
 _PANEL_PUSH_JOB_ID = "health_panel_push"
+_RESUME_JOB_ID = "health_review_resume"
+
+#: 图停在 HITL 的节点名（复核 resume 扫描的第二条件）
+_HITL_NODES: frozenset[str] = frozenset({"hitl_yellow", "hitl_red"})
 
 _UTC = datetime.UTC
 
@@ -96,6 +111,7 @@ def install_health_scheduler(
     checkpointer_schema: str | None = None,
     timezone_name: str = "Asia/Shanghai",
     now_fn: Callable[[], datetime.datetime] | None = None,
+    create_red_order_fn: Callable[[Any, Any], Any] | None = None,
 ) -> HealthSchedulerRuntime:
     """构造 HealthSchedulerRuntime 并挂到 `app.state.health_scheduler`，返回实例给调用方。
 
@@ -114,6 +130,7 @@ def install_health_scheduler(
         checkpointer_schema=checkpointer_schema,
         timezone_name=timezone_name,
         now_fn=now_fn,
+        create_red_order_fn=create_red_order_fn,
     )
     app.state.health_scheduler = runtime
     return runtime
@@ -133,6 +150,7 @@ class HealthSchedulerRuntime:
         checkpointer_schema: str | None = None,
         timezone_name: str = "Asia/Shanghai",
         now_fn: Callable[[], datetime.datetime] | None = None,
+        create_red_order_fn: Callable[[Any, Any], Any] | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._checkpointer_dsn = checkpointer_dsn
@@ -142,9 +160,25 @@ class HealthSchedulerRuntime:
         self._now_fn: Callable[[], datetime.datetime] = now_fn or (
             lambda: datetime.datetime.now(_UTC)
         )
+        #: X3 v0.6 红档落库包装注入点（P10 已闭合：`create_red_landing` 由 C 定名授权 B 命名）。
+        #: 默认即生产适配器 `create_red_landing_adapter`（调 health_service.create_red_landing）：
+        #: 只落库、不通知，通知归图内 notify_red 节点。**不直写 work_orders**。
+        self._create_red_order_fn: Callable[[Any, Any], Any] = (
+            create_red_order_fn or create_red_landing_adapter
+        )
         self._scheduler: AsyncIOScheduler | None = None
         self._checkpointer_ctx: Any = None
         self._checkpointer: AsyncPostgresSaver | None = None
+
+    def _build_graph(self, session: Any) -> Any:
+        """统一构造子图：两处（起图/收口）＋ resume 扫描都走这一处注入，缺一不可。"""
+        return build_health_checkup_graph(
+            session=session,
+            checkpointer=self._checkpointer,
+            validate_fn=default_validate_answers,
+            notify_red_fn=notify_red_dual_adapter,
+            create_red_order_fn=self._create_red_order_fn,
+        )
 
     # --- 时钟与窗口守卫 ---
 
@@ -201,10 +235,11 @@ class HealthSchedulerRuntime:
             (_RISK_SCAN_JOB_ID, self._tick_risk_scan),
             (_REPORT_JOB_ID, self._tick_report),
             (_PANEL_PUSH_JOB_ID, self._tick_panel_push),
+            (_RESUME_JOB_ID, self._tick_review_resume),
         ):
             self._scheduler.add_job(
                 handler,
-                CronTrigger.from_crontab("* * * * *", timezone=self._timezone_name),
+                IntervalTrigger(seconds=_TICK_SECONDS, timezone=self._timezone_name),
                 id=job_id,
                 replace_existing=True,
             )
@@ -258,9 +293,7 @@ class HealthSchedulerRuntime:
             thread_id = default_thread_id(elder_id, "voice_scheduled", on_date=day)
             try:
                 async with self._session_factory() as session:
-                    graph = build_health_checkup_graph(
-                        session=session, checkpointer=self._checkpointer
-                    )
+                    graph = self._build_graph(session)
                     state = await graph.aget_state(graph_config(thread_id))
                     if state.values:
                         # 当日已起图（含已收口）→ 幂等跳过
@@ -287,14 +320,14 @@ class HealthSchedulerRuntime:
             except Exception:
                 logger.exception("health_scheduler_trigger_failed elder_id=%s", elder_id)
 
-    # --- tick ①b：窗口内面板帧补推（每分钟，UI 触达与起图解耦） ---
+    # --- tick ①b：窗口内面板帧补推（每 30s，UI 触达与起图解耦） ---
 
     async def _tick_panel_push(self) -> None:
         """采集窗口内对当日无记录的长者重推 task_command 帧（§C-1）。
 
         幂等两层：taskId 按日固定（pad 端按 taskId 不重启面板）+ 只推「当日
         无任何记录」的长者（有记录说明已答完，不再打扰）。帧投递失败（离线）
-        不重试不建单——下一分钟 tick 自动再来，窗口外由漏采判定兜底。
+        不重试不建单——下一 tick 自动再来，窗口外由漏采判定兜底。
         """
         now_sh = self._shanghai()
         now_min = _minutes_of_day(now_sh.strftime("%H:%M"))
@@ -375,9 +408,7 @@ class HealthSchedulerRuntime:
             thread_id = default_thread_id(elder_id, "voice_scheduled", on_date=day)
             try:
                 async with self._session_factory() as session:
-                    graph = build_health_checkup_graph(
-                        session=session, checkpointer=self._checkpointer
-                    )
+                    graph = self._build_graph(session)
                     state = await graph.aget_state(graph_config(thread_id))
                     if not state.values:
                         continue  # 当日没起过图：漏采单已覆盖，无需收口
@@ -393,7 +424,7 @@ class HealthSchedulerRuntime:
                     thread_id,
                 )
 
-    # --- tick ③：红色升级 + 通知重试扫描（每分钟） ---
+    # --- tick ③：红色升级 + 通知重试扫描（每 30s） ---
 
     async def _tick_risk_scan(self) -> None:
         """AC-12：红事件 2 分钟无人确认 → 原事件标 escalated（不建第二个事件/工单）；
@@ -418,7 +449,7 @@ class HealthSchedulerRuntime:
     # --- tick ④：日报生成触发 ---
 
     async def _tick_report(self) -> None:
-        """21:30（自裁口径，见模块 docstring）对 active 长者逐人生成当日日报。
+        """20:00（X11 / PRD §4.8）对 active 长者逐人生成当日日报。
 
         `generate_daily_report` 对「当日已有版本」幂等返回（不重建不重发），
         重复 tick 无副作用；长者不存在由服务层抛 ValueError，逐人 try 包住不阻断他人。
@@ -448,6 +479,64 @@ class HealthSchedulerRuntime:
                 )
             except Exception:
                 logger.exception("health_scheduler_report_failed elder_id=%s day=%s", elder_id, day)
+
+    # --- tick ⑥：复核 resume 扫描（X7 / F07） ---
+
+    async def _tick_review_resume(self) -> None:
+        """console 复核已终态 + 线程仍 interrupt → `reviewed_externally` 收口。
+
+        双条件（X7）：
+        1. `review_status ∈ {confirmed, corrected}`（只读模块 1 条 SELECT 返回）；
+        2. 对应 `graph_thread_id` 的 checkpoint 仍停在 `hitl_yellow`/`hitl_red`。
+        已 resume 的线程 `state.next` 不再含 HITL 节点 → 天然幂等，**不靠时间戳水位**。
+
+        `thread_id` 只从 `health_records.graph_thread_id` 取；本方法零写库
+        （图的落库归 services，`commit` 是会话管理豁免）。
+        """
+        if self._checkpointer is None:
+            logger.warning("health_scheduler_checkpointer_missing skip_review_resume")
+            return
+
+        async with self._session_factory() as session:
+            rows = await list_records_pending_resume(session)
+        if not rows:
+            return
+
+        resumed = 0
+        for row in rows:
+            thread_id = row.graph_thread_id
+            try:
+                async with self._session_factory() as session:
+                    graph = self._build_graph(session)
+                    state = await graph.aget_state(graph_config(thread_id))
+                    if not state.values or not (set(state.next) & _HITL_NODES):
+                        continue  # 已恢复/未挂起：不重复 resume
+                    await resume_health_checkup(
+                        graph,
+                        thread_id=thread_id,
+                        payload={
+                            "decision": DECISION_REVIEWED_EXTERNALLY,
+                            "review_status": row.review_status,
+                            "reviewed_by": str(row.reviewed_by) if row.reviewed_by else None,
+                            "review_note": row.review_note,
+                        },
+                    )
+                    await session.commit()
+                resumed += 1
+                logger.info(
+                    "health_review_resume_done record_id=%s thread=%s review_status=%s",
+                    row.record_id,
+                    thread_id,
+                    row.review_status,
+                )
+            except Exception:
+                logger.exception(
+                    "health_review_resume_failed record_id=%s thread=%s",
+                    row.record_id,
+                    thread_id,
+                )
+        if resumed:
+            logger.info("health_review_resume_summary resumed=%d scanned=%d", resumed, len(rows))
 
 
 # ------------------------------------------------------------------ 类型导出

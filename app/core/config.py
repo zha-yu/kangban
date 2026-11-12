@@ -101,6 +101,18 @@ class Settings(BaseSettings):
     llm_max_retries: int = 2
     llm_temperature: float = 0.6
 
+    # ---------------------------- 长期记忆 · Embedding（Day 9 B2 / 裁决 D3） ----------------------------
+    # 口径：OpenAI 兼容 `POST {base_url}/embeddings`，维度固定 1536（与
+    # `models/memory.py:42` 的 vector(1536) 和 TD line 717 一致，免迁移）。
+    # base_url / model 任一为空 → 视为未配置：写入降级为无向量行、召回本轮不加载记忆。
+    embedding_base_url: str = ""
+    embedding_api_key: str = ""
+    embedding_model: str = ""
+    embedding_dim: int = 1536
+    embedding_timeout_seconds: float = 5.0
+    #: 单次请求文本条数上限。代码侧另有硬上限 16（`_EMBEDDING_MAX_BATCH`），配置放大不生效。
+    embedding_batch_size: int = 16
+
     # ---------------------------- System One · Laya 本地推理（Day 7 A1） ----------------------------
     # 口径来源：docs/plans/day07/dev-a-三级路由与决策日志.md §5.2.0（实测证据）
     #   laya-multilingual（322M/F16/615MB/apache-2.0），推理入口是仓库自带 rl_agent_api.RLAgent。

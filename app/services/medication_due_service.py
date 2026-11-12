@@ -21,14 +21,22 @@ import logging
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Final
 
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.medication import MedicationEvent, MedicationPlan
+from app.models.organization import Elder
 
 logger = logging.getLogger(__name__)
+
+#: 提醒触达的长者状态白名单（Z-A4d，2026-11-12 dev-A 交接）：
+#: `away`（暂离）期间**暂停采集与提醒触达**——首次触达与 resume 推进都不再扫到；
+#: `transferred`/`archived` 本就不该再有 active 药单被触达。A3 只做状态流转＋审计，
+#: 各调度链在这里读状态，不另设第二套判断。
+_TOUCHABLE_ELDER_STATUSES: Final = ("active",)
 
 
 # ------------------------------------------------------------------ 返回值
@@ -75,6 +83,7 @@ async def list_due_plans(
 
     过滤条件（全部命中才返回）：
     - `medication_plans.status = 'active'`
+    - **长者 `status = 'active'`**（Z-A4d：`away` 暂离期间暂停提醒触达，不扫不推）
     - 今天（按 timezone_name）在 `[start_date, end_date]` 范围内
       （end_date 可空 = 永久有效）
     - `schedule_cron` 命中当前分钟（cron 表达式也按同一 timezone_name 解释）
@@ -87,8 +96,13 @@ async def list_due_plans(
     # 钉到分钟，秒/毫秒归零——cron 匹配不关心子分钟
     rounded = effective_now.replace(second=0, microsecond=0)
 
-    # 查 active 计划。一次性把候选集拿回 Python 侧过滤（cron 匹配在 SQL 里不好写）
-    stmt = select(MedicationPlan).where(MedicationPlan.status == "active")
+    # 查 active 计划（join 长者状态：away/transferred/archived 一律不触达）。
+    # 一次性把候选集拿回 Python 侧过滤（cron 匹配在 SQL 里不好写）
+    stmt = (
+        select(MedicationPlan)
+        .join(Elder, Elder.elder_id == MedicationPlan.elder_id)
+        .where(MedicationPlan.status == "active", Elder.status.in_(_TOUCHABLE_ELDER_STATUSES))
+    )
     rows: Iterable[MedicationPlan] = (await session.execute(stmt)).scalars().all()
 
     # 今天日期（按当前时区），用于 start_date/end_date 覆盖过滤
@@ -147,14 +161,22 @@ async def list_waiting_confirm_events(session: AsyncSession) -> list[WaitingEven
     """返回所有 status='waiting_confirm' 且 terminal_state IS NULL 的用药事件。
 
     scheduler 的 resume tick 用：这些子图正在等待长者回答，需要定时推进到下一次触达或 finalize。
+    **Z-A4d**：长者 `away`（暂离）期间暂停提醒触达——等待中的事件不再 resume
+    （留在 waiting，长者恢复 active 后由既有 attempts/终态逻辑自然收口，不伪造应答）。
+    tool_impls 的「我的用药提醒」查询同样经过本口，away 长者听到的是如实的「无待确认提醒」。
     """
-    stmt = select(
-        MedicationEvent.reminder_id,
-        MedicationEvent.plan_id,
-        MedicationEvent.scheduled_at,
-    ).where(
-        MedicationEvent.status == "waiting_confirm",
-        MedicationEvent.terminal_state.is_(None),
+    stmt = (
+        select(
+            MedicationEvent.reminder_id,
+            MedicationEvent.plan_id,
+            MedicationEvent.scheduled_at,
+        )
+        .join(Elder, Elder.elder_id == MedicationEvent.elder_id)
+        .where(
+            MedicationEvent.status == "waiting_confirm",
+            MedicationEvent.terminal_state.is_(None),
+            Elder.status.in_(_TOUCHABLE_ELDER_STATUSES),
+        )
     )
     rows = (await session.execute(stmt)).mappings().all()
     return [

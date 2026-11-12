@@ -11,6 +11,8 @@
   单测不 mock session 即可跑。签名 12:00 前冻结（X1，通知 B/C）。
 - `create_health_record()` —— 写库入口：校验 → 分级 → 写 health_records
   → 按需建 risk_events + work_order。越权保护、版本链、黄升红全部在这里做。
+- `create_red_landing()` —— 红档落库包装（X3 v0.6 / P10）：同一落库流程但
+  **只落库、不通知**；语音路径先落库，再由子图 `notify_red` 节点单独双通知。
 - `review_health_record()` —— 复核入口：确认/纠错。纠错写新版本
   （superseded_reason="review_correction"，纯服务端写入，前端不传）。
 
@@ -335,7 +337,7 @@ async def _find_open_yellow_risk_event(
 # ------------------------------------------------------------------ 写库入口
 
 
-async def create_health_record(
+async def _land_health_record(
     session: AsyncSession,
     *,
     elder_id: uuid.UUID,
@@ -349,16 +351,20 @@ async def create_health_record(
     operator_id: uuid.UUID | None,
     operator_role: str | None = None,
     graph_thread_id: str | None = None,
+    notify_red: bool,
 ) -> HealthRecordRef:
-    """写库入口：校验 → 分级 → 写 health_records → 按需建 risk_events + work_order。
+    """落库主流程：校验 → 分级 → 写 health_records → 按需建 risk_events + work_order。
 
     越权保护：source=staff_* 时 operator_id 必填；**仅 care_worker** 要求是该长者
     的 primary_care（AC-32），doctor/admin 不限名下范围（与 H-3 补启动同口径，
     2026-11-12 本地实测发现 H-2 未按此口径放行 admin，主理人裁决对齐）。
     `operator_role=None`（服务层直调、语音路径）保持严格校验——fail-safe。
 
-    版本链：首次采集 version=1；补录场景由**复核入口** `review_health_record` 创建 version+1。
-    本函数只负责创建新的采集记录（version=1，superseded_by=NULL）。
+    `notify_red=False` 时**跳过红档双通知**（落库段完全不变）：语音路径由
+    `create_red_landing` 调本函数先落库，再由图内 `notify_red` 节点单独通知，
+    避免同一次红档在一次调用里通知两遍（X3 v0.6 先落库后通知）。
+
+    **本函数不 commit**：事务边界归调用方（REST 归 api 层、语音归子图/调度会话）。
     """
     # --- 越权保护 ---
     if source.startswith("staff_"):
@@ -435,14 +441,16 @@ async def create_health_record(
                 record_id=record.record_id,
                 risk_event_id=risk_event_id,
             )
-            # X3 v0.6：先落库（上方建单）→ 后通知；失败不回滚
-            await notify_red_dual(
-                session,
-                elder_id=elder_id,
-                record_id=record.record_id,
-                risk_event_id=risk_event_id,
-                severity="red",
-            )
+            # X3 v0.6：先落库（上方建单）→ 后通知；失败不回滚。
+            # notify_red=False（语音落库包装）时通知归图内 notify_red 节点，此处不重复发。
+            if notify_red:
+                await notify_red_dual(
+                    session,
+                    elder_id=elder_id,
+                    record_id=record.record_id,
+                    risk_event_id=risk_event_id,
+                    severity="red",
+                )
         else:
             # 新建 risk_event
             risk_event = RiskEvent(
@@ -478,14 +486,16 @@ async def create_health_record(
                     record_id=record.record_id,
                     risk_event_id=risk_event.event_id,
                 )
-                # X3 v0.6：先落库（上方建单）→ 后通知；失败不回滚
-                await notify_red_dual(
-                    session,
-                    elder_id=elder_id,
-                    record_id=record.record_id,
-                    risk_event_id=risk_event.event_id,
-                    severity="red",
-                )
+                # X3 v0.6：先落库（上方建单）→ 后通知；失败不回滚。
+                # notify_red=False（语音落库包装）时通知归图内 notify_red 节点，此处不重复发。
+                if notify_red:
+                    await notify_red_dual(
+                        session,
+                        elder_id=elder_id,
+                        record_id=record.record_id,
+                        risk_event_id=risk_event.event_id,
+                        severity="red",
+                    )
 
     logger.info(
         "health_record_created record_id=%s elder_id=%s severity=%s version=1 "
@@ -503,6 +513,94 @@ async def create_health_record(
         version=1,
         risk_event_id=risk_event_id,
         work_order_id=work_order_id,
+    )
+
+
+async def create_health_record(
+    session: AsyncSession,
+    *,
+    elder_id: uuid.UUID,
+    source: str,
+    systolic: int | None,
+    diastolic: int | None,
+    sleep_hours: float | None,
+    mood_score: int | None,
+    mood_note: str | None,
+    complaint: str | None,
+    operator_id: uuid.UUID | None,
+    operator_role: str | None = None,
+    graph_thread_id: str | None = None,
+) -> HealthRecordRef:
+    """写库入口（REST 旧行为不变）：校验 → 分级 → 落库 → 红档同时双通知。
+
+    越权保护：source=staff_* 时 operator_id 必填；**仅 care_worker** 要求是该长者
+    的 primary_care（AC-32），doctor/admin 不限名下范围（与 H-3 补启动同口径）；
+    `operator_role=None` 保持严格校验 fail-safe。
+
+    版本链：首次采集 version=1；补录场景由**复核入口** `review_health_record` 创建 version+1。
+    本函数只负责创建新的采集记录（version=1，superseded_by=NULL）。
+
+    X3 v0.6 之后本函数是「落库 + 通知」的**一体入口**，只服务 REST 单步调用；
+    语音路径（先落库、后通知）必须走 `create_red_landing`，否则图内 `notify_red`
+    会把同一红档通知两遍。
+    """
+    return await _land_health_record(
+        session,
+        elder_id=elder_id,
+        source=source,
+        systolic=systolic,
+        diastolic=diastolic,
+        sleep_hours=sleep_hours,
+        mood_score=mood_score,
+        mood_note=mood_note,
+        complaint=complaint,
+        operator_id=operator_id,
+        operator_role=operator_role,
+        graph_thread_id=graph_thread_id,
+        notify_red=True,
+    )
+
+
+async def create_red_landing(
+    session: AsyncSession,
+    *,
+    elder_id: uuid.UUID,
+    source: str,
+    systolic: int | None,
+    diastolic: int | None,
+    sleep_hours: float | None,
+    mood_score: int | None,
+    mood_note: str | None,
+    complaint: str | None,
+    operator_id: uuid.UUID | None,
+    operator_role: str | None = None,
+    graph_thread_id: str | None = None,
+) -> HealthRecordRef:
+    """红档落库（**只落库，不通知**）：record + risk_event + 工单同一事务，不 commit。
+
+    X3 v0.6「先落库、后通知」的语音侧包装（P10，函数名由 B 定、已通知 C）：
+    - 与 `create_health_record` 共用 `_land_health_record`，**不复制落库逻辑**；
+    - 唯一的差别是 `notify_red=False`：双通知由子图 `notify_red` 节点调
+      `notify_red_dual` 单独执行，避免一次调用里通知两遍；
+    - 返回 `HealthRecordRef`（record_id/severity/version/risk_event_id/work_order_id），
+      图状态从这三个 id 继续（`notify_red` 读 record_id + risk_event_id）；
+    - 失败回滚由调用方事务负责（本函数只 flush）；落库失败时通知也不会发出——
+      这正是「先落库后通知」要的顺序保证。
+    """
+    return await _land_health_record(
+        session,
+        elder_id=elder_id,
+        source=source,
+        systolic=systolic,
+        diastolic=diastolic,
+        sleep_hours=sleep_hours,
+        mood_score=mood_score,
+        mood_note=mood_note,
+        complaint=complaint,
+        operator_id=operator_id,
+        operator_role=operator_role,
+        graph_thread_id=graph_thread_id,
+        notify_red=False,
     )
 
 
@@ -1027,6 +1125,7 @@ __all__ = [
     "NotifyRef",
     "create_health_record",
     "create_missed_collection_order",
+    "create_red_landing",
     "get_health_trend",
     "get_record_chain",
     "get_record_row",

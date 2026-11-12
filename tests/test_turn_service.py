@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.agents.companion import (
@@ -1293,11 +1293,19 @@ class _RecordingRecall:
         *,
         elder_id: str | None,
         is_generic: bool,
+        query: str | None = None,
         limit: int = 5,
         min_importance: float | None = None,
         session: Any = None,
     ) -> list[_StubMemoryChunk]:
-        self.calls.append({"elder_id": elder_id, "is_generic": is_generic, "limit": limit})
+        self.calls.append(
+            {
+                "elder_id": elder_id,
+                "is_generic": is_generic,
+                "query": query,
+                "limit": limit,
+            }
+        )
         if self._error is not None:
             raise self._error
         return list(self._chunks)
@@ -1331,7 +1339,9 @@ async def test_context_builder_injects_recalled_memory() -> None:
 
     outcome = service.outcome_of("turn-mem-1")
     assert outcome is not None and outcome.text == "想起您爱听越剧。"
-    assert recall.calls == [{"elder_id": _ELDER_ID, "is_generic": False, "limit": 5}]
+    assert recall.calls == [
+        {"elder_id": _ELDER_ID, "is_generic": False, "query": "放一段戏", "limit": 5}
+    ]
     assert builder.last_context is not None
     assert builder.last_context.memory_notes == ("长者爱听越剧", "长者偏好清淡口味")
 
@@ -1375,9 +1385,19 @@ async def test_context_builder_generic_never_calls_recall() -> None:
 
 
 async def test_smoke_real_state_stack_full_turn(
-    turn_db: async_sessionmaker[AsyncSession], seeded: dict[str, str]
+    turn_db: async_sessionmaker[AsyncSession],
+    seeded: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """装配冒烟：真 StateCenter（内存模式）+ 适配器 + 真构建器，一轮七步全绿。"""
+
+    async def _fake_embed(texts: Sequence[str], **_: Any) -> list[list[float]]:
+        return [[0.1] * 1536 for _ in texts]
+
+    from app.services import memory_service
+
+    monkeypatch.setattr(memory_service, "_embed_texts", _fake_embed)
+
     async with turn_db() as session:
         session.add(
             MemoryChunk(
@@ -1395,6 +1415,15 @@ async def test_smoke_real_state_stack_full_turn(
                 valid_from=datetime.now(UTC),
                 status="active",
             )
+        )
+        await session.flush()
+        # B2 cosine 召回：种子行必须有向量，否则新路径按「召回失败不加载记忆」降级
+        vec = "[" + ",".join(["0.1"] * 1536) + "]"
+        await session.execute(
+            text(
+                "UPDATE memory_chunks SET embedding = CAST(:vec AS vector) WHERE content = :content"
+            ),
+            {"vec": vec, "content": "长者爱听越剧"},
         )
         await session.commit()  # 只释放 savepoint（外层事务仍在，用例结束整体回滚）
 

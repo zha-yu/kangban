@@ -1,7 +1,7 @@
 # dev-B Day 9 工作推进计划 · 智能层接线与注入防线
 
-> 状态：草稿（待主理人确认后开工）　｜　版本：v1.4　｜　日期：2026-11-12
-> 关联：`docs/team_tasks/day09/dev-B-智能层接线与注入防线.md` v1.2｜`docs/team_tasks/day09/day09-任务总览与DAG.md` v1.5｜`docs/team_tasks/day09/contracts.md` **v0.3（待冻结；N0 D9 09:30 四方签认后转「已冻结」）**——X1–X12 正文已齐备，X6/X10 已作废，X8 内容已定，**X3 待并入 v0.6（C2 四项条件）**
+> 状态：进行中（N0 已签认、contracts v1.0 已冻结；P10/P14 已闭合，剩 p95 与 P15 DB 落点）　｜　版本：v1.10　｜　日期：2026-11-12
+> 关联：`docs/team_tasks/day09/dev-B-智能层接线与注入防线.md` v1.2｜`docs/team_tasks/day09/day09-任务总览与DAG.md` v1.5｜`docs/team_tasks/day09/contracts.md` **v1.0（已冻结，2026-11-12 N0 四方回执签认）**
 > 上游依据：PRD line 266–275（FR-DLG-01/07/10）、318–327（用药终态与补报）、357–361（分级与校验）、383–390（通知状态）、418–427（FR-MEM）、440（FR-ADM-06）、487–524（AC-04/08/09/10/14/20/21/22/29/36/39）、531–536（固定测试集）、547（路由 ≤200ms）｜技术设计文档 line 717（vector(1536) 口径）、778（Day 9 迁移批次）、1017–1018（分级在代码与话术）、1166–1174（Day 9 落地与验收）
 > 变更记录见文末
 
@@ -13,7 +13,7 @@
 2. **执行顺序**：先读 §1–§2 建立认知 → 按 §4 的 Step 0–6 逐步执行，每步做完自检并向主理人汇报，**确认后才进入下一步** → 用 §5 的验收矩阵收口。
 3. **并行加速**：§3 的 DAG 与 §7 的子 agent 编排是同一份计划的两种执行方式。单人串行 20.5h；按 §7 开子 agent 并行，纯执行约 12h（含装配 1h）。**是否开子 agent、何时开，由主理人在 Step 0 确认。**
 4. **事实来源铁律**：一切「是什么/什么字段/什么阈值」只引 PRD 与技术设计文档；任务书、总览、本计划只回答「谁做、先做什么、怎么验」。两者冲突时以 PRD/TD 为准，并在本计划 §9 登记。
-5. **本轮已由主理人/团队裁决的 12 项口径**见 §9.1，不再重开；未决项见 §9.2，必须在对应 Step 开工前闭合。
+5. **本轮已由主理人/团队裁决的 15 项口径**见 §9.1，不再重开；未决项见 §9.2，必须在对应 Step 开工前闭合。
 
 ---
 
@@ -505,7 +505,7 @@ flowchart LR
 
 **操作**
 
-1. 主理人确认本计划与 §9.1 的 12 项裁决；确认是否启用 §7 的子 agent 编排。
+1. 主理人确认本计划与 §9.1 的 15 项裁决；确认是否启用 §7 的子 agent 编排。
 2. 主持 N0 评审（09:00–09:30），逐条过 X1–X12；重点确认 P3/P9/P11 与已裁决 D11/D12 的落笔（X8 迁移时点、contracts 冻结、通知键切换）；**P10 只确认「C 写完后通知函数名」的时点，不在 N0 阻塞**。
 3. 四方签认后，把 `contracts.md` 状态改「已冻结」，在 §7 变更记录写冻结版条目（版本、日期、签认人、未决项）。
 4. 把本计划 §9.1 的写域增量（`config.py`、`health_resume_read.py`、`router/injection.py`、`scheduler/audio_retention_jobs.py`）登记到总览 §6 的写域矩阵（可由主理人或 B 在首次提交时同步，**本轮不改**）。
@@ -1123,10 +1123,13 @@ uv run ruff check app tests && uv run ruff format --check app tests
 | D10 | X10 戏曲素材 | **作废，编号保留不复用**；媒体库以现有歌单为准 | B3 的 F21 剧种词取消；B 不再提供/消费 X10；AC-37 口径调整待主理人在总览 §8 与 PRD 落笔（见 P8） |
 | D11 | F06 校验落点 | **B 在图内实现**（`health_checkup_graph.py` 的 `validate` 节点统一做跨字段校验） | 两分量均有时 `systolic <= diastolic` → 两项 invalid → 重问一次 → 仍失败标缺失；不新增阈值常量；C1 不需要提供 `validate_answers` |
 | D12 | X3 v0.6 四项条件 | **接受**：① 落库调 C 的包装函数、B 不直写 `work_orders`；② `notify_red_dual` 新签名含 `risk_event_id`、`NotifyRef` 无 `work_order_id`；③ 通知失败不回滚落库；④ 通知键换 `risk_event:{event_id}:staff` / `:guardian` | B3 的红档改序按此落；包装函数名由 C 写完后通知，B 用适配层桩先行 |
+| D13 | P10 落库包装命名 | **C 授权 B 自定**：B 命名 `create_red_landing`，签名/返回由 B 定，后续通知 C；C 不再等 | B3 用 `create_red_landing` 替换 `pending_create_red_order`；contracts v1.0 已含（§7 v0.7） |
+| D14 | P14 注入接线归属 | **B 收口**：`dialogue_service` 加 `prompt_injection` 拒答分支 + 审计；`main.py` 调 `set_injection_hook`；B 确认审计落库口径 | 不再等 C；B4 的 xfail 必须转 pass |
+| D15 | 路由 p95 | **B3 继续优化到 ≤200ms**；普通集目标 ≥45/50；不放松阈值、不改规则条数 | 达不到就贴 before/after 与瓶颈，走裁决 |
 
 ### 9.2 未决项（必须在对应 Step 开工前闭合）
 
-> P1（X3 新语义）与 P2（F06 落点）已于 2026-11-12 裁决，见 §9.1 D11/D12，不再列入下表；当前未决为 **P3–P11 共 9 项**。
+> P1（X3 新语义）、P2（F06 落点）、P10（落库包装命名）已于 2026-11-12 裁决，见 §9.1 D11/D12/D13；P9（contracts 冻结）、P11（通知键）、P12（B1 schema 留痕）、P13（X4/X12 `PurgeRef`）已随 N0 v1.0 闭合。当前未决为 **P3–P15 共 8 项**（P9/P10/P11/P12/P13 已闭合，不占编号行；P14/P15 为本轮执行新发现）。
 
 | # | 待确认 | 阻塞 | 建议口径 | 不确认的后果 |
 | --- | --- | --- | --- | --- |
@@ -1136,13 +1139,15 @@ uv run ruff check app tests && uv run ruff format --check app tests
 | P6 | TD 修订记录的追加顺序（A 的 0020 与 B 的两条） | 收口 | A 先、B 后，同批合并；避免两条修订互相覆盖 | 修订记录冲突，AGENTS §4.7 不合规 |
 | P7 | 新增文件写域（`router/injection.py`、`scheduler/audio_retention_jobs.py`、`health_resume_read.py`） | Step 0 登记 | 随本计划确认生效，总览 §6 加行 | 子 agent 不敢建文件，或建了被判越界 |
 | P8 | **AC-37 口径调整未落笔**：通知称改为「点播现有媒体库条目可播、可控制」，但 PRD 与总览 §8 尚未见修订记录 | 验收口径 | 主理人在总览 §8 与 PRD 修订记录落笔后再按新口径验；**落笔前 B 不按新口径改任何判据** | 验收时口径不一致，D 的播放验证与 B 的规则回归对不上 |
-| P9 | **`contracts.md` 仍为「待冻结 v0.3」**：X1–X12 正文齐备、X8 内容已定，但状态未冻结；**X3 条款待并入 v0.6、X10 作废段待补入** | N0 冻结 | N0（D9 09:30，B 牵头）逐条评审后：把 X3 v0.6 四项条件与 X10 作废段并入，统一版本号后把状态改「已冻结」并四方签认 | 未冻结就开工 = 各人按各自理解写，红档/判黄/补报口径会分叉；文件 v0.3 与 X3 v0.6 两套版本号混用 |
-| P10 | **红档落库包装函数的名称/签名/返回**：C 写完后通知（**不承诺 N0 当场给**） | B3 红档**真联调**（**不阻塞图骨架/单测**） | B 在图内定义 callable 形态 + 适配层桩；两处装配点等 C 通知后替换；不猜、不直写 `work_orders` | 红档真联调可能压到 D10 15:00 后；B3 先交付 F14/F22/F07，红档段单独收口 |
-| P11 | **REST 通知键切换的落地与回归**：`health_red_alert:{record_id}` → `risk_event:{event_id}:guardian` 由 C 改；B 的语音路径要按新键断言 | X3 联调 | C2 在 X3 v0.6 同一提交切换；B 的红档测试同时断言 staff/guardian 两键；旧键出现即失败 | 语音与 REST 两套通知键并存，重复通知或统计口径分叉 |
+| P8 | **AC-37 口径调整未落笔**：通知称改为「点播现有媒体库条目可播、可控制」，但 PRD 与总览 §8 尚未见修订记录 | 验收口径 | 主理人在总览 §8 与 PRD 修订记录落笔后再按新口径验；**落笔前 B 不按新口径改任何判据** | 验收时口径不一致，D 的播放验证与 B 的规则回归对不上 |
+| P14 | ~~注入防线未接 safety 单一入口~~ **已闭合（2026-11-12 晚，B 收口）**：`dialogue_service` 的 `DialogueOrchestrator` 在 `safety_check` 之后、`_veto_on_safety` 之前加 `prompt_injection` 分支（固定拒答 + `injection_auditor` 审计 1 行，不走急症三表）；`main.py` lifespan 装 `_injection_hook` + `_injection_auditor`（短会话自 commit），finally 里 `set_injection_hook(None)`；`test_injection_wired_in_safety_single_entry` xfail→pass（test_injection 25 passed / 0 xfail，另加对话层 e2e 与急症优先用例） | AC-36 / B4 收口 | 已完成 | — |
+| P15 | **token usage 的 DB 落点**：`metrics` 表只有 `stage/duration_ms/source`，没有 token 列；`llm_tokens` stage 不在 CHECK 白名单。**B 侧已交付（2026-11-12 晚）**：`LLMReply.prompt_tokens/completion_tokens`（缺/非法→None，不补零）、成功调用一条 `llm_usage` 结构化日志、`record_llm_usage`/`snapshot_llm_usage` 进程内计数（`tokens_available` 标记）；**未写库、未动 STAGES/模型** | dev-C 的 `/api/metrics` 把 `available` 改 true | 剩 A 的 0021 迁移：`metrics.stage` CHECK 增 `llm_tokens`；建议**一行记 total、prompt/completion 进 detail**（避免双行翻倍统计分母），或 C 接受日志/内存聚合；DB 落点未通前 `/api/metrics` 只能读进程内 snapshot 或日志，`available` 不得置 true | C 读到不持久的进程内值 |
 
 ### 9.3 N0 议程（30 分钟，逐条过）
 
-0. **会前核对（2 分钟）**：`contracts.md` 仍为「待冻结 v0.3」；X1–X12 正文齐备、X8 内容已定；**X3 待并入 v0.6 四项条件、X10 作废段待补入**。**不要把它当成已冻结文件直接签认。**
+> **2026-11-12 19:30 更新**：四方电子回执已收，N0 以异步方式完成，`contracts.md` 已改「已冻结 v1.0」。本节保留为会议记录模板；手签/日期待补，不改变冻结效力。
+
+0. **会前核对（2 分钟，已完成）**：会前 `contracts.md` 为 v0.6「待冻结」；P12/P13 已随 v0.7/v1.0 落盘；2026-11-12 19:30 四方电子回执签认，状态已改「已冻结 v1.0」。以下为会议记录模板，不再执行。
 1. X1 回执帧：`receipt_kind` 两值、幂等键 `(notification_id, receipt_kind)`、无回执不得 delivered（3 分钟）。
 2. X2 分级：签名不变、`g2`、9 个边界值；F06 已裁决 B 实现，确认落笔（3 分钟）。
 3. X3 v0.6：四条件落笔、通知键 `risk_event:{event_id}:staff` / `:guardian`、REST 旧键切换、**确认 C 写完后通知包装函数名的时点**（不在 N0 阻塞）（6 分钟，含 P10/P11）。
@@ -1179,12 +1184,30 @@ uv run ruff check app tests && uv run ruff format --check app tests
 
 | 日期 | 节点 | 提交 | 验收结果 | 证据（命令/输出/文件:行） | 等待项 |
 | --- | --- | --- | --- | --- | --- |
-| — | N0 | — | — | — | P3/P9/P10/P11 |
-| — | B1 | — | — | — | — |
-| — | B2 | — | — | — | X4/X5 签名 |
-| — | B3 | — | — | — | X3/X7 |
-| — | B4 | — | — | — | X8 |
-| — | 装配/门禁 | — | — | — | — |
+| 2026-11-12 | N0 | 未提交 | **已签认**：四方电子回执收齐；`contracts.md` v1.0 已冻结（X3 v0.6/v0.7、X4 PurgeRef 统一、X8 0020） | `contracts.md` 头部「已冻结 v1.0」+ §7 v1.0 行；签认单 §3.4/§3.5/§3.6 | 手签/日期待补 |
+| 2026-11-12 | B1 | 工作区 | **完成**：105 passed（mcp/tool_executor/tool_registry）；8 条判据达成；全量回归绿 | `app/main.py:378` MultiServerMCPClient；`tests/test_mcp_multiserver.py`；`tool_executor` 统一记账；两 ops schema 补幂等键 | 契约 §7 schema 留痕（P12） |
+| 2026-11-12 | B2 | 工作区 | **完成**：93 passed（memory）；difflib 零命中；X4/X5/X12 单测全绿；跨长者零泄漏 | `memory_service.py` embedding/cosine/X5/X4；`medication_service.purge_elder_data`；`config.py` embedding 字段；`turn_service.py` 补 `query` 3 行 | TD 修订（P6）、PurgeRef 字段冲突（P13） |
+| 2026-11-12 | B3 | 工作区 | **代码完成，3 项缺口**：127 passed；AC-09/10/21/22 有 trace_id；判黄四类；resume/30s tick 全绿；路由 41/50、p95 270ms（未达闸门 E，基线 40/50、312ms） | `safety.py` 判黄 + hook；`health_checkup_graph.py` 改序/F06/`reviewed_externally`；`health_jobs` 30s + resume；`health_resume_read.py`；`tool_impls` 健康执行器 | P10 红档落库包装（语音侧降级桩）、注入接线、p95 超标 |
+| 2026-11-12 | B4 | 工作区 | **代码完成，1 项缺口**：注入集 ≥10、100% 单测拦截；F09/F10/F27 测试绿；F03 followup 模块已建；全量 1521 passed / 1 xfailed | `router/injection.py`；`eval/fixtures/injection.jsonl`；`audio_retention_jobs.py`；`medication_jobs` 删跳过；`agents/followup.py` | 注入接线 xfail（P14）、F03 装配 |
+| 2026-11-12 | 装配/门禁 | 工作区 | 全量 **1521 passed, 1 xfailed**；ruff 全绿；`alembic current=0020` | `uv run pytest -q`；`ruff check/format`；`alembic current` | P10/P12/P13/P14 |
+| 2026-11-12 | 收口 P10/P14/token/p95 | 工作区 | **P10 闭合**：`create_red_landing`（`_land_health_record(notify_red)` 抽取，REST 旧行为不变）；图内删降级桩，未注入即 `RuntimeError("create_red_order_fn not wired")`；`health_jobs._build_graph` 与 `tool_impls` 语音执行器注入 `create_red_landing_adapter`。验收：health_graph 20 passed / health_jobs 9 passed；`grep pending_create_red_order app/` 零命中；落库后 notifications=0、notify 后 staff/guardian 各 1、通知抛错三件套仍在。**P14 闭合**：`safety_check` 命中注入 → 固定拒答 + 审计 1 行；`main.py` lifespan 装 `_injection_hook`/`_injection_auditor`，finally 卸载；`test_injection_wired_in_safety_single_entry` xfail→pass（test_injection 25 passed，0 xfail）。**token**：`LLMReply.prompt_tokens/completion_tokens`、`record_llm_usage`（日志+进程内计数，不写库）。**p95 未达标**：before p50=215/p95=265 → after p50=235/p95=266（grace 150→80+硬上限后 p95 不降，敏感 20/20 与普通 41/50 不变；瓶颈实测是 fast 单问 187ms 与 shadow 抢 CPU，shadow-OFF 也仅 214ms 且敏感掉到 17/20，见 §11.1） | `uv run pytest tests/test_health_graph.py tests/test_health_jobs.py tests/test_injection.py tests/test_llm_service.py tests/test_metrics_service.py tests/test_router_decision.py -q`；`conda run -n jev python scripts/eval_router.py ... --report tmp/eval_local_jev_before.md / after.md` | P13（已随 contracts v1.0 闭合）、P15 DB 落点（`llm_tokens` 迁移申请已发 A） |
+| 2026-11-12 | Z-A4d away 暂离交接件 | 工作区 | **B 侧「暂停采集与提醒触达」落地**：① 健康链路——`list_active_elder_ids` 只取 `status='active'`，away 长者 19:00 不起图、20:00 不建漏采单（新增用例锁行为）；② 用药链路——`medication_due_service.list_due_plans` / `list_waiting_confirm_events` join `elders.status`，away 不触发首达、不 resume 推进（恢复 active 后由既有 attempts/终态自然收口）；日报仍只扫 active——「日报改暂离告知」是 C2 report_service 的实现项（`report.status` 已有 `away_notice` 值），B 的 `_tick_report` 扫描面等 C 通知后随装配窗口扩 active+away。新增 2 用例（scheduler_medication / health_jobs 各 1） | `uv run pytest tests/test_scheduler_medication.py tests/test_health_jobs.py -q`（21 passed） | C2 日报 away_notice 实现；A3 状态流转＋审计 |
+
+### §11.1 p95 瓶颈取证（2026-11-12，jev/cpu，110 条固定集）
+
+| 配置 | 普通 | 敏感 | p50 | p95 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| before（grace=400ms，settings 缺省） | 41/50 | 20/20 | 215ms | 265ms | 官方脚本；eval 把 grace 配成 sidecar 超时 400ms |
+| grace=150ms | 41/50 | 20/20 | — | — | Router 旧默认；等价行见探针 |
+| **after（grace=80ms + 80ms 硬上限）** | 41/50 | 20/20 | 235ms | 266ms | 官方脚本；同配置三跑 p95=265/266/340ms（final 跑与 pytest 并行），噪声大于改动收益 |
+| fast 单问（无 shadow） | — | — | 187ms | 196ms | 探针：快路径自身已贴着 200ms 预算 |
+| shadow 单问 | — | — | 100ms | 109ms | 探针：shadow 每次都先于 fast 完成 |
+| fast+shadow 并发 | — | — | 214ms | 230ms | 探针：等待不是瓶颈，**CPU 争抢**把 fast 推高 27ms |
+| shadow 完全关闭 | 41/50 | **17/20** | 201ms | 214ms | 敏感掉 3 条 ⇒ G1 不可拆；且 p95 仍 >200 |
+
+**结论**：p95 的构成是「fast 模型推理（贴预算）+ 并发争抢」，不是「等 shadow」。降 grace/上限已做（保留：防止任何调用方把等待放大到 400ms），但数字不达标是**模型推理本身**超预算。选项：① 继续优化 → 动 `app/system_one/**`（本日冻结，Day 10 F23 顺延项一起做：量化/批处理/线程数）；② 走裁决 → 接受现状并复测更稳机器；③ 门禁降级 → 拆「规则命中 ≤200ms / 模型路径单列」，需主理人裁，未裁前闸门 E 记「未通过」。
+
+**本轮收口判定（2026-11-12 晚更新）**：B1/B2 完成；B3/B4 的 **P10、P14 已闭合**（证据见 §11 收口行），**P12 已随 contracts v0.7 留痕**；任务卡改「已完成」只剩 **p95 未达闸门 E**（§11.1 已给瓶颈取证与三个选项）与 P13/P15 两个跨成员待办。
 
 ---
 
@@ -1192,6 +1215,12 @@ uv run ruff check app tests && uv run ruff format --check app tests
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.10 | 2026-11-12 | **临时提示词文件清理**：主理人要求剩余任务提示词「不入远端、作临时文件删除」→ `docs/plans/day09/adhoc-20261112-剩余任务执行提示词.md` 已删除（其内容已于 v1.9 执行完毕并回填），`docs/plans/README.md` 索引行同步删除，Day 9 看板自动刷新。同时清理根目录入库垃圾：`backend-err.txt`（0 字节）、`backend-out.txt`（0 字节）、`tmp_check_db.py`（一次性 DB 探测脚本）、`.coverage`（本地覆盖率产物）；**保留** `docs/prompts/seed-prompt.md`、`docs/plans/task-04-鉴权内核.md`、`docs/plans/adhoc-20261109-房间床位交付存档.md`（均被 README 索引/任务卡引用，属验收留痕），`tmp/`、`vrm-playground/` 未跟踪本地工作区暂不动。 |
+| v1.9 | 2026-11-12 | **收口执行回填（P10/P14/token/p95）**：① P10——`health_service.create_red_landing`（`_land_health_record(notify_red)` 抽取，REST 旧行为不变），图内删 `pending_create_red_order` 降级桩、未注入即 `RuntimeError`，`health_jobs._build_graph` 与 `tool_impls` 语音执行器注入 `create_red_landing_adapter`；② P14——注入防线经 `set_injection_hook` 接进 `safety_check` 单一入口，对话层固定拒答 + 审计 1 行（不走急症三表），xfail 转 pass；③ token——`LLMReply` 增 `prompt_tokens/completion_tokens` + `llm_usage` 日志 + `record_llm_usage` 进程内计数（不写库，迁移申请已发 A）；④ p95——shadow 等待 150→80ms 且加 80ms 硬上限，官方复测 p95 266ms（before 265ms）**仍未达闸门 E**，瓶颈取证见 §11.1（fast 单问 187ms 贴预算、CPU 争抢、shadow-OFF 敏感掉 3 条），三个处置选项已列。P14/P15 状态行同步；本轮新增/修改文件与验收命令见 §11 收口行。 |
+| v1.8 | 2026-11-12 | **N0 四方电子回执签认，contracts v1.0 冻结**：X4 `PurgeRef` 按 dev-A 建议统一为 X12 口径（`domain='memory'`，`audit_id` 归 A）；P9/P10/P11/P12/P13 闭合；§11 N0 行回填；签认单转「已签认」（手签/日期待补）。未决收敛为 **P3–P8、P14、P15 共 8 项**。 |
+| v1.7 | 2026-11-12 | **19:10 裁决落计划**：D13 P10 由 B 自定 `create_red_landing`（C 后续通知）；D14 P14 由 B 收口（dialogue_service 拒答+审计 / main.py `set_injection_hook`）；D15 p95 继续 B3 压到 ≤200ms。新增 P15（token usage 的 `llm_tokens` DB 落点，需 A 迁移或 C 接受日志/内存聚合）；P9/P14 版本口径更新为 v0.6。同步新增 `adhoc-20261112-剩余任务执行提示词.md`。 |
+| v1.6 | 2026-11-12 | **首轮并行执行回填**：B1/B2 完成；B3/B4 代码完成但 3 项缺口未闭合。执行证据见 §11：全量 **1521 passed / 1 xfailed**、ruff 全绿、`alembic current=0020`。新发现并入未决：P12 B1 契约 §7 留痕、P13 X4/X12 `PurgeRef` 字段冲突、P14 注入防线未接 safety 单一入口（xfail）。另修 B2 暴露的 `turn_service` 召回缺 `query`（3 行）与 `companion.DEFAULT_TOOLS` 缺 `health_checkup`（7 条对齐）。 |
+| v1.5 | 2026-11-12 | **主理人确认并启用子 agent**：计划转执行中；按 DAG 先开 Agent-A（B1）/Agent-B（B2）并行，B3/B4 等 N0 签认与 X3 联调窗口。对账现状：`contracts.md` v0.6 待冻结（X3 v0.6/X10 已并入；v0.4 为 X2 主诉归一化增补）、迁移 0020 已交付（工作区需 `alembic upgrade head` 确认）。**本轮开始写代码，执行记录见 §11。** |
 | v1.4 | 2026-11-12 | **P10 依赖降级**：C 侧明确「写完通知函数名」，不在 N0 当场给。B3 改为：图内只依赖 B 侧定义的 callable 形态 `(session, state) -> {record_id, risk_event_id, work_order_id}` + 适配层桩；两处装配点等 C 通知后替换；不猜、不直写 `work_orders`。P10 只阻塞红档**真联调**，不阻塞图骨架/单测；R-B12、§6 交接第 6 条、§9.3 议程第 3 条同步。**本轮未修改任何代码文件。** |
 | v1.3 | 2026-11-12 | **P1/P2 裁决落地**：① P2=F06 由 **B 在图内实现**（`health_checkup_graph.py` 的 `validate` 节点统一跨字段校验，两项 invalid→重问一次→缺失；不新增阈值；C1 不提供 `validate_answers`）→ D11；② P1=C2 **接受 X3 v0.6 四项条件**（落库调 C 包装、B 不直写 `work_orders`；`notify_red_dual` 新签名含 `risk_event_id`、`NotifyRef` 无 `work_order_id`；通知失败不回滚；通知键改 `risk_event:{event_id}:staff` / `:guardian`，REST 旧键一并切换）→ D12。计划补 B3 红档落库/通知/失败口径、4 条量化判据、§6 交接细节；未决由 9 项调整为 **P3–P11 共 9 项**（新增 P10 落库包装函数名、P11 REST 通知键切换）；风险新增 R-B12。**本轮未修改任何代码文件。** |
 | v1.2 | 2026-11-12 | **契约状态口径纠正**：`contracts.md` 不是 v0.4，而是**「待冻结 v0.3」**；N0（D9 09:30，B 牵头）才是四方签认冻结点。计划改为：会前核对正文齐备与 X8 内容已定 → 会上补 X10 作废段与变更记录 → 状态改「已冻结」→ 签认。P9 从「v0.4 未落盘」改为「v0.3 待冻结、X10 段未并入」；P3 从「A1 是否认口径」改为「内容已定，只等 D9 12:00 迁移落地」；Step 0 增加会前核对项。**本轮未修改任何代码文件。** |

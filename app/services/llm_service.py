@@ -41,10 +41,17 @@ _REQUEST_PATH: Final[str] = "/chat/completions"
 
 @dataclass(frozen=True, slots=True)
 class LLMReply:
-    """一次 LLM 调用的结果；对话层只消费这两个字段。"""
+    """一次 LLM 调用的结果。
+
+    `prompt_tokens` / `completion_tokens` 来自 OpenAI 兼容响应的 `usage` 段：
+    缺字段、非整数或降级路径一律 ``None``（**不补零、不估算**，dev-C 的
+    `/api/metrics` 据此判 `available`）。两者都不影响主回复文本与 degraded 语义。
+    """
 
     text: str
     degraded: bool
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
 
 
 class LLMService:
@@ -141,7 +148,7 @@ class LLMService:
                 elif status_code >= 300:
                     error_type = "http_status"
                 else:
-                    parsed = _parse_content(response)
+                    parsed, prompt_tokens, completion_tokens = _parse_completion(response)
                     if parsed is not None:
                         logger.info(
                             "llm_request_completed",
@@ -154,9 +161,36 @@ class LLMService:
                                     (asyncio.get_running_loop().time() - started) * 1000, 1
                                 ),
                                 "reply_chars": len(parsed),
+                                "prompt_tokens": prompt_tokens,
+                                "completion_tokens": completion_tokens,
                             },
                         )
-                        return LLMReply(text=parsed, degraded=False)
+                        # P15：token 用量只走「日志 + 进程内计数」——DB 落点（metrics.stage
+                        # 增 llm_tokens）尚未迁移，这里不写库、不塞 duration_ms。
+                        # 观测旁路失败不得影响主回复。
+                        try:
+                            from app.services.metrics_service import record_llm_usage
+
+                            record_llm_usage(
+                                prompt_tokens=prompt_tokens,
+                                completion_tokens=completion_tokens,
+                                provider=self._settings.llm_provider,
+                                model=self._settings.llm_model,
+                            )
+                        except Exception as exc:  # pragma: no cover - 防御性
+                            logger.warning(
+                                "llm_usage_record_failed",
+                                extra={
+                                    "trace_id": get_trace_id() or "-",
+                                    "error_type": type(exc).__name__,
+                                },
+                            )
+                        return LLMReply(
+                            text=parsed,
+                            degraded=False,
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                        )
                     error_type = "invalid_response"
 
             logger.warning(
@@ -191,32 +225,63 @@ async def _backoff(attempt: int) -> None:
     await asyncio.sleep(RETRY_BACKOFF_SECONDS * attempt)
 
 
-def _parse_content(response: httpx.Response) -> str | None:
-    """解析 OpenAI 兼容响应；结构不合法或 content 为空时返回 None。"""
+def _parse_usage(payload: dict[str, Any]) -> tuple[int | None, int | None]:
+    """解析 `usage.prompt_tokens` / `usage.completion_tokens`；缺字段或非整数 → None。
+
+    - 供应商未返回 usage（部分兼容实现只在流式/特定模型给）→ 双 None，不影响回复；
+    - **不补零、不估算**：0 与「不知道」在统计上语义完全不同；
+    - `bool` 是 `int` 子类，必须显式排除；负数同样按缺失处理。
+    """
+
+    def _pick(value: Any) -> int | None:
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value if value >= 0 else None
+
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return None, None
+    return _pick(usage.get("prompt_tokens")), _pick(usage.get("completion_tokens"))
+
+
+def _parse_completion(response: httpx.Response) -> tuple[str | None, int | None, int | None]:
+    """解析 OpenAI 兼容响应：返回 (content, prompt_tokens, completion_tokens)。
+
+    结构不合法或 content 为空时 content 为 None（调用方按 invalid_response 处理）；
+    usage 解析与 content 解耦——内容合法但 usage 缺失时仍正常回复，只是 token 为 None。
+    """
     try:
         payload: Any = response.json()
     except (json.JSONDecodeError, ValueError):
-        return None
+        return None, None, None
     if not isinstance(payload, dict):
-        return None
+        return None, None, None
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices:
-        return None
+        return None, None, None
     first = choices[0]
     if not isinstance(first, dict):
-        return None
+        return None, None, None
     message = first.get("message")
     if not isinstance(message, dict):
-        return None
+        return None, None, None
     content = message.get("content")
     if not isinstance(content, str):
-        return None
+        return None, None, None
     content = content.strip()
     # 推理型模型（MiniMax M 系等）会在 content 内联 <think>…</think> 思考块，
     # 不剥离会进 TTS 播报；max_tokens 截断时可能残留未闭合的 <think> 头，一并去掉。
     content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
     content = re.sub(r"^<think>.*$", "", content, flags=re.DOTALL).strip()
-    return content or None
+    if not content:
+        return None, None, None
+    prompt_tokens, completion_tokens = _parse_usage(payload)
+    return content, prompt_tokens, completion_tokens
+
+
+def _parse_content(response: httpx.Response) -> str | None:
+    """只取文本内容的兼容薄壳（既有调用/测试面不变）。"""
+    return _parse_completion(response)[0]
 
 
 __all__ = [

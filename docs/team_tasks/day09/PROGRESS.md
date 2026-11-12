@@ -8,7 +8,7 @@
 | # | 任务卡 | 状态 | 文件 |
 | --- | --- | --- | --- |
 | 1 | dev-A · Day 9 任务书 · 安全闸门与数据生命周期 | ⬜ 未开始 | `docs/team_tasks/day09/dev-A-安全闸门与生命周期.md` |
-| 2 | dev-B · Day 9 任务书 · 智能层接线与注入防线 | ⬜ 未开始 | `docs/team_tasks/day09/dev-B-智能层接线与注入防线.md` |
+| 2 | dev-B · Day 9 任务书 · 智能层接线与注入防线 | 🚧 进行中 | `docs/team_tasks/day09/dev-B-智能层接线与注入防线.md` |
 | 3 | dev-C · Day 9 任务书 · 健康通知闭环收口 ＋ console 管理台 | ⬜ 未开始 | `docs/team_tasks/day09/dev-C-健康通知闭环与管理台.md` |
 | 4 | dev-D · Day 9 任务书 · 长者端语音补全 ＋ 评测门禁 ＋ 家属端 | 🚧 进行中（D1 代码已收口，待 X1 联调与实测） | `docs/team_tasks/day09/dev-D-长者端语音与评测门禁.md` |
 
@@ -16,13 +16,13 @@
 
 | 计划 | 状态 |
 | --- | --- |
-| `docs/plans/day09/adhoc-20261112-X10作废与N0签认单.md` | 📝 草稿（N0 会前件，待 2026-11-13 09:30 签认） |
+| `docs/plans/day09/adhoc-20261112-X10作废与N0签认单.md` | ✅ 已收口（2026-11-12 四方电子回执已收；手签/日期待补录） |
 | `docs/plans/day09/dev-a-安全闸门与生命周期.md` | ❔ 待主理人批准 |
-| `docs/plans/day09/dev-b-day09-工作推进计划.md` | 📝 草稿（待主理人确认后开工） |
+| `docs/plans/day09/dev-b-day09-工作推进计划.md` | 🚧 进行中（N0 已签认、contracts v1.0 已冻结；P10/P14 已闭合，剩 p95 与 P15 DB 落点） |
 | `docs/plans/day09/dev-c-day09-工作推进计划.md` | ❔ 待确认（主理人批准后按步执行） |
 | `docs/plans/day09/dev-d-day09-工作推进计划.md` | 📝 草稿（待主理人确认执行） |
 
-## 契约冻结：**待冻结（N0 · D9 09:30 冻结评审；X6/X10 已裁减作废）**
+## 契约冻结：**已冻结（N0 四方回执签认，2026-11-12；签字原件待补）**
 
 ## 怎么更新
 

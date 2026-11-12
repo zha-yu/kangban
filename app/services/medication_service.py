@@ -9,8 +9,10 @@
 1. **幂等键**：`(plan_id, scheduled_at)` 唯一。同键**同内容**返回原 `reminder_id`；
    同键**异内容**抛 `MedicationConflict`（409 语义）——药单改版必须显式建新事件，
    否则「改了剂量但提醒还按老剂量发」没人能复盘。
-2. **终态互斥**：`terminal_state` 四值只能定一次。已定终态再写不同值 → `TerminalStateConflict`；
-   补确认走 `late_taken=True` 的追加语义，**不覆盖**原终态（AC-08）。
+2. **终态互斥**：`terminal_state` 五值只能定一次。已定终态再写不同值 → `TerminalStateConflict`；
+   补确认走 `late_taken=True` 的追加语义，**不覆盖**原终态（AC-08）：原终态只允许从
+   `missed_unconfirmed` / `notification_failed` 追加为 `late_taken_reported`，同事务写一条
+   审计留原值（迁移 0020 / 契约 X8）。
 3. **触达逐条留痕**：`(event_id, attempt_no)` 唯一，重复写同一次触达是**幂等无操作**，
    不是错误——scheduler 重试与图恢复都会重放这一步。
 """
@@ -22,31 +24,43 @@ import hashlib
 import json
 import logging
 import uuid
+from dataclasses import dataclass
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.medication import MedicationAttempt, MedicationEvent
+from app.models.medication import MedicationAttempt, MedicationEvent, MedicationPlan
 from app.services.audit_log_service import record_audit
 
 logger = logging.getLogger(__name__)
 
-#: 终态四值（与 0010 的 CHECK 同源）
+#: 终态五值（与 0020 的 CHECK 同源；第五值 `late_taken_reported` 是窗口外补确认，
+#: 由 `set_terminal(late_taken=True)` 从「未确认 / 通知失败」追加，不覆盖原终态）
 TERMINAL_STATES: tuple[str, ...] = (
     "taken_reported",
     "refused",
     "missed_unconfirmed",
     "notification_failed",
+    "late_taken_reported",
 )
+
+#: 允许追加「补确认」的原终态（PRD line 320-325 / AC-08：只有这两种终态需要补报）
+LATE_TAKEN_SOURCE_STATES: frozenset[str] = frozenset({"missed_unconfirmed", "notification_failed"})
+
+#: 补确认写入的终态值（第五值）
+LATE_TAKEN_STATE: str = "late_taken_reported"
 
 #: 事件状态四值
 EVENT_STATUSES: tuple[str, ...] = ("calling", "waiting_confirm", "confirmed", "escalated")
 
 #: FR-UI-08 / AC-26：普通已服自报的撤销窗口（秒）
 UNDO_WINDOW_SECONDS: int = 10
+
+#: X12 允许的清理原因（契约 X12 枚举）
+_PURGE_REASONS: frozenset[str] = frozenset({"checkout", "teaching_reset"})
 
 
 class MedicationError(ValueError):
@@ -308,7 +322,17 @@ async def set_terminal(
     confirm_channel: str | None = None,
     late_taken: bool = False,
 ) -> None:
-    """写终态。已定终态再写不同值 → `TerminalStateConflict`（**不覆盖**）。"""
+    """写终态。已定终态再写不同值 → `TerminalStateConflict`（**不覆盖**）。
+
+    **补确认例外**（PRD line 320-325 / AC-08 / 迁移 0020 / 契约 X8，主理人裁决 D8）：
+    `late_taken=True` 且 `terminal_state="late_taken_reported"`、原终态 ∈
+    {`missed_unconfirmed`, `notification_failed`} 时，允许把终态**追加**为第五值，
+    并**同事务**写一条 `audit_logs`（action=`medication_late_taken_reported`，
+    detail 留原终态）。工单不在这里关闭——核实归护工（AC-08）。
+    重复补报同值幂等：不再写第二条审计。
+
+    其他「不同终态」的组合仍是 `TerminalStateConflict`，既有互斥语义不变。
+    """
     if terminal_state not in TERMINAL_STATES:
         raise MedicationError(f"unknown terminal_state: {terminal_state!r}")
 
@@ -322,8 +346,15 @@ async def set_terminal(
     if row is None:
         raise MedicationEventNotFound(f"medication event not found: {event_id}")
 
-    if row.terminal_state is not None and row.terminal_state != terminal_state:
-        # AC-08：原终态不可被覆盖；补确认走 late_taken 的追加语义
+    previous_terminal = row.terminal_state
+    is_late_report = (
+        late_taken
+        and terminal_state == LATE_TAKEN_STATE
+        and previous_terminal in LATE_TAKEN_SOURCE_STATES
+    )
+
+    if not is_late_report and previous_terminal is not None and previous_terminal != terminal_state:
+        # AC-08：原终态不可被覆盖；补确认走 late_taken 的追加语义（见 docstring）
         raise TerminalStateConflict(
             f"event {event_id} already terminal={row.terminal_state!r}, "
             f"refuse to overwrite with {terminal_state!r}"
@@ -343,6 +374,23 @@ async def set_terminal(
         values["confirmed_at"] = datetime.datetime.now(datetime.UTC)
 
     await _update_event(session, event_id, values)
+
+    if is_late_report and previous_terminal != terminal_state:
+        # 只在实际发生「追加」时留痕；重复补报同值走上面的幂等路径，不再多写审计
+        await record_audit(
+            session,
+            actor_type="system",
+            actor_id=None,
+            action="medication_late_taken_reported",
+            resource_type="medication_event",
+            resource_id=event_id,
+            detail={
+                "previous_terminal_state": previous_terminal,
+                "terminal_state": terminal_state,
+                "late_taken": True,
+                "confirm_channel": confirm_channel,
+            },
+        )
 
 
 async def revoke_taken_report(
@@ -529,8 +577,66 @@ async def list_attempts(session: AsyncSession, event_id: uuid.UUID) -> list[dict
     return [dict(r) for r in rows]
 
 
+# ------------------------------------------------------------------ X12 清理钩子（退房 · 教学重置）
+
+
+@dataclass(frozen=True, slots=True)
+class PurgeRef:
+    """清理结果（契约 X12：`affected_rows` / `archived_rows` / `domain`）。
+
+    ⚠️ 契约 X4（记忆域）另给了一套 `deleted_chunks/deleted_vectors/audit_id` 字段。
+    两处各自定义同名字面量：**不跨 service 横向 import**（AGENTS §2.1 单向依赖），
+    A3 的流水线按属性名读取即可。`audit_id` 恒为 None —— 审计由 A 统一写（X12 明文）。
+    """
+
+    domain: str
+    affected_rows: int
+    archived_rows: int = 0
+    deleted_chunks: int = 0
+    deleted_vectors: int = 0
+    audit_id: uuid.UUID | None = None
+
+
+async def purge_elder_data(session: AsyncSession, *, elder_id: uuid.UUID, reason: str) -> PurgeRef:
+    """**X12**：清空该长者的用药域数据（`attempts → events → plans` 顺序，FK 决定）。
+
+    - `reason ∈ {checkout, teaching_reset}`，其余取值直接拒绝；
+    - **幂等**：第二次调用命中 0 行，返回全 0（各步独立可重入，契约 X12 顺序口径）；
+    - **不写审计**：由 A 的 `lifecycle_service` 逐步统一写（B 不重复写）；
+    - 事务归调用方（只 `execute`，不 commit）；
+    - `archived_rows=0`：用药域为物理清理，无脱敏归档（与健康域口径不同）。
+    """
+    if reason not in _PURGE_REASONS:
+        raise MedicationError(f"invalid purge reason {reason!r}; allowed={sorted(_PURGE_REASONS)}")
+
+    event_ids = select(MedicationEvent.reminder_id).where(MedicationEvent.elder_id == elder_id)
+
+    attempts = await session.execute(
+        delete(MedicationAttempt).where(MedicationAttempt.event_id.in_(event_ids))
+    )
+    events = await session.execute(
+        delete(MedicationEvent).where(MedicationEvent.elder_id == elder_id)
+    )
+    plans = await session.execute(delete(MedicationPlan).where(MedicationPlan.elder_id == elder_id))
+
+    affected = sum(int(r.rowcount or 0) for r in (attempts, events, plans))  # type: ignore[attr-defined]
+    logger.info(
+        "medication_purged",
+        extra={
+            "elder_id": str(elder_id),
+            "reason": reason,
+            "attempts": int(attempts.rowcount or 0),  # type: ignore[attr-defined]
+            "events": int(events.rowcount or 0),  # type: ignore[attr-defined]
+            "plans": int(plans.rowcount or 0),  # type: ignore[attr-defined]
+        },
+    )
+    return PurgeRef(domain="medication", affected_rows=affected, archived_rows=0)
+
+
 __all__ = [
     "EVENT_STATUSES",
+    "LATE_TAKEN_SOURCE_STATES",
+    "LATE_TAKEN_STATE",
     "TERMINAL_STATES",
     "UNDO_WINDOW_SECONDS",
     "MedicationConflict",
@@ -538,6 +644,7 @@ __all__ = [
     "MedicationEventNotFound",
     "MedicationUndoNotAllowed",
     "MedicationUndoWindowExpired",
+    "PurgeRef",
     "TerminalStateConflict",
     "create_event",
     "get_attempt",
@@ -547,6 +654,7 @@ __all__ = [
     "list_bound_device_ids",
     "mark_attempt_played",
     "payload_hash",
+    "purge_elder_data",
     "record_attempt",
     "record_response",
     "revoke_taken_report",

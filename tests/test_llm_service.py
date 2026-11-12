@@ -309,3 +309,110 @@ async def test_logs_never_contain_api_key(
     assert _TEST_KEY not in combined
     assert _TEST_KEY not in caplog.text
     await client.aclose()
+
+
+# ------------------------------------------------------------------ P15：token usage 透传
+
+
+def _ok_with_usage(
+    content: str = "今天晴，适合出门走走。", *, prompt: Any = 11, completion: Any = 7
+) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "choices": [{"message": {"role": "assistant", "content": content}}],
+            "usage": {"prompt_tokens": prompt, "completion_tokens": completion},
+        },
+    )
+
+
+async def test_usage_parsed_into_reply(caplog: pytest.LogCaptureFixture) -> None:
+    """成功分支：`usage.prompt_tokens/completion_tokens` 进 LLMReply，并落一条 llm_usage 日志。"""
+    from app.services import metrics_service
+
+    metrics_service.reset_llm_usage()
+    client = _client(lambda request: _ok_with_usage(prompt=123, completion=45))
+    service = LLMService(_settings(), client=client)
+
+    with caplog.at_level(logging.INFO, logger="app.services.metrics"):
+        reply = await service.chat(_MESSAGES)
+
+    assert reply.text == "今天晴，适合出门走走。"
+    assert reply.degraded is False
+    assert reply.prompt_tokens == 123
+    assert reply.completion_tokens == 45
+
+    usage_logs = [r for r in caplog.records if r.getMessage() == "llm_usage"]
+    assert len(usage_logs) == 1
+    record = usage_logs[0]
+    assert record.provider == "minimax"
+    assert record.model == "minimax-chat-test"
+    assert record.prompt_tokens == 123
+    assert record.completion_tokens == 45
+    assert record.total_tokens == 168
+    await client.aclose()
+
+
+async def test_missing_usage_yields_none_tokens() -> None:
+    """无 usage 段（部分兼容实现）：回复照常，token 为 None——**不补零**。"""
+    client = _client(lambda request: _ok_response("好的。"))
+    service = LLMService(_settings(), client=client)
+
+    reply = await service.chat(_MESSAGES)
+    assert reply.text == "好的。"
+    assert reply.degraded is False
+    assert reply.prompt_tokens is None
+    assert reply.completion_tokens is None
+    await client.aclose()
+
+
+@pytest.mark.parametrize(
+    "prompt, completion",
+    [
+        ("123", "45"),  # 字符串（供应商不一致）
+        (1.5, 2.5),  # 浮点
+        (True, False),  # bool 是 int 子类，必须排除
+        (-1, -2),  # 负数
+        (None, 7),
+        (123, {"n": 1}),  # 结构错（dict），JSON 可序列化但不是整数
+    ],
+)
+async def test_non_integer_usage_yields_none(prompt: Any, completion: Any) -> None:
+    """非整数/负数/缺失 → 该侧 None，另一侧合法值仍保留（不整体丢）。"""
+    client = _client(lambda request: _ok_with_usage(prompt=prompt, completion=completion))
+    service = LLMService(_settings(), client=client)
+
+    reply = await service.chat(_MESSAGES)
+    assert reply.text == "今天晴，适合出门走走。"
+    if isinstance(prompt, int) and not isinstance(prompt, bool) and prompt >= 0:
+        assert reply.prompt_tokens == prompt
+    else:
+        assert reply.prompt_tokens is None
+    if isinstance(completion, int) and not isinstance(completion, bool) and completion >= 0:
+        assert reply.completion_tokens == completion
+    else:
+        assert reply.completion_tokens is None
+    await client.aclose()
+
+
+async def test_degraded_path_has_no_tokens() -> None:
+    """降级/异常路径 token 恒为 None（没有成功调用就没有用量）。"""
+    client = _client(lambda request: httpx.Response(500, json={"error": "boom"}))
+    service = LLMService(_settings(llm_max_retries=0), client=client)
+
+    reply = await service.chat(_MESSAGES)
+    assert reply.degraded is True
+    assert reply.prompt_tokens is None
+    assert reply.completion_tokens is None
+    await client.aclose()
+
+
+async def test_missing_config_path_has_no_tokens() -> None:
+    """缺 key/base_url 的短路径同样不产生 token。"""
+    client = _client(lambda request: _ok_with_usage())
+    service = LLMService(_settings(llm_api_key=""), client=client)
+
+    reply = await service.chat(_MESSAGES)
+    assert reply.degraded is True
+    assert reply.prompt_tokens is None and reply.completion_tokens is None
+    await client.aclose()
