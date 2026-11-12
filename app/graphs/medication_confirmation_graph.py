@@ -104,6 +104,10 @@ class MedicationState(TypedDict, total=False):
     terminal: str | None
     needs_escalation: bool
     graph_thread_id: str
+    #: F17 外呼归因（FR-MED-06 / PRD:336）：本轮触达外呼全部 `rtc_failed` 且 WS 投递
+    #: 也未出门时置 `rtc_failed`，finalize 经 `_split_missed_by_receipt` 落库——
+    #: 比 `offline` 更精确的「建连失败」归因。WS 出过门时为 None（触达成立）。
+    outbound_failure_reason: str | None
 
 
 def graph_config(reminder_id: uuid.UUID | str) -> dict[str, Any]:
@@ -150,7 +154,10 @@ async def _split_missed_by_receipt(
         return "missed_unconfirmed", default_reason
     receipts = {str(row.get("receipt") or "none") for row in rows}
     if receipts and receipts <= UNDELIVERED_RECEIPTS:
-        return "notification_failed", "offline"
+        # 外呼建连失败（rtc_failed）比笼统 offline 更精确（FR-MED-06 / PRD:336）：
+        # 外呼确实尝试过且归因明确时如实落 rtc_failed，否则维持 offline。
+        reason = "rtc_failed" if default_reason == "rtc_failed" else "offline"
+        return "notification_failed", reason
     return "missed_unconfirmed", default_reason
 
 
@@ -198,8 +205,9 @@ async def _deliver_reminder(
     elder_id: uuid.UUID,
     reminder_id: uuid.UUID,
     attempt_no: int,
-) -> tuple[str, str | None]:
-    """把用药提醒下发到长者绑定设备，返回 (触达回执, TTS 结果)（E2 + TD-1）。
+    outbound_fn: Callable[[str], Awaitable[Any]] | None = None,
+) -> tuple[str, str | None, str | None]:
+    """把用药提醒下发到长者绑定设备，返回 (触达回执, TTS 结果, 外呼归因)（E2 + TD-1 + F17）。
 
     消息形状（day07/contracts.md §1）：`{"type": "tts_text", "text": ..., "degraded": false,
     "touch_id", "touch_event_id", "touch_attempt_no", "audio"?}`——**不带**
@@ -216,6 +224,13 @@ async def _deliver_reminder(
 
     TTS 结果（与投递回执是两个独立事实）：`ok` = 合成成功且随消息下发；
     `tts_failed` = 合成失败、降级纯字幕；没绑设备时不做合成（None，省一次调用）。
+
+    外呼（F17 / FR-MED-06，`outbound_fn` 未装配时整体跳过、行为与历史版本一致）：
+    逐台设备先 `outbound_fn(device_id)` 建音频会话——`connected` = 语音轨就绪（长者
+    可口头确认）；`in_session` = 已有会话直接复用（PRD:575 降级页面播报口径）；
+    `no_connection` / `rtc_failed` 只记归因、**不影响 WS 字幕投递**（字幕是底线）。
+    第三返回值：WS 也全没出门且外呼归因明确为 `rtc_failed` 时返回该值，
+    finalize 据此落 `failure_reason=rtc_failed`；其余场景 None。
     """
     drug_name = await medication_service.get_drug_name(session, event_id=reminder_id)
     text = (
@@ -228,7 +243,7 @@ async def _deliver_reminder(
         logger.warning(
             "medication_reminder_no_device reminder_id=%s elder_id=%s", reminder_id, elder_id
         )
-        return "no_bound_device", None
+        return "no_bound_device", None, None
 
     # X1：触达通知行——pad 回执（notification_id 必填）据此绑定真值；幂等键
     # medication_touch:{reminder_id}:{attempt_no}。通知行失败不阻断触达（触达是
@@ -298,23 +313,49 @@ async def _deliver_reminder(
         }
 
     dispatched = False
+    outbound_rtc_failed = False
     for device_id in device_ids:
+        # F17：先建音频会话（长者才能口头确认），失败不影响 WS 字幕投递。
+        if outbound_fn is not None:
+            try:
+                call = await outbound_fn(str(device_id))
+            except Exception as exc:  # 外呼自身故障不拖垮触达（与 deliver 不抛同口径）
+                logger.warning(
+                    "medication_outbound_call_raised reminder_id=%s device_id=%s error=%s",
+                    reminder_id,
+                    device_id,
+                    type(exc).__name__,
+                )
+            else:
+                reason = getattr(call, "failure_reason", None)
+                if getattr(call, "connected", False):
+                    logger.info(
+                        "medication_outbound_connected reminder_id=%s device_id=%s",
+                        reminder_id,
+                        device_id,
+                    )
+                elif reason == "rtc_failed":
+                    outbound_rtc_failed = True  # 建连失败：归因待 finalize 落库
+                # no_connection / in_session 不置归因：前者与 offline 同义，后者已有会话
         if deliver_fn(str(device_id), message):
             dispatched = True
         if card_message:
             deliver_fn(str(device_id), card_message)
     if not dispatched:
         logger.info(
-            "medication_reminder_offline reminder_id=%s devices=%s", reminder_id, len(device_ids)
+            "medication_reminder_offline reminder_id=%s devices=%s rtc_failed=%s",
+            reminder_id,
+            len(device_ids),
+            outbound_rtc_failed,
         )
-        return "device_offline", tts_result
+        return "device_offline", tts_result, ("rtc_failed" if outbound_rtc_failed else None)
     logger.info(
         "medication_reminder_dispatched reminder_id=%s devices=%s tts=%s",
         reminder_id,
         len(device_ids),
         tts_result,
     )
-    return "voice_dispatched", tts_result
+    return "voice_dispatched", tts_result, None
 
 
 def _default_deliver(device_id: str, message: dict[str, Any]) -> bool:
@@ -332,7 +373,12 @@ async def _default_tts(text: str) -> bytes | None:
 
 
 def build_medication_graph(
-    *, session: Any, checkpointer: Any, deliver_fn: Any | None = None, tts_fn: Any | None = None
+    *,
+    session: Any,
+    checkpointer: Any,
+    deliver_fn: Any | None = None,
+    tts_fn: Any | None = None,
+    outbound_fn: Any | None = None,
 ) -> Any:
     """编译子图。`session` 是本次运行的事务会话，`checkpointer` 由 N10 的 A08 提供。
 
@@ -341,10 +387,17 @@ def build_medication_graph(
     `tts_fn(text) -> bytes | None` 是 **TD-1 合成出口**（信令层
     `synthesize_touch_audio` 的同形接口）：失败返回 None、不抛异常，触达降级纯字幕。
     两者缺省用真实信令层；测试注入假函数即可覆盖「在线 / 离线 / 未绑设备 /
-    合成成功 / 合成失败」各路。
+    合成成功 / 合成失败」各路。`outbound_fn(device_id) -> OutboundCallResult`
+    是 **F17 外呼出口**（缺省 None = 不外呼）：装配层注真实
+    `app.audio.outbound.initiate_outbound_call`，测试注假结果即可覆盖
+    「connected / in_session / rtc_failed」各路。
     """
     _deliver = deliver_fn if deliver_fn is not None else _default_deliver
     _synthesize = tts_fn if tts_fn is not None else _default_tts
+    # F17 外呼出口（FR-MED-06）：装配层（main.py → medication_jobs）注入真实
+    # `initiate_outbound_call`；None = 不外呼（语音执行器等已有媒体会话的入口、
+    # 未装配的测试），行为与历史版本完全一致。
+    _outbound = outbound_fn
 
     async def remind(state: MedicationState) -> dict[str, Any]:
         event_id = _uuid(state["reminder_id"])
@@ -367,13 +420,14 @@ def build_medication_graph(
         else:
             # TD-1 触达：先合成、再下发、再记回执。顺序不可换——record_attempt 对
             # (event_id, attempt_no) 幂等，重放安全；下发失败也要记（触达尝试是事实）。
-            receipt, tts_result = await _deliver_reminder(
+            receipt, tts_result, outbound_failure = await _deliver_reminder(
                 session,
                 _deliver,
                 _synthesize,
                 elder_id=_uuid(state["elder_id"]),
                 reminder_id=event_id,
                 attempt_no=attempt_no,
+                outbound_fn=_outbound,
             )
             await medication_service.record_attempt(
                 session,
@@ -385,7 +439,10 @@ def build_medication_graph(
         await medication_service.set_waiting_confirm(
             session, event_id=event_id, graph_thread_id=state.get("graph_thread_id")
         )
-        return {"attempt_no": attempt_no}
+        update: dict[str, Any] = {"attempt_no": attempt_no}
+        if not already and outbound_failure:
+            update["outbound_failure_reason"] = outbound_failure
+        return update
 
     async def wait_confirm(state: MedicationState) -> dict[str, Any]:
         # 阻塞点：恢复时 `interrupt()` 的返回值就是 `Command(resume=...)` 的载荷
@@ -425,16 +482,26 @@ def build_medication_graph(
                 response=str(state["answer"]),
             )
         failure_reason = None if terminal in ("taken_reported", "refused") else "no_answer"
+        # F17：外呼建连失败归因优先——比 no_answer/offline 更精确（FR-MED-06 / PRD:336）。
+        # `outbound_failure_reason` 只对「没送到」类终态生效；
+        # 已确认（taken/refused）不背外呼失败的锅。
+        default_reason = (
+            (state.get("outbound_failure_reason") or failure_reason)
+            if terminal != "taken_reported" and terminal != "refused"
+            else failure_reason
+        )
         if terminal == "missed_unconfirmed":
             # AC-20 的**唯一分流口**（2026-11-10 合并 dev-C WIP 时收敛）：
             # 此前 finalize 里有两处重叠——旧的看「最后一条 receipt」改 terminal 不改
             # failure_reason，新的 `_split_missed_by_receipt` 因此永远不触发，归因恒
             # `no_answer`。现在只留按回执集合判定的这一处：四次全没出过门 →
-            # notification_failed + offline；任一条出过门 → missed_unconfirmed；
+            # notification_failed + offline/rtc_failed；任一条出过门 → missed_unconfirmed；
             # 查询失败保守不升级结论（见 split docstring）。
             terminal, failure_reason = await _split_missed_by_receipt(
-                session, state["reminder_id"], failure_reason
+                session, state["reminder_id"], default_reason
             )
+        elif terminal == "notification_failed":
+            failure_reason = default_reason
         await medication_service.set_terminal(
             session,
             event_id=_uuid(state["reminder_id"]),
