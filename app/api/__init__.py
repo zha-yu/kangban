@@ -21,6 +21,7 @@ from app.api import (
     admin_org,
     alerts,
     audio,
+    audit_export,
     auth,
     devices,
     elders,
@@ -28,6 +29,7 @@ from app.api import (
     guardians,
     health,
     health_records,
+    lifecycle,
     medication,
     pad,
     pad_undo,
@@ -61,6 +63,8 @@ ROUTERS: tuple[tuple[APIRouter, str], ...] = (
     (medication.router, ""),  # 自带 /api/medication-plans 前缀（Day 8 dev-A H+1 药单管理 REST）
     (sos.router, ""),  # 自带 /api/pad 前缀（D3 SOS 一键求助，Day 8 骨架接线）
     (pad_undo.router, ""),  # 自带 /api/pad 前缀（D3 普通确认撤销，FR-UI-08/AC-26）
+    (lifecycle.router, ""),  # 自带 /api/lifecycle 前缀（A4 生命周期三端点，Day 9）
+    (audit_export.router, ""),  # 自带 /api 前缀（A4 审计 CSV 导出，FR-ADM-05，Day 9）
 )
 
 __all__ = ["ROUTERS"]
