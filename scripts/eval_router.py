@@ -59,7 +59,7 @@ class FakeRuntime:
 
 
 class InProcessLayaSystemOne:
-    """`--provider local`：进程内直接调 `ChineseJevBackend`（不经 HTTP）。
+    """`--provider local`：进程内直接调 `LayaBackend`（不经 HTTP）。
 
     为什么需要这一档：sidecar 的 **180ms 内部预算**与实测单问前向（160–190ms）
     处在刀刃上，走 HTTP 会大量 503；而「意图准确率」是**模型属性**，不该被传输
@@ -69,9 +69,9 @@ class InProcessLayaSystemOne:
     """
 
     def __init__(self) -> None:
-        from app.system_one.backend import ChineseJevBackend
+        from app.system_one.backend import LayaBackend
 
-        self._backend = ChineseJevBackend()
+        self._backend = LayaBackend()
 
     async def _score(self, text: str, state: Any, questions: dict[str, Any]):
         from app.system_one.backend import map_answers
@@ -329,7 +329,7 @@ def render(
     verdict = lambda ok: "✅ 通过" if ok else "❌ 不通过"  # noqa: E731
     provider_note = {
         "sidecar": "真 sidecar（HTTP `/v1/decide`，受 180ms 内部预算约束）",
-        "local": "真权重（进程内 `ChineseJevBackend`，**不经 HTTP**，只测模型与映射）",
+        "local": "真权重（进程内 `LayaBackend`，**不经 HTTP**，只测模型与映射）",
         "mock": "**进程内 mock 后端**：本报告不代表权重能力，仅验证脚本与分层统计",
     }[provider]
 

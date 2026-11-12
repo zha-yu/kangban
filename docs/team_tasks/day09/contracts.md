@@ -1,5 +1,5 @@
-> 状态：待冻结（N0 · D9 09:30 冻结评审）　｜　版本：v0.2　｜　日期：2026-11-12
-> 关联：docs/team_tasks/day09/day09-任务总览与DAG.md v1.0 §5（对接点总表）
+> 状态：待冻结（N0 · D9 09:30 冻结评审；X6 已裁减作废）　｜　版本：v0.3　｜　日期：2026-11-12
+> 关联：docs/team_tasks/day09/day09-任务总览与DAG.md v1.3 §5（对接点总表）
 > 上游依据：PRD line 387（只有客户端回执算 delivered）、line 357–361（分级与校验）、line 320–325（用药终态）、line 436/441/443（重置/人设/退房）、line 440（三道闸门）｜技术设计文档 line 1166–1174（Day 9 落地）｜《接口契约_照护台业务数据.md》v1.3 §3.2（通知 5 值＋is_mock 冻结）/§6.1（稳定路径）/§6.4（种子规范）｜《接口契约_家属端数据.md》v1.2 S-01（用药统计键名）
 > 变更记录见文末
 
@@ -158,23 +158,9 @@ async def delete_memory(session, *, elder_id: uuid.UUID, chunk_id: uuid.UUID) ->
 
 ---
 
-## X6 · 人设视图与注入（C → B）
+## X6 · 人设视图与注入（C → B）——**已裁减作废**
 
-```python
-async def get_active_persona(session, *, elder_id: uuid.UUID) -> PersonaView: ...
-async def switch_persona(session, *, elder_id: uuid.UUID, persona_id: uuid.UUID, actor_id: uuid.UUID) -> PersonaRef: ...
-```
-
-`PersonaView(persona_id, name, personality, greeting, tone_examples, voice_id, avatar_url)`——字段与 `app/models/organization.py:39-54` 逐字对齐。
-
-| 项 | 口径 |
-| --- | --- |
-| 注入点 | **`app/core/context.py`（C 持锁）**：`personality` 拼进 system prompt **固定前缀**、`greeting` 作开场白、`tone_examples` 作 few-shot |
-| cache 约束 | `tone_examples` **≤3 条**；固定前缀顺序不变（保 prompt cache，AGENTS §1／TD §3.4） |
-| TTS | `voice_id` 传 TTS 适配层切换音色 |
-| 权限 | `switch_persona` 仅 **admin**；非 admin **403＋审计**；切换写 `audit_logs` |
-| 生效时机 | **新一轮对话**生效（FR-ADM-07 验收原文），不中断进行中的回合 |
-| B 侧 | 如需在 Agent 上下文消费，**只读 `PersonaView`**，不改 `context.py` |
+> **2026-11-12 主理人决定：人设功能（FR-ADM-07）移出 Day 9，本契约作废。** 不冻结、不实现 `get_active_persona`／`switch_persona`／`PersonaView`；C 不再持有 `persona_service.py`／`elder_service.py`／`app/core/context.py`／`app/api/personas.py`；B3 不再消费 X6。编号 **X6 保留不复用**，避免与历史引用混淆。裁减依据与留痕见总览 §8.1（PRD §6.2 人设属 P1 可裁减＋§7 裁减有记录）。**现有 `personas` 表／`elders.persona_id` 外键／`seed_personas.py`／`context.py:189-194` 注入模板保留不动**；console 人设入口保持置灰。
 
 ---
 
@@ -317,5 +303,6 @@ def next_retry_at(*, ntype: str, retry_count: int, now: datetime) -> datetime | 
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v0.3 | 2026-11-12 | **X6 人设契约裁减作废**（主理人决定，人设移出 Day 9）：删除 `get_active_persona`／`switch_persona`／`PersonaView` 全部字段级定义，改为作废声明；编号 X6 保留不复用。有效契约变为 X1–X5、X7–X12 共 11 份＋总览 §5.2 两条消费既有契约的边。裁减依据与现有代码保留口径见总览 §8.1。 |
 | v0.2 | 2026-11-12 | 全量校验后补 **X12 域清理钩子集**：退房/教学重置需清空的业务表分属 B/C 写域，A 的 `lifecycle_service` **不直写他人表**，改为各域 service 提供 `purge_elder_data` 钩子、A 只编排与审计（AGENTS §2.1）。明确 `reason` 枚举、`PurgeRef` 结构、审计归属（A 统一写、各域不重复）、保留项、幂等键与退房五步顺序及可重入语义。另修正 **X7**：`health_records` 实测 19 列**无 `reviewed_at`**，改用既有 `review_status`＋`reviewed_by`，扫描水位改「已终态＋线程仍 interrupt」双条件，不新增 schema。 |
 | v0.1 | 2026-11-12 | 首版草稿，供 N0（D9 09:30）冻结评审。定义 X1–X11 共 11 个跨成员对接点的字段级口径：X1 回执帧（复用 `/ws/signal`，幂等键 `(notification_id, receipt_kind)`，禁止无条件 delivered）、X2 分级阈值照 PRD:357-359 原文＋`rule_version` g2、X3 红档双通知出口与统一建单去重、X4 记忆清理钩子、X5 记忆管理三函数（强制 `WHERE elder_id`）、X6 人设视图与 prompt 注入点归 C、X7 复核 resume 落点（C 写库＋B scheduler 30s 扫描，依据 AGENTS §2.2）、X8 迁移 0020 扩两枚举、X9 闸门 E 校验 PRD 明文硬线（不属私自加严）＋七层归因＋夹具 gold 向 PRD:272 对齐、X10 素材照契约 §6.4 不重定义、X11 退避函数与 cron 写锁分离。全部契约含「服务端注入身份、客户端传值丢弃」铁律。 |

@@ -1,6 +1,6 @@
-> 状态：未开始　｜　版本：v1.0　｜　日期：2026-11-12
+> 状态：未开始　｜　版本：v1.2　｜　日期：2026-11-12
 > 负责人：**dev-B（唯一）**　｜　任务包：**B · 智能层接线与注入防线**　｜　容量：**20.5h ＝ 2.56 人日**（含 N0 执笔 0.5h）
-> 关联：docs/team_tasks/day09/day09-任务总览与DAG.md v1.0（§4.2 分工、§5 对接点、§6 写域）｜docs/team_tasks/day09/contracts.md（**N0 牵头人**；X2/X3/X5/X6/X7/X8/X10/X11 消费与提供）
+> 关联：docs/team_tasks/day09/day09-任务总览与DAG.md v1.3（§4.2 分工、§5 对接点、§6 写域）｜docs/team_tasks/day09/contracts.md v0.3（**N0 牵头人**；X2/X3/X5/X7/X8/X10/X11/X12 消费与提供；**X6 已裁减**）
 > 上游依据：PRD line 440（FR-ADM-06 闸门②③）、line 423–426（FR-MEM-04~07）、line 272（FR-DLG-07 历史/模糊判黄）、line 320–325（用药终态）、line 365–374（FR-HLT）、line 518（AC-36 注入）、line 487–497（AC-08/09/10/20/21/22）、line 547（路由 ≤200ms）｜技术设计文档 line 1017–1018（分级在代码＋话术＋HITL）、line 1169（注入集/test_injection）、line 1173（注入 100% 拦截）
 > 遗留承接：**F03（Agent 侧）F05（子图注入）F06 F07（resume 扫描）F08 F09 F10（service）F14 F18 F19 F20 F21（rules）F22（safety）F27** —— 本包是 day08 遗留最重的一包（13 项）
 > 变更记录见文末
@@ -34,7 +34,7 @@ docs/team_tasks/day09/contracts.md    （N0 后持锁）
 
 ### 0.2 禁触
 
-`app/models/**`、`alembic/**`（A）、`app/core/**`（A 的 redact/logging/runtime_context；C 的 context.py）、`health_service.py`／`notify_service.py`／`report_service.py`／`media_service.py`／`persona_service.py`（C）、`app/api/**`（A/C/D）、`frontend/**`（C/D）、`tests/eval_gate.py`／`eval/fixtures/day7_intents.jsonl`（D）。
+`app/models/**`、`alembic/**`（A）、`app/core/**`（A 的 redact/logging/runtime_context）、`health_service.py`／`notify_service.py`／`report_service.py`／`media_service.py`（C）、`app/api/**`（A/C/D）、`frontend/**`（C/D）、`tests/eval_gate.py`／`eval/fixtures/day7_intents.jsonl`（D）。**人设相关任何文件（`persona_service`／`context.py`／`api/personas`）本日无人持有，一律不碰。**
 
 ### 0.3 分层：你持有唯一的 services→graphs 接缝
 
@@ -162,8 +162,8 @@ uv run alembic current   # 向量列维度与迁移一致
 
 ## 3. 节点 B3 · 健康语音入口 ＋ 判黄 ＋ 红档注入 ＋ resume 扫描 ＋ 剧种规则（6h）
 
-**前置**：B1（工具注册表同文件）。**软依赖（骨架先行，不等待）**：C1 的 X2、C2 的 X3、C4 的 X7、C5 的 X6。
-**对接**：消费 X2/X3/X6/X7；**提供**路由入口稳定给 D2、路由改进完成给 D3。
+**前置**：B1（工具注册表同文件）。**软依赖（骨架先行，不等待）**：C1 的 X2、C2 的 X3、C4 的 X7。（原 C5 的 X6 已裁减移除。）
+**对接**：消费 X2/X3/X7（**X6 已裁减，不再消费**）；**提供**路由入口稳定给 D2、路由改进完成给 D3。
 
 ### 3.1 现状实测
 
@@ -299,7 +299,7 @@ grep -rn "已经帮您把需求转告" app/    # 若有命中，followup_sink �
 | X4 记忆清理钩子 | A3 | **提供** | D9 下午 | D10 16:00 | 待 |
 | X12 用药清理钩子 | A3 | **提供** | D9 下午 | D10 16:00 | 待 |
 | X5 记忆管理三函数 | C（api/memory＋console） | **提供** | D10 上午 | D11 10:00 | 待 |
-| X6 PersonaView | C5 | 消费 | N0 | D11 11:00 | 待 |
+| ~~X6 PersonaView~~ | ~~C5~~ | **已裁减，不消费** | — | — | 作废 |
 | X7 review_status → resume | C4 | 消费 | N0 | D11 14:00 | 待 |
 | X8 迁移 0020 | A1 | 消费 | N0 | D9 12:00 | 待 |
 | X10 素材规范 | D5 | 消费（media 调用侧） | N0 | D11 10:00 | 待 |
@@ -330,5 +330,6 @@ grep -rn "已经帮您把需求转告" app/    # 若有命中，followup_sink �
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.2 | 2026-11-12 | **人设裁减同步**：B3 不再消费 X6（软依赖与对接登记移除），B3 联调槽位改为 X3（D10 15:00）／X7（D11 14:00）；禁触清单明确人设相关文件本日无人持有、一律不碰。包容量不变 20.5h。 |
 | v1.1 | 2026-11-12 | 全量校验后修正：① B2 增 **X12 用药清理钩子** `medication_service.purge_elder_data`（供 A3 退房/重置编排，A 不直写 B 的表），B2 由 5h 调为 **5.5h**，包容量 20h→**20.5h＝2.56 人日**；② 排程校验后队列确定为 **B1→B2→B3→B4**（B3 骨架须在 D10 15:00 X3 联调前完成，实测 13.5h ✓）；③ X1 联调时点随 C 队列调整为 D10 12:00。程序校验：硬前置 11 边、软依赖 18 边**零违例**，五里程碑全达标。 |
 | v1.0 | 2026-11-12 | 首版。承接 day08 遗留 13 项（F03 Agent 侧/F05 子图注入/F06/F07 resume/F08/F09/F10 service/F14/F18/F19/F20/F21 rules/F22 safety/F27）＋ Day 9 原生闸门②③加固与注入防线；4 节点 20h＝2.5 人日（含 N0 牵头 0.5h）。**明确持有唯一 services→graphs 接缝**（`tool_impls.py:16` 既有先例），F14 沿用不新造；F07 走 C 写库＋B scheduler 扫描。**X5 记忆管理函数收敛进 `memory_service.py`，不新建 `memory_admin_service.py`**（避免两 service 写同一张表，TD:1169 模块名须留痕）。`app/system_one/**` 本日不动（F23 顺延 Day 10）。 |
