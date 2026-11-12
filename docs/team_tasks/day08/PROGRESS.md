@@ -19,8 +19,12 @@
 | `docs/plans/day08/adhoc-20261111-route_degraded契约冻结.md` | 🔒 已冻结 |
 | `docs/plans/day08/adhoc-20261111-三档身份级联演示脚本.md` | 🔒 已冻结 |
 | `docs/plans/day08/adhoc-20261111-声纹互测录音指南.md` | 🔒 已冻结 |
+<<<<<<< HEAD
 | `docs/plans/day08/adhoc-20261112-审查缺口修复.md` | 📝 草稿（待主理人裁决 Q1–Q7 后转执行） |
 | `docs/plans/day08/d-推进计划-日报通知与三端.md` | 🚧 进行中（S0–S7/S10 完成；D1 三偏差收口；**D3 触发＋撤销边界完成；D4 七动作与帧形状冻结完成；D6 服务端 route_degraded 置位完成；console 红色置顶与 family 三页 UI 取证完成**；剩同场演练与环境项：S8 卡 X5/X7 演练、S9 卡 CP4 真实设备、D6 e2e 缺 LLM key/sidecar） |
+=======
+| `docs/plans/day08/d-推进计划-日报通知与三端.md` | 🚧 进行中（S0–S7/S10 完成；D1 三偏差收口；**D3 触发＋撤销边界完成；D4 七动作与帧形状冻结完成；D6 服务端 route_degraded 置位完成；console 红色置顶/告警确认链与 family 三页、pad 七动作 UI 均已取证**；剩同场演练与环境项：S8 卡 X5/X7 演练、S9 卡 CP4 同场、D6 e2e 缺 LLM key/sidecar） |
+>>>>>>> develop
 | `docs/plans/day08/day-08-健康采集与三端后台.md` | 📝 草稿（待主理人确认后执行） |
 | `docs/plans/day08/dev-a-数据分级规则层.md` | 📝 草稿 |
 | `docs/plans/day08/dev-a-药单管理后端接口.md` | 📝 草稿 |
