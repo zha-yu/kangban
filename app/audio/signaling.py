@@ -58,8 +58,10 @@ from app.core.metrics import (
     record_wakeup,
 )
 from app.core.runtime_context import Identity, reset_identity, set_identity
-from app.db import get_session
+from app.db import get_session, session_factory
+from app.services import medication_service, notify_service
 from app.services.device_service import list_elder_candidates
+from app.services.notify_service import NotificationIllegalTransition, NotificationNotFound
 
 logger = logging.getLogger("app.audio.signaling")
 
@@ -122,6 +124,7 @@ __all__ = [
     "AuthMsg",
     "AuthOkMsg",
     "ClientDiagMsg",
+    "ClientReceiptMsg",
     "DialogueFinalHandler",
     "ErrorMsg",
     "IceMsg",
@@ -347,6 +350,8 @@ class ConnectionContext:
     room_id: str | None = None
     authed: bool = False
     last_frame_at: float = field(default_factory=time.monotonic)
+    # Day 9 X1：本连接已受理的回执幂等缓存，key=(notification_id|task_id, receipt_kind) → 原结果 status
+    receipt_seen: dict[tuple[str, str], str] = field(default_factory=dict)
     downstream: asyncio.Queue[dict[str, Any] | _TrackedFrame] = field(default_factory=asyncio.Queue)
     disconnect_callbacks: list[Callable[[], object]] = field(default_factory=list)
     # C5 状态机
@@ -794,6 +799,173 @@ async def _handle_touch_played(conn: ConnectionContext, message: Mapping[str, An
             "touch_played_handler_failed",
             extra=_log_extra(conn, error_type=type(exc).__name__),
         )
+
+
+# ------------------------------------------------------------------ Day 9 X1 契约追加
+# C→S client_receipt（day09/contracts.md X1，v0.4 冻结口径）：pad 卡片渲染/播报完成回执。
+# 分层：字段形状校验与幂等在本层；task_id 归属校验经 medication_service（audio → services
+# 单向依赖，本层不 import ORM）；delivered 落库调 notify_service.mark_notification_delivered
+# （C 持锁；X1 冻结签名带 receipt_kind，C3 未升级前 TypeError 降级并 warn 留痕，D10 12:00 联调）。
+# 身份铁律：elder_id/device_id 一律服务端注入，帧内出现同名字段一律不读、不作为授权依据。
+
+class ClientReceiptMsg(TypedDict):  # C→S，触达卡片渲染/播报完成回执
+    """task_id 必须来自服务端下发的 task_command.task_id，不得自造；
+    notification_id 用药/健康触达回执必填（C3 随触达帧下发），纯播报回执为 null。"""
+
+    type: Literal["client_receipt"]
+    receipt_kind: Literal["card_rendered", "tts_finished"]
+    task_id: str
+    notification_id: str | None
+    ts: str  # 客户端 ISO8601 UTC；服务端以接收时刻为准，ts 仅入日志
+
+
+ReceiptAckStatus = Literal["delivered", "accepted", "rejected"]
+
+_RECEIPT_KINDS = frozenset({"card_rendered", "tts_finished"})
+_HEALTH_TASK_PREFIX = "health:"
+
+
+def _receipt_ack(
+    conn: ConnectionContext,
+    *,
+    notification_id: str | None,
+    status: ReceiptAckStatus,
+    duplicate: bool,
+) -> None:
+    conn.downstream.put_nowait(
+        {
+            "type": "receipt_ack",
+            "notification_id": notification_id,
+            "status": status,
+            "duplicate": duplicate,
+        }
+    )
+
+
+async def _resolve_task_owner(session: AsyncSession, task_id: str) -> str | None:
+    """返回 task_id 归属长者的 elder_id（str）；无法解析返回 None。"""
+    if task_id.startswith(_HEALTH_TASK_PREFIX):
+        parts = task_id.split(":")
+        return parts[1] if len(parts) >= 2 else None
+    try:
+        reminder_uuid = UUID(task_id)
+    except ValueError:
+        return None
+    event = await medication_service.get_event(session, reminder_uuid)
+    return str(event["elder_id"]) if event is not None else None
+
+
+async def _handle_client_receipt(conn: ConnectionContext, message: Mapping[str, Any]) -> None:
+    """C→S client_receipt 分支：形状校验 → 幂等 → 归属校验 → mark delivered → receipt_ack。
+
+    - 幂等键 (notification_id|task_id, receipt_kind)：重复回执返回原结果、duplicate=true，
+      不重复写 sent_at（X1 契约）；被拒绝的回执**不入缓存**，允许真实重试；
+    - notification_id 为 null 的纯播报回执只做归属校验 + ack accepted，不写库；
+    - 任何失败都以 receipt_ack(status=rejected) 诚实回执，不静默丢弃。
+    """
+    receipt_kind = message.get("receipt_kind")
+    task_id = message.get("task_id")
+    notification_id = message.get("notification_id")
+    ts = message.get("ts")
+    # 形状校验（X1 字段表）；elder_id/device_id 出现在帧内一律丢弃（身份铁律）
+    if (
+        not isinstance(receipt_kind, str)
+        or receipt_kind not in _RECEIPT_KINDS
+        or not isinstance(task_id, str)
+        or not task_id
+        or (notification_id is not None and not isinstance(notification_id, str))
+        or not isinstance(ts, str)
+    ):
+        logger.warning(
+            "ws_bad_message",
+            extra=_log_extra(conn, reason="client_receipt_invalid"),
+        )
+        await _send_error(conn, "internal")
+        return
+
+    idempotency_key = (notification_id or task_id, receipt_kind)
+    seen_status = conn.receipt_seen.get(idempotency_key)
+    if seen_status is not None:
+        logger.info(
+            "client_receipt_duplicate",
+            extra=_log_extra(conn, receipt_kind=receipt_kind, notification_id=notification_id or "-"),
+        )
+        _receipt_ack(conn, notification_id=notification_id, status=seen_status, duplicate=True)  # type: ignore[arg-type]
+        return
+
+    async with session_factory() as session:
+        owner = await _resolve_task_owner(session, task_id)
+        if owner is None or owner != conn.bound_elder_id:
+            logger.warning(
+                "client_receipt_rejected",
+                extra=_log_extra(conn, reason="task_owner_mismatch", task_id=task_id),
+            )
+            _receipt_ack(conn, notification_id=notification_id, status="rejected", duplicate=False)
+            return
+
+        if notification_id is None:
+            # 纯播报回执：无通知行可标，ack accepted 即可（不伪造 delivered）
+            conn.receipt_seen[idempotency_key] = "accepted"
+            logger.info(
+                "client_receipt_accepted",
+                extra=_log_extra(conn, receipt_kind=receipt_kind, task_id=task_id),
+            )
+            _receipt_ack(conn, notification_id=None, status="accepted", duplicate=False)
+            return
+
+        try:
+            nid = UUID(notification_id)
+        except ValueError:
+            logger.warning(
+                "client_receipt_rejected",
+                extra=_log_extra(conn, reason="notification_id_not_uuid"),
+            )
+            _receipt_ack(conn, notification_id=notification_id, status="rejected", duplicate=False)
+            return
+
+        try:
+            try:
+                # X1 冻结签名（带 receipt_kind）；C3 未升级前的 TypeError 降级 + warn 留痕
+                await notify_service.mark_notification_delivered(
+                    session, notification_id=nid, receipt_kind=receipt_kind
+                )
+            except TypeError:
+                logger.warning(
+                    "notify_service_receipt_kind_not_aligned",
+                    extra=_log_extra(conn),
+                )
+                await notify_service.mark_notification_delivered(session, notification_id=nid)
+        except NotificationNotFound:
+            logger.warning(
+                "client_receipt_rejected",
+                extra=_log_extra(conn, reason="notification_not_found", notification_id=notification_id),
+            )
+            _receipt_ack(conn, notification_id=notification_id, status="rejected", duplicate=False)
+            return
+        except NotificationIllegalTransition as exc:
+            # 例：通知尚在 generated（C3 扫描未推 pending）或已 failed——诚实拒绝，允许重试
+            logger.warning(
+                "client_receipt_rejected",
+                extra=_log_extra(
+                    conn, reason="illegal_transition", notification_id=notification_id
+                ),
+            )
+            logger.info("client_receipt_transition_detail %s", exc)
+            _receipt_ack(conn, notification_id=notification_id, status="rejected", duplicate=False)
+            return
+
+        await session.commit()
+        conn.receipt_seen[idempotency_key] = "delivered"
+        logger.info(
+            "client_receipt_delivered",
+            extra=_log_extra(
+                conn,
+                receipt_kind=receipt_kind,
+                notification_id=notification_id,
+                client_ts=ts,
+            ),
+        )
+        _receipt_ack(conn, notification_id=notification_id, status="delivered", duplicate=False)
 
 
 # ------------------------------------------------------------------ 内部实现
@@ -1332,6 +1504,9 @@ async def _read_loop(conn: ConnectionContext) -> None:
             continue
         if msg_type == "touch_played":
             await _run_guarded(conn, _handle_touch_played(conn, message), msg_type)
+            continue
+        if msg_type == "client_receipt":
+            await _run_guarded(conn, _handle_client_receipt(conn, message), msg_type)
             continue
         if msg_type == "user_text":
             await _run_guarded(conn, _handle_user_text(conn, message), msg_type)

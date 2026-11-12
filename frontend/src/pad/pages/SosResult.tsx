@@ -7,19 +7,26 @@ import { TaskShell } from "../components/TaskShell";
 export type SosStatus = "sending" | "sent" | "failed";
 
 /**
- * SOS 求助结果态（FR-ALT-06、S5 演示主线）。
+ * SOS 求助结果态（FR-ALT-06、S5 演示主线；Day 9 F03 真实状态驱动）。
  *
  * 点击常显按钮即调 `POST /api/pad/sos` 生成敏感事件 + 护工工单，不经过语音路由；
- * 结果页只做告知，不提供「撤销」入口——红色事件不能由长者一键撤销（FR-UI-08），
+ * 结果页三格只陈述**后端真实返回**的事实：事件已生成、工单是否已创建（orderId 有无）。
+ * `status === "sent"` 只代表「事件 + 工单已生成」，**不代表护工/家属已收到通知**——
+ * 本页任何状态都不得出现「已通知」断言（任务书 F03 / AGENTS §4.4：断开通知出口
+ * 后按 SOS，页面不得出现「已通知」）。
+ * 结果页不提供「撤销」入口——红色事件不能由长者一键撤销（FR-UI-08），
  * 只允许追加「说错了」补充说明，事件保持 open（AC-26）。
  */
 export function SosResult({
   status,
+  orderId,
   onRetry,
   onCorrection,
   onExit,
 }: {
   status: SosStatus;
+  /** 后端 SOS 响应的 order_id（真实返回）；null = 工单未创建（如无责任护工绑定），照实陈述 */
+  orderId?: string | null;
   onRetry: () => void;
   /** 追加「说错了」说明；未拿到 event_id（如 ?sos=1 直达）时不传，按钮隐藏。 */
   onCorrection?: () => Promise<boolean>;
@@ -41,7 +48,7 @@ export function SosResult({
   return (
     <TaskShell
       eyebrow="一键求助"
-      title={sending ? "正在联系护工…" : failed ? "求助没有发出去" : "已通知护工，请稍等"}
+      title={sending ? "正在联系护工…" : failed ? "求助没有发出去" : "求助已发出，正在通知护工"}
       badge={
         <StatusBadge
           tone={sending ? "warning" : "danger"}
@@ -80,19 +87,24 @@ export function SosResult({
             ? "请稍等，正在把求助发给负责您的护工。"
             : failed
               ? "请再按一次，或直接呼叫身边的护工。"
-              : "负责您的护工和家属已经收到通知"}
+              : "求助已记录，正在通知负责您的护工和家属。"}
         </p>
         <p className="text-2xl leading-relaxed text-ink-muted">
           {sending
             ? "发送成功后会在这里告诉您，不需要重复按。"
             : failed
               ? "如果按了多次仍显示失败，请直接呼叫工作人员，不要等待。"
-              : "工作人员正在赶来。您可以坐下来等一会儿，不需要再操作。"}
+              : "工作人员收到通知后会赶来。您可以坐下来等一会儿，不需要再操作。"}
         </p>
       </div>
       {!failed && (
         <div className="mt-10 grid grid-cols-3 gap-4 border-t border-line pt-8">
-          {["求助已记录", "护工已通知", "家属已通知"].map((text) => (
+          {/* 三格 = 后端真实状态，逐格陈述事实，不做「已通知」断言（Day 9 F03） */}
+          {[
+            "求助已记录",
+            orderId ? "工单已创建" : "正在分派护工",
+            "通知发出后护工会赶来",
+          ].map((text) => (
             <div
               key={text}
               className="rounded-2xl border border-line bg-surface-sunken px-5 py-6 text-center text-2xl text-ink-muted"

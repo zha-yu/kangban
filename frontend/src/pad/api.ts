@@ -112,6 +112,41 @@ export async function appendSosCorrection(token: string, eventId: string): Promi
   }
 }
 
+/* ---------- Day 9 F24：普通「已服自报」10 秒内撤销（FR-UI-08，后端 pad_undo.py 既有端点） ---------- */
+
+/** 撤销失败分类：409 窗口已过/状态冲突、404 事件不存在、其余按暂时失败可重试。 */
+export class MedicationUndoError extends Error {
+  constructor(
+    public code: "window_expired" | "conflict" | "not_found" | "failed",
+  ) {
+    super(code);
+  }
+}
+
+/** POST /api/pad/medication-events/{id}/revoke：设备令牌鉴权，elder_id 服务端解出（禁区 9）。
+ *  成功 = 事件回 waiting_confirm；失败时 UI 不得显示成已撤销（FR-UI-08）。 */
+export async function revokeTakenReport(token: string, reminderId: string): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(
+      `/api/pad/medication-events/${encodeURIComponent(reminderId)}/revoke`,
+      { method: "POST", headers: { Authorization: `Bearer ${token}` } },
+    );
+  } catch {
+    throw new MedicationUndoError("failed");
+  }
+  if (res.ok) return;
+  if (res.status === 409) {
+    // 区分窗口过期与状态冲突需要读错误体 code；两都可重试意义不同，按窗口过期优先提示
+    const body = (await res.json().catch(() => ({}))) as { code?: string };
+    throw new MedicationUndoError(
+      body.code === "UNDO_WINDOW_EXPIRED" ? "window_expired" : "conflict",
+    );
+  }
+  if (res.status === 404) throw new MedicationUndoError("not_found");
+  throw new MedicationUndoError("failed");
+}
+
 /* ---------- mock 自测：无后端时验证三类错误 UI（?mock=1 启用） ---------- */
 
 export const MOCK_ENABLED =

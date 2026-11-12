@@ -17,11 +17,12 @@ import io
 import logging
 import os
 import time
+import uuid
 import wave
 from collections.abc import AsyncIterator
 from typing import Annotated, TypedDict
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 
 from app.api.schemas.auth import ErrorResponse
 from app.audio.asr import (
@@ -36,6 +37,7 @@ from app.audio.asr import (
 )
 from app.audio.tts import TTSProvider, TTSUnavailable, build_tts
 from app.core.auth import current_device
+from app.core.config import get_settings
 from app.core.context import get_trace_id
 from app.core.runtime_context import Identity
 
@@ -52,7 +54,7 @@ router = APIRouter(prefix="/api/audio", tags=["audio"])
 class UtteranceReply(TypedDict):
     """端点成功响应里的 reply 对象。"""
 
-    text: str  # 回复话术（Day 3 为写死模板，Day 6 接真 LLM 后替换）
+    text: str  # 回复话术（Day 9 F15：与 WS FINAL 同一条编排入口产出，不再写死模板）
     audio_url: str | None  # 服务端合成音频可取地址；无 TTS 时为 null
 
 
@@ -70,12 +72,15 @@ class UtteranceResponse(TypedDict):
 DEGRADE_TEMPLATES: dict[str, str] = {
     "asr_unavailable": ("抱歉，语音识别暂时不可用。您可以直接输入文字，或稍后再试。"),
     "tts_unavailable": ("抱歉，语音播报暂时不可用，但我会用文字回复您。"),
-    # 以下两个 Day 6 接真 LLM / Tool 熔断机制后才会被触发（Day 3 当前不可达）
     "llm_timeout": ("抱歉，我正在思考，您可以稍后再试或联系工作人员。"),
     "tool_breaker": ("抱歉，当前请求处理超时，我会尽快通知工作人员。"),
+    # Day 9 F15：编排入口未装配（裸 app / 装配异常）时诚实降级，不再写死假回复
+    "orchestrator_unavailable": ("抱歉，我现在没法回应，请稍后再试或联系工作人员。"),
 }
 
-MAX_AUDIO_SECONDS = 30  # PRD 硬性上限
+# PRD line 247（FR-UI-01）：降级模式单次录音最长 120 秒。Day 3 曾写 30s，Day 9 F15
+# 依 PRD 数值修正（历史注释引用非基线文档为依据，违反 AGENTS 前置铁律，已删）。
+MAX_AUDIO_SECONDS = 120
 
 
 # ---------------------------------------------------------------------------
@@ -221,15 +226,16 @@ async def _tts_synthesize(tts: TTSProvider, text: str) -> str | None:
 @router.post(
     "/utterance",
     response_model=UtteranceResponse,
-    summary="按住说话降级链路：整段上传 WAV → ASR + 模板回复",
+    summary="按住说话降级链路：整段上传 WAV → ASR + 编排回复（与 WS FINAL 同路）",
     responses={
         401: {"model": ErrorResponse, "description": "device token 失效/伪造/过期"},
-        413: {"model": ErrorResponse, "description": "音频超 30s 拒收"},
+        413: {"model": ErrorResponse, "description": "音频超 120s 拒收（PRD:247）"},
         422: {"model": ErrorResponse, "description": "表单字段缺失/类型错误"},
-        503: {"model": ErrorResponse, "description": "ASR 不可用（降级话术）"},
+        503: {"model": ErrorResponse, "description": "ASR/编排不可用（降级话术）"},
     },
 )
 async def utterance(
+    request: Request,
     identity: Annotated[Identity, Depends(current_device)],
     asr: Annotated[ASRProvider, Depends(_get_default_asr)],
     tts: Annotated[TTSProvider, Depends(_get_default_tts)],
@@ -238,15 +244,17 @@ async def utterance(
 ) -> UtteranceResponse:
     """按住说话降级端点 —— **WebRTC 主链路不可用时的唯一回退**。
 
-    流程（Block 3 Day 3 冻结，后续 Block 不改变契约）：
+    流程（Day 9 F15 收口，依据 PRD line 247 FR-UI-01）：
         ① 鉴权 → Depends(current_device) 已完成；elder_id 从库绑定取（禁区 9）
-        ② 读 WAV 文件头，校验 ≤ 30s
+        ② 读 WAV 文件头，校验 ≤ 120s（PRD line 247 单次最长 120 秒）
         ③ A1 ASR（build_asr）→ 识别文本；不可用时走降级话术（503）
-        ④ 组装 Day 3 写死回复话术："您说的是『{asr_text}』，我记下了。"
+        ④ 编排：调 `app.state.dialogue_orchestrator.handle_asr_final`——与 WS FINAL
+          （main.py `_on_dialogue_final` → main.py:592）**同一条编排入口**（任务书
+          F15「不得另造第二条编排入口」）；安全一票否决（AC-04）由编排入口内的
+          safety 层天然生效，本层不写第二套判定。audio_sink=None：REST 降级不经
+          WS 分段下发，回复文本随响应体返回。
         ⑤ A1 TTS（build_tts）→ 合成 PCM → 存 static → audio_url；
            不可用时 audio_url=null + 降级话术（200 不白屏）
-
-    Day 6 接真 LLM 后，④ 会换成真 Agent 回复；本契约不动。
     """
     trace_id = get_trace_id() or "-"
     device_id = identity.device_id or "-"
@@ -308,8 +316,44 @@ async def utterance(
             detail=DEGRADE_TEMPLATES["asr_unavailable"],
         ) from None
 
-    # --- ④ Day 3 写死回复话术（大纲课时 3.4 明确）---
-    reply_text = f"您说的是『{asr_text}』，我记下了。"
+    # --- ④ 编排（Day 9 F15：与 WS FINAL 同一条编排入口；无写死回复）---
+    orchestrator = getattr(request.app.state, "dialogue_orchestrator", None)
+    if orchestrator is None:
+        # 裸 app（单测）或装配异常：诚实降级，不伪造回复
+        logger.error(
+            "utterance: dialogue orchestrator unavailable → 503 degrade (trace_id=%s)",
+            trace_id,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=DEGRADE_TEMPLATES["orchestrator_unavailable"],
+        ) from None
+
+    try:
+        reply = await orchestrator.handle_asr_final(
+            device_id=device_id,
+            trace_id=trace_id,
+            # 降级路径每次上传独立 turn（编排器按 (device_id, turn_id) 去重）；
+            # 服务端生成，客户端无从传入（身份铁律）
+            turn_id=uuid.uuid4().hex,
+            text=asr_text,
+            audio_bytes=audio_bytes,
+            audio_sink=None,
+        )
+    except Exception:
+        # 编排异常不白屏：诚实降级话术 + 200（与 ASR/TTS 降级同策略）
+        logger.exception("utterance: orchestration failed → degrade (trace_id=%s)", trace_id)
+        reply = None
+
+    if reply is None or not reply.text:
+        # 空文本 / 重复 turn / 编排异常 → 降级话术（不编造回复，FR-UI-05 口径）
+        reply_text = DEGRADE_TEMPLATES["llm_timeout"]
+        logger.warning(
+            "utterance: orchestration returned empty → degrade template (trace_id=%s)",
+            trace_id,
+        )
+    else:
+        reply_text = reply.text
 
     # --- ⑤ TTS（A1 build_tts → synthesize PCM → 存 static；不可用时 audio_url=null + 话术前缀）---
     try:
@@ -323,4 +367,56 @@ async def utterance(
     return UtteranceResponse(
         text=asr_text,
         reply=UtteranceReply(text=reply_text, audio_url=audio_url),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/audio/ice-config（Day 9 F29）
+# ---------------------------------------------------------------------------
+
+
+class IceConfigResponse(TypedDict):
+    """`GET /api/audio/ice-config` 的 200 响应体。
+
+    值全部来自 config（环境注入）；**响应体含 TURN 凭据但不落日志**（AGENTS §4.2：
+    凭据不出现在前端源码与日志——前端经本端点动态获取，不进构建产物）。coturn
+    服务本体归 Day 10 compose，本端点只做配置下发。
+    """
+
+    stun_url: str
+    turn_url: str
+    turn_username: str
+    turn_credential: str
+    ttl_seconds: int
+
+
+@router.get(
+    "/ice-config",
+    response_model=IceConfigResponse,
+    summary="WebRTC ICE 配置下发（设备鉴权；TURN 凭据环境注入，不进前端源码与日志）",
+    responses={
+        401: {"model": ErrorResponse, "description": "device token 失效/伪造/过期"},
+    },
+)
+async def ice_config(
+    identity: Annotated[Identity, Depends(current_device)],
+) -> IceConfigResponse:
+    """F29：pad 建连前从本端点取 iceServers（含 TURN）。
+
+    `RTCPeerConnection` 不再无 iceServers 裸连；获取失败由前端回落空配置
+    （本地 host candidate 仍可用，不阻塞主链路）。elder_id/device_id 服务端
+    注入（禁区 9），本端点不收任何身份入参。
+    """
+    settings = get_settings()
+    logger.info(
+        "ice_config issued (device=%s, turn_url_set=%s)",
+        identity.device_id or "-",
+        bool(settings.turn_url),
+    )
+    return IceConfigResponse(
+        stun_url=settings.stun_url,
+        turn_url=settings.turn_url,
+        turn_username=settings.turn_username,
+        turn_credential=settings.turn_credential,
+        ttl_seconds=settings.turn_credential_ttl_seconds,
     )
