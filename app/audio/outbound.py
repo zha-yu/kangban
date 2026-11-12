@@ -126,9 +126,7 @@ async def initiate_outbound_call(
     # --- ② 建会话（参数与 webrtc._handle_offer 同构；失败回调额外唤醒等待方）---
     media_failed = asyncio.Event()
 
-    async def _on_media_failed(
-        connection_id: str, reason: Any, detail: str
-    ) -> None:
+    async def _on_media_failed(connection_id: str, reason: Any, detail: str) -> None:
         # 镜像 webrtc._failure_callback：清语音段缓存、关会话；再加外呼等待唤醒
         from app.audio import webrtc as _webrtc
 
@@ -157,8 +155,7 @@ async def initiate_outbound_call(
     except MediaError as exc:
         logger.warning(
             "outbound_call_session_failed",
-            extra={"trace_id": trace_id, "device_id": device_id,
-                   "error_type": type(exc).__name__},
+            extra={"trace_id": trace_id, "device_id": device_id, "error_type": type(exc).__name__},
         )
         return OutboundCallResult(
             device_id=device_id,
@@ -173,8 +170,7 @@ async def initiate_outbound_call(
     except (MediaStateError, MediaFormatError) as exc:
         logger.warning(
             "outbound_call_offer_failed",
-            extra={"trace_id": trace_id, "device_id": device_id,
-                   "error_type": type(exc).__name__},
+            extra={"trace_id": trace_id, "device_id": device_id, "error_type": type(exc).__name__},
         )
         await _safe_close(registry, device_id, "outbound_offer_failed")
         return OutboundCallResult(
@@ -220,8 +216,7 @@ async def initiate_outbound_call(
             # ICE 是否最终连通由媒体层 watchdog 裁决，这里以 answer 到达为建连成功口径
             logger.info(
                 "outbound_call_answered",
-                extra={"trace_id": trace_id, "device_id": device_id,
-                       "elapsed_ms": _elapsed_ms()},
+                extra={"trace_id": trace_id, "device_id": device_id, "elapsed_ms": _elapsed_ms()},
             )
             return OutboundCallResult(
                 device_id=device_id,
@@ -233,9 +228,12 @@ async def initiate_outbound_call(
         reason = FAILURE_RTC_FAILED  # 超时或媒体失败，统一 rtc_failed 归因
         logger.warning(
             "outbound_call_failed",
-            extra={"trace_id": trace_id, "device_id": device_id,
-                   "reason": "media_failed" if media_failed.is_set() else "answer_timeout",
-                   "elapsed_ms": _elapsed_ms()},
+            extra={
+                "trace_id": trace_id,
+                "device_id": device_id,
+                "reason": "media_failed" if media_failed.is_set() else "answer_timeout",
+                "elapsed_ms": _elapsed_ms(),
+            },
         )
         await _safe_close(registry, device_id, "outbound_failed")
         return OutboundCallResult(

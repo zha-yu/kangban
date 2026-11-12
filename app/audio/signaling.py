@@ -808,6 +808,7 @@ async def _handle_touch_played(conn: ConnectionContext, message: Mapping[str, An
 # （C 持锁；X1 冻结签名带 receipt_kind，C3 未升级前 TypeError 降级并 warn 留痕，D10 12:00 联调）。
 # 身份铁律：elder_id/device_id 一律服务端注入，帧内出现同名字段一律不读、不作为授权依据。
 
+
 class ClientReceiptMsg(TypedDict):  # C→S，触达卡片渲染/播报完成回执
     """task_id 必须来自服务端下发的 task_command.task_id，不得自造；
     notification_id 用药/健康触达回执必填（C3 随触达帧下发），纯播报回执为 null。"""
@@ -888,7 +889,9 @@ async def _handle_client_receipt(conn: ConnectionContext, message: Mapping[str, 
     if seen_status is not None:
         logger.info(
             "client_receipt_duplicate",
-            extra=_log_extra(conn, receipt_kind=receipt_kind, notification_id=notification_id or "-"),
+            extra=_log_extra(
+                conn, receipt_kind=receipt_kind, notification_id=notification_id or "-"
+            ),
         )
         _receipt_ack(conn, notification_id=notification_id, status=seen_status, duplicate=True)  # type: ignore[arg-type]
         return
@@ -938,7 +941,9 @@ async def _handle_client_receipt(conn: ConnectionContext, message: Mapping[str, 
         except NotificationNotFound:
             logger.warning(
                 "client_receipt_rejected",
-                extra=_log_extra(conn, reason="notification_not_found", notification_id=notification_id),
+                extra=_log_extra(
+                    conn, reason="notification_not_found", notification_id=notification_id
+                ),
             )
             _receipt_ack(conn, notification_id=notification_id, status="rejected", duplicate=False)
             return
