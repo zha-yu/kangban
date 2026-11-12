@@ -3,8 +3,9 @@ S1 闭环率与 token 消耗」）。
 
 - **admin-only**（对齐 F13 关闭事件 / F01 手动重扫的 admin 前例；运营观测不做楼栋范围过滤）；
 - 聚合逻辑在 `metrics_service.read_decision_metrics`，本文件只做鉴权 + 序列化；
-- **token 消耗**：当前无落库来源（`llm_service` 未回传 usage，B 侧适配器埋点后接入），
-  以 ``available=false`` 如实呈现，**不编造数值**（AGENTS §8「不编造」口径）。
+- **token 消耗**：`llm_service` 已埋点回传 usage（dev-B，2026-11-12），读
+  `metrics_service.snapshot_llm_usage()`（进程内计数，跨重启归零——持久化等
+  `llm_tokens` stage 迁移）。无 usage 数据时 `available=false` 如实呈现，不编造数值。
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from app.api.elders import ContractAPIRoute
 from app.core.auth import require_roles
 from app.core.runtime_context import Identity
 from app.db import get_session
-from app.services.metrics_service import read_decision_metrics
+from app.services.metrics_service import read_decision_metrics, snapshot_llm_usage
 
 router = APIRouter(
     prefix="/api/metrics",
@@ -34,10 +35,14 @@ async def get_operational_metrics(
 ) -> dict[str, object]:
     """路由观测指标（TD:1182）：分层命中率 + S1 闭环率 + S2 升级率 + token 消耗状态。"""
     routing = await read_decision_metrics(session)
-    return {
-        "routing": routing,
-        "token_usage": {
-            "available": False,
-            "reason": "llm_service 未回传 usage（B 侧适配器埋点后接入，届时改 available=true）",
-        },
+    snap = snapshot_llm_usage()
+    token_usage: dict[str, object] = {
+        "available": snap["tokens_available"],
+        "calls": snap["calls"],
+        "prompt_tokens": snap["prompt_tokens"],
+        "completion_tokens": snap["completion_tokens"],
+        "total_tokens": snap["total_tokens"],
     }
+    if not snap["tokens_available"]:
+        token_usage["reason"] = "暂无带回 usage 的 LLM 调用（进程内计数，重启归零）"
+    return {"routing": routing, "token_usage": token_usage}
