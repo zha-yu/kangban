@@ -1214,6 +1214,7 @@ uv run ruff check app tests && uv run ruff format --check app tests
   2. **模型路径**（system_one/agent/fallback）p95 **单列**：目标仍 200ms，超时**如实报告不硬失败**，挂 **D10 F23**（system_one 量化/批处理/线程数，即选项①）后按同预算验收；复测建议在更稳机器（选项②）执行；
 - **实现**：`scripts/eval_router.py` 增加 `layer_latencies` 分层延迟与报告双线行；`tests/eval_gate.py` 闸门 E 按 rule/model 拆判（`rule_p95_ms` 硬线、`model_p95_ms` 单列留痕），不许静默放行；
 - **留痕**：gate 报告与门禁表格均标注裁决来源与 F23 挂账；本裁决不改变 PRD:547 的 200ms 目标语义，只改**验收记账口径**（超时项从「整门不过」改为「单列挂账」，防止模型硬件瓶颈永久阻塞收口）。
+- **首跑复测（2026-11-12 22:10，jev/cpu，真权重，报告 `eval/reports/eval_jev_dualgate_20261112.md`）**：规则路径 p95 **0ms**（36 条 rule 命中全零）→ **硬线通过** ✅；模型路径 p95 **279ms**（p50 243ms，74 条）→ 单列挂 F23，与 §11.1 的 265/266ms 量级一致；全量 p95 278ms。拆层口径按预期工作，闸门 E 的 p95 项自本跑起不再整门红。
 
 **本轮收口判定（2026-11-12 晚更新）**：B1/B2 完成；B3/B4 的 **P10、P14 已闭合**（证据见 §11 收口行），**P12 已随 contracts v0.7 留痕**；**F03 followup_sink 已补装配（main.py 注入 `make_followup_sink(session_factory)`，假承诺拆除在生产生效）**；**p95 已裁决收口（③+① 组合：闸门 E 拆双线，模型路径挂 F23）**。任务卡改「已完成」只剩 **P15 DB 落点**（`llm_tokens` 迁移申请已发 A，0021 落地后补写库）一个跨成员待办。
 
