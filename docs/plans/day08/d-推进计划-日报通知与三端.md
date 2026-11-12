@@ -1,4 +1,4 @@
-> 状态：进行中（S0–S7/S10 完成；D1 三偏差收口；**D3 触发＋撤销边界完成；D4 七动作与帧形状冻结完成；D6 服务端 route_degraded 置位完成**；剩演练/验证窗口；S8 卡演练、S9 卡 CP4、D6 e2e 联调）　｜　版本：v2.4　｜　日期：2026-11-12
+> 状态：进行中（S0–S7/S10 完成；D1 三偏差收口；**D3 触发＋撤销边界完成；D4 七动作与帧形状冻结完成；D6 服务端 route_degraded 置位完成；console 红色置顶与 family 三页 UI 取证完成**；剩同场演练与环境项：S8 卡 X5/X7 演练、S9 卡 CP4 真实设备、D6 e2e 缺 LLM key/sidecar）　｜　版本：v2.5　｜　日期：2026-11-12
 > 关联：docs/team_tasks/day08/dev-D-日报通知API与family-pad.md（v1.2，本计划的任务来源）｜docs/plans/day08/day-08-健康采集与三端后台.md（v1.2，全量上游计划）｜docs/team_tasks/day08/day08-任务总览与DAG.md（v1.1，对接点 X1–X9 与全局节奏）
 > 上游依据：PRD line 405/409–412（FR-RPT-01~04 验收）、line 401（FR-ALT-06）、line 254（FR-UI-08）、line 294–297（FR-CON-03/04/06）、line 459（FR-TC-09）、line 381–391（通知状态机）、line 495/500/505/507/508/519/520（AC-13/18/23/25/26/37/38）、line 94–95（媒体分发/家属无障碍）、line 527–538（固定测试集）、line 576（Day 8 完成定义）｜技术设计文档 line 653–665（daily_reports）、line 667–684（notifications）、line 633–651（media 两表）、line 686–702（decision_logs）、line 1144–1164（Day 8 实现口径）
 > 变更记录见文末
@@ -55,11 +55,11 @@
 | S4 | D1 联调（桩换真） | ✅ 已完成 | 桩换真＋断言绿；N4 越权收口 403+审计（Q-D2 关闭，跨域契约对齐留痕）；C 侧互测归 S6 |
 | S6 | CP2 与 C 互测 | 🚧 部分完成 | C 侧确认全兼容；三偏差对账：N4 403✔／payload S-02✔（f445cb4）／acknowledged_by_name✔（R-D12 收口：staff_names 批量取名）；N-2 越权 403+审计补齐；本地夹具回归全过；⛔ C 侧重跑确认窗口；Q-D10（N-3 幂等 200）待 B 留痕 |
 | S7 | D2 family 切真＋375px | ✅ 已完成 | S-11 三条件满足：USE_MOCK/NOTIFICATIONS_LIVE 与 Mock 数据/实现同提交删除；375 真实数据断言 list=375/detail=360/notif=375、overflowEls=0；截图本地证据 eval/artifacts/family-375-real-data.png（gitignore 不入库，同 day05 口径） |
-| S8 | X5/X7 演练（家属侧证据） | ⛔ 阻塞 | D 侧证据就绪；卡全队 15:30 X5/X7 演练窗口 |
-| S9 | D4 pad 戏曲播放 | 🚧 部分完成 | ✅ pad live 接线＋七动作＋duck/barge-in；**服务端七动作路径已修**（schema 支持 action、executor 分支、companion 下发 media_control；executor 3 例＋companion 2 例绿）；15 首 mp3 本地＋DB；⛔ CP4 联演窗口＋契约 §6.2 入参留痕 |
+| S8 | X5/X7 演练（家属侧证据） | ⛔ 阻塞 | D 侧**接口＋UI 证据就绪**（家属端 7 天日报/详情/通知中心三张截图，2026-11-12）；卡的只是全队 15:30 X5/X7 同场演练窗口 |
+| S9 | D4 pad 戏曲播放 | 🚧 部分完成 | ✅ pad live 接线＋七动作＋duck/barge-in；**服务端七动作路径已修**（schema 支持 action、executor 分支、companion 下发 media_control；executor 3 例＋companion 2 例绿）；15 首 mp3 本地＋DB；2026-11-12 修 `?demo=opera` 单端面板在 StrictMode 下播放器被提前 dispose 的 DEV 缺陷（改为 effect 建/销），修复后「播放」返回 `load → ok`；⛔ 七动作 UI 连点留证卡**无头浏览器无音频输出**（3 秒演示曲立即 ended，无法停在「播放中」），需 CP4 真实设备窗口；⛔ 契约 §6.2 入参留痕 |
 | S10 | 报告定稿＋pre-push 接线 | ✅ 已完成 | 钩子只做机制自检（`--self-check`），真门禁不进钩子；正向 exit=0、反向 exit=1 双验证 |
-| S11 | 四件套全绿＋文档回填 | 🚧 部分完成 | 四件套复跑全绿（1333 passed／ruff／tsc／build）；⛔ 完成定义证据链待 S6 C 侧/S8/S9 CP4 |
-| S12 | 条件项（D3 SOS / D6 提示条） | 🚧 部分完成 | **D3 四件已接**：触发（`POST /api/pad/sos`）＋红事件追加说明（`POST /api/pad/sos/{id}/correction`）＋普通确认撤销（`POST /api/pad/medication-events/{id}/revoke`，10 秒窗口）＋pad 三态结果页/「我说错了」入口；24 用例绿（service 7＋API 11＋撤销 6）。⛔ 仅剩 30 秒看板红色置顶联演窗口；**D6 pad 增量＋服务端置位完成**（turn/response 逐段恒下发、legacy 与用药触达恒 false；+2 集成用例），⛔ e2e（杀 sidecar）联调窗口 |
+| S11 | 四件套全绿＋文档回填 | 🚧 部分完成 | 四件套复跑全绿（1391 passed／ruff／tsc／build，2026-11-12）；⛔ 完成定义证据链待 S8 同场演练与 S9 CP4 |
+| S12 | 条件项（D3 SOS / D6 提示条） | 🚧 部分完成 | **D3 四件已接**：触发（`POST /api/pad/sos`）＋红事件追加说明（`POST /api/pad/sos/{id}/correction`）＋普通确认撤销（`POST /api/pad/medication-events/{id}/revoke`，10 秒窗口）＋pad 三态结果页/「我说错了」入口；24 用例绿（service 7＋API 11＋撤销 6）。**看板红色置顶 UI 已取证**（两张红档工单置顶，截图 `eval/artifacts/console-red-pin.jpg`），⛔ 只剩 30 秒同场联演；**D6 pad 增量＋服务端置位完成**（turn/response 逐段恒下发、legacy 与用药触达恒 false；+2 集成用例），⛔ e2e（杀 sidecar）卡环境：`LLM_API_KEY` 为空且 Laya sidecar 未启，真链路无法生成回复，只能以 `tests/test_turn_service.py:710-744` 集成用例作证 |
 
 ---
 
@@ -481,6 +481,8 @@ uv run python scripts/update_progress.py --check-plans
 | 2026-11-11 | **合并 7b08df1＋F0/F1 落地（17:40）** | 合并 `7b08df1`（C：`9a8f603` 补 F0/F1 两函数；B：`e3eaf8b` 真素材 mp3 种子脚本；A：药单管理 REST `app/api/medication.py`）；冲突仅 `app/api/__init__.py` ROUTERS（三方各加行）→ 合并保留 `alerts/reports/health_records/medication` 四行，`medication` 导入补齐。**`app/api/reports.py` 补齐 F0/F1**：F0 `GET /api/family/elders` 三字段裁剪、未绑定返回空数组；F1 `GET /api/family/elders/{elder_id}/reports` 按长者、每日期只出最新版、`summary_preview` 截 80 字、越权 403＋审计（裁决在 api 按 F0 清单，因 service 对未绑定 elder 返回空集）。`tests/test_reports_api.py` 5 → **9 用例全绿** | **F1 越权裁决位置的分工已落定**：C 的 service docstring 明确「越权分流由 API 层裁决」，故 api 先查绑定清单再取列表——不是我在 api 拼查询，是消费对方约定的分工。**仍缺**：WS 帧形状（Q-D4）、SOS 入口与撤销（Q-D7）、`main.py` 未调 `bind_dev_b_tools`、`static/media/opera` 素材未生成 |
 | 2026-11-11 | **D3 REST＋pad 接线收口（Day 9 前移）** | 新建 `app/api/sos.py`：`POST /api/pad/sos`（`current_device` 鉴权、`elder_id` 只从 `devices` 绑定解出、未绑定 403 `device_not_bound`、未关闭 sos 事件幂等复用），`app/api/__init__.py` ROUTERS 追加一行；pad：`api.ts#triggerSos`＋`App.tsx` 点击即请求/发送中/成功/失败三态＋`SosResult` 失败重试，删除「界面演示·工单接口待接」徽标。新建 `tests/test_sos_api.py` 4 例（401 无凭证／401 家属主体／403 未绑定／200 建单＋幂等） | 响应体 `{event_id,order_id,created}` 无冻结契约（Q-D7 未决）→ 自裁留痕；**撤销边界仍缺 service 函数**、30 秒看板红色置顶联演待窗口 |
 | 2026-11-11 | **全量门禁复跑（Day 8 收口）** | `pytest`：**1342 passed / 1 failed**（193s）；唯一红点 `test_staff_reassign.py::test_stale_write_conflict_on_outdated_baseline` 单独跑 **passed**（4.99s），D 侧相关文件零失败；`ruff check`＋`format --check` 全绿；`tsc --noEmit` exit=0；`pnpm build` ✓ | 该红点为上游 A/B 域**时钟源混用**的时序抖动（详见 §12.4），非本次改动引入、非 D 写域；不静默改测试，登记交 A |
+| 2026-11-11 | **turn 播放控制话术还原＋单测** | `turn_service` 还原播报话术并补单测（AC-37）；全量 1390 passed | 提交 0fe28ab，develop 推送完成（0/0 同步） |
+| 2026-11-12 | **演练窗口类事项取证（UI 三端）** | ① 环境：本地起 `uvicorn` 8000＋`vite` 5173，用 7 天种子数据（`scripts/seed_family_reports.py`，**本地未跟踪，未入库**）；为登录演示账号，仅重置本地库口令（家属 13900000006、护工 13700000003，均为 123456，未改任何代码/种子脚本）。② **console 红色置顶**：护工登录 → 工单看板 2 单未处理，`WO-20261110-6735965C`／`WO-20261110-56CAC89B` 均红档置顶并带 `is-red` 红条，截图 `eval/artifacts/console-red-pin.jpg`。③ **family 三页**：日报 7 条（2026-11-06~12，同日只出最新版）、详情含健康摘要＋用药四类分列（已服自报/拒服/已送达未确认/通知失败）＋关注事件、通知中心含「模拟推送」「推送失败」「重试 N 次」徽标、页脚「教学模拟信息，不构成医疗诊断」；截图 `family-reports.jpg`／`family-report-detail.jpg`／`family-notifications.jpg`（均 gitignore 归档）。④ **pad**：修 `OperaDemoPanel` 在 StrictMode 下播放器被 dispose 后不再重建的 DEV 缺陷（`useMemo`→`useEffect` 建/销），修复后「播放」返回 `load → ok`；但无头浏览器无音频输出，演示曲立即 `ended`，七动作连点无法留证。 | **发现两处环境/工具缺口（未改代码，登记）**：① vite dev 的 MPA 重写只匹配精确路径，`/pad?demo=opera` 返回 404，演示入口须走 `/index.html?demo=opera`（属 `vite.config.ts` 开发配置，非 D 写域，未改）；② D6 e2e 不可跑：`LLM_API_KEY` 为空、Laya sidecar 未启动，fallback 轮无法生成回复 → 以 `tests/test_turn_service.py:710-744`（逐段 `route_degraded=true/false`）＋`::test_route_degraded_only_for_fallback_agent_normal_reply` 作证，登记阻塞待 key/sidecar。**门禁**：1391 passed / 0 failed；`ruff check`＋`format --check app tests` 全绿；`tsc --noEmit` exit=0；`pnpm build` ✓ |
 
 ---
 
@@ -496,17 +498,18 @@ uv run python scripts/update_progress.py --check-plans
 | AC-23 通知状态机 | 仅 delivered 可确认、跳步 409、幂等 | `test_alerts_api.py` 中 `::test_acknowledge_delivered_then_idempotent`＋`::test_acknowledge_before_delivered_is_conflict[generated/pending/failed]`（3 参数化） | ✅ |
 | AC-26 撤销边界 | 普通已服 10 秒可撤销；红色事件只追加「说错了」且保持 open | `test_medication_undo.py` 4 例（窗口内恢复 waiting_confirm＋审计／超窗 409／非已服终态 409／他人 404）；`test_sos_service.py` 3 例＋`test_sos_api.py` 3 例（追加说明 status 保持 open＋审计／他人 404／已关闭 409）；`test_pad_undo_api.py` 6 例 | ✅ 接口级；AC-26 联演待窗口 |
 | AC-13/18 家属日报范围 | 家属只见绑定长者；越权 403+审计 | `tests/test_reports_api.py` 9 例（F0 三字段、F1 最新版＋80 字预览、F2 四键＋声明、越权 403＋审计、404）；D2 已切真 | ✅ |
-| AC-38 双通知（家属侧） | 红色事件 → 家属可见一条 is_mock 通知 | 演练脚本实证：staff/guardian 双通知（guardian 状态 generated→pending→delivered、is_mock=true）；补齐 `safety_service`/`sos_service` 的家属通知缺链；证据 `eval/artifacts/day08_drill_evidence.md` | ✅ 接口级；UI 截图待窗口 |
-| AC-37 戏曲（pad 侧） | 七动作可控、可打断 | 演练脚本实证：R-01~R-08 直连产出 media_control（含 next_track 带 media、repeat→replay、interrupt 不发帧）；证据 `eval/artifacts/day08_drill_evidence.md` | ✅ 代码+脚本；CP4 四方联演待窗口 |
+| AC-38 双通知（家属侧） | 红色事件 → 家属可见一条 is_mock 通知 | 演练脚本实证：staff/guardian 双通知（guardian 状态 generated→pending→delivered、is_mock=true）；补齐 `safety_service`/`sos_service` 的家属通知缺链；**UI 侧 2026-11-12 补证**：通知中心可见「模拟推送」徽标与 emergency_health 通知，截图 `eval/artifacts/family-notifications.jpg`；证据 `eval/artifacts/day08_drill_evidence.md` | ✅ 接口级＋家属 UI；同场 X5/X7 演练待窗口 |
+| AC-37 戏曲（pad 侧） | 七动作可控、可打断 | 演练脚本实证：R-01~R-08 直连产出 media_control（含 next_track 带 media、repeat→replay、interrupt 不发帧）；`?demo=opera` 单端面板 StrictMode dispose 缺陷已修（播放 `load → ok`）；证据 `eval/artifacts/day08_drill_evidence.md` | 代码+脚本 ✅；七动作 UI 连点留证卡无头浏览器无音频输出，待 CP4 真实设备联演 |
+| 后台红色置顶（console UI） | 红档工单排最前且可辨识 | 护工登录实测：2 单未处理，`WO-20261110-6735965C`／`WO-20261110-56CAC89B` 红档置顶＋红条；截图 `eval/artifacts/console-red-pin.jpg` | ✅（D 侧可自查部分） |
 | FR-TC-09 门禁拦截 | 人为调坏规则层 → 门禁 EXIT≠0 | `eval/reports/day8_frtc09_intercept.md`（PASS→FAIL→还原→PASS 四步）＋ `day8_frtc09_{before,tampered,after}.md` | ✅ |
 | FR-TC-09 分层归因 | 报告含七层归因表 | `eval/reports/day8_eval_baseline.md` §3（ASR/召回/LLM/Tool 如实标「无数据」） | ✅ |
 | FR-TC-09 bad case 回流 | 失败项落盘有记录 | `eval/fixtures/badcase_backlog.jsonl`（15 条，run_id `20261111-145521`） | ✅ |
 | 评测基线不回退 | 各项 ≥ 首跑锁 | `eval/reports/day8_baseline_lock.json`（41/50、20/20、25/30、19/20）；gate B 门 PASS | ✅ |
 | 375px 家属端无障碍 | 无横向滚动、正文 ≥16px | 真实数据断言 list=375/detail=360/notif=375、overflowEls=0；截图 `eval/artifacts/family-375-real-data.png`（本地，gitignore） | ✅ |
-| 全量回归 | `pytest` 零失败 | **1389 passed / 0 failed**（2026-11-11 收口复跑，192s） | ✅ |
-| 前端编译 | `tsc --noEmit` ＋ `build` | 双绿（16:10） | ✅ |
+| 全量回归 | `pytest` 零失败 | **1391 passed / 0 failed**（2026-11-12 复跑，171s） | ✅ |
+| 前端编译 | `tsc --noEmit` ＋ `build` | 双绿（2026-11-12，`OperaDemoPanel` 修复后复跑） | ✅ |
 
-**诚实结论（2026-11-11 收口）**：D 的完成定义项中，**门禁 / 通知状态机 / 戏曲播放器 / 家属日报与 375px / 回归** 均有实证据；只剩 **AC-38 双通知演练（X5/X7 窗口）** 与 **AC-37 CP4 联演** 两项待演练，不再有被上游代码卡住的项。
+**诚实结论（2026-11-12 更新）**：D 的完成定义项中，**门禁 / 通知状态机 / 戏曲播放器（代码与帧）/ 家属日报与 375px / 后台红色置顶 UI / 回归** 均有实证据；剩 **AC-38 双通知同场演练（X5/X7 窗口）**、**AC-37 七动作 UI 联演（CP4 真实设备）**、**D6 e2e（缺 LLM key 与 sidecar）** 三项属窗口/环境项，不再有被上游代码卡住的项。
 
 ---
 
@@ -589,3 +592,4 @@ uv run python scripts/update_progress.py --check-plans
 | v2.2 | 2026-11-11 | **D6 服务端置位完成（跨 B 写域代改留痕）**：`turn_service._is_route_degraded`（仅 fallback＋action=agent＋生成未降级为真）→ `response_service` 逐段恒下发 `route_degraded`；`main.py` legacy 出口与 `medication_confirmation_graph` 触达帧恒 `false`；`signaling.TtsTextMsg` 与 `dialogue_service.TtsTextMsgV2` 同步声明；新增 turn_service 集成用例 1 例＋response/dialogue/signaling 形状断言 3 处。**D3 复核收口**：`append_correction` 增 `type='sos'` 过滤（非 sos 红事件按 404），补 service 用例 1 例。day08 contracts §6 状态回填 v1.2（口径零变更）。残项：D6 e2e（杀 sidecar）与 AC-26 联演待窗口 |
 | v2.3 | 2026-11-11 | **通知域两处收尾＋完成定义表同步**：`_require_transition` 改抛 `NotificationIllegalTransition`（R-D11 闭环）；§11 把 N-3 归属、AC-13/18、375px 三项改 ✅ 并更新全量回归数字（1389 passed / 0 failed）；R-D10/R-D11、§12.2、§12.3 全部标已闭环；诚实结论收敛为「仅 AC-38 演练与 AC-37 CP4 待窗口」 |
 | v2.4 | 2026-11-12 | **演练窗口类事项取证＋三处代码缺口修复**：① `safety_service`/`sos_service` 补家属通知（AC-38 双通知，无绑定跳过留痕）；② 规则 R-08 `repeat`→`replay` 映射，修复「重复一遍」坏路径；③ `interrupt` 按 §6.5 不下发 WS 媒体帧；④ 健康面板 `taskId` 改为使用调度注入时钟（修跨日测试）；⑤ 发现本地 media_library 种子含流行/摇滚等非戏曲 genre（不符 X8 §6.4），需重跑 `scripts/generate_opera_seed.py`。演练证据：`eval/artifacts/day08_drill_evidence.md`（SOS 86ms 红单+双通知、staff 四态/guardian 三态、七动作帧）。全量 **1390 passed / 0 failed** |
+| v2.5 | 2026-11-12 | **UI 演练取证＋DEV 缺陷修复**：本地起 8000/5173，console 红档置顶（2 单红档＋`is-red`）截图 `eval/artifacts/console-red-pin.jpg`；family 日报 7 条（同日仅最新版）/详情（用药四类分列）/通知中心（模拟推送/推送失败/重试）＋「教学模拟」声明，截图 3 张；修 `OperaDemoPanel` 在 StrictMode 下播放器被 dispose 的 DEV 缺陷（`useMemo`→`useEffect` 建/销），修复后 `load → ok`。**登记两处环境缺口**（未改代码）：`/pad?demo=opera` 因 vite MPA 重写只匹配精确路径而 404（改用 `/index.html?demo=opera`）；D6 e2e 缺 `LLM_API_KEY` 与 Laya sidecar，以 `test_turn_service.py:710-744` 集成用例作证。门禁 1391 passed／ruff／tsc／build 全绿；§0.4 S8/S9/S11/S12 与 §11 证据表同步 |
