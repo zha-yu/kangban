@@ -1,4 +1,4 @@
-> 状态：待冻结（N0 · D9 09:30 冻结评审；X6 已裁减作废）　｜　版本：v0.3　｜　日期：2026-11-12
+> 状态：待冻结（N0 · D9 09:30 冻结评审；X6/X10 已裁减作废）　｜　版本：v0.6　｜　日期：2026-11-12
 > 关联：docs/team_tasks/day09/day09-任务总览与DAG.md v1.3 §5（对接点总表）
 > 上游依据：PRD line 387（只有客户端回执算 delivered）、line 357–361（分级与校验）、line 320–325（用药终态）、line 436/441/443（重置/人设/退房）、line 440（三道闸门）｜技术设计文档 line 1166–1174（Day 9 落地）｜《接口契约_照护台业务数据.md》v1.3 §3.2（通知 5 值＋is_mock 冻结）/§6.1（稳定路径）/§6.4（种子规范）｜《接口契约_家属端数据.md》v1.2 S-01（用药统计键名）
 > 变更记录见文末
@@ -95,29 +95,43 @@ def grade_health(
 
 **`rule_version`**：`g1` → **`g2`**。既有 `g1` 记录不回改。
 
+**主诉归一化（v0.4 新增，dev-C 落地于 `health_service.NO_COMPLAINT_ANSWERS`）**：`complaint` 为字符串时先 `strip()`；空白或**精确匹配**（ASCII 忽略大小写）命中否定表 `没有／无／没什么／没有不舒服／没有哪不舒服／none／no` → 视为**无主诉（None）**，不触发「非急症主诉判黄」。理由：采集第 5 问「今天有没有哪里不舒服？」的否定回答不是主诉，不归一化会把真实场景全量误判黄。归一化是采集答案语义，**不是急症匹配**——急症语料仍由规则层（`app/router/safety.py`）先行拦截，本表不做第二套急症判定。调用方（B 的子图 grade 节点）传参口径不变，归一化在 `grade_health` 内完成。
+
 **禁止**：自加睡眠上界（原 `SLEEP_GREEN_UPPER=12.0` 无 PRD 依据，删除）；把低血压判红。
 
 ---
 
 ## X3 · 红档双通知出口（C → B）
 
+> **v0.6 语义修订（B3 提案，主理人批准，2026-11-12）**：**红档先落库，`notify_red_dual` 只做双通知、不建单。**
+
+**落库步骤（先）**：record＋risk_event＋工单**同一事务**由 C 的 service 函数承担——建单走 `open_work_order`（唯一建单口 A12），`dedupe_token = f"health_record:{record_id}:red"`。语音路径的落库步骤必须**调 C 提供的包装函数**（B 注入调用），**B 不得直写 `work_orders`**；REST 路径即 `create_health_record` 既有内联路径。
+
+**通知步骤（后）**：
+
 ```python
 async def notify_red_dual(
-    session, *, elder_id: uuid.UUID, record_id: uuid.UUID, severity: str,
+    session, *, elder_id: uuid.UUID, record_id: uuid.UUID,
+    risk_event_id: uuid.UUID, severity: str,
 ) -> NotifyRef: ...
+
+@dataclass(frozen=True, slots=True)
+class NotifyRef:
+    notification_ids: list[uuid.UUID]
+    risk_event_id: uuid.UUID
 ```
 
 | 项 | 口径 |
 | --- | --- |
 | 收件人 | **责任护工（primary_care）＋ 监护人（guardian）各 1 条**，同时发出（PRD line 378–392／FR-ALT-01） |
-| 幂等键 | `dedupe_token = f"health_record:{record_id}:red"` |
-| 返回 | `NotifyRef(notification_ids: list[uuid], risk_event_id: uuid, work_order_id: uuid \| None)` |
-| 建单 | **由 C 的 `health_service` 统一建单**（`severity="red"`，assignee＝primary_care）；B 的子图**不得另建一单** |
-| 去重 | 语音路径（子图）与 REST 路径共用同一 `dedupe_token`；同键重复 → 返回原结果；同键异内容 → **409** |
+| 通知幂等键 | `risk_event:{risk_event_id}:staff`／`risk_event:{risk_event_id}:guardian`（day08 dev-a 计划 v1.3 冻结三段式；替换旧 `health_red_alert:{record_id}` 单家属键） |
+| 顺序硬口径 | 先落库 → 后通知；**通知失败不回滚落库**（guardian 缺绑定「只记警告」先例，staff 侧同口径），重试由既有 scan 链兜底 |
+| 重复调用 | 返回原通知、不重发（幂等键锚定 event_id） |
+| 去重 | 两路径共用同一落库函数与同一通知出口，**不产生第二事件/第二工单**；同键异内容 → **409** |
 
-**B 侧注入点（两处，缺一不可）**：`app/scheduler/health_jobs.py:261-263` 与 `:378-380` 的子图构造，传 `notify_red_fn=notify_red_dual`、`create_red_order_fn=…`、`validate_fn=…`（X2 校验）。
+**B 侧注入点（两处，缺一不可）**：`app/scheduler/health_jobs.py:261-263` 与 `:378-380` 的子图构造，传 `notify_red_fn=notify_red_dual`、`create_red_order_fn=<C 的落库包装>`、`validate_fn=…`（X2 校验）。
 
-**禁止**：保留「notify_service 尚未交付」注释（该服务早已存在）；`_default_notify_red` 只作注入缺失时的显式降级兜底，生产路径必须走注入。
+**禁止**：B 另建第二单或绕过 C 的落库函数直写库；保留「notify_service 尚未交付」注释（该服务早已存在）；`_default_notify_red` 只作注入缺失时的显式降级兜底，生产路径必须走注入。
 
 ---
 
@@ -233,23 +247,9 @@ async def delete_memory(session, *, elder_id: uuid.UUID, chunk_id: uuid.UUID) ->
 
 ---
 
-## X10 · 戏曲素材规范（D → C）
+## X10 · 戏曲素材规范（D → C）——**已裁减作废**
 
-**唯一依据**：《接口契约_照护台业务数据.md》v1.3 **§6.4**（已冻结，本文不重定义）。
-
-| 项 | 冻结值 |
-| --- | --- |
-| 条数 | **20–30 条** |
-| `title` | **中文剧名**（如「梁山伯与祝英台·楼台会」） |
-| `genre` | **≥4 剧种且必含越剧、京剧** |
-| `duration` | **15–60 秒** |
-| 稳定路径 | §6.1：`media_url` 落库值决定扩展名（wav/mp3） |
-| 写库口 | **`media_service.seed_media_library`（C 持锁）**；D 的脚本只调该函数，不直写 ORM |
-| history | **Tool 层不写 `media_history`，history 归 C 的 `media_service`**（契约 §6 冻结口径） |
-
-**现状纠正**：`scripts/media_manifest.json` 现为流行/摇滚/说唱/民谣（cruel summer／the cure／仙儿／冷战／安河桥 等）且全部行 `type=opera`，**违反 §6.4**。改用已合规的 `scripts/generate_opera_seed.py`（程序生成、越剧/京剧/黄梅戏/豫剧/评剧、1950s–1990s），并按其 `:16` 注释改调 `seed_media_library`。
-
-**素材不入库**：`static/media/` 保持 `.gitignore:78`（AGENTS §4.11 不提交媒体大文件）；**重建脚本须在新克隆机器可跑通**。
+> **2026-11-12 团队一致决定（主理人留痕中）：Day 9 不再加戏曲素材，媒体库以现有歌单为准。** 本契约作废：《接口契约_照护台业务数据.md》§6.4 素材规范随之不再适用，现有 `scripts/media_manifest.json` 不再构成违规。**编号 X10 保留不复用**（X6 先例）。C 侧承接：`seed_media_library` 的 media 接线改以**现有媒体库**为对象；原 D11 10:00 的 X10 素材联调**取消**；F21 的 service 侧义务（`media_service` 接线、`media_history` 归 C、「换一段」顺序续播）**不变**；AC-37 口径调整为「点播现有媒体库条目可播、可控制」（验收基线调整由主理人在 day09 总览 §8 与 PRD 层落笔留痕）。B3 的 rules 剧种词改法归 dev-B 自行调整。详情见 `docs/plans/day09/dev-d-day09-工作推进计划.md` v1.1 §2.2。
 
 ---
 
@@ -303,6 +303,9 @@ def next_retry_at(*, ntype: str, retry_count: int, now: datetime) -> datetime | 
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v0.6 | 2026-11-12 | **X3 语义修订：红档先落库，notify_red_dual 只做双通知、不建单**（B3 提案，主理人批准）：落库（record＋risk_event＋工单同事务）由 C 的 service 函数承担、语音路径经注入调用 C 的落库包装（B 不得直写 work_orders）；`notify_red_dual` 签名增 `risk_event_id` 入参、`NotifyRef` 移除 `work_order_id`；通知幂等键改三段式 `risk_event:{event_id}:staff`／`:guardian`（替换旧 `health_red_alert:{record_id}`）；顺序硬口径「先落库→后通知、通知失败不回滚落库」。验收判据不变（2 条通知、无第二事件/工单、幂等 409）。 |
+| v0.5 | 2026-11-12 | **X10 戏曲素材契约裁减作废**（团队一致决定，主理人留痕中，详情见 dev-d 计划 v1.1 §2.2）：Day 9 不再加戏曲素材，媒体库以现有歌单为准；《照护台契约》§6.4 不再适用，现有 media_manifest.json 不构成违规；编号 X10 保留不复用。C 侧：seed_media_library 接线改以现有媒体库为对象、X10 联调（D11 10:00）取消，F21 service 侧义务（media_history 归 C、顺序续播）不变；B3 rules 剧种词改法归 dev-B；AC-37 调整为「点播现有媒体库条目可播、可控制」。N0 签认时跳过 X10。注：本条按「现有最大版本 +1」编为 v0.5——裁决通知所称 v0.4 在磁盘上已是 X2 主诉归一化增补，不回改历史版本号。 |
+| v0.4 | 2026-11-12 | **X2 增补主诉归一化口径**（C1 执行中发现，主理人裁决选项 A）：g2「非急症主诉判黄」若不归一化，会把采集第 5 问的否定回答（如「没有」）全量误判黄。落地：`health_service.NO_COMPLAINT_ANSWERS` 精确匹配否定表（没有/无/没什么/没有不舒服/没有哪不舒服/none/no，ASCII 忽略大小写）→ 视为无主诉；归一化在 `grade_health` 内完成，调用方传参口径不变，B3 零改动。急症匹配仍归规则层，本表不构成第二套急症判定。 |
 | v0.3 | 2026-11-12 | **X6 人设契约裁减作废**（主理人决定，人设移出 Day 9）：删除 `get_active_persona`／`switch_persona`／`PersonaView` 全部字段级定义，改为作废声明；编号 X6 保留不复用。有效契约变为 X1–X5、X7–X12 共 11 份＋总览 §5.2 两条消费既有契约的边。裁减依据与现有代码保留口径见总览 §8.1。 |
 | v0.2 | 2026-11-12 | 全量校验后补 **X12 域清理钩子集**：退房/教学重置需清空的业务表分属 B/C 写域，A 的 `lifecycle_service` **不直写他人表**，改为各域 service 提供 `purge_elder_data` 钩子、A 只编排与审计（AGENTS §2.1）。明确 `reason` 枚举、`PurgeRef` 结构、审计归属（A 统一写、各域不重复）、保留项、幂等键与退房五步顺序及可重入语义。另修正 **X7**：`health_records` 实测 19 列**无 `reviewed_at`**，改用既有 `review_status`＋`reviewed_by`，扫描水位改「已终态＋线程仍 interrupt」双条件，不新增 schema。 |
 | v0.1 | 2026-11-12 | 首版草稿，供 N0（D9 09:30）冻结评审。定义 X1–X11 共 11 个跨成员对接点的字段级口径：X1 回执帧（复用 `/ws/signal`，幂等键 `(notification_id, receipt_kind)`，禁止无条件 delivered）、X2 分级阈值照 PRD:357-359 原文＋`rule_version` g2、X3 红档双通知出口与统一建单去重、X4 记忆清理钩子、X5 记忆管理三函数（强制 `WHERE elder_id`）、X6 人设视图与 prompt 注入点归 C、X7 复核 resume 落点（C 写库＋B scheduler 30s 扫描，依据 AGENTS §2.2）、X8 迁移 0020 扩两枚举、X9 闸门 E 校验 PRD 明文硬线（不属私自加严）＋七层归因＋夹具 gold 向 PRD:272 对齐、X10 素材照契约 §6.4 不重定义、X11 退避函数与 cron 写锁分离。全部契约含「服务端注入身份、客户端传值丢弃」铁律。 |
