@@ -426,7 +426,9 @@ async def test_notification_retry_scan(session, seeded, runtime_factory):
     assert failed_row.status == "failed"
 
     # X1 回执驱动送达：pending → delivered → acknowledged（AC-23 全链路）
-    await notify_service.mark_notification_delivered(session, notification_id=pending_id)
+    await notify_service.mark_notification_delivered(
+        session, notification_id=pending_id, receipt_kind="card_rendered"
+    )
     await notify_service.acknowledge_notification(
         session, notification_id=pending_id, acknowledger_id=care_worker_id
     )

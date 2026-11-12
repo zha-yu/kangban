@@ -53,12 +53,14 @@ NOTIFICATION_TYPE_DAILY_REPORT: Final = "daily_report_updated"
 #: 免责声明（PRD §1.4：不构成医疗诊断）
 DISCLAIMER: Final = "本日报为教学模拟信息，不构成医疗诊断。"
 
-#: 用药终态四类（models/medication.py MedicationEvent.terminal_state 注释口径）
+#: 用药终态五类（models/medication.py terminal_state CHECK 约束口径；B4 已落库
+#: late_taken_reported，本处对齐——family 五键联调 D11 14:00，2026-11-12 dev-B 提出）
 _MED_TERMINAL_STATES: Final = (
     "taken_reported",
     "refused",
     "missed_unconfirmed",
     "notification_failed",
+    "late_taken_reported",
 )
 
 # ------------------------------------------------------------------ F30 日报语音条

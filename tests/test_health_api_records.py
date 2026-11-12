@@ -281,6 +281,42 @@ async def test_care_worker_cannot_submit_for_unassigned_elder(
     assert await _audit_count(db_conn, "health_submit_denied") == before + 1
 
 
+async def test_admin_can_submit_for_unassigned_elder(
+    client: AsyncClient, world: HealthWorld, app_with_session: tuple[FastAPI, AsyncSession]
+) -> None:
+    """H-2 范围口径（与 H-3 对齐）：admin 不限名下范围，代填非名下长者 → 200。"""
+    _, session = app_with_session
+    admin = StaffAccount(name="管理员-健康域S3", role="admin", password_hash="x")
+    session.add(admin)
+    await session.flush()
+
+    token = _staff_token(admin.staff_id, role="admin")
+    resp = await client.post(
+        "/api/health-records",
+        json=_submit_payload(
+            elder_id=str(world.elder_id), systolic=118, diastolic=76, sleep_hours=8.0, mood_score=4
+        ),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["severity"] == "green"
+
+
+async def test_doctor_can_submit_for_unassigned_elder(
+    client: AsyncClient, world: HealthWorld
+) -> None:
+    """H-2 范围口径（与 H-3 对齐）：doctor 不限名下范围，代填非名下长者 → 200。"""
+    token = _staff_token(world.doctor_id, role="doctor")
+    resp = await client.post(
+        "/api/health-records",
+        json=_submit_payload(
+            elder_id=str(world.elder_id), systolic=118, diastolic=76, sleep_hours=8.0, mood_score=4
+        ),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+
 async def test_care_worker_cannot_confirm_red_record(
     client: AsyncClient, world: HealthWorld, db_conn
 ) -> None:

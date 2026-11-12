@@ -349,10 +349,16 @@ async def _land_health_record(
     mood_note: str | None,
     complaint: str | None,
     operator_id: uuid.UUID | None,
+    operator_role: str | None = None,
     graph_thread_id: str | None = None,
     notify_red: bool,
 ) -> HealthRecordRef:
     """落库主流程：校验 → 分级 → 写 health_records → 按需建 risk_events + work_order。
+
+    越权保护：source=staff_* 时 operator_id 必填；**仅 care_worker** 要求是该长者
+    的 primary_care（AC-32），doctor/admin 不限名下范围（与 H-3 补启动同口径，
+    2026-11-12 本地实测发现 H-2 未按此口径放行 admin，主理人裁决对齐）。
+    `operator_role=None`（服务层直调、语音路径）保持严格校验——fail-safe。
 
     `notify_red=False` 时**跳过红档双通知**（落库段完全不变）：语音路径由
     `create_red_landing` 调本函数先落库，再由图内 `notify_red` 节点单独通知，
@@ -364,7 +370,8 @@ async def _land_health_record(
     if source.startswith("staff_"):
         if operator_id is None:
             raise ValueError("operator_id required when source is staff_*")
-        await _verify_staff_proxy(session, elder_id=elder_id, operator_id=operator_id)
+        if operator_role not in ("admin", "doctor"):
+            await _verify_staff_proxy(session, elder_id=elder_id, operator_id=operator_id)
 
     # --- 分级 ---
     grade = grade_health(
@@ -521,11 +528,14 @@ async def create_health_record(
     mood_note: str | None,
     complaint: str | None,
     operator_id: uuid.UUID | None,
+    operator_role: str | None = None,
     graph_thread_id: str | None = None,
 ) -> HealthRecordRef:
     """写库入口（REST 旧行为不变）：校验 → 分级 → 落库 → 红档同时双通知。
 
-    越权保护：source=staff_* 时 operator_id 必填 且 operator 必须是该长者的 primary_care 护工。
+    越权保护：source=staff_* 时 operator_id 必填；**仅 care_worker** 要求是该长者
+    的 primary_care（AC-32），doctor/admin 不限名下范围（与 H-3 补启动同口径）；
+    `operator_role=None` 保持严格校验 fail-safe。
 
     版本链：首次采集 version=1；补录场景由**复核入口** `review_health_record` 创建 version+1。
     本函数只负责创建新的采集记录（version=1，superseded_by=NULL）。
@@ -545,6 +555,7 @@ async def create_health_record(
         mood_note=mood_note,
         complaint=complaint,
         operator_id=operator_id,
+        operator_role=operator_role,
         graph_thread_id=graph_thread_id,
         notify_red=True,
     )
@@ -562,6 +573,7 @@ async def create_red_landing(
     mood_note: str | None,
     complaint: str | None,
     operator_id: uuid.UUID | None,
+    operator_role: str | None = None,
     graph_thread_id: str | None = None,
 ) -> HealthRecordRef:
     """红档落库（**只落库，不通知**）：record + risk_event + 工单同一事务，不 commit。
@@ -586,6 +598,7 @@ async def create_red_landing(
         mood_note=mood_note,
         complaint=complaint,
         operator_id=operator_id,
+        operator_role=operator_role,
         graph_thread_id=graph_thread_id,
         notify_red=False,
     )
