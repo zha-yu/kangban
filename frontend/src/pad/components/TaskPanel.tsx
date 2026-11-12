@@ -18,9 +18,12 @@ interface TaskPanelProps {
   onHint: (text: string) => void;
   /** Day 7 L6#8：任务卡片按钮的文本上行（用药确认等），由 App 接到 user_text 发送。 */
   onAnswer?: (text: string) => void;
+  /** Day 9 X1（F01）：卡片渲染回执上行（client_receipt/card_rendered）。
+   *  notificationId 来自服务端 task_command（触达回执必填），纯播报/开发态为 null。 */
+  onReceipt?: (taskId: string, notificationId: string | null) => void;
 }
 
-export function TaskPanel({ command, onExit, onHint, onAnswer }: TaskPanelProps) {
+export function TaskPanel({ command, onExit, onHint, onAnswer, onReceipt }: TaskPanelProps) {
   const payload = command.payload;
 
   switch (command.kind) {
@@ -34,6 +37,8 @@ export function TaskPanel({ command, onExit, onHint, onAnswer }: TaskPanelProps)
           onExit={onExit}
           onSubtitle={onHint}
           onAnswer={onAnswer}
+          taskId={command.taskId}
+          onRendered={() => onReceipt?.(command.taskId, command.notificationId ?? null)}
         />
       );
     }

@@ -37,6 +37,7 @@ import { PlaybackQueue, isSegmentedTts } from "./audio/playback-queue";
 import { TouchPlayback } from "./audio/touch-audio";
 import { OperaPlayer, type OperaAction, type OperaSnapshot, type OperaTrack } from "./audio/opera-player";
 import { SignalSocket } from "./signal-socket";
+import { loadSession } from "./session";
 
 /** Day 7 D1 S1.2.7 预留：路由降级常量文案（A3 下发降级标记时显示；不新增协议字段） */
 const FALLBACK_NOTICE = "网络慢，正在换种方式回答";
@@ -64,6 +65,12 @@ export class RealtimeClient {
   private mic: MicCapture | null = null;
   private vad: TenVad | null = null;
   private pc: RTCPeerConnection | null = null;
+  /** Day 9 F17：反向外呼的应答 PC（与会话 PC 互斥使用，同一时刻只活跃一个） */
+  private outboundPc: RTCPeerConnection | null = null;
+  /** Day 9 F17：外呼应答期的临时麦克风（standby 无会话麦时开；应答收口即停） */
+  private tempMic: MicCapture | null = null;
+  /** Day 9 F29：ICE 配置缓存（首帧建连前拉一次；失败回落空配置不阻塞） */
+  private iceServersCache: RTCIceServer[] | null = null;
   private unbindDeviceChange: (() => void) | null = null;
   private starting = false;
   /** Day 7 D1 关 P3-38：reopenMic 并发守卫（重连进行中直接返回，防级联重入） */
@@ -158,6 +165,24 @@ export class RealtimeClient {
     this.socket?.send({ type: "user_text", text });
   }
 
+  /** Day 9 X1（day09/contracts.md X1）：触达卡片渲染/播报完成回执。
+   *  task_id 原样回传 task_command.task_id（不得自造）；notification_id 触达回执必填、
+   *  纯播报为 null；会话未就绪时丢弃（回执是尽力而为上行，重连后由后端扫描兜底）。 */
+  sendClientReceipt(
+    taskId: string,
+    notificationId: string | null,
+    receiptKind: "card_rendered" | "tts_finished" = "card_rendered",
+  ): void {
+    if (!this.socketReady) return;
+    this.socket?.send({
+      type: "client_receipt",
+      receipt_kind: receiptKind,
+      task_id: taskId,
+      notification_id: notificationId,
+      ts: new Date().toISOString(),
+    });
+  }
+
   async stop(): Promise<void> {
     this.starting = false;
     this.ttsPlaying = false; // Day 7 D1 关 P3-38：登出复位播放态，防下次会话误判打断
@@ -167,6 +192,101 @@ export class RealtimeClient {
     this.socket?.stop();
     this.socket = null;
     await this.teardownSession();
+  }
+
+  /** Day 9 F29：ICE 配置（含 TURN）从后端端点动态获取（凭据不进前端源码，AGENTS §4.2）。
+   *  获取失败回落空配置——本地 host candidate 仍可工作，不阻塞主链路；结果缓存复用。 */
+  private async loadIceServers(): Promise<RTCIceServer[]> {
+    if (this.iceServersCache !== null) return this.iceServersCache;
+    const token = loadSession()?.access_token;
+    if (!token) return [];
+    try {
+      const res = await fetch("/api/audio/ice-config", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`ice-config ${res.status}`);
+      const body = (await res.json()) as {
+        stun_url: string;
+        turn_url: string;
+        turn_username: string;
+        turn_credential: string;
+      };
+      const servers: RTCIceServer[] = [];
+      if (body.stun_url) servers.push({ urls: body.stun_url });
+      if (body.turn_url) {
+        servers.push({
+          urls: body.turn_url,
+          username: body.turn_username,
+          credential: body.turn_credential,
+        });
+      }
+      this.iceServersCache = servers;
+      return servers;
+    } catch (err) {
+      console.warn("[ice] ICE 配置获取失败，回落无 iceServers 直连:", err);
+      this.sendDiag("webrtc", false, "ice_config_unavailable");
+      this.iceServersCache = [];
+      return this.iceServersCache;
+    }
+  }
+
+  /** Day 9 F17：反向外呼自动接听（FR-UI-10）。
+   *  建**独立应答 PC**（与会话 PC 互斥）：setRemote(offer) → 挂麦克风轨 →
+   *  createAnswer → C→S answer 帧 → ICE 走既有 ice 帧方向（outboundPc 优先）。
+   *  自动播放被浏览器策略拦截时显式提示 + diag 上报（不静默，R-D3 口径）。 */
+  private async handleOutboundOffer(sdp: string): Promise<void> {
+    const token = loadSession()?.access_token;
+    if (!token) return; // 无会话凭证：不接听，服务端超时归因 rtc_failed 走降级
+    const iceServers = await this.loadIceServers();
+    const pc = new RTCPeerConnection({ iceServers });
+    this.outboundPc = pc;
+
+    try {
+      // 麦克风：会话实例存在则复用其流；standby（无会话）时临时开麦，应答结束随 PC 关闭
+      let stream = this.mic?.stream ?? null;
+      if (!stream) {
+        const tempMic = new MicCapture();
+        await tempMic.start();
+        this.tempMic = tempMic;
+        stream = tempMic.stream;
+      }
+      if (stream) for (const track of stream.getAudioTracks()) pc.addTrack(track, stream);
+
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          this.socket?.send({ type: "ice", candidate: JSON.stringify(e.candidate) });
+        }
+      };
+      pc.ontrack = (e) => {
+        // 外呼播报直接出声（长者没点任何按钮，音频是主动提醒的主通道）
+        this.cb.audioEl.srcObject = e.streams[0] ?? null;
+        this.cb.audioEl.muted = false;
+        this.cb.onStatus("speaking");
+        void this.cb.audioEl.play().catch(() => {
+          // 自动播放策略拦截：显式提示 + diag，服务端不感知但下次触达降级页面播报兜底
+          this.sendDiag("webrtc", false, "outbound_autoplay_blocked");
+          this.cb.onSubtitle("来电话了，请点击屏幕接听", "notice");
+        });
+      };
+
+      await pc.setRemoteDescription({ type: "offer", sdp });
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      this.socket?.send({ type: "answer", sdp: pc.localDescription!.sdp });
+      this.cb.onStatus("speaking");
+    } catch (err) {
+      console.warn("[outbound] 自动接听失败:", err);
+      this.sendDiag("webrtc", false, `outbound_answer_failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.closeOutboundPc(); // 失败即收：服务端等不到 answer 会超时归因 rtc_failed
+      throw err;
+    }
+  }
+
+  private closeOutboundPc(): void {
+    this.outboundPc?.close();
+    this.outboundPc = null;
+    this.tempMic?.stop();
+    this.tempMic = null;
   }
 
   private async handleSignal(msg: ServerSignal): Promise<void> {
@@ -180,9 +300,20 @@ export class RealtimeClient {
           await this.pc?.setRemoteDescription({ type: "answer", sdp: msg.sdp });
         }
         break;
+      case "offer":
+        // Day 9 F17：服务端反向外呼（FR-UI-10）——自动接听，不等用户手势。
+        // 会话 PC 活跃时理论上不会收到（服务端 B1 策略会话中跳过外呼）；防御性忽略。
+        if (this.pc) {
+          console.warn("[outbound] 会话中收到外呼 offer，忽略（B1 策略下不应发生）");
+          break;
+        }
+        await this.handleOutboundOffer(msg.sdp);
+        break;
       case "ice":
         try {
-          await this.pc?.addIceCandidate(JSON.parse(msg.candidate));
+          // Day 9 F17：外呼应答 PC 优先（外呼期会话 PC 不存在）；普通会话回落 this.pc
+          const target = this.outboundPc ?? this.pc;
+          await target?.addIceCandidate(JSON.parse(msg.candidate));
         } catch {
           /* 迟到/无效候选丢弃，不中断 */
         }
@@ -359,10 +490,10 @@ export class RealtimeClient {
       this.cb.onSubtitle("语音检测已切换为服务端模式", "notice");
     }
 
-    // 3. WebRTC：上行麦克风轨 + offer
+    // 3. WebRTC：上行麦克风轨 + offer（Day 9 F29：iceServers 由后端端点下发）
     const stream = this.mic.stream;
     if (!stream) return;
-    const pc = new RTCPeerConnection();
+    const pc = new RTCPeerConnection({ iceServers: await this.loadIceServers() });
     this.pc = pc;
     for (const track of stream.getAudioTracks()) pc.addTrack(track, stream);
 
@@ -481,6 +612,7 @@ export class RealtimeClient {
       this.pc.close();
       this.pc = null;
     }
+    this.closeOutboundPc(); // Day 9 F17：外呼应答 PC 一并收口
     await this.mic?.stop();
     this.mic = null;
   }
