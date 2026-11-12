@@ -143,7 +143,7 @@ def questions_to_payload(questions: dict[str, Any]) -> dict[str, Any]:
 # ------------------------------------------------------------------ 真身：RLAgent
 
 
-class ChineseJevBackend:
+class LayaBackend:
     """`convaiinnovations/laya-multilingual` + 仓库自带 `rl_agent_api.RLAgent`。
 
     加载纪律：
@@ -351,7 +351,7 @@ def build_backend(settings: Settings | None = None) -> DecisionBackend:
     if provider == "mock":
         logger.warning("system_one_backend_mock provider=mock（仅限测试/演示）")
         return MockBackend(resolved)
-    return ChineseJevBackend(resolved)
+    return LayaBackend(resolved)
 
 
 def text_fingerprint(text: str) -> tuple[int, str]:
@@ -364,8 +364,8 @@ __all__ = [
     "OUT_OF_DOMAIN_THRESHOLD",
     "SENSITIVE_THRESHOLD",
     "WARMUP_TEXT",
-    "ChineseJevBackend",
     "DecisionBackend",
+    "LayaBackend",
     "MockBackend",
     "ModelNotConfigured",
     "build_backend",

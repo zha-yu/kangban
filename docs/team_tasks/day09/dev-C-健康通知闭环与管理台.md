@@ -1,6 +1,6 @@
-> 状态：未开始　｜　版本：v1.0　｜　日期：2026-11-12
-> 负责人：**dev-C（唯一）**　｜　任务包：**C · 健康通知闭环与管理台**　｜　容量：**21h ＝ 2.625 人日**
-> 关联：docs/team_tasks/day09/day09-任务总览与DAG.md v1.0（§4.3 分工、§5 对接点、§6 写域）｜docs/team_tasks/day09/contracts.md（X1/X2/X3/X5/X6/X7/X10/X11 消费与提供）
+> 状态：未开始　｜　版本：v1.3　｜　日期：2026-11-12
+> 负责人：**dev-C（唯一）**　｜　任务包：**C · 健康通知闭环与管理台**　｜　容量：**17.5h ＝ 2.19 人日**（人设裁减后）
+> 关联：docs/team_tasks/day09/day09-任务总览与DAG.md v1.3（§4.3 分工、§5 对接点、§6 写域）｜docs/team_tasks/day09/contracts.md v0.3（X1/X2/X3/X5/X7/X10/X11/X12 消费与提供；**X6 已裁减**）
 > 上游依据：PRD line 357–361（分级三档原文＋校验）、line 365–374（FR-HLT-01~10）、line 378–392（告警与通知状态机，**line 387 只有客户端回执算 delivered**、**line 392 工单关闭后事件才可关闭**）、line 394–400（FR-ALT-01~05）、line 405–412（FR-RPT-01~04）、line 441（FR-ADM-07 人设）、line 297（FR-CON-06 点播历史）、line 458（FR-TC-08 `/metrics`）、line 487–505（AC-09/10/13/21/22/23/25/38）｜技术设计文档 line 1017–1018（分级在代码＋HITL）、line 1169（api/memory、api/stats、console 四页）、line 1172（人设/记忆/统计/导出功能验收）
 > 遗留承接：**F01（notify 侧）F04 F05（service 侧）F07（复核落库）F11 F12 F13 F21（media_service）F25 F26 F30（生成侧）**
 > 变更记录见文末
@@ -20,23 +20,21 @@ app/services/report_service.py
 app/services/media_service.py
 app/services/work_order_service.py
 app/services/safety_service.py
-app/services/persona_service.py
-app/services/elder_service.py         （增量：人设绑定）
-app/core/context.py                   （人设 prompt 注入点，X6）
 app/api/health_records.py
 app/api/stats.py                      （新增，FR-ALT-05）
 app/api/memory.py                     （新增，消费 X5）
-app/api/personas.py                   （新增，FR-ADM-07）
 app/api/metrics.py                    （新增，FR-TC-08）
 app/api/alerts.py                     （增量：admin 重扫端点）
-app/api/__init__.py                   （仅末尾追加 4 行 ROUTERS）
+app/api/__init__.py                   （仅末尾追加 3 行 ROUTERS）
 frontend/src/console/**
 对应 tests
 ```
 
+> **人设裁减（2026-11-12）**：原写域中的 `persona_service.py`／`elder_service.py`（人设绑定）／`app/core/context.py`（注入点）／`app/api/personas.py` **全部移除**——人设功能不做，这些文件本日无人持有。
+
 ### 0.2 禁触
 
-`app/models/**`、`alembic/**`（A）、`app/graphs/**`、`app/scheduler/**`、`app/agents/**`、`app/router/**`、`app/main.py`（**B 独占**）、`app/services/memory_service.py`（B）、`app/services/tool_impls.py`／`tool_executor.py`（B）、`app/core/redact.py`／`logging.py`／`runtime_context.py`（A）、`frontend/src/pad/**`／`family/**`（D）、`app/api/audio.py`／`reports.py`／`family.py`（D）、`tests/eval_gate.py`（D）。
+`app/models/**`、`alembic/**`（A）、`app/graphs/**`、`app/scheduler/**`、`app/agents/**`、`app/router/**`、`app/main.py`（**B 独占**）、`app/services/memory_service.py`（B）、`app/services/tool_impls.py`／`tool_executor.py`（B）、`app/core/redact.py`／`logging.py`／`runtime_context.py`（A）、`frontend/src/pad/**`／`family/**`（D）、`app/api/audio.py`／`reports.py`／`family.py`（D）、`tests/eval_gate.py`（D）。**人设相关任何文件（`persona_service`／`elder_service`／`context.py`／`api/personas`）一律不碰。**
 
 **两处特别注意**：
 - **`app/scheduler/` 归 B**：C3 的日报时点与重试节奏，**你只提供退避函数 `next_retry_at`（X11），由 B 挂 cron**。你不改调度文件。
@@ -44,11 +42,11 @@ frontend/src/console/**
 
 ### 0.3 高风险文件（AGENTS §5：先出方案再落代码＋人工逐行读 diff）
 
-`app/core/context.py`（prompt 注入相邻）、`app/services/safety_service.py`（安全一票否决相邻）。**这两处必须先出方案经确认后才落代码。**
+`app/services/safety_service.py`（安全一票否决相邻）。**必须先出方案经确认后才落代码。**（原 `context.py` 因人设裁减不再涉及。）
 
 ### 0.4 角色口径
 
-本包**不含**独立测试/产品/设计角色工作。单测与接口测试是开发内嵌交付物；console 四页按**既有页面风格与 PRD 既有要求**实现（原生 CSS＋`var()` 引 tokens.css，**不引组件库**，PRD line 88／v2.7 裁决），不产生新设计工作。
+本包**不含**独立测试/产品/设计角色工作。单测与接口测试是开发内嵌交付物；console 三页按**既有页面风格与 PRD 既有要求**实现（原生 CSS＋`var()` 引 tokens.css，**不引组件库**，PRD line 88／v2.7 裁决），不产生新设计工作。
 
 ---
 
@@ -279,7 +277,7 @@ uv run pytest tests/ -q -k "notify or report"
 4. **F26 `/metrics`**：新增 `app/api/metrics.py`，输出分层命中率／S1 闭环率／token 消耗（TD:1182 口径）；鉴权按既有口径。
 5. **FR-ALT-05 统计**：新增 `app/api/stats.py`——本周红色事件数、平均确认时长、各楼栋漏采次数。
 6. **记忆管理 API**：新增 `app/api/memory.py`，薄路由消费 B 的 X5 三函数；**越权由 B 的 service 层拒绝＋审计，你不重复实现隔离逻辑**。
-7. **ROUTERS 追加 4 行**（stats／memory／personas／metrics），只增不改。
+7. **ROUTERS 追加 3 行**（stats／memory／metrics），只增不改。（原 personas 行随人设裁减移除。）
 
 ### 4.3 交付物清单
 
@@ -289,7 +287,7 @@ uv run pytest tests/ -q -k "notify or report"
 | 2 | `report_service.py` TTS 语音条＋`audio_url` 写入 |
 | 3 | `media_service.py` 六函数接线＋顺序续播＋history 写入 |
 | 4 | `app/api/metrics.py`、`app/api/stats.py`、`app/api/memory.py`（三新文件） |
-| 5 | `app/api/__init__.py` 追加 4 行 |
+| 5 | `app/api/__init__.py` 追加 3 行 |
 | 6 | 接口测试（权限 × 统计一致性 × 记忆越权） |
 
 ### 4.4 量化验收
@@ -314,65 +312,25 @@ uv run pytest tests/ -q -k "reports or media or metrics or stats or memory_api"
 
 ---
 
-## 5. 节点 C5 · 人设切换（3h）
+## 5. 节点 C5 · 人设切换 —— **已裁减，不做**
 
-**前置**：N0。**无其他硬前置，可与 C1–C4 穿插。**
-**对接**：**提供 X6**（`PersonaView`）给 B3；提供人设 REST 给 C6。
-
-### 5.1 现状实测
-
-- `personas` 表**已建**（`app/models/organization.py:39-54`：`name`／`personality`／`greeting`／`tone_examples`／`voice_id`／`avatar_url`）；`scripts/seed_personas.py` **已入库**；`app/services/elder_service.py:246` 已校验 `persona_id` 存在；`frontend/src/console/pages/EldersPage.tsx:87` 已显示「人设 ID」。
-- **但 `app/services/persona_service.py` 只做 avatar config**（`:142 get_avatar_config`、`:104 _persona_avatar_url`、`:51 _absolutize`、`:81 _fingerprint`）——**`personality`／`greeting`／`voice_id` 从未进 prompt 与 TTS**。
-- `app/core/context.py:162-163` 是真实 prompt 装配点（`FIXED_SYSTEM_PROMPT`＋`_dynamic_context`），`:191-192` personality/tone_examples 位置。
-- console 人设页 **`enabled: false` 置灰**（`layout/AppLayout.tsx:39`）。
-- `app/prompts/personas/` 只有 `README.md`。
-
-### 5.2 要做什么（FR-ADM-07）
-
-1. `persona_service.py` 扩展 **`get_active_persona`／`switch_persona`**（X6 签名，字段与 ORM 逐字对齐）。
-2. **`app/core/context.py` 注入**：`personality` 拼进 system prompt **固定前缀**、`greeting` 作开场白、`tone_examples` 作 few-shot。**`tone_examples` ≤3 条、固定前缀顺序不变**（保 prompt cache）。
-3. **TTS 音色**：`voice_id` 传 TTS 适配层切换。
-4. **`app/api/personas.py`**：列表／详情／切换，**仅 admin**；切换写 `audit_logs`。
-5. **生效时机**：**新一轮对话**生效（FR-ADM-07 验收原文），**不中断进行中的回合**。
-
-### 5.3 交付物清单
-
-| # | 交付物 |
-| --- | --- |
-| 1 | `persona_service.py` 两函数（X6） |
-| 2 | `app/core/context.py` 注入点（**高风险，先出方案**） |
-| 3 | `app/api/personas.py`＋ROUTERS 追加 |
-| 4 | TTS `voice_id` 接线 |
-| 5 | 人设切换端到端测试＋prompt cache 稳定性断言 |
-
-### 5.4 量化验收
-
-| 判据 | 期望 | 依据 |
-| --- | --- | --- |
-| 管理员把长者 A 人设**孙女 → 老同事** | **新一轮对话开场白 ＝ 新人设 `greeting`**；system prompt 含新 `personality`；TTS `voice_id` 切换 | FR-ADM-07／TD:1172 |
-| `tone_examples` | **≤3 条**，固定前缀顺序不变 | TD §3.4／AGENTS §1 |
-| 非 admin 调切换 | **403＋审计** | FR-ADM-07 |
-| 切换操作 | `audit_logs` **+1 行** | TD:1172 |
-| 进行中回合 | **不被中断** | FR-ADM-07「开启新一轮对话」 |
-| 长者端形象 | `avatar_url` 随人设切换（既有 `get_avatar_config` 不回退） | 既有能力 |
-
-```bash
-uv run pytest tests/ -q -k "persona or context"
-```
-
-**CP-C5**：报告切换前后开场白/prompt/音色三项对照＋cache 前缀稳定性断言。
+> **2026-11-12 主理人决定：人设功能（FR-ADM-07）移出 Day 9。** 本节点取消，不交付 `get_active_persona`／`switch_persona`／`api/personas.py`／`context.py` 注入／TTS 音色切换；X6 契约作废；C6 不再做人设配置页。裁减依据与留痕见总览 §8.1（PRD §6.2 人设属 P1 可裁减＋§7 裁减有记录）。
+>
+> **现状留档（仅供将来恢复时参考，本次不动）**：`personas` 表已建（`models/organization.py:39-54`）、`seed_personas.py` 已入库、`elder_service.py:244` 校验 persona_id、`context.py:189-194` 有注入模板但**全仓 `PersonaContext(` 零构造点（死代码）**、`greeting` 零消费、TTS 用全局 `tts_voice_id`、console 人设页 `enabled: false`。**这些既有代码与表一律保留，console 人设入口保持置灰。**
+>
+> 释放的 3h 计入 C 包缓冲（C 包 21h→17.5h），可用于支援全员联调。
 
 ---
 
-## 6. 节点 C6 · console 管理台四页 ＋ 空 catch 修复（3h）
+## 6. 节点 C6 · console 管理台三页 ＋ 空 catch 修复（2.5h：骨架 1.5h＋联调 1h）
 
-**前置**：C4、C5。**软依赖**：A4（生命周期/审计端点）、B2 的 X5（**骨架先行，按冻结契约先建页**）。
-**对接**：消费 A4 端点、X5；**M5.4 的 C 侧判据**。
+**前置**：C4。**软依赖**：A4（生命周期/审计端点）、B2 的 X5（**骨架先行，按冻结契约先建页**）。
+**对接**：消费 A4 端点、X5；**M5.4 的 C 侧判据**。**人设配置页已裁减，不做。**
 
 ### 6.1 现状实测
 
 - console 现有 11 页（`AdminDevicesPage`／`AdminRoomsPage`／`AdminUsersPage`／`AlertsPage`／`EldersPage`／`HealthFormPage`／`LoginPage`／`MedicationEditPage`／`MedicationPage`／`ReviewQueuePage`／`WorkOrdersPage`）。
-- **「教学数据重置 / 人设配置 / 审计日志」三入口置灰**（`App.tsx:34`、`layout/AppLayout.tsx:8,39`）；**无记忆管理页、无统计页**。
+- **「教学数据重置 / 人设配置 / 审计日志」三入口置灰**（`App.tsx:34`、`layout/AppLayout.tsx:8,39`）；**无记忆管理页、无统计页**。本次只解除**重置与审计**两处；**人设入口保持置灰**。
 - `frontend/src/console/pages/WorkOrdersPage.tsx:271-274`：
   ```javascript
   } catch {
@@ -384,29 +342,30 @@ uv run pytest tests/ -q -k "persona or context"
 
 ### 6.2 要做什么
 
-1. **四个新页**（原生 CSS＋`var()` 引 tokens.css，**不引组件库**）：
-   - **人设配置页**：列表＋切换（消费 C5 REST），切换后提示「新一轮对话生效」
+1. **三个新页**（原生 CSS＋`var()` 引 tokens.css，**不引组件库**）：
    - **教学重置与退房页**：两条流水线入口，**二次确认弹窗**后才发请求（消费 A4）；away 暂离开关
    - **记忆管理页**：列表／纠正／删除（消费 `api/memory.py`），删除后列表即时移除
    - **统计与审计页**：三项统计指标（消费 `api/stats.py`）＋审计日志表＋**导出 CSV 按钮**（消费 A4）
-2. **解除置灰**：`AppLayout.tsx:39` 等三处 `enabled: false` → `true`。
+2. **解除置灰**：`AppLayout.tsx` 的**重置与审计**两处 `enabled: false` → `true`；**人设配置保持 `false`**。
 3. **F25 空 catch 修复**：`WorkOrdersPage.tsx:271` 改行内错误提示，403/422 文案区分；删过期注释。
 
 ### 6.3 交付物清单
 
 | # | 交付物 |
 | --- | --- |
-| 1 | 四个新页组件＋路由＋侧栏入口解除置灰 |
+| 1 | 三个新页组件＋路由＋侧栏重置/审计入口解除置灰 |
 | 2 | 对应 `*-api.ts`（按冻结契约，不临时改字段） |
 | 3 | `WorkOrdersPage.tsx` 行内错误提示 |
-| 4 | 走查截图（四页 × 关键操作）＋`tsc`/`build` 输出 |
+| 4 | 走查截图（三页 × 关键操作）＋`tsc`/`build` 输出 |
 
 ### 6.4 量化验收
 
 | 判据 | 期望 | 依据 |
 | --- | --- | --- |
-| 四页可达 | 侧栏 `enabled: true`，路由可进 | TD:1169 |
+| 三页可达 | 侧栏重置/审计/记忆/统计 `enabled: true`，路由可进；**人设仍置灰** | TD:1169（人设裁减） |
 | 重置/退房 | **二次确认弹窗**后才发请求；取消则零请求 | FR-ADM-02／AC-19 |
+| 退房后 console 状态 | 该长者在列表/详情显示 **archived**（或已退房态），相关操作入口不可再点；与后端 `elders.status` 一致 | FR-ADM-09／E8 状态语义 |
+| **退房→pad/family 端到端（联调）** | C 在 console 触发退房后，**联合 D 确认**：pad 持旧 token → 401 回登录/未授权态；原绑定家属查日报 → 403「无权查看该长者的数据」/空态。**C 只负责触发与 console 侧断言，pad/family 表现由 D 确认，C 不改 pad/family** | FR-ADM-09／AC-24／FR-RPT-02 |
 | 记忆删除 | 列表即时移除；再查不再召回 | TD:1172 |
 | 导出按钮 | 下载 CSV，内容与审计表一致 | FR-ADM-05／TD:1172 |
 | 统计页 | 三项指标可见且与后端一致 | FR-ALT-05／TD:1172 |
@@ -421,7 +380,7 @@ pnpm --dir frontend build
 grep -r "three-vrm" frontend/dist/console frontend/dist/family   # 期望零命中
 ```
 
-**CP-C6**：报告四页走查截图＋二次确认取消零请求证据＋构建输出。**C6 完成即 M5.4 的 C 侧判据达成。**
+**CP-C6**：报告三页走查截图＋二次确认取消零请求证据＋构建输出。**C6 完成即 M5.4 的 C 侧判据达成。**
 
 ---
 
@@ -433,7 +392,7 @@ grep -r "three-vrm" frontend/dist/console frontend/dist/family   # 期望零命�
 | — | C2 | — | — | — |
 | — | C3 | — | — | — |
 | — | C4 | — | — | — |
-| — | C5 | — | — | — |
+| — | ~~C5~~ | — | **已裁减，不执行** | — |
 | — | C6 | — | — | — |
 
 **对接登记**：
@@ -447,13 +406,13 @@ grep -r "three-vrm" frontend/dist/console frontend/dist/family   # 期望零命�
 | X11 退避函数 | B（cron 持锁） | **提供函数** | N0 | D10 15:00 | 待 |
 | X7 review_status | B3 | **提供** | N0 | D11 14:00 | 待 |
 | X5 记忆管理函数 | B2 | 消费 | D10 上午 | D11 10:00 | 待 |
-| X6 PersonaView | B3 | **提供** | N0 | D11 11:00 | 待 |
+| ~~X6 PersonaView~~ | ~~B3~~ | **已裁减，不提供** | — | — | 作废 |
 | X10 素材规范 | D5 | 消费（seed 函数） | N0 | D11 10:00 | 待 |
 | `audio_url` | D4 | **提供** | — | D11 下午 | 待 |
 | 生命周期/审计端点 | A4 | 消费 | N0 | D11 15:00 | 待 |
 | media 调用侧改动 | B（tool_impls 持锁） | 提需求 | — | D11 上午 | 待 |
 
-**高风险文件方案登记**（`core/context.py`／`safety_service.py`，落代码前必填）：待填。
+**高风险文件方案登记**（`safety_service.py`，落代码前必填）：待填。（原 `core/context.py` 随人设裁减不再涉及。）
 
 ---
 
@@ -464,8 +423,8 @@ grep -r "three-vrm" frontend/dist/console frontend/dist/family   # 期望零命�
 | R-C1 | C1 阈值回改导致既有测试大面积红 | 改测试期望值对齐 PRD line 357-359，**不改 PRD 口径**；提交正文写明依据 |
 | R-C2 | 拆除假 `delivered` 后，依赖「恒 delivered」的测试与 console 展示连锁红 | 按契约 §3.2 五值＋`is_mock` 修展示；**`failed` 分支必须可展示**（契约 v1.2 明要求） |
 | R-C3 | 双路径重复建单/重复通知 | 统一 `dedupe_token`；上线前跑重复提交用例；**建单只在你这边做** |
-| R-C4 | 本包 6 节点最多，C6 依赖 A4/B2 易成尾段瓶颈 | C6 **骨架先行**（按冻结契约先建页＋Mock 态），D11 下午集中联调；若 A4 延迟，C6 先交人设页与统计页（自有依赖），重置/审计页留联调段 |
-| R-C5 | `core/context.py` 注入破坏 prompt cache | 固定前缀顺序不变、`tone_examples` ≤3 条；改动前后各跑一次 cache 命中断言 |
+| R-C4 | 本包 5 节点，C6 依赖 A4/B2 易成尾段瓶颈 | C6 **骨架先行**（按冻结契约先建页＋Mock 态），D11 下午集中联调；若 A4 延迟，C6 先交统计页与记忆页（自有依赖），重置/审计页留联调段 |
+| R-C5 | 人设裁减后 C 包释放 3.5h，可能被误当作可加新任务 | 释放工时**只作缓冲与全员联调支援**，不擅自加项；如需恢复人设须主理人另行裁决并回补 X6 |
 | R-C6 | 日历口径压缩（总览 Q1） | 先裁顺位：**F30 日报语音条（P1，O2 溢出池）→ F26 `/metrics`（P1）→ 统计页（FR-ALT-05）**；**C1 分级、C2 红档闭环、C3 送达真链路属 P0，不容顺延** |
 
 ---
@@ -474,5 +433,7 @@ grep -r "three-vrm" frontend/dist/console frontend/dist/family   # 期望零命�
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.3 | 2026-11-12 | C6 验收补：退房后 console 该长者显示 **archived** 且入口不可再操作；**退房→pad/family 端到端联调**（C 触发＋console 侧断言，pad 401 回登录／family 403 空态由 D 确认，C 不改 pad/family）。依据：`elders.status` 已含 archived（E8），两端 401/403 兜底已存在。 |
+| v1.2 | 2026-11-12 | **人设裁减（主理人决定）**：删除 C5 节点（改为裁减声明＋现状留档）、C6 人设配置页（四页→三页）、X6 提供义务；写域移除 `persona_service`／`elder_service`／`context.py`／`api/personas.py`；ROUTERS 追加 4 行→3 行；高风险清单去掉 `context.py`；C 包 21h→**17.5h＝2.19 人日**，释放 3.5h 作缓冲/联调支援；console 人设入口保持置灰、既有表与代码不动。 |
 | v1.1 | 2026-11-12 | 全量校验后修正：① C2 增 **X12 四个域清理钩子**（health/notify/report/work_order 各一个 `purge_elder_data`，供 A3 编排，A 不直写 C 的表），C2 由 4h 调为 **5h**，包容量 20h→**21h＝2.625 人日**；② 写域补 `app/services/elder_service.py`（人设绑定）与 `app/api/alerts.py`（admin 重扫端点落点明确，消除原「或提需求给 A/D」的模糊表述）；③ 排程校验后队列确定为 **C1→C2→C3→C5→C4→C6**，X1 联调时点随之定为 **D10 12:00**（C3 骨架 10.5h 完成）。程序校验：硬前置 11 边、软依赖 18 边**零违例**，五里程碑全达标。 |
 | v1.0 | 2026-11-12 | 首版。承接 day08 遗留 10 项（F01 notify 侧/F04/F05 service 侧/F07 复核落库/F11/F12/F13/F21 media_service/F25/F26/F30 生成侧）＋ Day 9 原生人设切换、记忆管理 API、统计页、审计导出前端；6 节点 20h＝2.5 人日。**明确两处不越界**：`app/scheduler/` 归 B（C3 只提供 X11 退避函数）、`api` 禁 import graphs（F07 只写库，resume 由 B 扫描）。实测校准：`persona_service.py` 只做 avatar config（人设切换未实现）、`personas` 表与 seed 已就绪、console 三入口置灰、医生趋势图已真实落地不重做。X7 字段按实测修正为 `review_status`＋`reviewed_by`（**无 `reviewed_at` 列，不新增 schema**）。 |
