@@ -15,6 +15,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.core.context import get_trace_id
+from app.core.redact import redact_obj, redact_text
+
+# 脱敏白名单：这些字段是日志元数据，值不参与脱敏（trace_id 红线——绝不抹掉）
+_UNREDACTED_FIELDS = frozenset({"ts", "level", "logger", "trace_id", "service"})
 
 # LogRecord 自带的属性，打日志时不当成业务字段
 _RESERVED_ATTRS = frozenset(
@@ -71,6 +75,17 @@ class JsonFormatter(logging.Formatter):
             payload["exc"] = self.formatException(record.exc_info)
         if record.stack_info:
             payload["stack"] = self.formatStack(record.stack_info)
+
+        # A1b（Day 9）：出口统一脱敏——msg / extra 业务字段 / 异常栈全部过 redact；
+        # 元数据字段（含 trace_id）在白名单里原样保留（AC-36 后半：日志无明文 PII/密钥）。
+        for key in list(payload):
+            if key in _UNREDACTED_FIELDS:
+                continue
+            payload[key] = (
+                redact_text(payload[key])
+                if key in ("msg", "exc", "stack")
+                else redact_obj(payload[key])
+            )
 
         return json.dumps(payload, ensure_ascii=False, default=str)
 

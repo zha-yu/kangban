@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import RoleForbiddenError, check_roles
 from app.core.context import get_trace_id
+from app.core.redact import mask_name as _mask_display_name
 from app.core.runtime_context import Identity
 from app.core.security import KIND_DEVICE, KIND_STAFF, sha256_hex
 from app.models import Bed, Device, Elder, Room
@@ -150,11 +151,34 @@ def _binding(device: Device) -> DeviceBinding:
     )
 
 
-def _mask_display_name(name: str) -> str:
-    """候选姓名脱敏：姓 + `*` + 末字（裁决 S-06，例 张桂芬 → 张*芬）。"""
-    if len(name) <= 1:
-        return name
-    return f"{name[0]}*{name[-1]}"
+async def unbind_all_for_elder(session: AsyncSession, *, elder_id: uuid.UUID) -> int:
+    """退房流水线步骤⑤（Day 9 A3 / X12「A 自有」行）：解绑该长者名下全部设备。
+
+    与 E10 `unbind_device` 的差异：**无 admin 身份检查、不写 DB 审计**——权限由
+    调用方（lifecycle REST，admin-only）把关，审计由 lifecycle 流水线统一写
+    （X12：审计归 A，每步 1 条，各域不重复写）。解绑定义与 `_clear_binding`
+    严格同源：清长者、置 offline、轮换 token_hash（旧设备令牌即 401）。
+    """
+    devices = (
+        (await session.execute(select(Device).where(Device.elder_id == elder_id))).scalars().all()
+    )
+    for device in devices:
+        _clear_binding(device)
+    await session.commit()
+    logger.info(
+        "lifecycle unbind_all",
+        extra={
+            "trace_id": get_trace_id() or "-",
+            "audit_action": "device.unbind_all",
+            "target": f"elder:{elder_id}",
+            "result": f"unbound:{len(devices)}",
+        },
+    )
+    return len(devices)
+
+
+# 候选姓名脱敏唯一实现在 app/core/redact.py（Day 9 A1b 集中化），
+# `_mask_display_name` 已在文件头 import 处以别名 re-export，调用点签名不变。
 
 
 async def bind_device(

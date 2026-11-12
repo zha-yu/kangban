@@ -21,6 +21,7 @@ from app.api import (
     admin_org,
     alerts,
     audio,
+    audit_export,
     auth,
     devices,
     elders,
@@ -28,6 +29,7 @@ from app.api import (
     guardians,
     health,
     health_records,
+    lifecycle,
     medication,
     memory,
     metrics,
@@ -67,6 +69,8 @@ ROUTERS: tuple[tuple[APIRouter, str], ...] = (
     (memory.router, ""),  # 自带 /api/memory 前缀（C4 记忆管理 X5 薄路由，B2 未交付时 503）
     (stats.router, ""),  # 自带 /api/stats 前缀（C4 FR-ALT-05 运营统计）
     (metrics.router, ""),  # 自带 /api/metrics 前缀（C4 F26 分层命中率/S1 闭环率，TD:1182）
+    (lifecycle.router, ""),  # 自带 /api/lifecycle 前缀（A4 生命周期三端点，Day 9）
+    (audit_export.router, ""),  # 自带 /api 前缀（A4 审计 CSV 导出，FR-ADM-05，Day 9）
 )
 
 __all__ = ["ROUTERS"]

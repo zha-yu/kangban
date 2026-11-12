@@ -26,6 +26,7 @@ from collections.abc import Sequence
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.redact import mask_phone as _core_mask_phone
 from app.core.security import STAFF_ROLES, hash_password
 from app.models.guardian import GuardianAccount
 from app.models.organization import Elder
@@ -84,13 +85,9 @@ class GuardianDisabledError(StaffServiceError):
     """家属账号已停用，不能新增绑定（P1 修复 2026-11-06）。"""
 
 
-def mask_phone(phone: str | None) -> str:
-    """手机号脱敏：`13800000001` → `138****0001`（响应体与日志统一用它）。"""
-    if not phone:
-        return ""
-    if len(phone) < 7:  # pragma: no cover - 入库前已校验 11 位
-        return "*" * len(phone)
-    return f"{phone[:3]}****{phone[-4:]}"
+# 手机号脱敏唯一实现在 app/core/redact.py（Day 9 A1b 集中化）；
+# 这里 import re-export，保持 `staff_service.mask_phone` 的既有调用面（API 层与测试）。
+mask_phone = _core_mask_phone
 
 
 async def _phone_taken(session: AsyncSession, phone: str) -> bool:

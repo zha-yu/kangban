@@ -11,8 +11,10 @@ import {
 
 /**
  * 健康日报：列表 + 详情（契约 F1/F2；FR-RPT-01/02）。
- * 列表同日期只出最新版（S-07）；详情含用药四类分列（S-01，不合并「实际漏服」）、
- * 健康摘要与需关注事件（S-09 服务端组装）。audio_url P0 恒 null，不渲染播放器（FR-RPT-04 P1）。
+ * 列表同日期只出最新版（S-07）；详情含用药五类分列（S-01 Day9 v1.3 第五键
+ * late_taken_reported=窗口外补报，不合并「实际漏服」）、健康摘要与需关注事件
+ * （S-09 服务端组装）。audio_url 非空渲染语音条播放器、null 不渲染（FR-RPT-04，
+ * Day 9 F30：C4 生成侧联调 D11 14:00，前端按冻结字段先行）。
  */
 interface ReportsPageProps {
   elderId: string;
@@ -27,6 +29,7 @@ const MED_LABELS: Array<{ key: keyof MedicationStats; label: string; tone: Tone 
   { key: "refused", label: "拒服", tone: "warning" },
   { key: "missed_unconfirmed", label: "已送达未确认", tone: "info" },
   { key: "notification_failed", label: "通知失败", tone: "danger" },
+  { key: "late_taken_reported", label: "窗口外补报", tone: "info" },
 ];
 
 type Tone = "success" | "warning" | "info" | "danger";
@@ -156,7 +159,7 @@ function ReportDetail({ report, elderName }: { report: DailyReportDetail; elderN
       )}
 
       <div className="detail-block">
-        <h3 className="detail-heading">用药情况（四类分列）</h3>
+        <h3 className="detail-heading">用药情况（五类分列）</h3>
         <div className="med-grid">
           {MED_LABELS.map(({ key, label, tone }) => (
             <div key={key} className="med-cell">
@@ -166,6 +169,16 @@ function ReportDetail({ report, elderName }: { report: DailyReportDetail; elderN
           ))}
         </div>
       </div>
+
+      {/* Day 9 F30（FR-RPT-04）：日报语音条——audio_url 非空才渲染，null 保持既有降级
+          （不渲染空播放器）；直连静态文件（PRD §2.1 媒体分发：不经后端转发） */}
+      {report.audio_url && (
+        <div className="detail-block">
+          <h3 className="detail-heading">语音播报</h3>
+          {/* eslint-disable-next-line jsx-a11y/media-has-caption -- 语音条为完整日报朗读，无独立字幕轨 */}
+          <audio controls preload="none" src={report.audio_url} className="audio-player" />
+        </div>
+      )}
 
       {report.health_summary && (
         <div className="detail-block">
