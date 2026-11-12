@@ -1,5 +1,6 @@
 """Day 9 A4 · 生命周期 REST 端点测试（退房 / 教学重置 / away）。
 
+路径与出入参对齐 C6 `lifecycle-api.ts` 定稿：elder_id 在 body、confirm 为布尔。
 覆盖：admin-only 403、二次确认 409、200 流水线响应、404、away 幂等；
 service 层行为（审计行数/401/403/幂等）见 tests/test_lifecycle.py。
 """
@@ -23,7 +24,6 @@ ROOM_ID = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000002")
 ELDER_A = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000001")
 DEVICE_A = uuid.UUID("cccccccc-0000-0000-0000-000000000001")
 DEVICE_SECRET_A = "device-a-long-term-secret"
-CONFIRM_TOKEN = "CONFIRM"
 STAFF_ADMIN = uuid.UUID("dddddddd-0000-0000-0000-000000000011")
 STAFF_CARE = uuid.UUID("dddddddd-0000-0000-0000-000000000012")
 TEST_JWT_SECRET = "lifecycle-api-secret-0123456789abcdef"
@@ -121,18 +121,19 @@ def _bearer(token: str) -> dict[str, str]:
 
 async def test_lifecycle_endpoints_reject_non_admin(client: AsyncClient) -> None:
     """护工调生命周期端点 → 403 ROLE_FORBIDDEN（admin-only）。"""
-    for path in (
-        f"/api/lifecycle/elders/{ELDER_A}/checkout",
-        f"/api/lifecycle/elders/{ELDER_A}/teaching-reset",
-    ):
+    for path in ("/api/lifecycle/checkout", "/api/lifecycle/teaching-reset"):
         resp = await client.post(
-            path, json={"confirm_token": CONFIRM_TOKEN}, headers=_bearer(_care_token())
+            path,
+            json={"elder_id": str(ELDER_A), "confirm": True},
+            headers=_bearer(_care_token()),
         )
         assert resp.status_code == 403, resp.text
         assert resp.json()["code"] == "ROLE_FORBIDDEN"
 
     resp = await client.post(
-        f"/api/lifecycle/elders/{ELDER_A}/away", json={"away": True}, headers=_bearer(_care_token())
+        "/api/lifecycle/away",
+        json={"elder_id": str(ELDER_A), "away": True},
+        headers=_bearer(_care_token()),
     )
     assert resp.status_code == 403
     assert resp.json()["code"] == "ROLE_FORBIDDEN"
@@ -142,19 +143,28 @@ async def test_lifecycle_endpoints_reject_non_admin(client: AsyncClient) -> None
 
 
 async def test_checkout_without_confirm_returns_409(client: AsyncClient) -> None:
+    """confirm=false → 409 CONFIRM_REQUIRED（零副作用，AC-19）；缺 confirm 字段 → 422（契约 §7 字段错误）。"""
     resp = await client.post(
-        f"/api/lifecycle/elders/{ELDER_A}/checkout",
-        json={"confirm_token": "wrong"},
+        "/api/lifecycle/checkout",
+        json={"elder_id": str(ELDER_A), "confirm": False},
         headers=_bearer(_admin_token()),
     )
     assert resp.status_code == 409, resp.text
     assert resp.json()["code"] == "CONFIRM_REQUIRED"
 
+    resp = await client.post(
+        "/api/lifecycle/checkout",
+        json={"elder_id": str(ELDER_A)},  # 缺 confirm：字段级校验错误
+        headers=_bearer(_admin_token()),
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["code"] == "VALIDATION_ERROR"
+
 
 async def test_unknown_elder_returns_404(client: AsyncClient) -> None:
     resp = await client.post(
-        f"/api/lifecycle/elders/{uuid.uuid4()}/teaching-reset",
-        json={"confirm_token": CONFIRM_TOKEN},
+        "/api/lifecycle/teaching-reset",
+        json={"elder_id": str(uuid.uuid4()), "confirm": True},
         headers=_bearer(_admin_token()),
     )
     assert resp.status_code == 404, resp.text
@@ -168,8 +178,8 @@ async def test_checkout_via_api_returns_step_report(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
     resp = await client.post(
-        f"/api/lifecycle/elders/{ELDER_A}/checkout",
-        json={"confirm_token": CONFIRM_TOKEN},
+        "/api/lifecycle/checkout",
+        json={"elder_id": str(ELDER_A), "confirm": True},
         headers=_bearer(_admin_token()),
     )
     assert resp.status_code == 200, resp.text
@@ -186,15 +196,15 @@ async def test_checkout_via_api_returns_step_report(
     assert body["steps"][2]["stub"] is True, "桩步标记透传给前端（联调段后为 false）"
 
     elder = await db_session.get(Elder, ELDER_A)
-    assert elder is not None and elder.status == "transferred"
+    assert elder is not None and elder.status == "archived", "退房后 archived（C6/E8 口径）"
     device = await db_session.get(Device, DEVICE_A)
     assert device is not None and device.elder_id is None
 
 
 async def test_away_round_trip_via_api(client: AsyncClient, db_session: AsyncSession) -> None:
     resp = await client.post(
-        f"/api/lifecycle/elders/{ELDER_A}/away",
-        json={"away": True},
+        "/api/lifecycle/away",
+        json={"elder_id": str(ELDER_A), "away": True},
         headers=_bearer(_admin_token()),
     )
     assert resp.status_code == 200, resp.text
@@ -204,8 +214,8 @@ async def test_away_round_trip_via_api(client: AsyncClient, db_session: AsyncSes
     assert elder is not None and elder.status == "away"
 
     resp = await client.post(
-        f"/api/lifecycle/elders/{ELDER_A}/away",
-        json={"away": False},
+        "/api/lifecycle/away",
+        json={"elder_id": str(ELDER_A), "away": False},
         headers=_bearer(_admin_token()),
     )
     assert resp.status_code == 200, resp.text

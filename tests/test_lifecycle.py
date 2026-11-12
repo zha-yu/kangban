@@ -39,7 +39,6 @@ from app.models import (
 )
 from app.services import voiceprint_service
 from app.services.lifecycle_service import (
-    CONFIRM_TOKEN,
     ElderNotFoundError,
     LifecycleConfirmError,
     LifecycleStepError,
@@ -222,7 +221,7 @@ async def test_checkout_runs_five_steps_with_per_step_audit(
         db_session,
         operator=_admin_identity(),  # type: ignore[arg-type]
         elder_id=ELDER_A,
-        confirm_token=CONFIRM_TOKEN,
+        confirm=True,
     )
 
     assert report.success is True
@@ -244,7 +243,7 @@ async def test_checkout_runs_five_steps_with_per_step_audit(
     assert len(stub_rows) == 2, "桩步审计必须带 stub=True（联调段换真钩子后为 0）"
 
     elder = await db_session.get(Elder, ELDER_A)
-    assert elder is not None and elder.status == "transferred"
+    assert elder is not None and elder.status == "archived"
     assert await _voiceprint_count(db_session) == 0
 
     device = await db_session.get(Device, DEVICE_A)
@@ -276,7 +275,7 @@ async def test_checkout_invalidates_device_token_and_guardian_scope(
         db_session,
         operator=_admin_identity(),  # type: ignore[arg-type]
         elder_id=ELDER_A,
-        confirm_token=CONFIRM_TOKEN,
+        confirm=True,
     )
 
     replay = await client.get("/api/sessions/current", headers=_bearer(device_token))
@@ -298,23 +297,23 @@ async def test_checkout_invalidates_device_token_and_guardian_scope(
     assert binding.status == "unbound"
 
 
-async def test_checkout_without_confirm_token_has_zero_side_effects(
+async def test_checkout_without_confirm_has_zero_side_effects(
     db_session: AsyncSession,
 ) -> None:
-    """无确认令牌 → LifecycleConfirmError（REST 409），零副作用（AC-19 同型）。"""
+    """无确认标志 → LifecycleConfirmError（REST 409），零副作用（AC-19 同型）。"""
     with pytest.raises(LifecycleConfirmError):
         await checkout_elder(
             db_session,
             operator=_admin_identity(),  # type: ignore[arg-type]
             elder_id=ELDER_A,
-            confirm_token=None,
+            confirm=False,
         )
     with pytest.raises(LifecycleConfirmError):
         await checkout_elder(
             db_session,
             operator=_admin_identity(),  # type: ignore[arg-type]
             elder_id=ELDER_A,
-            confirm_token="confirm",  # 大小写不符也算无效
+            confirm=False,  # false 同样拒绝
         )
 
     assert await _lifecycle_audits(db_session, "checkout") == []
@@ -332,7 +331,7 @@ async def test_checkout_is_idempotent_on_rerun(db_session: AsyncSession) -> None
         db_session,
         operator=operator,
         elder_id=ELDER_A,
-        confirm_token=CONFIRM_TOKEN,  # type: ignore[arg-type]
+        confirm=True,  # type: ignore[arg-type]
     )
     assert first.success is True
 
@@ -340,7 +339,7 @@ async def test_checkout_is_idempotent_on_rerun(db_session: AsyncSession) -> None
         db_session,
         operator=operator,
         elder_id=ELDER_A,
-        confirm_token=CONFIRM_TOKEN,  # type: ignore[arg-type]
+        confirm=True,  # type: ignore[arg-type]
     )
     assert all(s.skipped for s in second.steps), "重跑时所有已完成步骤必须跳过"
     assert len(await _lifecycle_audits(db_session, "checkout")) == 5, "重跑不得新增审计行"
@@ -361,7 +360,7 @@ async def test_checkout_step_failure_is_resumable(
             db_session,
             operator=operator,
             elder_id=ELDER_A,
-            confirm_token=CONFIRM_TOKEN,  # type: ignore[arg-type]
+            confirm=True,  # type: ignore[arg-type]
         )
     assert exc_info.value.step == "purge_voiceprints"
     assert len(await _lifecycle_audits(db_session, "checkout")) == 1, "仅步骤①完成并有审计"
@@ -371,7 +370,7 @@ async def test_checkout_step_failure_is_resumable(
         db_session,
         operator=operator,
         elder_id=ELDER_A,
-        confirm_token=CONFIRM_TOKEN,  # type: ignore[arg-type]
+        confirm=True,  # type: ignore[arg-type]
     )
     assert report.success is True
     assert report.steps[0].skipped is True, "已成功步骤重跑必须跳过"
@@ -385,7 +384,7 @@ async def test_checkout_unknown_elder_raises(db_session: AsyncSession) -> None:
             db_session,
             operator=_admin_identity(),  # type: ignore[arg-type]
             elder_id=uuid.uuid4(),
-            confirm_token=CONFIRM_TOKEN,
+            confirm=True,
         )
 
 
@@ -395,13 +394,13 @@ async def test_checkout_unknown_elder_raises(db_session: AsyncSession) -> None:
 async def test_teaching_reset_without_confirm_token_has_zero_side_effects(
     db_session: AsyncSession,
 ) -> None:
-    """教学重置无确认令牌 → 409 零副作用（AC-19）。"""
+    """教学重置无确认标志 → 409 零副作用（AC-19）。"""
     with pytest.raises(LifecycleConfirmError):
         await teaching_reset(
             db_session,
             operator=_admin_identity(),  # type: ignore[arg-type]
             elder_id=ELDER_A,
-            confirm_token=None,
+            confirm=False,
         )
     assert await _lifecycle_audits(db_session, "teaching_reset") == []
     assert await _voiceprint_count(db_session) == 2, "教学重置不删声纹"
@@ -415,7 +414,7 @@ async def test_teaching_reset_runs_six_stub_steps_and_preserves_accounts(
         db_session,
         operator=_admin_identity(),  # type: ignore[arg-type]
         elder_id=ELDER_A,
-        confirm_token=CONFIRM_TOKEN,
+        confirm=True,
     )
     assert report.success is True
     assert [s.step for s in report.steps] == [

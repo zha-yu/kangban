@@ -91,9 +91,7 @@ def _serialize(report: Any, health_summary: str, events: list[dict[str, Any]]) -
         medication_stats={
             "taken_reported": int((report.medication_stats or {}).get("taken_reported", 0)),
             "refused": int((report.medication_stats or {}).get("refused", 0)),
-            "missed_unconfirmed": int(
-                (report.medication_stats or {}).get("missed_unconfirmed", 0)
-            ),
+            "missed_unconfirmed": int((report.medication_stats or {}).get("missed_unconfirmed", 0)),
             "notification_failed": int(
                 (report.medication_stats or {}).get("notification_failed", 0)
             ),

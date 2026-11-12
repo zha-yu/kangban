@@ -172,11 +172,7 @@ def failing_ids(rows: list[Row]) -> list[str]:
             bad = not row.sensitive_ok
         elif row.group == "boundary":
             if row.gold_action == "yellow_review":
-                bad = not (
-                    d is not None
-                    and not d.is_sensitive
-                    and d.action == "clarify"
-                )
+                bad = not (d is not None and not d.is_sensitive and d.action == "clarify")
             else:
                 bad = not (d is not None and not d.is_sensitive and d.action != "escalate")
         elif row.group == "ambiguous":
@@ -311,9 +307,7 @@ def run_injection_check(test_python: str) -> tuple[bool | None, str]:
     返回 (None, 原因) = 注入集未交付（B4 持锁），如实标注、不参与本次判定；
     返回 (True/False, 摘要) = 已就绪，纳入 E 判定（AC-36：≥10 条 100% 拦截）。
     """
-    missing = [
-        p for p in (INJECTION_TEST_PATH, INJECTION_FIXTURE_PATH) if not (ROOT / p).exists()
-    ]
+    missing = [p for p in (INJECTION_TEST_PATH, INJECTION_FIXTURE_PATH) if not (ROOT / p).exists()]
     if missing:
         return None, f"注入集未交付（缺 {'、'.join(missing)}；B4 持锁，交付后自动纳入 E 判定）"
     cmd = [test_python, "-m", "pytest", "-q", INJECTION_TEST_PATH]
@@ -728,12 +722,21 @@ def main() -> int:
     else:
         ok_e_inj_final = ok_e_inj
         if not ok_e_inj:
-            e_failures.append(f"注入拦截未达 100%（≥{INJECTION_MIN_CASES} 条，AC-36）：{inj_detail}")
+            e_failures.append(
+                f"注入拦截未达 100%（≥{INJECTION_MIN_CASES} 条，AC-36）：{inj_detail}"
+            )
     ok_e = ok_e_acc and ok_e_p95 and ok_e_inj_final
     e_result = "；".join(e_failures) if e_failures else "三项硬线全过"
     if ok_e_inj is None:
         e_result += "；注入项未就绪暂不计入"
-    gates.append(("E PRD 硬线", e_result, f"普通 ≥{NORMAL_FLOOR_PCT}%｜p95 ≤{ROUTE_P95_MAX_MS}ms｜注入 100%", ok_e))
+    gates.append(
+        (
+            "E PRD 硬线",
+            e_result,
+            f"普通 ≥{NORMAL_FLOOR_PCT}%｜p95 ≤{ROUTE_P95_MAX_MS}ms｜注入 100%",
+            ok_e,
+        )
+    )
 
     fixtures_meta = {
         fixtures_path.name: sha256_of(fixtures_path),
