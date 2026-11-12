@@ -77,9 +77,14 @@ async function assertOk(res: Response): Promise<void> {
 // 三个生命周期操作（均需页面二次确认弹窗后才调用）
 // ---------------------------------------------------------------------------
 
-/** 教学数据重置（FR-ADM-02）：确认弹窗通过后调用 */
-export async function teachingReset(): Promise<void> {
-  const res = await apiPost(LIFECYCLE_ENDPOINTS.teachingReset, { confirm: true });
+/** 教学数据重置（FR-ADM-02）：确认弹窗通过后调用。
+ * 后端 A4 定稿（app/api/lifecycle.py）为**按长者**清数据：elder_id 必填
+ * （2026-11-12 对接错位裁决——原全局语义改为绑定选中长者，前端补传）。 */
+export async function teachingReset(elderId: string): Promise<void> {
+  const res = await apiPost(LIFECYCLE_ENDPOINTS.teachingReset, {
+    elder_id: elderId,
+    confirm: true,
+  });
   await assertOk(res);
 }
 
