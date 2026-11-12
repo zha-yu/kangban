@@ -23,10 +23,10 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from app.models.medication import WorkOrder, WorkOrderTransition
+from app.models.medication import RiskEvent, WorkOrder, WorkOrderTransition
 from app.models.organization import Elder
 from app.models.relation import ElderStaffAssignment
 from app.models.staff import StaffAccount
@@ -328,6 +328,121 @@ async def test_red_order_cannot_close_without_handled_at(
         await session.execute(select(WorkOrder).where(WorkOrder.order_id == ref.order_id))
     ).scalar_one()
     assert order.actual_handled_at is not None, "AC-22 的红单必须能回溯到处置时间"
+
+
+# ------------------------------------------------------------------ 5b. F13 关闭联动
+
+
+async def test_transition_closed_links_risk_event(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    """F13：工单 closed → 同事务关闭关联 risk_events（status/closed_at）。"""
+    event = RiskEvent(
+        event_id=uuid.uuid4(),
+        elder_id=seeded["elder_id"],
+        type="health_alert",
+        severity="red",
+        status="open",
+    )
+    session.add(event)
+    await session.flush()
+
+    ref = await work_order_service.open_work_order(
+        session,
+        elder_id=seeded["elder_id"],
+        order_type="health_alert",
+        severity="red",
+        dedupe_token="link:1",
+        event_id=event.event_id,
+    )
+    await work_order_service.transition(
+        session,
+        order_id=ref.order_id,
+        to_status="closed",
+        actual_handled_at=datetime.datetime(2026, 11, 12, 9, 0, tzinfo=datetime.UTC),
+    )
+    await session.flush()
+    updated = (
+        await session.execute(select(RiskEvent).where(RiskEvent.event_id == event.event_id))
+    ).scalar_one()
+    assert updated.status == "closed"
+    assert updated.closed_at is not None
+
+
+async def test_transition_closed_without_event_id_no_linkage(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    """F13：无 event_id 的漏服类工单关闭不触发事件联动（幂等空转）。"""
+    ref = await work_order_service.open_work_order(
+        session,
+        elder_id=seeded["elder_id"],
+        order_type="drug_question",
+        severity="yellow",
+        dedupe_token="link:2",
+    )
+    await work_order_service.transition(session, order_id=ref.order_id, to_status="closed")
+    # 只要不抛错即通过：无事件可联动
+
+
+async def test_work_order_purge_elder_data(session: AsyncSession, seeded: dict[str, Any]) -> None:
+    """X12 工单钩子：transitions → orders → risk_events 级联清除，幂等。"""
+    event = RiskEvent(
+        event_id=uuid.uuid4(),
+        elder_id=seeded["elder_id"],
+        type="health_alert",
+        severity="yellow",
+        status="open",
+    )
+    session.add(event)
+    await session.flush()
+    ref = await work_order_service.open_work_order(
+        session,
+        elder_id=seeded["elder_id"],
+        order_type="health_alert",
+        severity="yellow",
+        dedupe_token="purge:1",
+        event_id=event.event_id,
+    )
+    await work_order_service.transition(session, order_id=ref.order_id, to_status="in_progress")
+
+    result = await work_order_service.purge_elder_data(
+        session, elder_id=seeded["elder_id"], reason="checkout"
+    )
+    await session.flush()
+    assert result.domain == "work_orders"
+    assert result.affected_rows >= 2  # 1 order + ≥1 transition（risk_event 计 1）
+    assert (
+        await session.execute(
+            select(func.count())
+            .select_from(WorkOrder)
+            .where(WorkOrder.elder_id == seeded["elder_id"])
+        )
+    ).scalar_one() == 0
+    assert (
+        await session.execute(
+            select(func.count())
+            .select_from(WorkOrderTransition)
+            .where(WorkOrderTransition.order_id == ref.order_id)
+        )
+    ).scalar_one() == 0
+    assert (
+        await session.execute(
+            select(func.count())
+            .select_from(RiskEvent)
+            .where(RiskEvent.elder_id == seeded["elder_id"])
+        )
+    ).scalar_one() == 0
+
+    # 幂等：第二遍为 0
+    again = await work_order_service.purge_elder_data(
+        session, elder_id=seeded["elder_id"], reason="teaching_reset"
+    )
+    assert again.affected_rows == 0
+
+    with pytest.raises(ValueError, match="unknown purge reason"):
+        await work_order_service.purge_elder_data(
+            session, elder_id=seeded["elder_id"], reason="nope"
+        )
 
 
 # ------------------------------------------------------------------ 6. 责任护工

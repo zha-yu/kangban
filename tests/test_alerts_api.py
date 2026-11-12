@@ -28,7 +28,9 @@ from app.db import get_session
 from app.main import create_app
 from app.models.audit import AuditLog
 from app.models.guardian import GuardianAccount
+from app.models.medication import RiskEvent
 from app.models.notifications import Notification
+from app.models.organization import Elder
 from app.models.staff import StaffAccount
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
@@ -361,3 +363,208 @@ async def test_list_acknowledged_by_name_filled(app_with_session, client: AsyncC
     )
     assert item["acknowledged_by"] == str(me.staff_id)
     assert item["acknowledged_by_name"] == "姓名展示测试护工"
+
+
+# ------------------------------------------------------------------ F13 事件直接关闭
+
+
+def _admin_token(staff_id: uuid.UUID) -> str:
+    return sign_staff_access(kind="staff", staff_id=staff_id, role="admin", token_version=0)
+
+
+async def _seed_admin_and_event(
+    session: AsyncSession,
+) -> tuple[StaffAccount, RiskEvent]:
+    admin = StaffAccount(name="管理员甲", role="admin", password_hash="x")
+    elder = Elder(name="关闭测试长者", status="active")
+    session.add_all([admin, elder])
+    await session.flush()
+    event = RiskEvent(
+        event_id=uuid.uuid4(),
+        elder_id=elder.elder_id,
+        type="health_alert",
+        severity="red",
+        status="open",
+    )
+    session.add(event)
+    await session.flush()
+    return admin, event
+
+
+async def test_close_event_requires_auth(client: AsyncClient) -> None:
+    resp = await client.post(f"/api/risk-events/{uuid.uuid4()}/close")
+    assert resp.status_code == 401
+
+
+async def test_close_event_rejects_non_admin(app_with_session, client: AsyncClient) -> None:
+    """F13：非 admin 角色 → 403 ROLE_FORBIDDEN（require_roles 门禁）。"""
+    _, session = app_with_session
+    worker = await _seed_staff(session, "护工-关闭尝试")
+    resp = await client.post(
+        f"/api/risk-events/{uuid.uuid4()}/close",
+        headers={"Authorization": f"Bearer {_staff_token(worker.staff_id)}"},
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["code"] == "ROLE_FORBIDDEN"
+
+
+async def test_close_event_blocked_by_open_work_order(
+    app_with_session, client: AsyncClient
+) -> None:
+    """F13：存在未关闭关联工单 → 409 CONFLICT，事件保持 open。"""
+    from sqlalchemy import select
+
+    from app.models.medication import RiskEvent
+    from app.services import work_order_service
+
+    _, session = app_with_session
+    admin, event = await _seed_admin_and_event(session)
+    await work_order_service.open_work_order(
+        session,
+        elder_id=event.elder_id,
+        order_type="health_alert",
+        severity="red",
+        dedupe_token=f"close-test:{event.event_id}",
+        event_id=event.event_id,
+    )
+    await session.flush()
+
+    resp = await client.post(
+        f"/api/risk-events/{event.event_id}/close",
+        headers={"Authorization": f"Bearer {_admin_token(admin.staff_id)}"},
+    )
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["code"] == "CONFLICT"
+    refreshed = (
+        await session.execute(
+            select(RiskEvent)
+            .where(RiskEvent.event_id == event.event_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+    assert refreshed.status == "open"
+
+
+async def test_close_event_success_and_idempotent(app_with_session, client: AsyncClient) -> None:
+    """F13：无未关闭工单 → 200 closed + closed_at；重复请求幂等。"""
+    from sqlalchemy import select
+
+    from app.models.medication import RiskEvent
+
+    _, session = app_with_session
+    admin, event = await _seed_admin_and_event(session)
+
+    resp = await client.post(
+        f"/api/risk-events/{event.event_id}/close",
+        headers={"Authorization": f"Bearer {_admin_token(admin.staff_id)}"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "closed"
+    assert body["idempotent"] is False
+    assert body["event_id"] == str(event.event_id)
+
+    first_closed_at = body["closed_at"]
+    again = await client.post(
+        f"/api/risk-events/{event.event_id}/close",
+        headers={"Authorization": f"Bearer {_admin_token(admin.staff_id)}"},
+    )
+    assert again.status_code == 200, again.text
+    assert again.json()["idempotent"] is True
+    assert again.json()["closed_at"] == first_closed_at, "幂等：不得刷新 closed_at"
+
+    refreshed = (
+        await session.execute(
+            select(RiskEvent)
+            .where(RiskEvent.event_id == event.event_id)
+            .execution_options(populate_existing=True)  # 关闭走 Core UPDATE，防 identity map 陈旧
+        )
+    ).scalar_one()
+    assert refreshed.status == "closed"
+    assert refreshed.closed_at is not None
+
+
+async def test_close_event_unknown_is_404(app_with_session, client: AsyncClient) -> None:
+    _, session = app_with_session
+    admin = StaffAccount(name="管理员乙", role="admin", password_hash="x")
+    session.add(admin)
+    await session.flush()
+    resp = await client.post(
+        f"/api/risk-events/{uuid.uuid4()}/close",
+        headers={"Authorization": f"Bearer {_admin_token(admin.staff_id)}"},
+    )
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["code"] == "NOT_FOUND"
+
+
+# ------------------------------------------------------------------ F01 手动重发
+
+
+async def test_rescan_requires_auth(client: AsyncClient) -> None:
+    resp = await client.post("/api/notifications/rescan")
+    assert resp.status_code == 401
+
+
+async def test_rescan_rejects_non_admin(app_with_session, client: AsyncClient) -> None:
+    _, session = app_with_session
+    worker = await _seed_staff(session, "护工-重发尝试")
+    resp = await client.post(
+        "/api/notifications/rescan",
+        headers={"Authorization": f"Bearer {_staff_token(worker.staff_id)}"},
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["code"] == "ROLE_FORBIDDEN"
+
+
+async def test_rescan_never_marks_delivered(app_with_session, client: AsyncClient) -> None:
+    """F01/Q-D3：手动重发只触发一次扫描（due 门控＋超限置 failed），
+    delivered 只能由 X1 回执驱动——端点对到点 pending 也只记尝试。"""
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    _, session = app_with_session
+    admin = StaffAccount(name="管理员丙", role="admin", password_hash="x")
+    session.add(admin)
+    await session.flush()
+    aged = Notification(
+        target_type="staff",
+        target_id=(await _seed_staff(session, "护工-收件人")).staff_id,
+        type="health_alert",
+        payload={"title": "重发测试"},
+        channel="inapp",
+        status="pending",
+        retry_count=0,
+        is_mock=True,
+        sent_at=datetime.datetime.now(datetime.UTC) - timedelta(seconds=60),
+        dedupe_key=f"test_rescan:{uuid.uuid4()}",
+    )
+    session.add(aged)
+    await session.flush()
+
+    resp = await client.post(
+        "/api/notifications/rescan",
+        headers={"Authorization": f"Bearer {_admin_token(admin.staff_id)}"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["retried"] >= 1
+    assert set(body) == {"retried", "failed", "remaining_pending"}
+
+    await session.refresh(aged)
+    assert aged.status == "pending", "手动重发绝不置 delivered（Q-D3 + F01 真链路）"
+    assert aged.retry_count == 1
+
+    rows = (
+        (
+            await session.execute(
+                select(Notification).where(
+                    Notification.dedupe_key == aged.dedupe_key,
+                    Notification.status == "delivered",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert rows == []

@@ -36,6 +36,7 @@ from app.models.relation import ElderGuardian
 from app.models.report import DailyReport
 from app.services.notify_service import (
     NotificationTargetNotFound,
+    PurgeRef,
     send_guardian_notifications,
 )
 
@@ -543,6 +544,30 @@ async def get_report_detail_for_guardian(
     return report, health_summary, events
 
 
+# ------------------------------------------------------------------ X12 域清理钩子
+
+
+async def purge_elder_data(session: AsyncSession, *, elder_id: uuid.UUID, reason: str) -> PurgeRef:
+    """日报域清理（X12）：daily_reports 全版本物理清除（checkout／teaching_reset 同口径）。
+
+    日报是派生物（可由 health/medication 原始域重算），无归档价值；健康原始行
+    的归档语义归 health_service.purge_elder_data。幂等：重复调用第二遍计数为 0。
+    本钩子不写审计（A 的 lifecycle 统一写）。
+    """
+    if reason not in ("checkout", "teaching_reset"):
+        raise ValueError(f"unknown purge reason: {reason!r}")
+    from sqlalchemy import delete as sa_delete
+
+    result = await session.execute(sa_delete(DailyReport).where(DailyReport.elder_id == elder_id))
+    affected = int(result.rowcount or 0)
+    if affected:
+        await session.flush()
+    logger.info(
+        "report_purge_elder_data elder_id=%s reason=%s affected=%d", elder_id, reason, affected
+    )
+    return PurgeRef(domain="daily_reports", affected_rows=affected, archived_rows=0)
+
+
 __all__ = [
     "DISCLAIMER",
     "NOTIFICATION_TYPE_DAILY_REPORT",
@@ -555,4 +580,5 @@ __all__ = [
     "list_bound_elders_for_guardian",
     "list_daily_report_versions",
     "list_reports_for_guardian",
+    "purge_elder_data",
 ]

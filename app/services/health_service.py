@@ -47,6 +47,7 @@ import logging
 import uuid
 from typing import Final, Literal
 
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -58,7 +59,9 @@ from app.models.relation import ElderStaffAssignment
 from app.models.staff import StaffAccount
 from app.services.notify_service import (
     NotificationTargetNotFound,
+    PurgeRef,
     send_guardian_notifications,
+    send_staff_notifications,
 )
 from app.services.work_order_service import (
     WorkOrderRef,
@@ -143,6 +146,14 @@ class HealthRecordRef:
     version: int
     risk_event_id: uuid.UUID | None  # 本次新建或升级的 risk_event
     work_order_id: uuid.UUID | None  # 本次新建的工单（黄档建单；红档若走 safety_service 则为 None）
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class NotifyRef:
+    """X3 v0.6 红档双通知结果（只通知、不建单；work_order_id 归落库步骤返回值）。"""
+
+    notification_ids: list[uuid.UUID]
+    risk_event_id: uuid.UUID
 
 
 # ------------------------------------------------------------------ 纯函数分级（无 DB 依赖，签名 12:00 X1 冻结）
@@ -419,6 +430,14 @@ async def create_health_record(
                 record_id=record.record_id,
                 risk_event_id=risk_event_id,
             )
+            # X3 v0.6：先落库（上方建单）→ 后通知；失败不回滚
+            await notify_red_dual(
+                session,
+                elder_id=elder_id,
+                record_id=record.record_id,
+                risk_event_id=risk_event_id,
+                severity="red",
+            )
         else:
             # 新建 risk_event
             risk_event = RiskEvent(
@@ -453,6 +472,14 @@ async def create_health_record(
                     elder_id=elder_id,
                     record_id=record.record_id,
                     risk_event_id=risk_event.event_id,
+                )
+                # X3 v0.6：先落库（上方建单）→ 后通知；失败不回滚
+                await notify_red_dual(
+                    session,
+                    elder_id=elder_id,
+                    record_id=record.record_id,
+                    risk_event_id=risk_event.event_id,
+                    severity="red",
                 )
 
     logger.info(
@@ -767,13 +794,13 @@ async def _open_red_followup(
     record_id: uuid.UUID,
     risk_event_id: uuid.UUID,
 ) -> uuid.UUID | None:
-    """红档善后：紧急工单（A12 唯一建单口，dedupe 幂等）+ 家属通知（S-02 三键）。
+    """红档**落库步骤**（X3 v0.6：先落库，只建单、不通知）。
 
-    - dedupe_token `health_record:<record_id>:red`：同一记录重放返回原单；
-    - 家属通知失败**不回滚主链路**：无 active 家属绑定（`NotificationTargetNotFound`）
-      是合法状态，只记警告——红档的事件与工单不能因通知缺目标而丢；
-    - 通知 payload 沿用 S-02 三键语义（elder_name / event_brief / record_id），
-      文案只报「红色预警值」不给任何医疗判断口径（AGENTS §4 红线 4）。
+    - 建单走 A12 唯一建单口，dedupe_token `health_record:<record_id>:red`
+      同一记录重放返回原单；
+    - 双通知由 `notify_red_dual` 在本函数返回后另行执行（后通知、失败不回滚）；
+    - 本函数同时是 **B3 语音路径的落库包装**（`open_red_followup` 别名导出）：
+      B 的子图经注入调用，不得直写 work_orders。
     """
     assignee_id = await resolve_primary_care_staff(session, elder_id=elder_id)
     order_ref = await open_work_order(
@@ -785,27 +812,72 @@ async def _open_red_followup(
         event_id=risk_event_id,
         assignee_id=assignee_id,
     )
+    return order_ref.order_id
+
+
+# B3 语音路径落库包装（X3 v0.6）：与 REST 共用同一落库出口
+open_red_followup = _open_red_followup
+
+
+async def notify_red_dual(
+    session: AsyncSession,
+    *,
+    elder_id: uuid.UUID,
+    record_id: uuid.UUID,
+    risk_event_id: uuid.UUID,
+    severity: str,
+) -> NotifyRef:
+    """红档**双通知**（X3 v0.6：只通知、不建单；落库归 `open_red_followup`）。
+
+    - 双通道：责任护工（staff）＋监护人（guardian）各 1 条（PRD line 378-392／FR-ALT-01）；
+    - 通知幂等键（三段式，替换旧 `health_red_alert:<record_id>` 单家属键）：
+      `risk_event:<event_id>:staff`／`risk_event:<event_id>:guardian`
+      （notify_service 逐目标再派生 `:<staff_id|guardian_id>` 尾缀）；
+    - payload 携带 `risk_event_id` 供 F13 确认联动（acknowledge → acknowledged_at）；
+    - 通知失败**不回滚落库**：guardian 无绑定（`NotificationTargetNotFound`）与
+      staff 侧异常都只记警告——事件与工单已在调用方事务内先行落定；
+    - 文案只报「红色预警值」不给任何医疗判断口径（AGENTS §4 红线 4）。
+    """
     elder_name = (
         await session.execute(select(Elder.name).where(Elder.elder_id == elder_id))
     ).scalar_one_or_none()
+    payload = {
+        "title": "健康红色预警",
+        "elder_name": elder_name or "您的家人",
+        "event_brief": (
+            "长者今日健康数据出现红色预警值，工作人员已收到紧急工单并将立即跟进，请放心"
+        ),
+        "record_id": str(record_id),
+        "risk_event_id": str(risk_event_id),
+        "severity": severity,
+    }
+    notification_ids: list[uuid.UUID] = []
     try:
-        await send_guardian_notifications(
+        staff_refs = await send_staff_notifications(
             session,
             elder_id=elder_id,
             ntype="health_alert",
-            payload={
-                "title": "健康红色预警",
-                "elder_name": elder_name or "您的家人",
-                "event_brief": (
-                    "长者今日健康数据出现红色预警值，工作人员已收到紧急工单并将立即跟进，请放心"
-                ),
-                "record_id": str(record_id),
-            },
-            dedupe_key=f"health_red_alert:{record_id}",
+            payload=payload,
+            dedupe_key=f"risk_event:{risk_event_id}:staff",
+            is_mock=True,
         )
+        notification_ids.extend(ref.notification_id for ref in staff_refs)
+    except Exception:
+        logger.exception(
+            "red_alert_staff_notify_failed elder_id=%s risk_event_id=%s", elder_id, risk_event_id
+        )
+    try:
+        guardian_refs = await send_guardian_notifications(
+            session,
+            elder_id=elder_id,
+            ntype="health_alert",
+            payload=payload,
+            dedupe_key=f"risk_event:{risk_event_id}:guardian",
+        )
+        notification_ids.extend(ref.notification_id for ref in guardian_refs)
     except NotificationTargetNotFound:
         logger.warning("red_alert_guardian_unbound elder_id=%s record_id=%s", elder_id, record_id)
-    return order_ref.order_id
+    return NotifyRef(notification_ids=notification_ids, risk_event_id=risk_event_id)
 
 
 # ------------------------------------------------------------------ 调度域查询与漏采派单（B3 · Day 8）
@@ -867,6 +939,77 @@ async def create_missed_collection_order(
     return ref
 
 
+# ------------------------------------------------------------------ X12 域清理钩子
+
+_PURGE_PLACEHOLDER = "[已脱敏归档]"
+
+
+def _redact_free_text(text: str | None) -> str | None:
+    """归档脱敏：优先用 A1 的 redact 工具（集中脱敏唯一实现）；未交付/失败时
+    整段替换为占位符——健康文本字段（主诉/情绪备注）无结构化 PII 可选摘，
+    占位符比复制一份脱敏正则更符合「不新增第二种脱敏实现」约束（AGENTS §4.8）。"""
+    if text is None:
+        return None
+    try:
+        from app.core.redact import redact_text  # A1 交付件；D9 上午已合入
+
+        return redact_text(text)
+    except ImportError:
+        return _PURGE_PLACEHOLDER
+
+
+async def purge_elder_data(session: AsyncSession, *, elder_id: uuid.UUID, reason: str) -> PurgeRef:
+    """健康域清理（X12）——本域是唯一区分两种 reason 的域：
+
+    - ``teaching_reset``：物理删除 health_records（含版本链）；
+    - ``checkout``：**脱敏归档不物理删**——主诉/情绪备注经 redact 脱敏后原行保留
+      （PRD line 392「健康数据不可删」的运营留档语义）；按**实际变更**计数，
+      redact 幂等 ⇒ 重复调用第二遍计数为 0。
+    本钩子不写审计（A 的 lifecycle 统一写）。
+    """
+    if reason not in ("checkout", "teaching_reset"):
+        raise ValueError(f"unknown purge reason: {reason!r}")
+    rows = list(
+        (
+            await session.execute(select(HealthRecord).where(HealthRecord.elder_id == elder_id))
+        ).scalars()
+    )
+    if reason == "teaching_reset":
+        affected = 0
+        if rows:
+            result = await session.execute(
+                sa_delete(HealthRecord).where(HealthRecord.elder_id == elder_id)
+            )
+            affected = int(result.rowcount or 0)
+            await session.flush()
+        logger.info(
+            "health_purge_elder_data elder_id=%s reason=teaching_reset affected=%d",
+            elder_id,
+            affected,
+        )
+        return PurgeRef(domain="health_records", affected_rows=affected, archived_rows=0)
+
+    archived = 0
+    for row in rows:
+        masked = False
+        for field in ("complaint", "mood_note"):
+            value = getattr(row, field)
+            if value is None:
+                continue
+            new_value = _redact_free_text(value)
+            if new_value != value:  # 按实际变更计数：redact 幂等 ⇒ 本钩子幂等
+                setattr(row, field, new_value)
+                masked = True
+        if masked:
+            archived += 1
+    if archived:
+        await session.flush()
+    logger.info(
+        "health_purge_elder_data elder_id=%s reason=checkout archived=%d", elder_id, archived
+    )
+    return PurgeRef(domain="health_records", affected_rows=0, archived_rows=archived)
+
+
 __all__ = [
     "RULE_VERSION",
     "SEVERITY_GREEN",
@@ -876,6 +1019,7 @@ __all__ = [
     "HealthGradeResult",
     "HealthRecordRef",
     "HealthRecordRow",
+    "NotifyRef",
     "create_health_record",
     "create_missed_collection_order",
     "get_health_trend",
@@ -885,5 +1029,8 @@ __all__ = [
     "list_active_elder_ids",
     "list_elder_ids_with_records_on",
     "list_pending_reviews",
+    "notify_red_dual",
+    "open_red_followup",
+    "purge_elder_data",
     "review_health_record",
 ]

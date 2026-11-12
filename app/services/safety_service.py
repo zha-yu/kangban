@@ -367,8 +367,74 @@ async def escalate_safety_event(
     )
 
 
+# ------------------------------------------------------------------ F13 事件直接关闭（admin）
+
+
+class RiskEventNotFound(Exception):
+    """事件不存在（alerts.py 映射 404）。"""
+
+
+class RiskEventCloseBlocked(Exception):
+    """直接关闭被拒：存在未关闭的关联工单（PRD line 392 顺序硬约束，alerts.py 映射 409）。"""
+
+
+async def close_risk_event(session: AsyncSession, *, event_id: uuid.UUID) -> dict:
+    """admin 直接关闭红色事件（F13；alerts.py admin-only 端点调用）。
+
+    顺序硬约束（PRD line 392）：**工单关闭后事件才可关闭**——存在任一非
+    closed 关联工单即抛 `RiskEventCloseBlocked`（409）；工单侧主动关闭的
+    联动方向（closed → 同事务关事件）归 work_order_service.transition。
+    本模块沿用模块纪律用 Core Table 读改（两表 ORM 禁触，见 docstring）；
+    幂等：事件已 closed 直接返回既有 closed_at。
+    本函数不写审计：admin 生命周期审计统一归 A2 的 lifecycle 流水线口径。
+    """
+    now = datetime.now(UTC)
+    event = (
+        await session.execute(
+            sa.select(_risk_events.c.status, _risk_events.c.closed_at).where(
+                _risk_events.c.event_id == event_id
+            )
+        )
+    ).first()
+    if event is None:
+        raise RiskEventNotFound(f"risk event {event_id} not found")
+    if event.status == "closed":
+        return {
+            "event_id": event_id,
+            "status": "closed",
+            "closed_at": event.closed_at,
+            "idempotent": True,
+        }
+    open_orders = (
+        await session.execute(
+            sa.select(_work_orders.c.order_no).where(
+                _work_orders.c.event_id == event_id,
+                _work_orders.c.status != "closed",
+            )
+        )
+    ).all()
+    if open_orders:
+        order_nos = ", ".join(row.order_no for row in open_orders)
+        raise RiskEventCloseBlocked(f"risk event {event_id} has unclosed work orders: {order_nos}")
+    await session.execute(
+        sa.update(_risk_events)
+        .where(_risk_events.c.event_id == event_id)
+        .values(status="closed", closed_at=now)
+    )
+    logger.info("risk_event_closed_directly event_id=%s", event_id)
+    return {
+        "event_id": event_id,
+        "status": "closed",
+        "closed_at": now,
+        "idempotent": False,
+    }
+
+
 __all__ = [
     "EscalationResult",
+    "RiskEventCloseBlocked",
+    "RiskEventNotFound",
     "SafetyEscalationError",
+    "close_risk_event",
     "escalate_safety_event",
 ]
