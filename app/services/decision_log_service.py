@@ -21,7 +21,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from decimal import Decimal
 from typing import Any, Protocol
@@ -29,28 +28,15 @@ from typing import Any, Protocol
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# 脱敏唯一实现在 app/core/redact.py（Day 9 A1b 集中化）；保留 redact_input 别名
+# 仅为既有调用方与测试的导入路径不变——不是第二套实现。
+from app.core.redact import redact_text as redact_input
 from app.models.decision import DecisionLog
 
 logger = logging.getLogger("app.services.decision_log_service")
 
 #: 低置信澄清的默认阈值（与 `system_one_confidence_threshold` 同源；调用方应显式传入配置值）
 DEFAULT_CONFIDENCE_THRESHOLD: float = 0.85
-
-#: 手机号：11 位，1 开头，第二位 3–9
-_PHONE_RE = re.compile(r"(?<!\d)(1[3-9]\d)(\d{4})(\d{4})(?!\d)")
-#: 身份证：18 位（末位可为 X）或 15 位
-_ID_CARD_RE = re.compile(r"(?<!\d)(\d{6})(\d{8})(\d{3}[\dXx])(?!\d)")
-#: 房间/床位号：`302房`、`A栋301`、`12床`
-_ROOM_RE = re.compile(r"([A-Za-z]?\d{1,4})\s*(房|房间|室|床|栋)")
-
-
-def redact_input(text: str) -> str:
-    """手机号/身份证/房间号脱敏（保留可读性，便于人工复核 bad case）。"""
-    if not text:
-        return ""
-    redacted = _ID_CARD_RE.sub(r"\1********\3", text)
-    redacted = _PHONE_RE.sub(r"\1****\3", redacted)
-    return _ROOM_RE.sub(lambda m: f"***{m.group(2)}", redacted)
 
 
 class DecisionLike(Protocol):

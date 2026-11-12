@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import RoleForbiddenError, check_roles
 from app.core.context import get_trace_id
+from app.core.redact import mask_name as _mask_display_name
 from app.core.runtime_context import Identity
 from app.core.security import KIND_DEVICE, KIND_STAFF, sha256_hex
 from app.models import Bed, Device, Elder, Room
@@ -150,11 +151,8 @@ def _binding(device: Device) -> DeviceBinding:
     )
 
 
-def _mask_display_name(name: str) -> str:
-    """候选姓名脱敏：姓 + `*` + 末字（裁决 S-06，例 张桂芬 → 张*芬）。"""
-    if len(name) <= 1:
-        return name
-    return f"{name[0]}*{name[-1]}"
+# 候选姓名脱敏唯一实现在 app/core/redact.py（Day 9 A1b 集中化），
+# `_mask_display_name` 已在文件头 import 处以别名 re-export，调用点签名不变。
 
 
 async def bind_device(

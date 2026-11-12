@@ -27,6 +27,7 @@ from app.core.auth import (
     decode_refresh_token,
 )
 from app.core.config import get_settings
+from app.core.redact import mask_phone
 from app.core.runtime_context import Identity
 from app.core.security import (
     _DEVICE_TOKEN_HASH_PREFIX_LENGTH,
@@ -143,13 +144,8 @@ class CurrentIdentityResult:
 # 工具
 # ---------------------------------------------------------------------------
 
-
-def _mask_phone(phone: str | None) -> str:
-    """日志脱敏：只留后 4 位。空值返回空串。"""
-    if not phone:
-        return ""
-    tail = phone[-4:]
-    return f"****{tail}"
+# 手机号脱敏唯一实现在 app/core/redact.py（Day 9 A1b 集中化，原 _mask_phone 已删除；
+# 日志格式由 `****0001` 统一为 `138****0001`，与响应体口径一致，R-A1）。
 
 
 # ---------------------------------------------------------------------------
@@ -189,25 +185,25 @@ async def login_with_phone(
         if guardian_row is not None:
             logger.error(
                 "phone collision across staff and guardian tables: phone=%s",
-                _mask_phone(phone),
+                mask_phone(phone),
             )
             raise AuthConflictError("手机号冲突")
 
     target = staff_row if staff_row is not None else guardian_row
     if target is None:
-        logger.info("login failed: phone=%s not found in either table", _mask_phone(phone))
+        logger.info("login failed: phone=%s not found in either table", mask_phone(phone))
         raise AuthInvalidError("用户名或密码错误")
 
     # --- 2. 验密码 ---
     if not verify_password(password, target.password_hash):
-        logger.info("login failed: phone=%s password mismatch", _mask_phone(phone))
+        logger.info("login failed: phone=%s password mismatch", mask_phone(phone))
         raise AuthInvalidError("用户名或密码错误")
 
     # --- 3. 状态检查 ---
     if target.status != "active":
         logger.warning(
             "login rejected: phone=%s account status=%s",
-            _mask_phone(phone),
+            mask_phone(phone),
             target.status,
         )
         raise AuthRevokedError("账号已停用")
