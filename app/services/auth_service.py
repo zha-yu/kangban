@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 import uuid
 from dataclasses import dataclass, field
 from typing import Literal
@@ -27,6 +28,7 @@ from app.core.auth import (
     decode_refresh_token,
 )
 from app.core.config import get_settings
+from app.core.context import get_trace_id
 from app.core.redact import mask_phone
 from app.core.runtime_context import Identity
 from app.core.security import (
@@ -36,6 +38,7 @@ from app.core.security import (
     KIND_STAFF_CARD,
     access_ttl_seconds,
     device_ttl_seconds,
+    sha256_hex,
     sign_device_session,
     sign_staff_access,
     sign_staff_refresh,
@@ -473,3 +476,53 @@ async def get_current_identity(
         name=name,
         scope_elder_ids=scope_elder_ids,
     )
+
+
+# ---------------------------------------------------------------------------
+# 生命周期吊销（Day 9 A3 / X12「A 自有」行：auth_service.revoke_all_tokens）
+# ---------------------------------------------------------------------------
+
+
+async def revoke_all_tokens(session: AsyncSession, *, elder_id: uuid.UUID) -> int:
+    """退房流水线步骤①：吊销该长者的全部凭证面。
+
+    - 设备：`devices.token_hash` 轮换（密码学安全随机）→ 旧设备令牌下一次请求即
+      401（auth.py:292 前 16 位前缀判定，AC-24「解绑即失效」同机制）；
+    - 家属：`elder_guardians` active → unbound（解绑保痕，AC-24）→ 家属对该长者的
+      范围授权失效（再访问详情 403）；家属自身账号与 token 不动（账号保留项）。
+
+    无身份检查、不写 DB 审计——权限由 lifecycle REST（admin-only）把关，审计由
+    lifecycle 流水线统一写（X12：审计归 A，每步 1 条，各域不重复写）。
+    """
+    devices = (
+        (await session.execute(select(Device).where(Device.elder_id == elder_id))).scalars().all()
+    )
+    for device in devices:
+        device.token_hash = sha256_hex(secrets.token_urlsafe(32))
+
+    bindings = (
+        (
+            await session.execute(
+                select(ElderGuardian).where(
+                    ElderGuardian.elder_id == elder_id,
+                    ElderGuardian.status == "active",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for binding in bindings:
+        binding.status = "unbound"
+
+    await session.commit()
+    logger.info(
+        "lifecycle revoke_all_tokens",
+        extra={
+            "trace_id": get_trace_id() or "-",
+            "audit_action": "auth.revoke_all_tokens",
+            "target": f"elder:{elder_id}",
+            "result": f"devices:{len(devices)},guardians:{len(bindings)}",
+        },
+    )
+    return len(devices) + len(bindings)
