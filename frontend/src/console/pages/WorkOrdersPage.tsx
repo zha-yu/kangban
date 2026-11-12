@@ -184,6 +184,7 @@ export function WorkOrdersPage({ principal }: WorkOrdersPageProps) {
   const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(new Set());
   const [dialog, setDialog] = useState<ActionDialogState | null>(null);
   const [dialogError, setDialogError] = useState<string | null>(null);
+  const [quickError, setQuickError] = useState<string | null>(null); // F25：确认/开始处理行内错误
   const [busy, setBusy] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -265,11 +266,13 @@ export function WorkOrdersPage({ principal }: WorkOrdersPageProps) {
 
   async function quickAction(order: WorkOrder, action: Extract<TransitionAction, "acknowledge" | "start">) {
     setBusy(true);
+    setQuickError(null);
     try {
       await transitionWorkOrder(order.order_id, action, {}, actor);
       reload();
-    } catch {
-      // Mock 层不会失败；真实接口接入后此处改为行内错误提示
+    } catch (err) {
+      // F25：403/422 不静默——transitionWorkOrder 已把服务端 detail 归一为错误文案
+      setQuickError(err instanceof MockApiError ? err.message : "操作失败，请稍后重试");
     } finally {
       setBusy(false);
     }
@@ -365,6 +368,13 @@ export function WorkOrdersPage({ principal }: WorkOrdersPageProps) {
           共 {filtered.length} 单 · 未处理 {openCount} 单
         </span>
       </div>
+
+      {/* F25：快捷操作（确认/开始处理）失败行内提示，403/422 文案不静默 */}
+      {quickError && (
+        <p className="alert-danger" role="alert">
+          {quickError}
+        </p>
+      )}
 
       {/* 列表：红档置顶已由排序保证 */}
       <ul className="wo-list">
