@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
@@ -285,16 +286,77 @@ def as_mapping(identity: Identity) -> dict[str, object]:
     }
 
 
+# ------------------------------------------------------------------ 闸门①：thread_id 归属（Day 9 A2 增量）
+
+
+class ThreadFormatError(RuntimeContextError):
+    """thread_id 不是服务端生成的长者会话形状（闸门①第一层，纯代码、零 I/O）。"""
+
+
+# 长者会话线程：`identity_service._open_thread()` 按 `(elder_id, session_seq)` 拼接
+# （identity_service.py:143-146），这是唯一允许声称「属于某长者会话」的形状。
+_ELDER_THREAD_RE = re.compile(
+    r"^(?P<elder_id>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):(?P<seq>[0-9]+)$"
+)
+# generic 场景（设备未绑定长者）：uuid4().hex，32 位小写十六进制，不含冒号。
+_GENERIC_THREAD_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def parse_elder_thread_id(thread_id: str) -> tuple[str, int]:
+    """解析服务端生成的长者会话 thread_id，返回 `(elder_id, session_seq)`。
+
+    非长者会话形状（generic 32hex、健康子图线程、客户端随手编的字符串）一律抛
+    `ThreadFormatError` —— 伪造 thread_id 在进数据库之前就死在格式层。
+    形状合法 ≠ 归属合法：后者必须再过 DB 级归属校验（identity_service
+    `validate_thread_belongs_to_device`，identity_service.py:382-401）。
+    """
+    match = _ELDER_THREAD_RE.match(thread_id or "")
+    if match is None:
+        raise ThreadFormatError(f"thread_id is not a server-generated elder session: {thread_id!r}")
+    return match.group("elder_id"), int(match.group("seq"))
+
+
+def is_generic_thread_id(thread_id: str) -> bool:
+    """是否 generic（未绑定长者的设备）会话线程：uuid4().hex 形状。"""
+    return bool(_GENERIC_THREAD_RE.match(thread_id or ""))
+
+
+def thread_matches_device_identity(thread_id: str, identity: Identity) -> bool:
+    """纯代码层的 thread 归属预判：thread 里的 elder_id 是否等于身份携带的 elder_id。
+
+    只对带设备上下文的 `device` / `staff_card` 身份做判定（elder_id 由服务端从
+    `devices` 表读出注入，见 `Identity` 文档）；`staff` / `guardian` 没有 elder 维度，
+    一律 `False` —— 范围授权是服务层的职责，不在鉴权内核里替它做主。
+
+    返回 `False` ≠ 结论：真正的归属裁决以 DB 级
+    `identity_service.validate_thread_belongs_to_device()` 为准（本函数是
+    「零 I/O 快速拒绝」，DB 层是「权威裁决」，两层语义互补不互代）。
+    """
+    if identity.kind not in (KIND_DEVICE, KIND_STAFF_CARD):
+        return False
+    if identity.elder_id is None:
+        return False
+    try:
+        elder_id, _seq = parse_elder_thread_id(thread_id)
+    except ThreadFormatError:
+        return False
+    return elder_id == identity.elder_id
+
+
 __all__ = [
     "IDENTITY_KINDS",
     "Identity",
     "IdentityConstructionError",
     "IdentityNotSetError",
     "RuntimeContextError",
+    "ThreadFormatError",
     "as_mapping",
     "get_identity",
     "identity_scope",
+    "is_generic_thread_id",
+    "parse_elder_thread_id",
     "require_identity",
     "reset_identity",
     "set_identity",
+    "thread_matches_device_identity",
 ]
