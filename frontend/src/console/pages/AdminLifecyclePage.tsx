@@ -134,45 +134,12 @@ export function AdminLifecyclePage() {
         </p>
       )}
 
-      {/* ① 教学数据重置（FR-ADM-02） */}
+      {/* ⓪ 操作对象（①②③ 三个操作共用） */}
       <section className="adm-section">
-        <h2 className="adm-section-title">
-          教学数据重置 <span className="badge badge-danger">危险</span>
-        </h2>
-        <p className="adm-note">
-          清空教学演示期间产生的对话、工单、健康采集等数据并重置到初始状态。该操作不可撤销，请确认当前不在演示进行中。
-        </p>
-        <button
-          type="button"
-          className="btn-secondary"
-          onClick={() => {
-            setNotice(null);
-            setConfirmError(null);
-            setConfirm({
-              title: "重置教学数据",
-              body: "将清空教学演示数据并重置到初始状态，操作不可撤销。确定继续吗？",
-              confirmLabel: "确认重置",
-              action: async () => {
-                await teachingReset();
-                return "教学数据已重置";
-              },
-            });
-          }}
-        >
-          重置教学数据…
-        </button>
-      </section>
-
-      {/* ②③ 长者退房 / 暂离开关（操作对象共用一个长者选择） */}
-      <section className="adm-section">
-        <h2 className="adm-section-title">长者退房与暂离</h2>
-        <p className="adm-note">
-          退房后该长者转为 archived（FR-ADM-09）：pad 端会话失效、家属端不再可见（端到端表现由联调确认）；
-          暂离为临时状态（away），可随时恢复。
-        </p>
+        <h2 className="adm-section-title">选择长者</h2>
         <div className="adm-toolbar">
           <label className="field">
-            <span className="field-label">选择长者</span>
+            <span className="field-label">长者</span>
             <select
               className="field-input"
               value={selectedId}
@@ -195,6 +162,48 @@ export function AdminLifecyclePage() {
             </span>
           )}
         </div>
+      </section>
+
+      {/* ① 教学数据重置（FR-ADM-02）——后端 A4 按长者清数据，绑定上方长者选择 */}
+      <section className="adm-section">
+        <h2 className="adm-section-title">
+          教学数据重置 <span className="badge badge-danger">危险</span>
+        </h2>
+        <p className="adm-note">
+          清空所选长者的对话、工单、健康采集等教学演示数据并重置到初始状态。该操作不可撤销，请确认当前不在演示进行中。
+        </p>
+        <button
+          type="button"
+          className="btn-secondary"
+          disabled={!selected}
+          onClick={() => {
+            if (!selected) return;
+            setNotice(null);
+            setConfirmError(null);
+            setConfirm({
+              title: "重置教学数据",
+              sub: elderLabel(selected),
+              body: `将清空 ${selected.name} 的教学演示数据并重置到初始状态，操作不可撤销。确定继续吗？`,
+              confirmLabel: "确认重置",
+              action: async () => {
+                await teachingReset(selected.elder_id);
+                setSelectedId("");
+                return `${selected.name} 的教学数据已重置`;
+              },
+            });
+          }}
+        >
+          重置教学数据…
+        </button>
+      </section>
+
+      {/* ②③ 长者退房 / 暂离开关（操作对象共用一个长者选择） */}
+      <section className="adm-section">
+        <h2 className="adm-section-title">长者退房与暂离</h2>
+        <p className="adm-note">
+          退房后该长者转为 archived（FR-ADM-09）：pad 端会话失效、家属端不再可见（端到端表现由联调确认）；
+          暂离为临时状态（away），可随时恢复。
+        </p>
 
         <div className="adm-actions">
           <button
