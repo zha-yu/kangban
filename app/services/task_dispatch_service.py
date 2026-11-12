@@ -59,6 +59,7 @@ async def push_health_collection_task(
     source: Literal["scheduler", "staff"],
     operator_id: uuid.UUID | None = None,
     operator_role: str | None = None,
+    now: datetime.datetime | None = None,
 ) -> tuple[DispatchStatus, int]:
     """推送「打开健康采集面板」的 task_command 帧到长者绑定设备。
 
@@ -79,7 +80,8 @@ async def push_health_collection_task(
         logger.info("health_task_no_device elder_id=%s source=%s", elder_id, source)
         return "no_bound_device", 0
 
-    now = datetime.datetime.now(_TZ_SHANGHAI)
+    now = now or datetime.datetime.now(_TZ_SHANGHAI)
+    now = now.replace(tzinfo=_TZ_SHANGHAI) if now.tzinfo is None else now.astimezone(_TZ_SHANGHAI)
     day = now.date()
     message: dict[str, Any] = {
         "type": "task_command",

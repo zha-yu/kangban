@@ -308,9 +308,12 @@ def _session_factory(db: AsyncConnection) -> Callable[[], AsyncSession]:
 
 def _runtime(db: AsyncConnection, hour: int, minute: int) -> HealthSchedulerRuntime:
     tz = ZoneInfo("Asia/Shanghai")
+    today = datetime.datetime.now(tz).date()
     return HealthSchedulerRuntime(
         session_factory=_session_factory(db),
-        now_fn=lambda: datetime.datetime(2026, 11, 11, hour, minute, tzinfo=tz),
+        now_fn=lambda: datetime.datetime(
+            today.year, today.month, today.day, hour, minute, tzinfo=tz
+        ),
     )
 
 
@@ -324,7 +327,8 @@ async def test_panel_push_inside_window_skips_elder_with_record(
 
     await runtime._tick_panel_push()
     assert len(captured) == 1
-    assert captured[0][1]["task_id"] == f"health:{ELDER_ID}:20261111"
+    today = datetime.datetime.now(ZoneInfo("Asia/Shanghai"))
+    assert captured[0][1]["task_id"] == f"health:{ELDER_ID}:{today:%Y%m%d}"
 
     # 补一条当日记录后再 tick：该长者不再被推
     session = AsyncSession(db)

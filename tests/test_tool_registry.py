@@ -249,6 +249,17 @@ async def test_opera_tool_control_actions_return_marker(
         assert result.ok, (action, result.message)
         assert result.data == {"control": action}, action
 
+    # 规则层 R-08 传 repeat，协议侧统一落 replay（§6.5 冻结七动作名）
+    repeat = await executor.execute(
+        tool_name="play_opera",
+        args={"action": "repeat"},
+        runtime=runtime,
+        turn_id=None,
+        idempotency_key="ik-opera-ctl-repeat",
+    )
+    assert repeat.ok, repeat.message
+    assert repeat.data == {"control": "replay"}
+
 
 async def test_work_order_tool_via_mcp(
     session: AsyncSession, elder_id: str, runtime: Identity

@@ -1,4 +1,4 @@
-> 状态：进行中（S0–S7/S10 完成；D1 三偏差收口；**D3 触发＋撤销边界完成；D4 七动作与帧形状冻结完成；D6 服务端 route_degraded 置位完成**；剩演练/验证窗口；S8 卡演练、S9 卡 CP4、D6 e2e 联调）　｜　版本：v2.3　｜　日期：2026-11-11
+> 状态：进行中（S0–S7/S10 完成；D1 三偏差收口；**D3 触发＋撤销边界完成；D4 七动作与帧形状冻结完成；D6 服务端 route_degraded 置位完成**；剩演练/验证窗口；S8 卡演练、S9 卡 CP4、D6 e2e 联调）　｜　版本：v2.4　｜　日期：2026-11-12
 > 关联：docs/team_tasks/day08/dev-D-日报通知API与family-pad.md（v1.2，本计划的任务来源）｜docs/plans/day08/day-08-健康采集与三端后台.md（v1.2，全量上游计划）｜docs/team_tasks/day08/day08-任务总览与DAG.md（v1.1，对接点 X1–X9 与全局节奏）
 > 上游依据：PRD line 405/409–412（FR-RPT-01~04 验收）、line 401（FR-ALT-06）、line 254（FR-UI-08）、line 294–297（FR-CON-03/04/06）、line 459（FR-TC-09）、line 381–391（通知状态机）、line 495/500/505/507/508/519/520（AC-13/18/23/25/26/37/38）、line 94–95（媒体分发/家属无障碍）、line 527–538（固定测试集）、line 576（Day 8 完成定义）｜技术设计文档 line 653–665（daily_reports）、line 667–684（notifications）、line 633–651（media 两表）、line 686–702（decision_logs）、line 1144–1164（Day 8 实现口径）
 > 变更记录见文末
@@ -496,8 +496,8 @@ uv run python scripts/update_progress.py --check-plans
 | AC-23 通知状态机 | 仅 delivered 可确认、跳步 409、幂等 | `test_alerts_api.py` 中 `::test_acknowledge_delivered_then_idempotent`＋`::test_acknowledge_before_delivered_is_conflict[generated/pending/failed]`（3 参数化） | ✅ |
 | AC-26 撤销边界 | 普通已服 10 秒可撤销；红色事件只追加「说错了」且保持 open | `test_medication_undo.py` 4 例（窗口内恢复 waiting_confirm＋审计／超窗 409／非已服终态 409／他人 404）；`test_sos_service.py` 3 例＋`test_sos_api.py` 3 例（追加说明 status 保持 open＋审计／他人 404／已关闭 409）；`test_pad_undo_api.py` 6 例 | ✅ 接口级；AC-26 联演待窗口 |
 | AC-13/18 家属日报范围 | 家属只见绑定长者；越权 403+审计 | `tests/test_reports_api.py` 9 例（F0 三字段、F1 最新版＋80 字预览、F2 四键＋声明、越权 403＋审计、404）；D2 已切真 | ✅ |
-| AC-38 双通知（家属侧） | 红色事件 → 家属可见一条 is_mock 通知 | N1 接口已交付（提前件），但 X5/X7 演练未做（卡 D1） | ⛔ 待演练 |
-| AC-37 戏曲（pad 侧） | 七动作可控、可打断 | pad 播放器 16 步断言；服务端 action 分支＋`media_control` 下发（新增 executor 3 例＋companion 2 例）；全量 1348 passed | 🚧 代码全链路通；CP4 四方联演待窗口 |
+| AC-38 双通知（家属侧） | 红色事件 → 家属可见一条 is_mock 通知 | 演练脚本实证：staff/guardian 双通知（guardian 状态 generated→pending→delivered、is_mock=true）；补齐 `safety_service`/`sos_service` 的家属通知缺链；证据 `eval/artifacts/day08_drill_evidence.md` | ✅ 接口级；UI 截图待窗口 |
+| AC-37 戏曲（pad 侧） | 七动作可控、可打断 | 演练脚本实证：R-01~R-08 直连产出 media_control（含 next_track 带 media、repeat→replay、interrupt 不发帧）；证据 `eval/artifacts/day08_drill_evidence.md` | ✅ 代码+脚本；CP4 四方联演待窗口 |
 | FR-TC-09 门禁拦截 | 人为调坏规则层 → 门禁 EXIT≠0 | `eval/reports/day8_frtc09_intercept.md`（PASS→FAIL→还原→PASS 四步）＋ `day8_frtc09_{before,tampered,after}.md` | ✅ |
 | FR-TC-09 分层归因 | 报告含七层归因表 | `eval/reports/day8_eval_baseline.md` §3（ASR/召回/LLM/Tool 如实标「无数据」） | ✅ |
 | FR-TC-09 bad case 回流 | 失败项落盘有记录 | `eval/fixtures/badcase_backlog.jsonl`（15 条，run_id `20261111-145521`） | ✅ |
@@ -588,3 +588,4 @@ uv run python scripts/update_progress.py --check-plans
 | v2.1 | 2026-11-11 | **Q-D11 帧冻结＋四项契约留痕**：照护台契约 v1.5（§6.2 play_opera 入参 query/action 二选一、§6.5 新增 media 帧形状并否决 `stream_id`/`media_info`、§3.2 N-3 幂等口径）；day08 contracts v1.1（§P-2 撤销/说明端点冻结、§6 route_degraded 引用登记）；`adhoc-20261111-ws-media-control-frame.md` 标「已废弃」；计划 §9 Q-D10/Q-D11、§12.1 #5/#7/#9 同步。代码零改动（D 实现与冻结口径一致） |
 | v2.2 | 2026-11-11 | **D6 服务端置位完成（跨 B 写域代改留痕）**：`turn_service._is_route_degraded`（仅 fallback＋action=agent＋生成未降级为真）→ `response_service` 逐段恒下发 `route_degraded`；`main.py` legacy 出口与 `medication_confirmation_graph` 触达帧恒 `false`；`signaling.TtsTextMsg` 与 `dialogue_service.TtsTextMsgV2` 同步声明；新增 turn_service 集成用例 1 例＋response/dialogue/signaling 形状断言 3 处。**D3 复核收口**：`append_correction` 增 `type='sos'` 过滤（非 sos 红事件按 404），补 service 用例 1 例。day08 contracts §6 状态回填 v1.2（口径零变更）。残项：D6 e2e（杀 sidecar）与 AC-26 联演待窗口 |
 | v2.3 | 2026-11-11 | **通知域两处收尾＋完成定义表同步**：`_require_transition` 改抛 `NotificationIllegalTransition`（R-D11 闭环）；§11 把 N-3 归属、AC-13/18、375px 三项改 ✅ 并更新全量回归数字（1389 passed / 0 failed）；R-D10/R-D11、§12.2、§12.3 全部标已闭环；诚实结论收敛为「仅 AC-38 演练与 AC-37 CP4 待窗口」 |
+| v2.4 | 2026-11-12 | **演练窗口类事项取证＋三处代码缺口修复**：① `safety_service`/`sos_service` 补家属通知（AC-38 双通知，无绑定跳过留痕）；② 规则 R-08 `repeat`→`replay` 映射，修复「重复一遍」坏路径；③ `interrupt` 按 §6.5 不下发 WS 媒体帧；④ 健康面板 `taskId` 改为使用调度注入时钟（修跨日测试）；⑤ 发现本地 media_library 种子含流行/摇滚等非戏曲 genre（不符 X8 §6.4），需重跑 `scripts/generate_opera_seed.py`。演练证据：`eval/artifacts/day08_drill_evidence.md`（SOS 86ms 红单+双通知、staff 四态/guardian 三态、七动作帧）。全量 **1390 passed / 0 failed** |

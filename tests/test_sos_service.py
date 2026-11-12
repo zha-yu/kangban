@@ -15,10 +15,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.models.audit import AuditLog
+from app.models.guardian import GuardianAccount
 from app.models.medication import RiskEvent, WorkOrder
 from app.models.notifications import Notification
 from app.models.organization import Elder
-from app.models.relation import ElderStaffAssignment
+from app.models.relation import ElderGuardian, ElderStaffAssignment
 from app.models.staff import StaffAccount
 from app.services import sos_service
 
@@ -86,6 +87,39 @@ async def test_trigger_sos_creates_event_order_notification(
     ).scalar_one()
     assert notif.target_type == "staff"
     assert notif.type == "sos"
+
+
+async def test_trigger_sos_also_notifies_guardian(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    """AC-38 双通知：SOS 红色事件同时给 active 家属落一条 is_mock 通知。"""
+    guardian = GuardianAccount(name="SOS测试家属", password_hash="x" * 32)
+    session.add(guardian)
+    await session.flush()
+    session.add(
+        ElderGuardian(
+            elder_id=seeded["elder_id"],
+            guardian_id=guardian.guardian_id,
+            relation="女儿",
+            status="active",
+        )
+    )
+    await session.flush()
+
+    result = await sos_service.trigger_sos(session, elder_id=seeded["elder_id"])
+
+    notif = (
+        await session.execute(
+            select(Notification).where(
+                Notification.dedupe_key == f"sos:{result.event_id}:guardian:{guardian.guardian_id}"
+            )
+        )
+    ).scalar_one()
+    assert notif.target_type == "guardian"
+    assert notif.target_id == guardian.guardian_id
+    assert notif.type == "sos"
+    assert notif.status == "generated"
+    assert notif.is_mock is True
 
 
 async def test_trigger_sos_idempotent_while_open(

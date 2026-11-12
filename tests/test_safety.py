@@ -25,12 +25,15 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 from tests.fixtures.safety_normal_corpus import NORMAL_CORPUS
 
 from app.models import Elder, ElderStaffAssignment, StaffAccount
+from app.models.guardian import GuardianAccount
+from app.models.relation import ElderGuardian
 from app.router.safety import SafetyDecision, safety_check
 from app.services.safety_service import EscalationResult, escalate_safety_event
 
 # 占位 UUID：固定值便于断言，均为虚构（AGENTS §4.3，不写真实长者数据）
 ELDER_ID = uuid.UUID("22222222-3333-4444-5555-666666666666")
 STAFF_ID = uuid.UUID("33333333-4444-5555-6666-777777777777")
+GUARDIAN_ID = uuid.UUID("44444444-5555-6666-7777-888888888888")
 
 #: 触发样本（AC-04 主样本）
 HIT_TEXT = "我胸口疼"
@@ -345,6 +348,38 @@ async def test_red_event_writes_three_tables_and_vetoes_agent(
     assert notification.retry_count == 0
     assert notification.dedupe_key == f"risk:{result.event_id}"
     assert notification.dedupe_key.startswith("risk:")
+
+
+async def test_red_event_also_notifies_guardian(safety_db: AsyncConnection) -> None:
+    """AC-38 双通知：红色事件同时给 active 家属落一条 is_mock 通知。"""
+    await _seed_elder_with_primary_care(safety_db)
+    await safety_db.execute(
+        GuardianAccount.__table__.insert().values(
+            guardian_id=GUARDIAN_ID, name="测试家属", password_hash="x" * 32
+        )
+    )
+    await safety_db.execute(
+        ElderGuardian.__table__.insert().values(
+            elder_id=ELDER_ID, guardian_id=GUARDIAN_ID, relation="女儿", status="active"
+        )
+    )
+
+    result = await _escalate_chest_pain(safety_db)
+
+    guardian_notification = (
+        await safety_db.execute(
+            text(
+                "SELECT target_type, target_id, type, status, is_mock "
+                "FROM notifications WHERE dedupe_key = :k"
+            ),
+            {"k": f"risk:{result.event_id}:guardian:{GUARDIAN_ID}"},
+        )
+    ).one()
+    assert guardian_notification.target_type == "guardian"
+    assert guardian_notification.target_id == GUARDIAN_ID
+    assert guardian_notification.type == "emergency_health"
+    assert guardian_notification.status == "generated"
+    assert guardian_notification.is_mock is True
 
 
 async def test_duplicate_notification_is_deduped(safety_db: AsyncConnection) -> None:

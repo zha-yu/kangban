@@ -101,6 +101,23 @@ async def trigger_sos(session: AsyncSession, *, elder_id: uuid.UUID) -> SosResul
         payload={"title": "一键求助", "summary": "长者按下 SOS 按钮，请立即响应"},
         dedupe_key=f"sos:{event.event_id}",
     )
+    # AC-38：红色事件家属侧也要有记录（无 binding 时跳过，不影响主链路）
+    try:
+        await notify_service.send_guardian_notifications(
+            session,
+            elder_id=elder_id,
+            ntype="sos",
+            payload={
+                "elder_id": str(elder_id),
+                "event_id": str(event.event_id),
+                "severity": "red",
+                "brief": "长者按下了一键求助，护工已收到通知",
+            },
+            dedupe_key=f"sos:{event.event_id}:guardian",
+            is_mock=True,
+        )
+    except notify_service.NotificationTargetNotFound:
+        logger.info("sos_guardian_skipped_no_binding elder_id=%s", elder_id)
     logger.warning(
         "sos_triggered event_id=%s elder_id=%s order_id=%s", event.event_id, elder_id, ref.order_id
     )

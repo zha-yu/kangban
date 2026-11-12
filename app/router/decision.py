@@ -358,9 +358,11 @@ class Router:
             media = data.get("media") or {}
             device_id = getattr(runtime.identity, "device_id", None)
             if control:
-                await self.media_frame_sink(
-                    device_id, {"type": "media_control", "action": str(control)}
-                )
+                # §6.5 冻结：interrupt 由 pad 端 barge-in 收口，不走 WS 媒体帧
+                if str(control) != "interrupt":
+                    await self.media_frame_sink(
+                        device_id, {"type": "media_control", "action": str(control)}
+                    )
             elif data.get("found") and media.get("media_url"):
                 await self.media_frame_sink(
                     device_id,
