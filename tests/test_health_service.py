@@ -147,10 +147,12 @@ import pytest_asyncio  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker  # noqa: E402
 
+from app.models.guardian import GuardianAccount  # noqa: E402
 from app.models.health import HealthRecord  # noqa: E402
 from app.models.medication import RiskEvent, WorkOrder  # noqa: E402
+from app.models.notifications import Notification  # noqa: E402
 from app.models.organization import Elder  # noqa: E402
-from app.models.relation import ElderStaffAssignment  # noqa: E402
+from app.models.relation import ElderGuardian, ElderStaffAssignment  # noqa: E402
 from app.models.staff import StaffAccount  # noqa: E402
 from app.services import health_service  # noqa: E402
 
@@ -260,10 +262,16 @@ async def test_create_green_health_record_no_risk_event(
     assert ref.work_order_id is None
 
 
-async def test_create_red_health_record_risk_event_not_work_order(
+async def test_create_red_health_record_builds_red_work_order(
     session: AsyncSession, seeded: dict[str, Any]
 ) -> None:
-    """红档 → risk_event 建 red；工单**不建**（红档走 safety_service/dev-C）。"""
+    """红档 → risk_event 建 red + **紧急工单 severity=red**（AC-22/AC-23；PRD §4.6）。
+
+    2026-11-12 修订：原口径「红档不建工单（走 safety_service）」经走查证伪——
+    safety_service 只有 SOS 链路，健康红档的紧急工单从未有人建，前端
+    「将创建紧急工单」文案一直无法兑现。红档现与黄档同走 A12 建单口。
+    无家属绑定的 seeded 场景下通知只记警告，不阻断建单。
+    """
     ref = await health_service.create_health_record(
         session,
         elder_id=seeded["elder_id"],
@@ -280,7 +288,61 @@ async def test_create_red_health_record_risk_event_not_work_order(
 
     assert ref.severity == SEVERITY_RED
     assert ref.risk_event_id is not None
-    assert ref.work_order_id is None  # 红档不建工单（AGENTS §2 分层约束）
+    assert ref.work_order_id is not None  # 红档建紧急工单（dedupe 幂等）
+
+    order = (
+        await session.execute(select(WorkOrder).where(WorkOrder.order_id == ref.work_order_id))
+    ).scalar_one_or_none()
+    assert order is not None
+    assert order.severity == "red"
+    assert order.type == "health_alert"
+    assert order.event_id == ref.risk_event_id
+
+
+async def test_red_record_notifies_active_guardian(
+    session: AsyncSession, seeded: dict[str, Any]
+) -> None:
+    """红档 + active 家属绑定 → notifications 落一条（S-02 三键 + dedupe 键）。"""
+    guardian = GuardianAccount(name="张小红", password_hash="x" * 32)
+    session.add(guardian)
+    await session.flush()
+    session.add(
+        ElderGuardian(
+            elder_id=seeded["elder_id"],
+            guardian_id=guardian.guardian_id,
+            relation="女",
+            status="active",
+        )
+    )
+    await session.flush()
+
+    ref = await health_service.create_health_record(
+        session,
+        elder_id=seeded["elder_id"],
+        source="voice_active",
+        systolic=185,
+        diastolic=90,
+        sleep_hours=7.0,
+        mood_score=4,
+        mood_note=None,
+        complaint=None,
+        operator_id=None,
+    )
+    await session.flush()
+
+    assert ref.work_order_id is not None
+    # 通知服务按「逐监护人」派生键：<dedupe_key>:<guardian_id>（notify_service §L149）
+    notif = (
+        await session.execute(
+            select(Notification).where(
+                Notification.dedupe_key.like(f"health_red_alert:{ref.record_id}:%")
+            )
+        )
+    ).scalar_one_or_none()
+    assert notif is not None
+    assert notif.target_type == "guardian"
+    assert notif.payload["elder_name"] == "张桂芬"
+    assert notif.payload["record_id"] == str(ref.record_id)
 
 
 # ------------------------------------------------------------------ AC-22 黄升红
@@ -324,7 +386,17 @@ async def test_yellow_to_red_upgrade_no_second_risk_event(
 
     assert second.severity == SEVERITY_RED
     assert second.risk_event_id == first_event_id  # 同一个 risk_event，不新建
-    assert second.work_order_id is None  # 工单不重复建
+    assert second.work_order_id is not None  # 红档善后建紧急工单（first 是黄档单，不冲突）
+
+    # first 单（黄）与 second 单（红）并存，severity 各自正确
+    first_order = (
+        await session.execute(select(WorkOrder).where(WorkOrder.order_id == first.work_order_id))
+    ).scalar_one_or_none()
+    second_order = (
+        await session.execute(select(WorkOrder).where(WorkOrder.order_id == second.work_order_id))
+    ).scalar_one_or_none()
+    assert first_order is not None and first_order.severity == "yellow"
+    assert second_order is not None and second_order.severity == "red"
 
     # 验证原事件已升级
     event = (
@@ -332,7 +404,7 @@ async def test_yellow_to_red_upgrade_no_second_risk_event(
     ).scalar_one_or_none()
     assert event is not None
     assert event.severity == "red"
-    assert event.status == "open"  # 保持 open，不 escalate
+    assert event.status == "open"  # 保持 open，escalated 由 AC-12 定时链负责
 
 
 # ------------------------------------------------------------------ AC-32 代填越权
@@ -546,8 +618,9 @@ __all__ = [
     "TestGradeHealthPure",
     "test_create_green_health_record_no_risk_event",
     "test_create_health_record_version_defaults_to_1",
-    "test_create_red_health_record_risk_event_not_work_order",
+    "test_create_red_health_record_builds_red_work_order",
     "test_create_yellow_health_record_builds_work_order_and_risk_event",
+    "test_red_record_notifies_active_guardian",
     "test_review_confirm_does_not_create_new_version",
     "test_review_correct_creates_new_version_chain",
     "test_rule_version_always_written",

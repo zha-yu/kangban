@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 
 from app.api import health_records as health_records_api
@@ -37,6 +37,7 @@ from app.core.trace import TraceIdMiddleware
 from app.db import get_session
 from app.models import Bed, Device, Elder, Room
 from app.models.audit import AuditLog
+from app.models.health import HealthRecord
 from app.models.relation import ElderStaffAssignment
 from app.models.staff import StaffAccount
 from app.scheduler.health_jobs import HealthSchedulerRuntime
@@ -324,9 +325,13 @@ async def test_panel_push_inside_window_skips_elder_with_record(
 
     await runtime._tick_panel_push()
     assert len(captured) == 1
-    assert captured[0][1]["task_id"] == f"health:{ELDER_ID}:20261111"
+    # 与代码同口径取上海时间当天（写死日期会在跨日后必挂）
+    expected_day = datetime.datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d")
+    assert captured[0][1]["task_id"] == f"health:{ELDER_ID}:{expected_day}"
 
-    # 补一条当日记录后再 tick：该长者不再被推
+    # 补一条当日记录后再 tick：该长者不再被推。
+    # recorded_at 显式对齐 runtime 冻结时钟（2026-11-11）：recorded_at 默认取
+    # 真实 now，跨午夜后「当日记录」判定与冻结的 tick 日期劈叉（漏判已答长者）。
     session = AsyncSession(db)
     try:
         await health_service.create_health_record(
@@ -340,6 +345,13 @@ async def test_panel_push_inside_window_skips_elder_with_record(
             mood_note=None,
             complaint=None,
             operator_id=None,
+        )
+        await session.execute(
+            update(HealthRecord)
+            .where(HealthRecord.elder_id == ELDER_ID)
+            .values(
+                recorded_at=datetime.datetime(2026, 11, 11, 19, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+            )
         )
         await session.commit()
     finally:
