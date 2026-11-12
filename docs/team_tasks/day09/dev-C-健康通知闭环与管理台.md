@@ -1,0 +1,478 @@
+> 状态：未开始　｜　版本：v1.0　｜　日期：2026-11-12
+> 负责人：**dev-C（唯一）**　｜　任务包：**C · 健康通知闭环与管理台**　｜　容量：**21h ＝ 2.625 人日**
+> 关联：docs/team_tasks/day09/day09-任务总览与DAG.md v1.0（§4.3 分工、§5 对接点、§6 写域）｜docs/team_tasks/day09/contracts.md（X1/X2/X3/X5/X6/X7/X10/X11 消费与提供）
+> 上游依据：PRD line 357–361（分级三档原文＋校验）、line 365–374（FR-HLT-01~10）、line 378–392（告警与通知状态机，**line 387 只有客户端回执算 delivered**、**line 392 工单关闭后事件才可关闭**）、line 394–400（FR-ALT-01~05）、line 405–412（FR-RPT-01~04）、line 441（FR-ADM-07 人设）、line 297（FR-CON-06 点播历史）、line 458（FR-TC-08 `/metrics`）、line 487–505（AC-09/10/13/21/22/23/25/38）｜技术设计文档 line 1017–1018（分级在代码＋HITL）、line 1169（api/memory、api/stats、console 四页）、line 1172（人设/记忆/统计/导出功能验收）
+> 遗留承接：**F01（notify 侧）F04 F05（service 侧）F07（复核落库）F11 F12 F13 F21（media_service）F25 F26 F30（生成侧）**
+> 变更记录见文末
+
+---
+
+# dev-C · Day 9 任务书 · 健康通知闭环收口 ＋ console 管理台
+
+## 0. 你的边界（先读这条）
+
+### 0.1 写域仅限（越界即返工）
+
+```
+app/services/health_service.py
+app/services/notify_service.py
+app/services/report_service.py
+app/services/media_service.py
+app/services/work_order_service.py
+app/services/safety_service.py
+app/services/persona_service.py
+app/services/elder_service.py         （增量：人设绑定）
+app/core/context.py                   （人设 prompt 注入点，X6）
+app/api/health_records.py
+app/api/stats.py                      （新增，FR-ALT-05）
+app/api/memory.py                     （新增，消费 X5）
+app/api/personas.py                   （新增，FR-ADM-07）
+app/api/metrics.py                    （新增，FR-TC-08）
+app/api/alerts.py                     （增量：admin 重扫端点）
+app/api/__init__.py                   （仅末尾追加 4 行 ROUTERS）
+frontend/src/console/**
+对应 tests
+```
+
+### 0.2 禁触
+
+`app/models/**`、`alembic/**`（A）、`app/graphs/**`、`app/scheduler/**`、`app/agents/**`、`app/router/**`、`app/main.py`（**B 独占**）、`app/services/memory_service.py`（B）、`app/services/tool_impls.py`／`tool_executor.py`（B）、`app/core/redact.py`／`logging.py`／`runtime_context.py`（A）、`frontend/src/pad/**`／`family/**`（D）、`app/api/audio.py`／`reports.py`／`family.py`（D）、`tests/eval_gate.py`（D）。
+
+**两处特别注意**：
+- **`app/scheduler/` 归 B**：C3 的日报时点与重试节奏，**你只提供退避函数 `next_retry_at`（X11），由 B 挂 cron**。你不改调度文件。
+- **`app/api/` 禁 import `graphs`**（AGENTS §2.2）：F07 复核**只写库**，resume 由 B 的 scheduler 扫描完成（X7）。
+
+### 0.3 高风险文件（AGENTS §5：先出方案再落代码＋人工逐行读 diff）
+
+`app/core/context.py`（prompt 注入相邻）、`app/services/safety_service.py`（安全一票否决相邻）。**这两处必须先出方案经确认后才落代码。**
+
+### 0.4 角色口径
+
+本包**不含**独立测试/产品/设计角色工作。单测与接口测试是开发内嵌交付物；console 四页按**既有页面风格与 PRD 既有要求**实现（原生 CSS＋`var()` 引 tokens.css，**不引组件库**，PRD line 88／v2.7 裁决），不产生新设计工作。
+
+---
+
+## 1. 节点 C1 · 血压分级回正 ＋ 计划件回改（2h）
+
+**前置**：N0。**无其他前置，D9 上午第一个开工（B3 在等 X2）。**
+**对接**：**提供 X2**（分级签名＋`rule_version='g2'`）给 B3。
+
+### 1.1 现状实测（根因在计划件，不是笔误）
+
+**代码侧**：
+- `app/services/health_service.py:70-96` 常量：`RULE_VERSION="g1"`、`SYSTOLIC_RED_UPPER=180`、**`SYSTOLIC_RED_LOWER=90`**、`DIASTOLIC_RED_UPPER=120`、**`DIASTOLIC_RED_LOWER=60`**、`SYSTOLIC_YELLOW_LOWER=140`、`DIASTOLIC_YELLOW_LOWER=90`、`SLEEP_YELLOW_HOURS=5.0`、`MOOD_YELLOW=2`、`SYSTOLIC_GREEN_UPPER=139`、`DIASTOLIC_GREEN_UPPER=89`、**`SLEEP_GREEN_UPPER=12.0`**。
+- `:150-159`：`if valid >= SYSTOLIC_RED_UPPER or valid <= SYSTOLIC_RED_LOWER: → RED`（舒张压同构于 `:162-171`）→ **90 判红**（PRD 属绿）、**<90 判红**（PRD 属黄）。
+- `:183-186` 睡眠 >12h 判黄（**无 PRD 依据**）。
+- `:214` 注释「complaint…当前版本仅参与日志，不单独触发升级」＋`:238-239` `if complaint: logger.debug(...)` → **非急症主诉不判黄**。
+
+**计划件侧（同样写错，必须同提交回改）**：
+- `docs/plans/day08/dev-a-数据分级规则层.md:170-171`「DIASTOLIC_RED: 120 # 舒张压 ≥120 **或 ≤90（低血压）**」
+- `:179`「SYSTOLIC_LOW_NORMAL: 90 # 收缩压 ≤90 触发判红」
+- `:214`「红：… OR 收缩压 ≤90 OR 舒张压 ≤60」
+- `:217`「绿：… 睡眠 **5–12h**」
+
+### 1.2 目标口径（PRD line 357–359 原文，唯一依据）
+
+| 等级 | 规则 |
+| --- | --- |
+| **红** | 收缩压 **≥180** 或 舒张压 **≥120**；或命中急症症状规则。**低血压不判红** |
+| **黄** | 收缩压 140–179；舒张压 90–119；**收缩压 <90**；**舒张压 <60**；睡眠 <5h；mood ≤2 且未命中急症；**非急症主诉**；任一采集项缺失 |
+| **绿** | 收缩压 **90–139** 且 舒张压 **60–89**，其他无异常 |
+
+PRD line 361：睡眠 **>24h** 才无效（**不是 >12h**）；无红分量但血压任一分量缺失判黄；每次分级保存 `rule_version`。
+
+### 1.3 要做什么
+
+1. 删除 `SYSTOLIC_RED_LOWER`／`DIASTOLIC_RED_LOWER` 两常量及其判红分支；`<90`／`<60` 改判黄。
+2. 删除 `SLEEP_GREEN_UPPER=12.0` 与 >12h 判黄分支；睡眠上界只保留 **>24h 无效**校验。
+3. `complaint` 非空且未命中急症 → **判黄**（删除「仅参与日志」注释与 `logger.debug` 占位）。
+4. **`RULE_VERSION` 由 `g1` 升 `g2`**；既有 `g1` 记录**不回改**，保留历史可追溯。
+5. **同提交回改 `docs/plans/day08/dev-a-数据分级规则层.md`**：修正 line 170-171/179/214/217，并在该件文末变更记录新增一条，写明「依据 PRD line 357-359 回改，原稿把低血压误写为判红、自加睡眠 12h 上界」。**不许静默改计划件**（AGENTS §10）。
+6. 既有测试若断言了错误阈值（如期望 90→red），**改测试期望值而非改 PRD 口径**，提交正文说明依据。
+
+### 1.4 交付物清单
+
+| # | 交付物 |
+| --- | --- |
+| 1 | `health_service.py` 阈值与主诉分支修正 |
+| 2 | `docs/plans/day08/dev-a-数据分级规则层.md` 回改＋变更记录（**同提交**） |
+| 3 | 9 个边界值参数化测试 |
+| 4 | 主诉/睡眠上界/缺失判黄测试 |
+
+### 1.5 量化验收（9 个边界断言，逐条可执行）
+
+| 输入（收缩压/舒张压） | 期望 | 依据 |
+| --- | --- | --- |
+| `90/60` | **绿** | PRD:359 |
+| `89/60` | **黄** | PRD:358 收缩压 <90 |
+| `90/59` | **黄** | PRD:358 舒张压 <60 |
+| `139/89` | **绿** | PRD:359 |
+| `140/89` | **黄** | PRD:358 |
+| `90/90` | **黄** | PRD:358 舒张压 90–119 |
+| `180/80` | **红** | PRD:357 |
+| `120/120` | **红** | PRD:357 舒张压 ≥120 |
+| `179/119` | **黄** | PRD:358 |
+
+| 其他判据 | 期望 |
+| --- | --- |
+| 主诉「有点头晕」＋血压正常 | **黄** |
+| 睡眠 13h＋其余正常 | **绿**（不再误判黄） |
+| 睡眠 25h | **无效标缺失 → 黄** |
+| `grep -n "RED_LOWER\|SLEEP_GREEN_UPPER" app/services/health_service.py` | **零命中** |
+| 新记录 `rule_version` | **`g2`** |
+| `SYSTOLIC_RED_UPPER=180`／`DIASTOLIC_RED_UPPER=120` | **不变**（PRD §7 硬性数值） |
+
+```bash
+uv run pytest tests/test_health_service*.py -q
+uv run ruff check app tests && uv run ruff format --check app tests
+```
+
+**CP-C1**：报告 9 个边界实测表＋计划件回改 diff 摘要。**须 D9 12:00 前交付 X2**（B3 在等）。
+
+---
+
+## 2. 节点 C2 · 红档建单双通知 ＋ 升级对象 ＋ 事件关闭联动 ＋ 域清理钩子（5h）
+
+**前置**：C1。**对接**：**提供 X3**（`notify_red_dual`）给 B3、**X12**（四个域 purge 钩子）给 A3；消费 X9（错误体/审计口径）。
+
+### 2.1 现状实测
+
+- `app/services/health_service.py:396-422`：建 `RiskEvent(type="health_alert", severity=grade.severity, source_type="health_record", source_id=record.record_id, status="open")` 后，`:410` **只有 `if grade.severity == SEVERITY_YELLOW:` 分支建单**；注释写「红档走 safety_service（dev-C），本函数不重复建单」。**该模块从未 import `notify_service`** → REST 录入的红档**不建单、不通知**，风险事件永久 open。
+- `app/services/notify_service.py:718-770 escalate_red_event`：`:739` 正确写 `event.status="escalated"`（不建第二事件/工单 ✓），但 `:759 send_staff_notifications(session, elder_id=event.elder_id, ntype="escalated_red_event", …)` → 走 **primary_care 护工**，**不是 admin**。
+- `:692-715 scan_escalations`：docstring 声称「无 acknowledged_at」，实际 WHERE 只有 `status=="open"`／`severity=="red"`／`created_at < cutoff`。
+- `risk_events.acknowledged_at`／`closed_at` 在 `app/services/safety_service.py:82-83` 与 `:107` 声明，**从不写入**；`closed_at` 全仓唯一写入点是 `app/services/work_order_service.py:387`（写的是**工单**）。
+- `safety_service.escalate_safety_event` **已合规接线**（`main.py:94/:412`、`dialogue_service.py:439`），语音急症 AC-04 通路成立——**不要动它**。
+
+### 2.2 要做什么
+
+1. **F05 红档建单＋双通知**：`health_service.py` 补红档分支——`open_work_order(severity="red", dedupe_token=f"health_record:{record_id}:red", assignee=resolve_primary_care_staff(...))` ＋ 新增 **`notify_red_dual`**（X3 签名）同时发**责任护工＋监护人各 1 条**。
+2. **去重**：语音路径（B 的子图）与 REST 路径共用同一 `dedupe_token`；同键重复 → 返回原结果；同键异内容 → **409**。**建单统一由你这边做，B 的子图不另建一单**。
+3. **F12 升级对象改 admin**：`escalate_red_event` 的 `:759` 改为按 **admin 角色**查收件人，不用 `resolve_primary_care_staff`；保持「不建第二事件/第二工单」。
+4. **F12 扫描条件**：`scan_escalations` WHERE 补 `acknowledged_at IS NULL`，与 docstring 一致。
+5. **F13 事件确认/关闭联动**：告警确认路径写 `risk_events.acknowledged_at`；**工单关闭时**联动关闭关联 `risk_events`（写 `closed_at`），**顺序不可反**；未关工单时拒绝直接关事件（**409**）。
+6. **X12 四个域清理钩子（1h）**：`health_service`／`notify_service`／`report_service`／`work_order_service` 各增 `purge_elder_data(session, *, elder_id, reason) -> PurgeRef`。**`reason=checkout` 时健康数据脱敏归档（调 A 的 `redact.py`，不物理删）；`reason=teaching_reset` 时清除**。**审计由 A 统一写，你不重复写**；保留账号/角色/配置；同键幂等。**A 不直写你的表，你也不直写 A/B 的表。**
+
+### 2.3 交付物清单
+
+| # | 交付物 |
+| --- | --- |
+| 1 | `health_service.py` 红档建单分支＋`notify_red_dual` |
+| 2 | `notify_service.py` 升级对象改 admin＋扫描补确认过滤 |
+| 3 | `safety_service.py`／`work_order_service.py` 事件确认与关闭联动 |
+| 3b | 四个域 `purge_elder_data` 钩子（X12）＋单测 |
+| 4 | 两路径（REST／语音）幂等去重集成测试 |
+| 5 | X3 签名冻结与联调证据（与 B3） |
+
+### 2.4 量化验收
+
+| 场景 | 期望 | 依据 |
+| --- | --- | --- |
+| REST 录入 `185/95` | `risk_events` **1** 条 red open ＋ `work_orders` **1** 条 red ＋ `notifications` **2** 条（护工＋监护人各 1） | PRD:357／FR-ALT-01／AC-38 |
+| 语音路径同输入 | 同样 **2** 条通知，**不产生第二事件/第二工单** | AC-22／AC-38 |
+| 同 `record_id` 重复提交 | 幂等返回原结果；同键异内容 **409** | AGENTS §8 |
+| 红档 2 分钟未确认 | 原事件 `escalated` ＋ **admin 收到通知**、护工不重复收；`risk_events` **行数不变** | PRD:385 |
+| 已确认事件 | **不被升级扫描命中** | F12 |
+| 工单 open 时关事件 | **409** | PRD:392 |
+| 工单 closed | 事件 `closed_at` **非空** | PRD:392 |
+| 确认告警 | `acknowledged_at` **非空** | F13 |
+| 通知状态 | 遵循 X1：**无回执时 `pending`，不得直接 `delivered`** | PRD:387 |
+
+```bash
+uv run pytest tests/ -q -k "health_service or notify or work_order or safety"
+```
+
+**SQL 核对模板**（联调留证用）：
+```sql
+SELECT severity, status FROM risk_events WHERE source_id = :record_id;      -- 期望 1 行 red/open
+SELECT severity, status FROM work_orders WHERE event_id = :event_id;        -- 期望 1 行 red
+SELECT target_type, status FROM notifications WHERE elder_id = :elder_id
+  AND created_at > :t0;                                                     -- 期望 2 行：staff + guardian
+```
+
+**CP-C2**：报告两路径三表行数对照＋幂等重放结果＋升级收件人角色。**须 D10 15:00 前冻结 X3 并联调**（B3 在等）。
+
+---
+
+## 3. 节点 C3 · 送达真链路 ＋ 日报时点与重试节奏（4h）
+
+**前置**：N0（X1 帧形状已冻结）。**软依赖**：D1 的回执生产者（**并行开发，不等待**）。
+**对接**：**消费 X1**（回执帧 → `mark_notification_delivered`）；**提供 X11**（`next_retry_at` 退避函数）给 B 挂 cron。
+
+### 3.1 现状实测
+
+- `app/services/notify_service.py:785-803`：
+  ```python
+  pending = await scan_pending_notifications(session, now=now)
+  for notification in pending:
+      notification.retry_count += 1
+      notification.status = _STATUS_DELIVERED      # ← 无条件伪造送达
+      notification.sent_at = now
+  ```
+  **无任何回执校验**，`failed` 分支永不可达。
+- 真实入口 `:551 mark_notification_sent`／`:566 mark_notification_delivered` **只有定义与 `__all__`（`:850-851`），生产调用零次**。
+- `:45 RETRY_INTERVAL_S = 30` **未被使用**；实际由 `health_jobs.py:198-211` 的 `CronTrigger.from_crontab("* * * * *")`（60s）驱动。
+- `app/scheduler/health_jobs.py:59 _DAILY_REPORT_FIRE = "21:30"`（标注自裁）；`:438` 是 `generate_daily_report` 唯一调用点。**上游 day-08 计划 H4/H8 与 dev-B/C 任务卡均明写 20:00** → 21:30 属偏离已冻结计划，非有效自裁。
+- `app/api/reports.py` 只有 3 个 GET；`grep resend|重发|manual_retry` **零命中**。
+
+### 3.2 要做什么
+
+1. **F01 送达真链路**：扫描逻辑改为「发送 → 置 `pending` ＋ `retry_count+1`」，**删除无条件 `delivered` 赋值**；`retry_count >= 3` 置 `failed`。`delivered` **只由 `mark_notification_delivered` 写入**（由 D1 的信令收帧调用，X1）。`is_mock=true` 不计入送达率分母（`:8` 既有口径保持）。
+2. **F11 日报时点**：提供 20:00 口径给 B（`_DAILY_REPORT_FIRE` 由 B 改，**你不动调度文件**）；采集完成即生成首版的触发保持。
+3. **F11 两条退避序列（X11）**：实现 `next_retry_at(*, ntype, retry_count, now) -> datetime | None`：
+   - 告警通知（`health_alert`／`escalated_red_event`／`medication_*`）→ **30s / 60s / 90s**，3 次后 `failed`（契约 §3.2）
+   - 日报推送（`report_ready`／`report_updated`）→ **1min / 5min / 15min**（PRD §4.8 FR-RPT-03）
+   - 返回 `None` 表示次数用尽 → 调用方置 `failed`
+4. **管理员手动重发**：在 **`app/api/alerts.py`**（你持锁）增 admin-only 端点，**仅触发一次既有 `scan_pending_notifications`**，**不含独立重试逻辑**（遵 Q-D3 裁决，总览 §5.4 Q3）。
+
+### 3.3 交付物清单
+
+| # | 交付物 |
+| --- | --- |
+| 1 | `notify_service.py` 扫描逻辑修正＋`mark_notification_*` 接线 |
+| 2 | `next_retry_at` 退避函数（X11）＋单测 |
+| 3 | admin-only 重扫端点（落 `app/api/` 你持锁的文件，或提需求给 A/D） |
+| 4 | 与 D1 的 X1 联调证据 |
+| 5 | 与 B 的 X11 挂载联调证据 |
+
+### 3.4 量化验收
+
+| 判据 | 期望 | 依据 |
+| --- | --- | --- |
+| 无回执时扫描 3 次 | `status='failed'`，**永不出现 delivered** | PRD:387／契约 §3.2 |
+| 有回执 | `delivered` ＋ `sent_at` 取**回执时间** | AC-23 |
+| `grep -n "_STATUS_DELIVERED" app/services/notify_service.py` | **只在 `mark_notification_delivered` 内出现** | F01 |
+| 状态序列 | `generated → pending → delivered → acknowledged` 依次可见；**送达≠确认，确认≠工单完成** | AC-23 |
+| 客户端先离线后上线回执 | 离线期 `pending`，上线回执后 `delivered`，再人工确认 `acknowledged` | AC-23 原文 |
+| 日报首版时点 | **20:00**；`grep -n "21:30" app/scheduler/health_jobs.py` **零命中**（B 改，你核对） | PRD §4.8 |
+| 告警重试时间点 | **30s / 60s / 90s** 可断言 | 契约 §3.2 |
+| 日报重试时间点 | **1min / 5min / 15min** 可断言 | PRD §4.8 |
+| `is_mock=true` | **不计入送达率分母** | `notify_service.py:8` |
+| 补录新版本 | 旧版保留、每版只发一次更新通知 | AC-25 |
+| 日报内容 | **不读 `memory_chunks`**（`grep` 零命中）；含固定声明「教学模拟信息，不构成医疗诊断」 | 任务卡 C2 明禁／PRD §4.8 |
+
+```bash
+uv run pytest tests/ -q -k "notify or report"
+```
+
+**CP-C3**：报告两条退避序列实测时间点＋无回执落 failed 的证据＋X1/X11 联调记录。
+
+---
+
+## 4. 节点 C4 · 复核落库 ＋ 语音条 ＋ media 接线 ＋ /metrics ＋ stats ＋ memory API（4h）
+
+**前置**：C2。**软依赖**：B2 的 X5、D5 的 X10（**骨架先行**）。
+**对接**：**提供 X7**（`review_status` 写入）给 B3；**消费 X5/X10**；提供 `audio_url` 给 D4。
+
+### 4.1 现状实测
+
+- `app/api/health_records.py:505` 与 `:544` 直调 `health_service.review_health_record`，**无 graph resume**（正确——api 禁 import graphs；缺的是 B 侧扫描）。
+- `app/models/report.py:88 audio_url` 声明；`app/api/reports.py:109/:218` 只读；`app/services/report_service.py` **无任何写入** → 恒 null。
+- `app/services/media_service.py:123 list_media`／`:148 search_media`／`:181 get_playback_url`／`:202 start_playback`／`:229 finish_playback`／`:264 list_media_history` —— `app/` 内**全部零调用**。`app/services/tool_impls.py:326`「record_playback（未交付），过渡期退化为**随机换一首**」、`:333`「**不写 media_history**」、`:380-393 order_by(func.random()).limit(1)`。
+- `grep metrics app/api/*.py app/main.py` **零命中**；`app/services/metrics_service.py:191 get_metrics_recorder` 只有 recorder。
+- `app/api/stats.py` **不存在**。
+
+### 4.2 要做什么
+
+1. **F07 复核落库（X7）**：复核端点写 `review_status ∈ {confirmed, corrected}`＋`reviewed_by`＋`review_note`／`superseded_reason`（**全部既有列，无 `reviewed_at`，不新增 schema**）。**不 import graphs、不自行调 resume**。
+2. **F30 日报语音条**：`report_service.py` 接 TTS 生成并写 `audio_url`（FR-RPT-04，P1）。
+3. **F21 media 接线**：把 `media_service` 六个零调用函数接上真实消费方——**`tool_impls.py` 归 B**，故你**提供函数＋签名**，由 B 改调用侧（X10）。**Tool 层不写 `media_history`，history 归你的 `media_service`**（契约 §6 冻结口径）。「换一段」改**顺序续播**而非随机。
+4. **F26 `/metrics`**：新增 `app/api/metrics.py`，输出分层命中率／S1 闭环率／token 消耗（TD:1182 口径）；鉴权按既有口径。
+5. **FR-ALT-05 统计**：新增 `app/api/stats.py`——本周红色事件数、平均确认时长、各楼栋漏采次数。
+6. **记忆管理 API**：新增 `app/api/memory.py`，薄路由消费 B 的 X5 三函数；**越权由 B 的 service 层拒绝＋审计，你不重复实现隔离逻辑**。
+7. **ROUTERS 追加 4 行**（stats／memory／personas／metrics），只增不改。
+
+### 4.3 交付物清单
+
+| # | 交付物 |
+| --- | --- |
+| 1 | `api/health_records.py` 复核写 `review_status`（X7） |
+| 2 | `report_service.py` TTS 语音条＋`audio_url` 写入 |
+| 3 | `media_service.py` 六函数接线＋顺序续播＋history 写入 |
+| 4 | `app/api/metrics.py`、`app/api/stats.py`、`app/api/memory.py`（三新文件） |
+| 5 | `app/api/__init__.py` 追加 4 行 |
+| 6 | 接口测试（权限 × 统计一致性 × 记忆越权） |
+
+### 4.4 量化验收
+
+| 判据 | 期望 | 依据 |
+| --- | --- | --- |
+| `grep -n "from app.graphs" app/api/` | **零命中** | AGENTS §2.2 |
+| 复核后 | `review_status` 落 `confirmed`/`corrected`，B 侧 ≤30s resume | X7 |
+| 日报 `audio_url` | **非空且可播** | FR-RPT-04 |
+| `media_history` | 播放后**有行** | FR-CON-06 |
+| 「换一段」 | **顺序续播**（下一首），非随机 | F21 |
+| `curl /metrics` | 返回分层命中率／S1 闭环率／token 消耗；未授权 **401** | FR-TC-08／TD:1182 |
+| 统计页三项指标 | 与 SQL 复算**一致**（本周红色事件数／平均确认时长／各楼栋漏采次数） | FR-ALT-05／TD:1172 |
+| 记忆 API 越权 | 跨长者 `chunk_id` → **403＋审计** | AC-39② |
+| ROUTERS | 增 **4** 行；`main.py` **未被修改** | 装配归 B |
+
+```bash
+uv run pytest tests/ -q -k "reports or media or metrics or stats or memory_api"
+```
+
+**CP-C4**：报告 9 条判据实测＋X5/X7/X10 联调记录＋统计 SQL 复算对照。
+
+---
+
+## 5. 节点 C5 · 人设切换（3h）
+
+**前置**：N0。**无其他硬前置，可与 C1–C4 穿插。**
+**对接**：**提供 X6**（`PersonaView`）给 B3；提供人设 REST 给 C6。
+
+### 5.1 现状实测
+
+- `personas` 表**已建**（`app/models/organization.py:39-54`：`name`／`personality`／`greeting`／`tone_examples`／`voice_id`／`avatar_url`）；`scripts/seed_personas.py` **已入库**；`app/services/elder_service.py:246` 已校验 `persona_id` 存在；`frontend/src/console/pages/EldersPage.tsx:87` 已显示「人设 ID」。
+- **但 `app/services/persona_service.py` 只做 avatar config**（`:142 get_avatar_config`、`:104 _persona_avatar_url`、`:51 _absolutize`、`:81 _fingerprint`）——**`personality`／`greeting`／`voice_id` 从未进 prompt 与 TTS**。
+- `app/core/context.py:162-163` 是真实 prompt 装配点（`FIXED_SYSTEM_PROMPT`＋`_dynamic_context`），`:191-192` personality/tone_examples 位置。
+- console 人设页 **`enabled: false` 置灰**（`layout/AppLayout.tsx:39`）。
+- `app/prompts/personas/` 只有 `README.md`。
+
+### 5.2 要做什么（FR-ADM-07）
+
+1. `persona_service.py` 扩展 **`get_active_persona`／`switch_persona`**（X6 签名，字段与 ORM 逐字对齐）。
+2. **`app/core/context.py` 注入**：`personality` 拼进 system prompt **固定前缀**、`greeting` 作开场白、`tone_examples` 作 few-shot。**`tone_examples` ≤3 条、固定前缀顺序不变**（保 prompt cache）。
+3. **TTS 音色**：`voice_id` 传 TTS 适配层切换。
+4. **`app/api/personas.py`**：列表／详情／切换，**仅 admin**；切换写 `audit_logs`。
+5. **生效时机**：**新一轮对话**生效（FR-ADM-07 验收原文），**不中断进行中的回合**。
+
+### 5.3 交付物清单
+
+| # | 交付物 |
+| --- | --- |
+| 1 | `persona_service.py` 两函数（X6） |
+| 2 | `app/core/context.py` 注入点（**高风险，先出方案**） |
+| 3 | `app/api/personas.py`＋ROUTERS 追加 |
+| 4 | TTS `voice_id` 接线 |
+| 5 | 人设切换端到端测试＋prompt cache 稳定性断言 |
+
+### 5.4 量化验收
+
+| 判据 | 期望 | 依据 |
+| --- | --- | --- |
+| 管理员把长者 A 人设**孙女 → 老同事** | **新一轮对话开场白 ＝ 新人设 `greeting`**；system prompt 含新 `personality`；TTS `voice_id` 切换 | FR-ADM-07／TD:1172 |
+| `tone_examples` | **≤3 条**，固定前缀顺序不变 | TD §3.4／AGENTS §1 |
+| 非 admin 调切换 | **403＋审计** | FR-ADM-07 |
+| 切换操作 | `audit_logs` **+1 行** | TD:1172 |
+| 进行中回合 | **不被中断** | FR-ADM-07「开启新一轮对话」 |
+| 长者端形象 | `avatar_url` 随人设切换（既有 `get_avatar_config` 不回退） | 既有能力 |
+
+```bash
+uv run pytest tests/ -q -k "persona or context"
+```
+
+**CP-C5**：报告切换前后开场白/prompt/音色三项对照＋cache 前缀稳定性断言。
+
+---
+
+## 6. 节点 C6 · console 管理台四页 ＋ 空 catch 修复（3h）
+
+**前置**：C4、C5。**软依赖**：A4（生命周期/审计端点）、B2 的 X5（**骨架先行，按冻结契约先建页**）。
+**对接**：消费 A4 端点、X5；**M5.4 的 C 侧判据**。
+
+### 6.1 现状实测
+
+- console 现有 11 页（`AdminDevicesPage`／`AdminRoomsPage`／`AdminUsersPage`／`AlertsPage`／`EldersPage`／`HealthFormPage`／`LoginPage`／`MedicationEditPage`／`MedicationPage`／`ReviewQueuePage`／`WorkOrdersPage`）。
+- **「教学数据重置 / 人设配置 / 审计日志」三入口置灰**（`App.tsx:34`、`layout/AppLayout.tsx:8,39`）；**无记忆管理页、无统计页**。
+- `frontend/src/console/pages/WorkOrdersPage.tsx:271-274`：
+  ```javascript
+  } catch {
+    // Mock 层不会失败；真实接口接入后此处改为行内错误提示
+  }
+  ```
+  吞掉 403/422（同文件 `:256` 另一路径已用 `MockApiError` 处理）。
+- 医生趋势图**已真实落地**（`TrendChart.tsx:20` 真实 fetch＋Chart.js 三序列、`ReviewQueuePage.tsx:222-229` 按需展开）——**不要重做**。
+
+### 6.2 要做什么
+
+1. **四个新页**（原生 CSS＋`var()` 引 tokens.css，**不引组件库**）：
+   - **人设配置页**：列表＋切换（消费 C5 REST），切换后提示「新一轮对话生效」
+   - **教学重置与退房页**：两条流水线入口，**二次确认弹窗**后才发请求（消费 A4）；away 暂离开关
+   - **记忆管理页**：列表／纠正／删除（消费 `api/memory.py`），删除后列表即时移除
+   - **统计与审计页**：三项统计指标（消费 `api/stats.py`）＋审计日志表＋**导出 CSV 按钮**（消费 A4）
+2. **解除置灰**：`AppLayout.tsx:39` 等三处 `enabled: false` → `true`。
+3. **F25 空 catch 修复**：`WorkOrdersPage.tsx:271` 改行内错误提示，403/422 文案区分；删过期注释。
+
+### 6.3 交付物清单
+
+| # | 交付物 |
+| --- | --- |
+| 1 | 四个新页组件＋路由＋侧栏入口解除置灰 |
+| 2 | 对应 `*-api.ts`（按冻结契约，不临时改字段） |
+| 3 | `WorkOrdersPage.tsx` 行内错误提示 |
+| 4 | 走查截图（四页 × 关键操作）＋`tsc`/`build` 输出 |
+
+### 6.4 量化验收
+
+| 判据 | 期望 | 依据 |
+| --- | --- | --- |
+| 四页可达 | 侧栏 `enabled: true`，路由可进 | TD:1169 |
+| 重置/退房 | **二次确认弹窗**后才发请求；取消则零请求 | FR-ADM-02／AC-19 |
+| 记忆删除 | 列表即时移除；再查不再召回 | TD:1172 |
+| 导出按钮 | 下载 CSV，内容与审计表一致 | FR-ADM-05／TD:1172 |
+| 统计页 | 三项指标可见且与后端一致 | FR-ALT-05／TD:1172 |
+| 越权操作 | 显示 **403 文案，不静默** | F25 |
+| 构建 | `tsc` 与 `vite build` **全绿** | 门禁 |
+| 包隔离 | `grep -r "three-vrm" dist/console dist/family` **零命中** | AGENTS §2.4 |
+| 样式 | 全部 `var()` 引 tokens.css，**无第三方组件库 import** | PRD:88／v2.7 裁决 |
+
+```bash
+pnpm --dir frontend exec tsc --noEmit
+pnpm --dir frontend build
+grep -r "three-vrm" frontend/dist/console frontend/dist/family   # 期望零命中
+```
+
+**CP-C6**：报告四页走查截图＋二次确认取消零请求证据＋构建输出。**C6 完成即 M5.4 的 C 侧判据达成。**
+
+---
+
+## 7. 执行记录与对接登记（待回填）
+
+| 日期 | 节点 | 提交 | 验收结果 | 等待项 |
+| --- | --- | --- | --- | --- |
+| — | C1 | — | — | — |
+| — | C2 | — | — | — |
+| — | C3 | — | — | — |
+| — | C4 | — | — | — |
+| — | C5 | — | — | — |
+| — | C6 | — | — | — |
+
+**对接登记**：
+
+| 对接点 | 对方 | 我提供/消费 | 冻结时点 | 联调时点 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| X2 分级签名 g2 | B3 | **提供** | N0 | D9 12:00 | 待 |
+| X3 红档双通知出口 | B3 | **提供** | N0 | D10 15:00 | 待 |
+| X1 回执帧 | D1 | 消费 | N0 | D10 12:00 | 待 |
+| X12 域清理钩子（四个） | A3 | **提供** | D9 下午 | D10 16:00 | 待 |
+| X11 退避函数 | B（cron 持锁） | **提供函数** | N0 | D10 15:00 | 待 |
+| X7 review_status | B3 | **提供** | N0 | D11 14:00 | 待 |
+| X5 记忆管理函数 | B2 | 消费 | D10 上午 | D11 10:00 | 待 |
+| X6 PersonaView | B3 | **提供** | N0 | D11 11:00 | 待 |
+| X10 素材规范 | D5 | 消费（seed 函数） | N0 | D11 10:00 | 待 |
+| `audio_url` | D4 | **提供** | — | D11 下午 | 待 |
+| 生命周期/审计端点 | A4 | 消费 | N0 | D11 15:00 | 待 |
+| media 调用侧改动 | B（tool_impls 持锁） | 提需求 | — | D11 上午 | 待 |
+
+**高风险文件方案登记**（`core/context.py`／`safety_service.py`，落代码前必填）：待填。
+
+---
+
+## 8. 风险与回退
+
+| # | 风险 | 处置 |
+| --- | --- | --- |
+| R-C1 | C1 阈值回改导致既有测试大面积红 | 改测试期望值对齐 PRD line 357-359，**不改 PRD 口径**；提交正文写明依据 |
+| R-C2 | 拆除假 `delivered` 后，依赖「恒 delivered」的测试与 console 展示连锁红 | 按契约 §3.2 五值＋`is_mock` 修展示；**`failed` 分支必须可展示**（契约 v1.2 明要求） |
+| R-C3 | 双路径重复建单/重复通知 | 统一 `dedupe_token`；上线前跑重复提交用例；**建单只在你这边做** |
+| R-C4 | 本包 6 节点最多，C6 依赖 A4/B2 易成尾段瓶颈 | C6 **骨架先行**（按冻结契约先建页＋Mock 态），D11 下午集中联调；若 A4 延迟，C6 先交人设页与统计页（自有依赖），重置/审计页留联调段 |
+| R-C5 | `core/context.py` 注入破坏 prompt cache | 固定前缀顺序不变、`tone_examples` ≤3 条；改动前后各跑一次 cache 命中断言 |
+| R-C6 | 日历口径压缩（总览 Q1） | 先裁顺位：**F30 日报语音条（P1，O2 溢出池）→ F26 `/metrics`（P1）→ 统计页（FR-ALT-05）**；**C1 分级、C2 红档闭环、C3 送达真链路属 P0，不容顺延** |
+
+---
+
+## 变更记录
+
+| 版本 | 日期 | 说明 |
+| --- | --- | --- |
+| v1.1 | 2026-11-12 | 全量校验后修正：① C2 增 **X12 四个域清理钩子**（health/notify/report/work_order 各一个 `purge_elder_data`，供 A3 编排，A 不直写 C 的表），C2 由 4h 调为 **5h**，包容量 20h→**21h＝2.625 人日**；② 写域补 `app/services/elder_service.py`（人设绑定）与 `app/api/alerts.py`（admin 重扫端点落点明确，消除原「或提需求给 A/D」的模糊表述）；③ 排程校验后队列确定为 **C1→C2→C3→C5→C4→C6**，X1 联调时点随之定为 **D10 12:00**（C3 骨架 10.5h 完成）。程序校验：硬前置 11 边、软依赖 18 边**零违例**，五里程碑全达标。 |
+| v1.0 | 2026-11-12 | 首版。承接 day08 遗留 10 项（F01 notify 侧/F04/F05 service 侧/F07 复核落库/F11/F12/F13/F21 media_service/F25/F26/F30 生成侧）＋ Day 9 原生人设切换、记忆管理 API、统计页、审计导出前端；6 节点 20h＝2.5 人日。**明确两处不越界**：`app/scheduler/` 归 B（C3 只提供 X11 退避函数）、`api` 禁 import graphs（F07 只写库，resume 由 B 扫描）。实测校准：`persona_service.py` 只做 avatar config（人设切换未实现）、`personas` 表与 seed 已就绪、console 三入口置灰、医生趋势图已真实落地不重做。X7 字段按实测修正为 `review_status`＋`reviewed_by`（**无 `reviewed_at` 列，不新增 schema**）。 |

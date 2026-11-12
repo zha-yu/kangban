@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 
 from app.api import health_records as health_records_api
@@ -37,6 +37,7 @@ from app.core.trace import TraceIdMiddleware
 from app.db import get_session
 from app.models import Bed, Device, Elder, Room
 from app.models.audit import AuditLog
+from app.models.health import HealthRecord
 from app.models.relation import ElderStaffAssignment
 from app.models.staff import StaffAccount
 from app.scheduler.health_jobs import HealthSchedulerRuntime
@@ -325,12 +326,19 @@ async def test_panel_push_inside_window_skips_elder_with_record(
     runtime = _runtime(db, 19, 5)  # 默认窗口 19:00–20:00 内
     captured = _captured_deliver(monkeypatch, result=True)
 
+    # 与 _runtime 同口径取上海时间当天（写死日期会在跨日后必挂，2026-11-12 踩过）
+    frozen_day = datetime.datetime.now(ZoneInfo("Asia/Shanghai")).date()
+    frozen_noon = datetime.datetime.combine(
+        frozen_day, datetime.time(19, 0), tzinfo=ZoneInfo("Asia/Shanghai")
+    )
+
     await runtime._tick_panel_push()
     assert len(captured) == 1
-    today = datetime.datetime.now(ZoneInfo("Asia/Shanghai"))
-    assert captured[0][1]["task_id"] == f"health:{ELDER_ID}:{today:%Y%m%d}"
+    assert captured[0][1]["task_id"] == f"health:{ELDER_ID}:{frozen_day:%Y%m%d}"
 
-    # 补一条当日记录后再 tick：该长者不再被推
+    # 补一条当日记录后再 tick：该长者不再被推。
+    # recorded_at 对齐 runtime 冻结时钟的日期（19:00 也在窗口内）：recorded_at
+    # 默认取真实 now，且写死日期会在跨日后与冻结 tick 日期劈叉（漏判已答长者）。
     session = AsyncSession(db)
     try:
         await health_service.create_health_record(
@@ -344,6 +352,11 @@ async def test_panel_push_inside_window_skips_elder_with_record(
             mood_note=None,
             complaint=None,
             operator_id=None,
+        )
+        await session.execute(
+            update(HealthRecord)
+            .where(HealthRecord.elder_id == ELDER_ID)
+            .values(recorded_at=frozen_noon)
         )
         await session.commit()
     finally:

@@ -11,7 +11,7 @@
  * → ⑥ 停止。每一步状态都在面板上以文字体现，截图即可留证。
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   OperaPlayer,
@@ -70,7 +70,6 @@ export function OperaDemoPanel({
   /** 由主屏注入的收起回调；放在信息行右端，不再用绝对定位浮层盖住按钮 */
   onCollapse?: () => void;
 }) {
-  const playerRef = useRef<OperaPlayer | null>(null);
   const [demoSnapshot, setDemoSnapshot] = useState<OperaSnapshot>({
     status: "idle",
     track: null,
@@ -79,26 +78,26 @@ export function OperaDemoPanel({
     ducked: false,
   });
   const [lastResult, setLastResult] = useState<string>("—");
+  /**
+   * 播放器由 effect 创建/销毁（不是 useMemo）：DEV 的 StrictMode 会「挂载→清理→再挂载」，
+   * useMemo 实例在清理里被 dispose 后不会重建，面板从此全部动作返回 ignored（状态永远待机）。
+   */
+  const [player, setPlayer] = useState<OperaPlayer | null>(null);
 
-  const player = useMemo(() => {
-    if (live) return null; // 真实链路：播放器归 realtime，面板只渲染与发动作
+  useEffect(() => {
+    if (live) return; // 真实链路：播放器归 realtime，面板只渲染与发动作
     const instance = new OperaPlayer({
       onState: (s) => setDemoSnapshot({ ...s }),
       onError: (reason) => setLastResult(`失败：${reason}`),
     });
-    playerRef.current = instance;
-    return instance;
-  }, [live]);
-
-  useEffect(() => {
-    if (!player) return;
-    const timer = window.setInterval(() => setDemoSnapshot({ ...player.state }), 300);
+    setPlayer(instance);
+    const timer = window.setInterval(() => setDemoSnapshot({ ...instance.state }), 300);
     return () => {
       window.clearInterval(timer);
-      player.dispose();
-      playerRef.current = null;
+      instance.dispose();
+      setPlayer(null);
     };
-  }, [player]);
+  }, [live]);
 
   const snapshot = live ? live.snapshot : demoSnapshot;
 
@@ -108,11 +107,12 @@ export function OperaDemoPanel({
       setLastResult(`${action} → 已下发`);
       return;
     }
+    if (!player) return; // effect 尚未建好（首帧），忽略本次点击
     // 「换一段」在只有一首演示曲时，用同一首模拟换源（真实链路由 media_service 给下一段）
     const next = action === "next_track" ? { ...DEMO_TRACK, title: `${DEMO_TRACK.title}·第 2 段` } : undefined;
-    const result = await player!.apply(action, next);
+    const result = await player.apply(action, next);
     setLastResult(`${action} → ${result}`);
-    setDemoSnapshot({ ...player!.state });
+    setDemoSnapshot({ ...player.state });
   }
 
   // 底部播放条：两行结构。旧版把「徽标 + 曲名 + 长状态串 + 7 个按钮」全塞进一行，
@@ -220,9 +220,10 @@ export function OperaDemoPanel({
             type="button"
             className="rounded-2xl bg-brand px-6 py-4 text-2xl font-bold text-ink-inverse"
             onClick={async () => {
-              const result = await player!.load(DEMO_TRACK);
+              if (!player) return;
+              const result = await player.load(DEMO_TRACK);
               setLastResult(`load → ${result}`);
-              setDemoSnapshot({ ...player!.state });
+              setDemoSnapshot({ ...player.state });
             }}
           >
             播放
@@ -246,9 +247,10 @@ export function OperaDemoPanel({
             type="button"
             className="rounded-2xl bg-warning-soft px-6 py-4 text-2xl font-semibold text-warning-ink"
             onClick={() => {
-              player!.duckForSpeech();
+              if (!player) return;
+              player.duckForSpeech();
               setLastResult("duckForSpeech（模拟开始说话）");
-              setDemoSnapshot({ ...player!.state });
+              setDemoSnapshot({ ...player.state });
             }}
           >
             模拟开始说话（压住戏曲）
@@ -257,9 +259,10 @@ export function OperaDemoPanel({
             type="button"
             className="rounded-2xl bg-warning-soft px-6 py-4 text-2xl font-semibold text-warning-ink"
             onClick={() => {
-              player!.resumeAfterSpeech();
+              if (!player) return;
+              player.resumeAfterSpeech();
               setLastResult("resumeAfterSpeech（播报结束）");
-              setDemoSnapshot({ ...player!.state });
+              setDemoSnapshot({ ...player.state });
             }}
           >
             模拟说完（恢复戏曲）

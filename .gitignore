@@ -136,3 +136,16 @@ docs/测试数据_人员与床位.md
 # ---------- 14. 系统资源叉 / Vite 构建缓存 ----------
 **/__MACOSX/
 **/.vite/
+
+# ---------- 15. 本机参考素材与外部克隆（不入库）----------
+# 四者合计约 900MB，均为本机对照/调试用，不是本仓库的源码：
+#   asr/            独立 ASR 工程，自带 .git，且含 cert.pem 私钥与 *.vrm（红线）
+#   vrm-playground/ 第三方 three-vrm 示例库克隆，自带 .git 与 node_modules
+#   mp3素材/         戏曲/歌曲 mp3 试听素材（含一层重复嵌套目录），受版权保护
+#   sherpa-onnx/     onnx 声纹/唤醒词模型与 wasm 产物（同 frontend/public/kws/ 口径）
+# 入库会撞 GitHub 单文件 100MB 限制，且嵌套 .git 会被存成 gitlink 空壳。
+# 需要共享时走网盘或 Git LFS，不随普通提交进入主仓。
+vrm-playground/
+asr/
+mp3素材/
+sherpa-onnx/

@@ -56,6 +56,10 @@ from app.models.medication import RiskEvent
 from app.models.organization import Bed, Elder, Room
 from app.models.relation import ElderStaffAssignment
 from app.models.staff import StaffAccount
+from app.services.notify_service import (
+    NotificationTargetNotFound,
+    send_guardian_notifications,
+)
 from app.services.work_order_service import (
     WorkOrderRef,
     open_work_order,
@@ -380,7 +384,7 @@ async def create_health_record(
         )
 
         if existing_yellow is not None and grade.severity == SEVERITY_RED:
-            # 黄升红：原事件升级，不新建
+            # 黄升红：原事件升级，不新建；红档善后（紧急工单 + 家属通知）走 _open_red_followup
             existing_yellow.severity = "red"
             existing_yellow.source_id = record.record_id  # 更新来源指向最新记录
             existing_yellow.source_type = "health_record"
@@ -392,6 +396,12 @@ async def create_health_record(
                 record.record_id,
             )
             await session.flush()
+            work_order_id = await _open_red_followup(
+                session,
+                elder_id=elder_id,
+                record_id=record.record_id,
+                risk_event_id=risk_event_id,
+            )
         else:
             # 新建 risk_event
             risk_event = RiskEvent(
@@ -407,7 +417,7 @@ async def create_health_record(
             await session.flush()
             risk_event_id = risk_event.event_id
 
-            # 黄档建工单；红档走 safety_service（dev-C），本函数不重复建单
+            # 黄红都走 A12 唯一建单口 open_work_order，dedupe_token 按记录区分幂等
             if grade.severity == SEVERITY_YELLOW:
                 assignee_id = await resolve_primary_care_staff(session, elder_id=elder_id)
                 order_ref = await open_work_order(
@@ -420,6 +430,13 @@ async def create_health_record(
                     assignee_id=assignee_id,
                 )
                 work_order_id = order_ref.order_id
+            else:
+                work_order_id = await _open_red_followup(
+                    session,
+                    elder_id=elder_id,
+                    record_id=record.record_id,
+                    risk_event_id=risk_event.event_id,
+                )
 
     logger.info(
         "health_record_created record_id=%s elder_id=%s severity=%s version=1 "
@@ -724,6 +741,54 @@ async def get_health_trend(
         .order_by(HealthRecord.recorded_at.asc())
     )
     return list(result.scalars().all())
+
+
+async def _open_red_followup(
+    session: AsyncSession,
+    *,
+    elder_id: uuid.UUID,
+    record_id: uuid.UUID,
+    risk_event_id: uuid.UUID,
+) -> uuid.UUID | None:
+    """红档善后：紧急工单（A12 唯一建单口，dedupe 幂等）+ 家属通知（S-02 三键）。
+
+    - dedupe_token `health_record:<record_id>:red`：同一记录重放返回原单；
+    - 家属通知失败**不回滚主链路**：无 active 家属绑定（`NotificationTargetNotFound`）
+      是合法状态，只记警告——红档的事件与工单不能因通知缺目标而丢；
+    - 通知 payload 沿用 S-02 三键语义（elder_name / event_brief / record_id），
+      文案只报「红色预警值」不给任何医疗判断口径（AGENTS §4 红线 4）。
+    """
+    assignee_id = await resolve_primary_care_staff(session, elder_id=elder_id)
+    order_ref = await open_work_order(
+        session,
+        elder_id=elder_id,
+        order_type="health_alert",
+        severity="red",
+        dedupe_token=f"health_record:{record_id}:red",
+        event_id=risk_event_id,
+        assignee_id=assignee_id,
+    )
+    elder_name = (
+        await session.execute(select(Elder.name).where(Elder.elder_id == elder_id))
+    ).scalar_one_or_none()
+    try:
+        await send_guardian_notifications(
+            session,
+            elder_id=elder_id,
+            ntype="health_alert",
+            payload={
+                "title": "健康红色预警",
+                "elder_name": elder_name or "您的家人",
+                "event_brief": (
+                    "长者今日健康数据出现红色预警值，工作人员已收到紧急工单并将立即跟进，请放心"
+                ),
+                "record_id": str(record_id),
+            },
+            dedupe_key=f"health_red_alert:{record_id}",
+        )
+    except NotificationTargetNotFound:
+        logger.warning("red_alert_guardian_unbound elder_id=%s record_id=%s", elder_id, record_id)
+    return order_ref.order_id
 
 
 # ------------------------------------------------------------------ 调度域查询与漏采派单（B3 · Day 8）
