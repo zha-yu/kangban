@@ -289,6 +289,9 @@ async def test_red_2min_escalation_scan_idempotent(session, seeded, runtime_fact
     await session.flush()
 
     rt = runtime_factory(lambda: datetime.datetime.now(datetime.UTC))
+    # F12：升级通知发 admin —— 本测试 seed 一个 admin（不动共享夹具，避免影响其他用例）
+    session.add(StaffAccount(name="升级管理员", role="admin", password_hash="x" * 32))
+    await session.flush()
     await rt._tick_risk_scan()
 
     event = (
@@ -296,14 +299,18 @@ async def test_red_2min_escalation_scan_idempotent(session, seeded, runtime_fact
     ).scalar_one()
     assert event.status == "escalated"  # 原事件升级，不是新建第二个事件
 
-    care_worker_id = await care_worker_id_of(session, elder_id)
+    # F12（X3 v0.6 期间裁决）：升级通知发 admin，护工不重复收
+    admin_id = (
+        await session.execute(select(StaffAccount.staff_id).where(StaffAccount.role == "admin"))
+    ).scalar_one_or_none()
+    assert admin_id is not None, "升级测试需要 seed 一个 admin 角色"
     escalation_notes = (
         (
             await session.execute(
                 select(Notification).where(
                     Notification.type == "escalated_red_event",
                     Notification.dedupe_key
-                    == f"risk_event:{ref.risk_event_id}:escalated:{care_worker_id}",
+                    == f"risk_event:{ref.risk_event_id}:escalated:{admin_id}",
                 )
             )
         )
@@ -311,6 +318,7 @@ async def test_red_2min_escalation_scan_idempotent(session, seeded, runtime_fact
         .all()
     )
     assert len(escalation_notes) == 1
+    assert escalation_notes[0].target_id == admin_id
 
     # 重复扫描：事件已 escalated 不再进扫描面 → 不重复发通知
     await rt._tick_risk_scan()

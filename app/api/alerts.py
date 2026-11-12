@@ -12,13 +12,14 @@
 只做三件事：校验入参 → 从 JWT 取员工身份 → 调 `notify_service`。
 **不拼查询、不写库、不 commit**（`get_session` 收口）。
 
-## 当前范围：N-1 / N-2 / N-3 三条齐
+## 当前范围：N-1 / N-2 / N-3 三条齐 ＋ F13 事件直接关闭
 
 | 编号 | 端点 | 口径 |
 | --- | --- | --- |
 | N-1 | `GET /api/notifications` | 只出 `target_type='staff' AND target_id=本人`；`created_at` 倒序；`unread_only` 可选 |
 | N-2 | `POST /api/notifications/{id}/read` | 只写 `read_at`，**已读≠确认**；幂等返回原时间 |
-| N-3 | `POST /api/notifications/{id}/acknowledge` | 仅 `delivered` 可确认，跳步 409，写 `acknowledged_by/at` |
+| N-3 | `POST /api/notifications/{id}/acknowledge` | 仅 `delivered` 可确认，跳步 409，写 `acknowledged_by/at`；payload 带 `risk_event_id` 时联动写 `risk_events.acknowledged_at`（F13） |
+| F13 | `POST /api/risk-events/{id}/close` | **admin-only**；存在未关闭关联工单 → 409；已 closed 幂等 200 |
 
 ### 一个字段缺口（R-D12，2026-11-11 已收口）
 
@@ -55,10 +56,10 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.elders import ContractAPIRoute, _error_response
-from app.core.auth import current_staff
+from app.core.auth import current_staff, require_roles
 from app.core.runtime_context import Identity
 from app.db import get_session
-from app.services import notify_service, staff_service
+from app.services import notify_service, safety_service, staff_service
 from app.services.audit_log_service import record_audit
 from app.services.notify_service import (
     NotificationError,
@@ -256,4 +257,46 @@ async def acknowledge_notification(
         notification_id=notification_id,
         status="acknowledged",
         acknowledged_by=acknowledger_id,
+    )
+
+
+class RiskEventCloseOut(BaseModel):
+    """F13 关闭事件响应。idempotent=True 表示事件本就处于 closed（重复请求）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: uuid.UUID
+    status: str
+    closed_at: str
+    idempotent: bool
+
+
+@router.post("/risk-events/{event_id}/close", response_model=RiskEventCloseOut)
+async def close_risk_event(
+    event_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    staff: Annotated[Identity, Depends(require_roles("admin"))],  # F13：admin-only
+) -> RiskEventCloseOut:
+    """F13：admin 直接关闭红色事件（仅当无未关闭关联工单，PRD line 392 顺序硬约束）。
+
+    - 仅 admin 角色可调（`require_roles("admin")`，其他员工 403）；
+    - 工单侧正常关闭的联动（closed → 同事务关事件）在
+      `work_order_service.transition` 内，本端点只服务「事件误开/已线下处理」
+      的 admin 直接关闭路径；
+    - 事件不存在 → 404；存在未关闭工单 → 409（先关工单）；
+    - 已 closed → 幂等 200。
+    """
+    try:
+        result = await safety_service.close_risk_event(session, event_id=event_id)
+    except safety_service.RiskEventNotFound:
+        return _error_response(404, "NOT_FOUND", "risk event not found")
+    except safety_service.RiskEventCloseBlocked:
+        return _error_response(
+            409, "CONFLICT", "risk event has unclosed work orders — close them first"
+        )
+    return RiskEventCloseOut(
+        event_id=result["event_id"],
+        status=result["status"],
+        closed_at=_iso(result["closed_at"]) or "",
+        idempotent=bool(result["idempotent"]),
     )

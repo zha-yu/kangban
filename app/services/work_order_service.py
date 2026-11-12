@@ -48,12 +48,16 @@ import datetime
 import hashlib
 import logging
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
+
+if TYPE_CHECKING:
+    from app.services.notify_service import PurgeRef
 
 from app.models.medication import WorkOrder, WorkOrderTransition
 from app.models.relation import ElderStaffAssignment
@@ -385,6 +389,23 @@ async def transition(
         order.note = note
     if to_status == "closed":
         order.closed_at = datetime.datetime.now(datetime.UTC)
+        # F13 关闭联动（PRD line 392「工单关闭后事件才可关闭」，顺序不可反）：
+        # 工单 closed → 同事务关闭关联 risk_events（写 closed_at）。
+        # 幂等：事件已 closed 跳过；无 event_id（漏服类工单）不联动。
+        if order.event_id is not None:
+            from app.models.medication import RiskEvent  # 局部导入规避环
+
+            event = (
+                await session.execute(select(RiskEvent).where(RiskEvent.event_id == order.event_id))
+            ).scalar_one_or_none()
+            if event is not None and event.status != "closed":
+                event.status = "closed"
+                event.closed_at = order.closed_at
+                logger.info(
+                    "risk_event_closed_via_work_order event_id=%s order_id=%s",
+                    event.event_id,
+                    order.order_id,
+                )
 
     session.add(
         WorkOrderTransition(
@@ -546,6 +567,46 @@ async def get_work_order(session: AsyncSession, *, order_id: uuid.UUID) -> WorkO
     )
 
 
+# ------------------------------------------------------------------ X12 域清理钩子
+
+
+async def purge_elder_data(session: AsyncSession, *, elder_id: uuid.UUID, reason: str) -> PurgeRef:
+    """工单域清理（X12）：按依赖顺序清 transitions → orders → risk_events。
+
+    checkout／teaching_reset 在本域同为物理清除（契约 X12：健康域才有归档口径）。
+    幂等：重复调用第二遍计数为 0。本钩子不写审计（A 的 lifecycle 统一写）。
+    """
+    if reason not in ("checkout", "teaching_reset"):
+        raise ValueError(f"unknown purge reason: {reason!r}")
+    from app.models.medication import RiskEvent  # 局部导入规避环
+    from app.services.notify_service import PurgeRef
+
+    order_ids = list(
+        (
+            await session.execute(select(WorkOrder.order_id).where(WorkOrder.elder_id == elder_id))
+        ).scalars()
+    )
+    affected = 0
+    if order_ids:
+        result = await session.execute(
+            sa_delete(WorkOrderTransition).where(WorkOrderTransition.order_id.in_(order_ids))
+        )
+        affected += int(result.rowcount or 0)
+        result = await session.execute(sa_delete(WorkOrder).where(WorkOrder.elder_id == elder_id))
+        affected += int(result.rowcount or 0)
+    result = await session.execute(sa_delete(RiskEvent).where(RiskEvent.elder_id == elder_id))
+    affected += int(result.rowcount or 0)
+    if affected:
+        await session.flush()
+    logger.info(
+        "work_order_purge_elder_data elder_id=%s reason=%s affected=%d",
+        elder_id,
+        reason,
+        affected,
+    )
+    return PurgeRef(domain="work_orders", affected_rows=affected, archived_rows=0)
+
+
 __all__ = [
     "ORDER_TYPES",
     "SEVERITIES",
@@ -559,6 +620,7 @@ __all__ = [
     "WorkOrderRow",
     "open_missed_medication",
     "open_work_order",
+    "purge_elder_data",
     "resolve_primary_care_staff",
     "transition",
 ]
