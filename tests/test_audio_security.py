@@ -109,6 +109,11 @@ async def sec_app(sec_session: AsyncSession) -> FastAPI:
     app.dependency_overrides[audio_api._get_default_asr] = lambda: MockASRProvider()
     app.dependency_overrides[audio_api._get_default_tts] = lambda: MockTTSProvider()
 
+    # Day 9 F15：降级端点走编排入口——裸 app 挂最小桩（与 test_audio_utterance 同口径）
+    from tests.test_audio_utterance import _StubOrchestrator
+
+    app.state.dialogue_orchestrator = _StubOrchestrator()
+
     @app.exception_handler(CredentialInvalidError)
     async def _(_req, exc):
         return JSONResponse(

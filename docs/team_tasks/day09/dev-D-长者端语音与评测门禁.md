@@ -1,4 +1,4 @@
-> 状态：未开始　｜　版本：v1.3　｜　日期：2026-11-12
+> 状态：进行中（D1 代码已收口，待 X1 联调与实测）　｜　版本：v1.3　｜　日期：2026-11-12
 > 负责人：**dev-D（唯一）**　｜　任务包：**D · 长者端语音补全与评测门禁**　｜　容量：**19h ＝ 2.375 人日**（Laya/Jev 对比裁减后）
 > 关联：docs/team_tasks/day09/day09-任务总览与DAG.md v1.0（§4.4 分工、§5 对接点、§6 写域）｜docs/team_tasks/day09/contracts.md（X1/X8/X9/X10 提供与消费）
 > 上游依据：PRD line 247（FR-UI-01 降级须进路由、单次最长 120 秒）、line 257（FR-UI-11 唤醒词 P0）、line 336（FR-MED-06 反向外呼＋`rtc_failed`）、line 254（FR-UI-08 撤销）、line 401（FR-ALT-06 SOS）、line 405–412（FR-RPT-01~04）、line 531–536（固定测试集 ≥45/50）、line 547（路由 ≤200ms）、line 95（家属端正文 ≥16px）、line 286（FR-VPR-04）、line 489/497/505/519/523（AC-08/20/23/37/41/42）、line 590（不得裁减：反向外呼与唤醒词）｜技术设计文档 line 1173（声纹 FAR/FRR 表、Laya 与 Chinese-Jev 对比报告、接口覆盖率 ≥70%）、line 1182（`/metrics` 口径由 C 承接）

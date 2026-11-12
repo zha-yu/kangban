@@ -134,11 +134,12 @@ VadEventCallback = Callable[[str, VadEvent], Awaitable[None]]
 
 
 class MediaState(StrEnum):
-    """PeerConnection / 媒体会话状态（对齐 A3 执行计划 §3.4）。"""
+    """PeerConnection / 媒体会话状态（对齐 A3 执行计划 §3.4；Day 9 增外呼中间态）。"""
 
     OPEN = "open"
     OFFER_RECEIVED = "offer_received"
     ANSWER_CREATED = "answer_created"
+    OUTBOUND_OFFER_CREATED = "outbound_offer_created"  # Day 9 F17：服务端主动 offer 已就绪
     CONNECTING = "connecting"
     CONNECTED = "connected"
     CLOSING = "closing"
@@ -1106,6 +1107,82 @@ class MediaSession:
             mline_count=local.sdp.count("m="),
         )
         return local.sdp
+
+    # ------------------------------------------------------------------
+    # Day 9 F17 反向外呼（方案 B1：复用本会话单次握手，仅待机态发起）
+    # ------------------------------------------------------------------
+
+    async def create_outbound_offer(self) -> str:
+        """服务端主动创建 offer，返回本地 SDP（outbound.py 经信令 deliver 下发）。
+
+        复用既有单次握手语义：置位 `_offer_seen` 后，pad 若再发浏览器向 offer
+        会被 `handle_offer` 以 duplicate offer 拒绝——一个会话只允许一次握手方向。
+        """
+        self._ensure_loop()
+        self._ensure_open()
+        if self._pc is not None or self._offer_seen:
+            raise MediaStateError("outbound offer conflicts with an existing handshake")
+
+        pc = self.create_peer_connection()
+        try:
+            offer = await pc.createOffer()
+            await pc.setLocalDescription(offer)
+        except Exception as exc:
+            self._state = MediaState.FAILED
+            raise MediaFormatError("outbound offer creation failed") from exc
+
+        self._offer_seen = True
+        self._state = MediaState.OUTBOUND_OFFER_CREATED
+        local = pc.localDescription
+        if local is None:
+            raise MediaStateError("outbound offer SDP is not available")
+        _log_event(
+            "outbound offer created",
+            trace_id=self.trace_id,
+            connection_id=self.connection_id,
+            turn_id=self._turn_id,
+            state=self._state.value,
+            reason="outbound_offer_created",
+            sdp_length=len(local.sdp),
+            mline_count=local.sdp.count("m="),
+        )
+        return local.sdp
+
+    async def handle_outbound_answer(self, sdp: str) -> None:
+        """pad 对外呼 offer 的 answer（C→S answer 帧）；握手收口进 CONNECTING。"""
+        self._ensure_loop()
+        self._ensure_open()
+        if not isinstance(sdp, str) or not sdp.strip():
+            raise MediaFormatError("answer SDP must not be empty")
+        pc = self._pc
+        if pc is None or self._state is not MediaState.OUTBOUND_OFFER_CREATED:
+            raise MediaStateError("no outbound offer outstanding for this session")
+
+        try:
+            await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type="answer"))
+        except Exception as exc:
+            self._state = MediaState.FAILED
+            raise MediaFormatError("outbound answer SDP was rejected") from exc
+
+        # answer 前到达的 pad ICE 已缓存（remoteDescription 为 None 走缓存分支），此处冲刷
+        pending = self._pending_ice
+        self._pending_ice = []
+        self._pending_ice_keys.clear()
+        for candidate, sdp_mid, sdp_mline_index in pending:
+            await self._apply_ice_candidate(pc, candidate, sdp_mid, sdp_mline_index)
+
+        self._state = MediaState.CONNECTING
+        self._start_ice_watchdog("connect")
+        _log_event(
+            "outbound answer accepted",
+            trace_id=self.trace_id,
+            connection_id=self.connection_id,
+            turn_id=self._turn_id,
+            state=self._state.value,
+            reason="outbound_answer_accepted",
+            sdp_length=len(sdp),
+            mline_count=sdp.count("m="),
+        )
 
     async def add_ice_candidate(
         self,
@@ -2376,6 +2453,22 @@ async def _handle_asr_end(registry: MediaSessionRegistry, device_id: str) -> Non
     await session.end_turn()
 
 
+async def _handle_outbound_answer(
+    registry: MediaSessionRegistry, device_id: str, message: Mapping[str, Any]
+) -> None:
+    """Day 9 F17：C→S answer 帧 → 外呼会话握手收口 → 通知 outbound 等待方。"""
+    sdp = message.get("sdp")
+    if not isinstance(sdp, str) or not sdp.strip():
+        raise MediaFormatError("answer SDP must be a non-empty string")
+    session = _require_session(registry, device_id)
+    await session.handle_outbound_answer(sdp)
+
+    # 惰性 import 防环：outbound → webrtc（顶层），webrtc 仅在收帧时回调 outbound
+    from app.audio.outbound import notify_outbound_answer
+
+    notify_outbound_answer(device_id, sdp)
+
+
 async def handle_signal_message(conn: ConnectionContext, message: dict[str, Any]) -> None:
     """A2 上行消息入口：只处理 C2 的 offer / ice / asr_start / asr_end。"""
     device_id = conn.device_id
@@ -2397,6 +2490,9 @@ async def handle_signal_message(conn: ConnectionContext, message: dict[str, Any]
     try:
         if msg_type == "offer":
             await _handle_offer(conn, registry, device_id, message)
+        elif msg_type == "answer":
+            # Day 9 F17：仅外呼流程存在 C→S answer；普通会话收到即状态错误（错误帧）
+            await _handle_outbound_answer(registry, device_id, message)
         elif msg_type == "ice":
             await _handle_ice(registry, device_id, message)
         elif msg_type == "asr_start":

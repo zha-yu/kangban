@@ -47,7 +47,29 @@ from app.models.organization import Bed, Device, Elder, Room
 # ---------------------------------------------------------------------------
 
 _DEVICE_SECRET_PLAIN = "device-long-secret-plain-abc123"
-_MAX_AUDIO_SECONDS = 30  # 与 audio.py 硬编码一致
+_MAX_AUDIO_SECONDS = 120  # 与 audio.py 一致（Day 9 F15：PRD:247 单次最长 120 秒）
+
+
+class _StubOrchestrator:
+    """对话编排器桩：形状对齐 DialogueOrchestrator.handle_asr_final（返回 .text）。
+
+    裸 app（本文件 fixture）没有 main.py 装配层，显式挂一个最小桩让降级端点
+    走「与 WS FINAL 同一条编排入口」的调用形状；生产真身由 main.py 挂 app.state。
+    """
+
+    async def handle_asr_final(
+        self,
+        *,
+        device_id: str,
+        trace_id: str,
+        turn_id: str,
+        text: str,
+        audio_bytes: bytes | None = None,
+        audio_sink: Any = None,
+    ) -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(text=f"好的，已收到：{text}", degraded=False)
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +156,10 @@ async def app_for_audio(
     # 注意必须用零参工厂而非类本身：FastAPI 会把类的 __init__ 参数当可注入查询参数解析
     app.dependency_overrides[audio_api._get_default_asr] = lambda: MockASRProvider()
     app.dependency_overrides[audio_api._get_default_tts] = lambda: MockTTSProvider()
+
+    # Day 9 F15：降级端点走编排入口（app.state.dialogue_orchestrator）——
+    # 裸 app 无 main.py 装配，挂最小桩（形状对齐 handle_asr_final 返回 .text）
+    app.state.dialogue_orchestrator = _StubOrchestrator()
 
     # 全局 exception handler —— audio.py 鉴权用 Depends(current_device)
     # 会走 get_current_principal → 抛 Credential*Error，必须这里兜
@@ -329,8 +355,8 @@ async def test_utterance_success(
     # 契约 C3 响应形状
     assert "text" in body
     assert "reply" in body and "text" in body["reply"] and "audio_url" in body["reply"]
-    # Day 3 写死话术
-    assert "您说的是" in body["reply"]["text"]
+    # Day 9 F15：编排入口产出（桩回显），不再是 Day 3 写死话术
+    assert body["reply"]["text"] == f"好的，已收到：{body['text']}"
 
 
 @pytest.mark.asyncio
@@ -372,8 +398,8 @@ async def test_utterance_too_long_413(
     ac_audio: httpx.AsyncClient,
     real_device_token: str,
 ) -> None:
-    """超长音频（>30s）→ 413 拒收。"""
-    wav = _make_wav(16_000 * 31)  # 31s
+    """超长音频（>120s，PRD:247）→ 413 拒收；121s 边界判据（任务书 D2 验收）。"""
+    wav = _make_wav(16_000 * 121)  # 121s
     resp = await ac_audio.post(
         "/api/audio/utterance",
         headers={"Authorization": f"Bearer {real_device_token}"},

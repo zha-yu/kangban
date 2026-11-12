@@ -124,6 +124,18 @@ export interface UserTextMsg {
   text: string;
 }
 
+/** Day 9 新增（day09/contracts.md X1，v0.4 冻结）：触达卡片渲染/播报完成回执（C→S）。
+ *  task_id 必须来自服务端下发的 task_command.task_id，不得自造；
+ *  notification_id 用药/健康触达回执必填（C3 随触达帧下发），纯播报回执为 null；
+ *  ts 为客户端 ISO8601 UTC，服务端以接收时刻为准。elder_id/device_id 不进本帧（身份注入）。 */
+export interface ClientReceiptMsg {
+  type: "client_receipt";
+  receipt_kind: "card_rendered" | "tts_finished";
+  task_id: string;
+  notification_id: string | null;
+  ts: string;
+}
+
 /** Day 7 联调（L6#9）：主动触达的任务卡片命令（scheduler / 子图下发）。
  *  shape 与 task-channel.ts 的 PadTaskCommand 对齐（snake_case 下行、camelCase snapshot）；
  *  同 taskId 重复下发前端幂等（FR-MED-04），不重启面板。
@@ -134,6 +146,8 @@ export interface TaskCommandMsg {
   kind: "medication" | "health";
   source: "scheduler" | "ws_fallback" | "staff" | "voiceprint";
   hint: string;
+  /** Day 9 X1：触达通知行 id（C3 随触达帧下发）；缺省 = 纯播报，回执 notification_id 落 null */
+  notification_id?: string | null;
   payload:
     | {
         kind: "medication";
@@ -169,7 +183,9 @@ export type ClientSignal =
   | SegmentAckMsg
   | TouchPlayedMsg
   | InterruptMsg
-  | UserTextMsg;
+  | UserTextMsg
+  | ClientReceiptMsg
+  | OutboundAnswerMsg;
 
 /* ---- S→C 服务端下发 ---- */
 
@@ -186,6 +202,21 @@ export interface AuthFailMsg {
 }
 
 export interface AnswerMsg {
+  type: "answer";
+  sdp: string;
+}
+
+/** Day 9 F17（day09 方案 B 已批准）：反向外呼 —— 服务端主动下发的 offer（S→C）。
+ *  pad 收到即自动接听（FR-UI-10：不等用户手势 createAnswer 回 C→S answer）；
+ *  应答失败/超时由服务端归因 rtc_failed 并降级页面播报（FR-MED-06）。 */
+export interface OutboundOfferMsg {
+  type: "offer";
+  sdp: string;
+}
+
+/** Day 9 F17：pad 对外呼 offer 的自动应答（C→S）。普通会话不使用本帧——
+ *  浏览器向握手仍走既有 C→S offer / S→C answer 方向。 */
+export interface OutboundAnswerMsg {
   type: "answer";
   sdp: string;
 }
@@ -291,6 +322,7 @@ export type ServerSignal =
   | AuthOkMsg
   | AuthFailMsg
   | AnswerMsg
+  | OutboundOfferMsg
   | ServerIceMsg
   | PongMsg
   | AsrPartialMsg

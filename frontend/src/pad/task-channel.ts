@@ -19,9 +19,9 @@
  *     成本都高于 WS，仅作离线补单兜底，不作为首选（离线补推已由后端调度 tick 覆盖）。
  *  3. 反向外呼 auth_ok 携带 task 扩展 → 与 1 同属 C2 契约，等主路径落地后合并。
  *
- * 回程（答案提交已接，回执待接）：健康采集答案 → POST /api/pad/health-records
- * （§P-1，health-client.ts）；卡片渲染成功 → card_rendered、播报完成 → tts_finished
- * 仍仅留回调，本批不伪造请求。
+ * 回程（答案提交与渲染回执已接）：健康采集答案 → POST /api/pad/health-records
+ * （§P-1，health-client.ts）；卡片渲染成功 → client_receipt/card_rendered 帧经信令 WS
+ * 上行（Day 9 X1，realtime.sendClientReceipt；standby 期无 WS 会话时丢弃，联调走会话内路径）。
  */
 import {
   MOCK_CANDIDATES,
@@ -62,6 +62,9 @@ export interface PadTaskCommand {
   hint: string;
   payload?: PadTaskPayload;
   issuedAt?: number;
+  /** Day 9 X1：触达通知行 id（服务端 task_command.notification_id 透传）；
+   *  card_rendered 回执必带，纯播报/开发态为 null。 */
+  notificationId?: string | null;
 }
 
 export type PadTaskEvent =

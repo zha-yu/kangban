@@ -96,6 +96,9 @@ function MainScreen({
   const [sosStatus, setSosStatus] = useState<SosStatus>(SOS_DEV_DIRECT ? "sent" : "sending");
   // D3/AC-26：红色事件只能追加「说错了」说明，需要记住本次事件 id
   const [sosEventId, setSosEventId] = useState<string | null>(null);
+  // Day 9 F03：SOS 三格由后端真实返回驱动——order_id 仅代表工单已生成，
+  // 「已通知」永远不在此页出现（通知状态以护工/家属端为准，AC-26 / 任务书 F03）
+  const [sosOrderId, setSosOrderId] = useState<string | null>(null);
 
   // D4 单端调试入口（?demo=opera，仅 DEV）：WS 帧形状未定（Q-D4），先验七动作状态机
   const [operaDemo] = useState(
@@ -179,6 +182,7 @@ function MainScreen({
     try {
       const result = await triggerSos(token);
       setSosEventId(result.event_id);
+      setSosOrderId(result.order_id); // Day 9 F03：真实工单 id 驱动结果页三格
       setSosStatus("sent");
     } catch {
       setSosStatus("failed");
@@ -310,6 +314,7 @@ function MainScreen({
             hint: msg.hint,
             payload: msg.payload,
             issuedAt: msg.issued_at,
+            notificationId: msg.notification_id ?? null, // Day 9 X1：触达回执用
           },
         });
       },
@@ -386,7 +391,8 @@ function MainScreen({
       ? "说“小伴”开始对话"
       : kwsState === "loading"
         ? "正在准备唤醒词…"
-        : "点下方按钮开始对话"; // R-5：KWS 不可用只留按钮，不误导长者喊唤醒词
+        : // Day 9 F16：KWS 加载失败不再静默——显式告知唤醒不可用 + 保留按住说话/呼叫入口
+          "唤醒不可用，请按住说话";
 
   // 大字幕：standby 默认显示唤醒引导；降级「按住说话」与声纹提示下发的文本优先显示，
   // 避免话术被引导语吞掉。两相位共用同一字幕区，位置不随对话状态跳动。
@@ -475,12 +481,13 @@ function MainScreen({
         ) : sosOpen ? (
           // 结果态只占中部：顶栏 SOS（active）、大字幕区、操作区高度都在原位
           <div className="flex h-full w-full items-center justify-center">
-            <SosResult
-              status={sosStatus}
-              onRetry={() => void requestSos()}
-              onCorrection={sosEventId ? appendCorrection : undefined}
-              onExit={() => setSosOpen(false)}
-            />
+          <SosResult
+            status={sosStatus}
+            orderId={sosOrderId}
+            onRetry={() => void requestSos()}
+            onCorrection={sosEventId ? appendCorrection : undefined}
+            onExit={() => setSosOpen(false)}
+          />
           </div>
         ) : activeTask ? (
           // 任务面板优先于对话记录；退出任务后若在会话中会自动回到记录
@@ -493,6 +500,18 @@ function MainScreen({
               onAnswer={(text) => {
                 // Day 7 L6#8：卡片按钮 → user_text 上行（词表内口语，ASR FINAL 同路）
                 clientRef.current?.sendUserText(text);
+              }}
+              onReceipt={(taskId, notificationId) => {
+                // Day 9 X1/F01：卡片渲染 → client_receipt/card_rendered 回执（服务端幂等）。
+                // standby 期无 WS 会话（clientRef 为 null）时丢弃并留痕，联调走会话内路径。
+                if (clientRef.current) {
+                  clientRef.current.sendClientReceipt(taskId, notificationId);
+                } else {
+                  console.warn(
+                    "[receipt] 无信令会话，card_rendered 回执丢弃（待 C3 扫描兜底）",
+                    taskId,
+                  );
+                }
               }}
             />
           </>
