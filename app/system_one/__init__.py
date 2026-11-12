@@ -13,7 +13,7 @@ Day 7 起模型从「Laya 配置项」换成**本地 Laya multilingual 权重 + 
 
 **导出纪律**：本模块**不导出** `backend` / `server`。`backend` 会在加载时依赖
 `torch` + `rl_agent_api`（只在函数内延迟导入，但一旦有人 `from app.system_one import
-ChineseJevBackend` 就会把这条依赖拉到主服务进程），`server` 是 sidecar 专用 FastAPI 应用。
+LayaBackend` 就会把这条依赖拉到主服务进程），`server` 是 sidecar 专用 FastAPI 应用。
 主 `.venv` 里 `import app.system_one` 必须永远不碰 torch。
 """
 

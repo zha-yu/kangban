@@ -191,11 +191,11 @@ async def run_degrade(settings: Settings) -> dict[str, Any]:
 async def run_pure(settings: Settings) -> dict[str, Any]:
     """纯前向模式（必须 jev 环境）：不含 HTTP，用来分离"模型慢"与"环境忙"。"""
     try:
-        from app.system_one.backend import ChineseJevBackend
+        from app.system_one.backend import LayaBackend
     except Exception as exc:
         return {"mode": "pure", "error": f"无法导入后端（是否在主 .venv 里跑？）：{exc}"}
 
-    backend = ChineseJevBackend(settings)
+    backend = LayaBackend(settings)
     questions = build_fast_questions()
     load_started = time.perf_counter()
     try:
