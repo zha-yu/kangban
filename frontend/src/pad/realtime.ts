@@ -213,12 +213,19 @@ export class RealtimeClient {
       };
       const servers: RTCIceServer[] = [];
       if (body.stun_url) servers.push({ urls: body.stun_url });
-      if (body.turn_url) {
+      // Day 10 X1 联调实证：turn_url 非空但凭据空 → RTCPeerConnection 构造直接抛
+      // InvalidAccessError（ICE server parsing failed），会话链路崩成「请再说一遍」。
+      // 本地无 coturn 时属预期配置缺项——凭据不全就不下发 turn 条目，退 host
+      // candidate 直连并上报 diag（不静默、不阻塞，与「获取失败回落空配置」同口径）。
+      if (body.turn_url && body.turn_username && body.turn_credential) {
         servers.push({
           urls: body.turn_url,
           username: body.turn_username,
           credential: body.turn_credential,
         });
+      } else if (body.turn_url) {
+        console.warn("[ice] TURN 凭据不全（username/credential 为空），跳过 turn 条目走直连");
+        this.sendDiag("webrtc", false, "ice_turn_credential_missing");
       }
       this.iceServersCache = servers;
       return servers;
