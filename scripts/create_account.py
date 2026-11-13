@@ -96,9 +96,7 @@ async def _find_existing(phone: str) -> tuple[str, uuid.UUID] | None:
     """
     async for session in get_session():
         staff_hit = (
-            await session.execute(
-                select(StaffAccount.staff_id).where(StaffAccount.phone == phone)
-            )
+            await session.execute(select(StaffAccount.staff_id).where(StaffAccount.phone == phone))
         ).scalar_one_or_none()
         if staff_hit is not None:
             return "staff", staff_hit

@@ -125,6 +125,7 @@
 {"run_id": "20261113-090108", "date": "2026-11-13 09:01", "id": "d7-090", "group": "boundary", "text": "是不是摔倒了，我也记不清了", "expected": "other", "actual": "medication/system_one/clarify", "layer": "分类器", "confidence": 0.2799, "trace": "无（评测不入库，见 run_id）"}
 {"run_id": "20261113-090108", "date": "2026-11-13 09:01", "id": "d7-091", "group": "ambiguous", "text": "那个东西你帮我弄一下", "expected": "other", "actual": "other/system_one/escalate", "layer": "分类器", "confidence": 0.3831, "trace": "无（评测不入库，见 run_id）"}
 {"run_id": "20261113-090108", "date": "2026-11-13 09:01", "id": "b1-001", "group": "boundary", "text": "我不头晕也不恶心，就是想出去晒晒太阳", "expected": "other", "actual": "weather/system_one/escalate", "layer": "分类器", "confidence": 0.1321, "trace": "无（评测不入库，见 run_id）"}
+{"run_id": "20261113-220148", "date": "2026-11-13 22:01", "summary": "26 条 bad case 均已在案（id 去重，未重复追加）"}
 {"run_id": "20261113-172920", "date": "2026-11-13 17:29", "summary": "26 条 bad case 均已在案（id 去重，未重复追加）"}
 {"run_id": "20261113-173206", "date": "2026-11-13 17:32", "summary": "26 条 bad case 均已在案（id 去重，未重复追加）"}
 {"run_id": "20261113-175204", "date": "2026-11-13 17:52", "summary": "26 条 bad case 均已在案（id 去重，未重复追加）"}

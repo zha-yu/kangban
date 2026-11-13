@@ -77,11 +77,20 @@ async def main() -> int:
             @pc.on("icecandidate")
             async def _on_cand(e):
                 if e.candidate:
-                    await ws.send(json.dumps({"type": "ice", "candidate": json.dumps({
-                        "candidate": e.candidate.candidate,
-                        "sdpMid": e.candidate.sdpMid,
-                        "sdpMLineIndex": e.candidate.sdpMLineIndex,
-                    })}))
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "type": "ice",
+                                "candidate": json.dumps(
+                                    {
+                                        "candidate": e.candidate.candidate,
+                                        "sdpMid": e.candidate.sdpMid,
+                                        "sdpMLineIndex": e.candidate.sdpMLineIndex,
+                                    }
+                                ),
+                            }
+                        )
+                    )
 
             answer = await pc.createAnswer()
             await pc.setLocalDescription(answer)
@@ -97,8 +106,11 @@ async def main() -> int:
                 mtype = msg.get("type")
                 if mtype == "tts_text" and msg.get("touch_id"):
                     got_touch = True
-                    record(True, f"③ 触达帧到达（touch_id={str(msg.get('touch_id'))[:8]}… "
-                                 f"notification_id={str(msg.get('notification_id'))[:8]}…）")
+                    record(
+                        True,
+                        f"③ 触达帧到达（touch_id={str(msg.get('touch_id'))[:8]}… "
+                        f"notification_id={str(msg.get('notification_id'))[:8]}…）",
+                    )
                 elif mtype == "offer":
                     got_offer = True
                     record(True, "④ 服务端外呼 offer 到达（X1/B1：信令下发）")

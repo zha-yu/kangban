@@ -248,7 +248,11 @@ def _verdict(result: dict[str, Any]) -> tuple[bool, list[str]]:
         return ok, notes
 
     if mode == "degrade":
-        ok = result["degraded"] and result["invariants_ok"] and result["warm_p50_ms"] <= DEGRADE_BUDGET_MS
+        ok = (
+            result["degraded"]
+            and result["invariants_ok"]
+            and result["warm_p50_ms"] <= DEGRADE_BUDGET_MS
+        )
         notes.append(f"降级 degraded={result['degraded']} 三不变量={result['invariants_ok']}")
         notes.append(
             f"{'✅' if result['warm_p50_ms'] <= DEGRADE_BUDGET_MS else '❌'} "
@@ -303,7 +307,10 @@ async def main_async(args: argparse.Namespace) -> int:
 
     if args.json_out:
         # 写盘放在 sync 的 main()（async 里做阻塞文件 IO 会卡事件循环）
-        _pending_payload[0] = (Path(args.json_out), {"env": _env_report(settings), "results": results})
+        _pending_payload[0] = (
+            Path(args.json_out),
+            {"env": _env_report(settings), "results": results},
+        )
 
     print(f"\n=== 总判定：{'PASS' if all_ok else 'FAIL'} ===")
     return 0 if all_ok else 1

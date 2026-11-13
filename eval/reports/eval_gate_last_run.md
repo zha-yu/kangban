@@ -78,7 +78,7 @@
 ## 5. 行为场景（超时/打断/重复/越权）
 
 - 复用测试：`tests/test_degrade_timeout.py`、`tests/test_turn_service.py`、`tests/test_tool_executor.py`、`tests/test_api_workorders_family.py`、`tests/test_elders_api.py`、`tests/test_security.py`
-- 结果：✅ 通过 ｜ ` | -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html | 322 passed, 21 warnings in 77.20s (0:01:17)`
+- 结果：✅ 通过 ｜ ` | -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html | 322 passed, 21 warnings in 94.46s (0:01:34)`
 
 ## 6. 样本指纹
 
