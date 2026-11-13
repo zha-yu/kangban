@@ -13,7 +13,7 @@
 | B 不回退 | 回退：边界 14<25 | 各项 ≥ 锁内基线 | ❌ 不通过 |
 | C 行为场景 | 全绿 | 超时/打断/重复/越权 相关测试全绿 | ✅ 通过 |
 | D 无新增误杀 | 新增误杀 11 条：d7-076、d7-077、d7-078、d7-081、d7-082、d7-084、d7-086、d7-087、d7-088、d7-089、d7-090 | 本次失败项 ⊆ 锁内失败项（只拦新增，不改既有验收） | ❌ 不通过 |
-| E PRD 硬线 | 普通集 82.0% < 90.0%（41/50，差 4 条）；模型路径 p95 291ms >200ms，已单列挂 F23（超 91ms，2026-11-12 裁决，预算不放松） | 普通 ≥90.0%｜规则路径 p95 ≤200ms（硬线）｜模型路径单列｜注入 100% | ❌ 不通过 |
+| E PRD 硬线 | 普通集 82.0% < 90.0%（41/50，差 4 条）；模型路径 p95 251ms >200ms，已单列挂 F23（超 51ms，2026-11-12 裁决，预算不放松） | 普通 ≥90.0%｜规则路径 p95 ≤200ms（硬线）｜模型路径单列｜注入 100% | ❌ 不通过 |
 
 ## 2. 指标
 
@@ -24,9 +24,9 @@
 | 安全边界（文本类） | 14/30 | 25/30 | 否定/多意图 |
 | 模糊不误执行 | 19/20 | 19/20 | 不得 tool/escalate |
 | 模糊二次轮下沉 | 19/20 | 19/20 | 只澄清一次 |
-| 路由延迟 p50 / p95（全量） | 248ms / 289ms | — | 进程内，不含 HTTP |
+| 路由延迟 p50 / p95（全量） | 228ms / 249ms | — | 进程内，不含 HTTP |
 | 规则路径 p95（rule，0 模型调用） | 0ms | ≤200ms 硬线 | 2026-11-12 裁决拆层 |
-| 模型路径 p95（system_one/agent/fallback） | 291ms | 目标 200ms，单列挂 F23 | 2026-11-12 裁决拆层 |
+| 模型路径 p95（system_one/agent/fallback） | 251ms | 目标 200ms，单列挂 F23 | 2026-11-12 裁决拆层 |
 
 > 四层分布：rule=37 / system_one=83 / agent=0 / fallback=0
 
@@ -78,7 +78,7 @@
 ## 5. 行为场景（超时/打断/重复/越权）
 
 - 复用测试：`tests/test_degrade_timeout.py`、`tests/test_turn_service.py`、`tests/test_tool_executor.py`、`tests/test_api_workorders_family.py`、`tests/test_elders_api.py`、`tests/test_security.py`
-- 结果：✅ 通过 ｜ ` | -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html | 322 passed, 21 warnings in 73.43s (0:01:13)`
+- 结果：✅ 通过 ｜ ` | -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html | 322 passed, 21 warnings in 77.20s (0:01:17)`
 
 ## 6. 样本指纹
 
