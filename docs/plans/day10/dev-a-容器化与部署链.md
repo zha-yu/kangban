@@ -1,4 +1,4 @@
-> 状态：草稿（待 M6.0 启动核对与主理人确认后执行）　｜　版本：v1.0　｜　日期：2026-11-13
+> 状态：进行中（S0 已收口，Q4/Q7/Q-A1/Q-A2 已裁决；下一步 S1）　｜　版本：v1.1　｜　日期：2026-11-13
 > 负责人：**dev-A（唯一）**　｜　任务包：**A · 容器化与部署链（17h）**
 > 关联：docs/team_tasks/day10/dev-A-容器化与部署链.md v1.0（任务书，分工与判据唯一依据）｜docs/team_tasks/day10/day10-任务总览与DAG.md v1.1（§2 DAG、§3 对接点 Y1/Y2/Y4、§4 写域、§8 待确认）｜docs/plans/day10/day-10-交付与观测-工作推进计划.md v1.1（总计划件）
 > 上游依据：PRD line 578（Day 10 完成定义）、§2.5（一键启动/HTTPS/健康检查）、line 455（FR-TC-05）、line 444（FR-ADM-10）｜技术设计文档 §8.3 Day 10（line 1176–1183：多阶段非 root、七服务编排、回滚演练）、§1.4 选型表 line 206（compose 七服务）
@@ -272,11 +272,11 @@ uv run ruff check app tests
 
 | # | 待确认 | 影响子任务 | 默认口径（挂起建议，不自动执行） |
 | --- | --- | --- | --- |
-| **Q-A1** | backend 容器是否自动执行 `alembic upgrade head`（entrypoint 内）vs compose 一次性 migrate 服务 vs 保持手动 | A1-b/D3 判据 | entrypoint 自动迁移（D3 三步起全栈判据隐含库有表）；生产形态另议 |
-| **Q-A2** | `static/` 进镜像 COPY vs 运行时卷挂载（`/static` 依赖 cwd，main.py L1114-1118） | A1 | 镜像 COPY（体积可接受时），VRM 大资产走 nginx 卷 |
-| **Q-A3** | nginx 前端产物在 C1（Y3）到位前的占位方式 | S3 | 本地 `dist/` 只读卷占位 + 登记待替换，不阻塞 A2 骨架 |
-| （沿用总览）Q4 | langfuse v2 vs v3 | S4 | v2 + 复用 postgres 独立 schema |
-| （沿用总览）Q7 | laya 挂卷 vs sidecar | S4 | 挂载宿主已下载权重卷；不可行则 sidecar 化如实记录 |
+| **Q-A1** | backend 容器是否自动执行 `alembic upgrade head`（entrypoint 内）vs compose 一次性 migrate 服务 vs 保持手动 | A1-b/D3 判据 | **已裁决（2026-11-13 S0）：entrypoint 自动迁移**——`deploy/backend-entrypoint.sh` 先 `alembic upgrade head` 再 exec uvicorn；D3 三步起全栈判据成立 |
+| **Q-A2** | `static/` 进镜像 COPY vs 运行时卷挂载（`/static` 依赖 cwd，main.py L1114-1118） | A1 | **已裁决（2026-11-13 S0）：COPY 进镜像**；VRM 大资产不在此目录，走 nginx 卷 |
+| **Q-A3** | nginx 前端产物在 C1（Y3）到位前的占位方式 | S3 | 按默认口径执行（S0 登记，不单独阻塞）：本地 `dist/` 只读卷占位 + 执行记录登记待替换 |
+| （沿用总览）Q4 | langfuse v2 vs v3 | S4 | **已裁决（2026-11-13 S0）：v2 单容器 + 复用 postgres 独立 schema**（避免 v3 的 ClickHouse/MinIO 依赖，与 Y2 契约默认一致） |
+| （沿用总览）Q7 | laya 挂卷 vs sidecar | S4 | **已裁决（2026-11-13 S0）：挂载宿主已下载权重卷**；不可行再降级 sidecar 化并如实记录 |
 | （沿用总览）Q2 | D12–D13 收口日历 | 排程 | 按 D12–D13 |
 
 ---
@@ -304,7 +304,7 @@ uv run ruff check app tests
 
 | 日期 | 步骤 | 结果/证据指针 | 等待项 |
 | --- | --- | --- | --- |
-| | | | |
+| 2026-11-13 | S0 | ①环境自检 PASS：Docker 29.9.1（client=server）、`docker compose config` 退出码 0、C 盘余量 141G≥15G；②现状实测表 §2 十四条逐条复核**无漂移**（/static cwd 依赖实位于 main.py L1115-1119、.dockerignore 排除 alembic 实际 L27；**新增登记**：.dockerignore L28 同时排除 `scripts/` → entrypoint 脚本必须放 `deploy/` 下才能进构建上下文，与 §4 S1 方案一致）；③计划件 v1.0+索引已提交 `a19504b`，工作区干净；④裁决落档：Q4=langfuse v2+复用 postgres 独立 schema、Q7=laya 挂载宿主权重卷、Q-A1=entrypoint 自动迁移、Q-A2=static COPY 进镜像、Q-A3 按默认口径（dist 占位卷）执行 | 无（可进 S1） |
 
 ---
 
@@ -313,3 +313,4 @@ uv run ruff check app tests
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-13 | 首版。基于任务书 v1.0、总览 v1.1、PRD v3.1、TD §8.3/§1.4 与 2026-11-13 代码现状巡检（14 条实测，含文件行号）编制：S0–S10 十一步分步确认制，每步含子任务拆解/工时/优先级/前置/命令级自检/确认点；Y1/Y2/Y4 对接动作、待确认 Q-A1–Q-A3、风险预案 R1–R12、工时 17.5h（含缓冲）。未改任何业务代码。 |
+| v1.1 | 2026-11-13 | S0 收口：环境自检 PASS（Docker 29.9.1/compose config 0/磁盘 141G）；现状表复核无漂移，新增登记 `.dockerignore` 排除 `scripts/`（entrypoint 须放 deploy/）；四项裁决落档（Q4=v2+复用 postgres、Q7=挂载宿主权重卷、Q-A1=entrypoint 自动迁移、Q-A2=static COPY 进镜像），Q-A3 按默认口径执行；计划件提交 `a19504b`。 |
