@@ -541,7 +541,7 @@ docker compose up -d
 | nginx（前端托管 + 反代） | 80 / 443 | ✅ **已入编（A2a）**：镜像 = dev-C C1 的 `frontend/frontend.Dockerfile`（Y3 契约：构建上下文 `./frontend`、产物 `/usr/share/nginx/html/{pad,console,family}`、镜像内默认配置含三入口静态段 + `/api` `/ws` 反代）；healthcheck 探 `/pad/`；**`deploy/nginx.conf` 的 HTTPS/证书/三入口完整段归 dev-A S6 升格后卷挂载覆盖**（当前镜像内默认配置生效中） |
 | system-one（laya sidecar） | 7001 | ⏳ 待 A2 S4（Q7 裁决：默认挂宿主权重卷，不可行则 sidecar 化如实记录） |
 | coturn | 3478 / 5349 | ⏳ 待 A2 S4 |
-| langfuse | 3000（共享实例在 dev-B 主机） | ⏳ compose 定义 **profile 化**（`--profile langfuse` 才启动，默认全员连 dev-B 主机共享实例——2026-11-13 裁决，Y2 改 B⇄A 双向）；key 向 dev-B 领取，`.env` 注入不进 git |
+| langfuse | 3000（共享实例） | ⏳ **改判⑨（2026-11-13）：形态改 Langfuse v4 全家桶（六容器）**，compose 服务定义归 dev-A S4 待办（尚未入 compose）；共享实例常驻主理人指定主机，其他成员在 `http://<主理人局域网IP>:3000` 自行注册拿 key（密钥不进 git，`.env` 注入） |
 
 ### 12.3 端口约定
 
