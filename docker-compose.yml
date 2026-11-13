@@ -307,36 +307,176 @@ services:
       retries: 6
       start_period: 120s   # 权重 615MB 建图实测约 40s（宿主），容器内更慢，留足余量
 
-  langfuse:
-    # Langfuse v2（Day 10 · A2-b，dev-A）。Q4 裁决：v2 单容器 + 复用 postgres 独立 schema。
-    # **共享实例裁决（主理人 2026-11-13）**：实例常驻 dev-B 主机全员连 B——因此本服务
-    # profile 化，默认 `docker compose up` 不启动；`docker compose --profile langfuse up`
-    # 激活（B 侧常驻跑法，或任何人本机自起临时取证）。
-    # 首次启用前在业务 postgres 建一次 schema（幂等）：
-    #   docker exec silvermate-postgres psql -U silvermate -d silvermate -c "CREATE SCHEMA IF NOT EXISTS langfuse;"
-    image: langfuse/langfuse:2
-    container_name: silvermate-langfuse
+  langfuse-web:
+    # Langfuse v4 全家桶（Day 10 · A2-b，dev-A）。**Q4 改判（dev-B 通知，2026-11-13，落档
+    # dev-b 计划件 §8.1-⑨ / commit 56345ab）**：OTLP 摄入端点是 Langfuse v3.22 才引入的，
+    # v2 收不了 OTel span（B 在 v2.95 容器实测 api/public/ 无 otel 路由）——B1 观测代码走
+    # OTLP/HTTP，实例必须 v3.22+（现行 v4）。共享实例常驻 dev-B 主机（六容器已起好、冒烟全过），
+    # 全员默认连 B 的 `LANGFUSE_HOST`，**本段六服务全部 profile 化默认不起**——compose 这套是
+    # 「一键启动/干净主机演练」的兜底（`docker compose --profile langfuse up` 激活）。
+    # 编排对齐官方 v4 模板（langfuse.com/self-hosting）；基础设施端口不映射宿主
+    # （本机 5432/6379 已被业务 postgres/redis 占用），仅 web 3000 对外。
+    image: docker.langfuse.com/langfuse/langfuse:${LANGFUSE_IMAGE_TAG:-4}
+    container_name: silvermate-langfuse-web
     restart: unless-stopped
     profiles: ["langfuse"]
     ports:
       - "${LANGFUSE_HOST_PORT:-3000}:3000"
-    environment:
-      # Prisma ?schema= 参数：数据落业务 postgres 的 langfuse schema（与业务表/checkpoint 隔离）
-      DATABASE_URL: postgresql://${POSTGRES_USER:-silvermate}:${POSTGRES_PASSWORD:-silvermate}@postgres:5432/${POSTGRES_DB:-silvermate}?schema=langfuse
+    environment: &langfuse-env
       NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:3000}
-      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-}
-      SALT: ${LANGFUSE_SALT:-}
-      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-}
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-changeme-generate-a-random-secret}
+      SALT: ${LANGFUSE_SALT:-changeme-generate-a-random-salt}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-changeme-64-hex-via-openssl-rand-hex-32}
+      DATABASE_URL: postgresql://${LANGFUSE_POSTGRES_USER:-langfuse}:${LANGFUSE_POSTGRES_PASSWORD:-langfuse}@langfuse-postgres:5432/${LANGFUSE_POSTGRES_DB:-langfuse}
+      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_USER: ${LANGFUSE_CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-clickhouse}
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_HOST: langfuse-redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: ${LANGFUSE_REDIS_AUTH:-changeme-redis-password}
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_MINIO_ROOT_USER:-minio}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_ROOT_PASSWORD:-changeme-minio-secret}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_MINIO_ROOT_USER:-minio}
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_ROOT_PASSWORD:-changeme-minio-secret}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:${LANGFUSE_MINIO_HOST_PORT:-9090}
+      LANGFUSE_S3_MEDIA_UPLOAD_INTERNAL_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
     depends_on:
-      postgres:
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-minio:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/public/health"]
       interval: 15s
       timeout: 5s
       retries: 6
-      start_period: 60s
+      start_period: 90s
+
+  langfuse-worker:
+    # v4 摄入 worker（与 web 同镜像同变量；OTel span/trace 落库的执行者）
+    image: docker.langfuse.com/langfuse/langfuse-worker:${LANGFUSE_IMAGE_TAG:-4}
+    container_name: silvermate-langfuse-worker
+    restart: unless-stopped
+    profiles: ["langfuse"]
+    environment:
+      <<: *langfuse-env
+    depends_on:
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3030/api/public/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 90s
+
+  langfuse-postgres:
+    # v4 元数据库（官方口径：postgres 只存元数据，trace 数据在 ClickHouse）；
+    # 独立实例与业务 postgres 物理隔离（v4 不再走 v2 的 schema 复用方案）
+    image: docker.io/postgres:${LANGFUSE_POSTGRES_VERSION:-17}
+    container_name: silvermate-langfuse-postgres
+    restart: unless-stopped
+    profiles: ["langfuse"]
+    environment:
+      POSTGRES_USER: ${LANGFUSE_POSTGRES_USER:-langfuse}
+      POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD:-langfuse}
+      POSTGRES_DB: ${LANGFUSE_POSTGRES_DB:-langfuse}
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - langfuse_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${LANGFUSE_POSTGRES_USER:-langfuse}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  langfuse-redis:
+    # v4 队列缓存（BullMQ）；独立实例，不与业务 redis 共用（maxmemory-policy noeviction 硬要求）
+    image: docker.io/redis:7
+    container_name: silvermate-langfuse-redis
+    restart: unless-stopped
+    profiles: ["langfuse"]
+    command: >
+      --requirepass ${LANGFUSE_REDIS_AUTH:-changeme-redis-password}
+      --maxmemory-policy noeviction
+    volumes:
+      - langfuse_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${LANGFUSE_REDIS_AUTH:-changeme-redis-password}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  langfuse-clickhouse:
+    # v4 trace 数据主存（OLAP）
+    image: docker.io/clickhouse/clickhouse-server:26.3.62.3
+    container_name: silvermate-langfuse-clickhouse
+    restart: unless-stopped
+    profiles: ["langfuse"]
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: ${LANGFUSE_CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-clickhouse}
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+      - langfuse_clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  langfuse-minio:
+    # v4 事件/媒体对象存储（S3 兼容）；entrypoint 预建 langfuse 桶（官方口径，无需 init 容器）
+    image: cgr.dev/chainguard/minio
+    container_name: silvermate-langfuse-minio
+    restart: unless-stopped
+    profiles: ["langfuse"]
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: ${LANGFUSE_MINIO_ROOT_USER:-minio}
+      MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_ROOT_PASSWORD:-changeme-minio-secret}
+    ports:
+      # 浏览器媒体直传走 localhost:9090（LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT）
+      - "${LANGFUSE_MINIO_HOST_PORT:-9090}:9000"
+      - "127.0.0.1:9091:9001"
+    volumes:
+      - langfuse_minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 3s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
 volumes:
   postgres_data:
   funasr_models:
+  langfuse_postgres_data:
+  langfuse_redis_data:
+  langfuse_clickhouse_data:
+  langfuse_clickhouse_logs:
+  langfuse_minio_data:
