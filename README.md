@@ -541,13 +541,15 @@ docker compose up -d
 | nginx（前端托管 + 反代） | 80 / 443 | ✅ **已入编（A2a）**：镜像 = dev-C C1 的 `frontend/frontend.Dockerfile`（Y3 契约：构建上下文 `./frontend`、产物 `/usr/share/nginx/html/{pad,console,family}`、镜像内默认配置含三入口静态段 + `/api` `/ws` 反代）；healthcheck 探 `/pad/`；**`deploy/nginx.conf` 的 HTTPS/证书/三入口完整段归 dev-A S6 升格后卷挂载覆盖**（当前镜像内默认配置生效中） |
 | system-one（laya sidecar） | 7001 | ⏳ 待 A2 S4（Q7 裁决：默认挂宿主权重卷，不可行则 sidecar 化如实记录） |
 | coturn | 3478 / 5349 | ⏳ 待 A2 S4 |
-| langfuse | 3000（共享实例在 dev-B 主机） | ⏳ compose 定义 **profile 化**（`--profile langfuse` 才启动，默认全员连 dev-B 主机共享实例——2026-11-13 裁决，Y2 改 B⇄A 双向）；key 向 dev-B 领取，`.env` 注入不进 git |
+| langfuse | 3000（共享实例） | ⏳ **改判⑨（2026-11-13）+ 主理人澄清（17:18）：形态 v4 全家桶（六容器），部署在 dev-B 主机，全员直连 dev-B IP，不自己起服务**；compose 服务定义归 dev-A S4 待办（本地仅保留 profile 化编排或占位，由 A 复核）；观测注册 `http://<dev-B局域网IP>:3000` 自行注册拿 key（密钥不进 git，`.env` 注入） |
 
 ### 12.3 端口约定
 
 端口一律沿用 **§6.2 服务与端口表**（唯一口径）：postgres 5432 / redis 6379 / backend 8000 / nginx 80·443 / system-one(laya) 7001 / funasr 7002 / weather-mcp 7101 / mock-operations-mcp 7102 / coturn 3478·5349 / vite dev 5173。
 
 补充一处实测事实：**voiceprint 7003** 已在 `docker-compose.yml` 启用（`VOICEPRINT_HOST_PORT` 可改写），§6.2 表后续统一回补。
+
+> **本机不起 funasr / voiceprint（2026-11-13 17:18 主理人口径）**：两者直连 **dev-B 主机实例**（funasr 免本机 GB 级模型下载；voiceprint 免本机环境重复搭建），本机 compose 可不起这两个容器，backend 经 `.env` 把 `ASR_*` / `VOICEPRINT_BASE_URL` 指向 dev-B 局域网 IP 即可（dev-B IP 由 dev-B 分发）。funasr 连通性为当前攻坚重点。
 
 ### 12.4 前端镜像（C1 已交付，2026-11-13）
 
@@ -608,9 +610,10 @@ docker compose up -d
 ### 15.4 门禁口径
 
 - 评测门禁机制现状见 §7（`eval_gate.py` 作为 pre-push 钩子，固定集不达标阻断提交）。
-- **阻塞模式已裁决（2026-11-13，Q3=A）：阻塞真门禁**——`git push` 前实跑 `eval_gate.py`，不通过则拒绝 push；同时为已知挂起红项建立 **expected-red 显式标注机制**（标注项不阻塞 push，防止历史挂起项误伤正常提交）。
-- **门禁成本与钩子启用要求（dev-D D1 提单 2026-11-13 15:17；详细素材 `day10_gate_rerun.md` §6，文件待 dev-D push，到位后本节逐字校对回填）**：
-  - 每次 `git push` 实跑评测门禁，**约 3~4 分钟，属既定成本**——push 变慢是门禁在工作，不是卡死；
-  - 钩子启用要求：clone 后必须执行一次 `git config core.hooksPath .githooks`，否则 pre-push 钩子不生效（等于绕过门禁）；
-  - **expected-red 有过期时间：2026-11-15 后 B/D/E 红项自动恢复阻塞**——到期前必须完成 X9 复跑并撤销标注或更新留痕，否则全员 push 被堵。
-- ⏳ 待 dev-D push `day10_gate_rerun.md` 后：按 §6 四态验证表逐字校对本节并回填复跑记录。
+- **阻塞模式已裁决（2026-11-13，Q3=A）：阻塞真门禁**（素材：`eval/reports/day10_gate_rerun.md` §6，2026-11-13 已逐字合入本节）：
+  - **pre-push 链路**：①看板/索引/样本机制自检（`.venv` python）→ ②真门禁 `tests/eval_gate.py --provider local`（`.venv_sidecar` python + torch，**约 3~4 分钟，属 Q3 裁决既定成本**）——不过**拒绝 push**；无 `.venv_sidecar` 环境＝环境未配好，报错退出不静默放行（F02）。
+  - **expected-red 标注机制（已落码）**：已知挂起红项登记 `eval/reports/expected_red.json`（gates/reason/expires/evidence/ruling **入库留痕**，变更走 git 历史）；命中红项**不阻塞 push 但留痕**（报告头＋控制台双留痕）；未标注的红一律阻塞；`--strict` 忽略全部标注（复核用）；**expires 过期自动失效**防「标注永不摘除」。
+  - **当前标注：B/D/E**（本机环境偏差＋普通集 82%<90% 待 Line 1 路由改进；规则路径 p95 0ms 硬线已达标，模型路径 1147ms 单列挂 F23），**expires=2026-11-15**——覆盖 D11 X9 复跑窗口，达标后撤销；过期自动失效、红项重新阻塞。
+  - **四态验证（2026-11-13 实测全过）**：红＋标注 exit 0（留痕）｜`--strict` 红未标注 exit 1｜绿→放行分支已实测｜调低阈值 0.30＋strict exit 1｜端到端 `pre-push` 完整链路 exit 0。
+  - **钩子启用**：clone 后执行一次 `git config core.hooksPath .githooks`，否则钩子不生效＝绕过门禁。
+  - **纪律**：全员不得为变绿调阈值或删用例（沿 day09 X9）；`SENSITIVE_FLOOR_PCT=95.0` 不放宽；D1 复跑五闸门 **A/C 过、B/D/E 如实报红不粉饰**（详见 day10_gate_rerun.md §1–§3）。

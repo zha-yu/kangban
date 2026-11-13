@@ -188,7 +188,7 @@ flowchart LR
 | 项 | 内容 |
 | --- | --- |
 | 提供方→消费方 | dev-A（A2）→ dev-B（B1） |
-| 契约内容 | compose `langfuse` 服务定义（形态按 §8 Q4 裁决，默认建议 Langfuse v2 镜像＋复用 postgres 独立 schema，避免 v3 的 ClickHouse/MinIO 依赖）；凭据三变量 **`.env` 注入、不硬编码**：`LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_HOST`；**B1 走 OTel exporter 路线（裁决 ⑤/Q10），exporter 端点/凭据复用同一组变量**；`.env.example` 的 langfuse 段由 **B 先定稿、A 合编排时一并成文**（B→A 提交顺序） |
+| 契约内容 | ~~compose `langfuse` 服务定义（建议 Langfuse v2 镜像＋复用 postgres 独立 schema）~~ **改判⑨（2026-11-13 主理人）：Langfuse 形态改 v4 全家桶（六容器）**；**主理人澄清（17:18）：实例部署 dev-B 主机、全员直连 dev-B IP，不自己起服务**（早前「主理人 IP」口径作废）；compose 服务定义仍归 dev-A S4（**尚未入 compose，Y2 仍是 A 待办**，本地仅保留 profile 化编排或占位，由 A 按 v4 形态复核）；**其他成员在 `http://<dev-B局域网IP>:3000` 自行注册拿 key**（密钥不进 git）；`.env.example` 的 langfuse 段 B 先定稿、A 合编排时成文；**B1 走 OTel exporter 路线（裁决 ⑤/Q10），exporter 端点/凭据复用同一组变量**；⚠️ dev-A 计划件 S0/S4 所记「v2+复用 postgres」已过时（v4 改判）待 A 同步，「连 dev-B 主机」口径经澄清**维持有效** |
 | 联调时点 | D11 上午（compose 就绪后） |
 | 联调判据 | B1 以注入凭据发起一次对话，Langfuse 界面可见 Trace 落库可查 |
 
@@ -285,7 +285,7 @@ flowchart LR
 | Q3 | ~~pre-push 阻塞模式~~ **已裁决（A1，2026-11-13 14:06）：阻塞真门禁**——push 前实跑 eval_gate 不过则拒绝；同时为已知挂起红项建 **expected-red 显式标注机制**（标注项不阻塞 push），环境不具备再降级留痕 | D1/Y5 | 已裁决，D1 按此接线 |
 | Q5 | ~~TD line 1179 路径勘误留痕~~ **已裁决（A1，2026-11-13 14:06）：修订记录留痕、不改正文**——TD 修订记录加 v1.x 条目说明实际落点 `tests/eval_gate.py`（沿 day07 先例），dev-D 在 D1 同提交执行 | D1 | 已裁决 |
 | Q2 | Day 10 收口段日历 D12–D13 是否认可 | 排期对外口径 | 按 D12–D13；压缩则按裁减顺序先裁 A5/B3 |
-| Q4 | Langfuse 部署形态：v2 单容器+复用 postgres vs v3 全家桶 | A2/B1 | v2＋复用 postgres 独立 schema |
+| Q4 | ~~Langfuse 部署形态：v2 单容器+复用 postgres vs v3 全家桶~~ **改判⑨（2026-11-13 主理人）：Langfuse v4 全家桶（六容器）**——dev-A 计划件 S0 所记「Q4=v2+复用 postgres」过时，S4 编排按 v4 口径执行；共享实例注册地址 `http://<主理人局域网IP>:3000`（key 各自注册领取，不进 git） | A2 S4 / B1 | 改判落档，dev-A S4 待办中 |
 | Q6 | iter2-demo/iter3-demo 缺失：不补打仅登记偏差 | A4/D5 | 接受登记 |
 | Q7 | Laya 容器化形态：宿主权重卷挂载 vs sidecar | A2 | 挂载宿主已下载权重卷；不可行则 sidecar 化并如实记录 |
 | Q8 | F23 延迟 668ms>200ms 继续挂起 | B3 | 如实记录不为达标调阈值（沿 X9 纪律） |
@@ -306,3 +306,5 @@ flowchart LR
 | v1.5 | 2026-11-13 | **Q1/Q3/Q5 三项裁决落档**（主理人 14:06）：Q1=A 纳入演示视频录制（D4 +1~1.5h，白天场景改陪聊）；Q3=A pre-push 阻塞真门禁＋expected-red 显式标注机制（D1 接线）；Q5=A TD 修订记录留痕不改正文（D1 同提交执行）。§2.2 D4 行、§6、§8 同步。 |
 | v1.6 | 2026-11-13 | **Q1 改判落档**（主理人 14:28，推翻 14:06 的 A 裁决）：**演示视频不录制**，D4 只交 5 分钟脚本（工时回 2h）；PRD line 578 / 大纲 10.4 字面偏差显式登记 §6，PRD 层留痕建议并入修订记录 v3.2 同批处理。Q3/Q5 不受影响。 |
 | v1.7 | 2026-11-13 | **Y5 契约增补**（dev-D 提单 15:17，dev-C 登记）：push 成本 3~4 分钟为既定、全员须 `git config core.hooksPath .githooks`、expected-red 过期时间 2026-11-15（到期 B/D/E 红项恢复阻塞）；README §15.4 已先行合入提单事实（素材文件 `day10_gate_rerun.md` 待 dev-D push，到位后逐字校对）。 |
+| v1.8 | 2026-11-13 | **改判⑨落档（Langfuse v4 全家桶）**：主理人改判 Langfuse 形态为 **v4 全家桶（六容器）**——Q4 行、Y2 契约同步更新；compose langfuse 服务定义仍归 dev-A S4 待办（当前未入 compose）；共享实例注册 `http://<主理人局域网IP>:3000`；dev-A 计划件 S0/S4 所记「v2+复用 postgres、连 dev-B」标记过时待 A 自行同步（提单不动其写域）。 |
+| v1.9 | 2026-11-13 | **主理人澄清（17:18）**：改判⑨的实例宿主确认 **dev-B 主机、全员直连 dev-B IP，不自己起服务**（v1.8 的「主理人 IP」口径作废，「连 dev-B」恢复有效）；**funasr 与 voiceprint 同口径：直连 dev-B 实例、本机不起容器**（funasr 免本机 GB 级模型下载，为攻坚重点）；Y2/Q4、README §12.2 同步。 |
