@@ -508,7 +508,7 @@ uv run pytest -q -m "not slow" --cov=app --cov-report=term
 
 ## 12. Docker 部署
 
-> **骨架说明（2026-11-13）**：本节为 Day 10 收口骨架，按「先写结构与已确认事实」策略先行。完整 11 服务版编排（backend / nginx / system-one / coturn / langfuse 等新增服务定义）归 dev-A A2 交付，落地后回填本节。演示视频：**不录制（2026-11-13 14:28 改判，Q1=B）**——D4 只交 5 分钟演示脚本；PRD line 578 字面偏差已登记 day10 总览 §6，PRD 层留痕并入修订记录 v3.2 同批处理。
+> **骨架说明（2026-11-13，A2a 后更新）**：本节为 Day 10 收口骨架，按「先写结构与已确认事实」策略先行。backend 与 nginx 已入 compose（A2a，双 healthy + 三入口 200 实测）；**laya / coturn / langfuse(profile 化) 归 dev-A S4、nginx HTTPS 完整段归 S6**，落地后继续回填本节。演示视频：**不录制（2026-11-13 14:28 改判，Q1=B）**——D4 只交 5 分钟演示脚本；PRD line 578 字面偏差已登记 day10 总览 §6，PRD 层留痕并入修订记录 v3.2 同批处理。
 
 ### 12.1 三步启动
 
@@ -518,7 +518,7 @@ cp .env.example .env    # 至少填 LLM_API_KEY、ASR_*/TTS_*、WEATHER_API_KEY
 docker compose up -d
 ```
 
-> ⏳ 待 A2：完整 11 服务版 `docker-compose.yml` 交付后，补充健康检查验收标准与一键启动实测记录。当前 `docker compose up -d` 只起 §12.2 表中已实测的 6 个服务，前后端仍按 §5.2 双终端口径启动。
+> ⏳ 待 A2 S4/S6：laya / coturn / langfuse（profile 化）入编及 nginx HTTPS 完整段后，补充健康检查验收标准与一键启动实测记录。当前 `docker compose up -d` 起 §12.2 表中 8 个服务（6 既有 + backend + nginx，A2a 实测双 healthy + 三入口 200）。
 
 ### 12.2 服务清单
 
@@ -533,15 +533,15 @@ docker compose up -d
 | mock-operations-mcp | 本地构建 `deploy/mock-operations/Dockerfile` | 127.0.0.1:7102 | 工单 / 家属通知 Mock 落库；MCP 协议级探活 |
 | voiceprint | 本地构建 `deploy/voiceprint/Dockerfile` | 7003 | 声纹特征提取（`POST /extract` + `GET /health`）；容器不装 torch；CPU 限 1 核 |
 
-计划新增 5 类服务（**⏳ 待 A2** 交付，尚未写入 compose，端口为 §6.2 既有约定）：
+计划新增 5 类服务——**backend 与 nginx 已于 2026-11-13 入编（A2a 交付，见下表）**，剩余 3 类待 A2 后续节点（端口为 §6.2 既有约定）：
 
-| 服务 | 端口 | 说明 |
+| 服务 | 端口 | 状态 |
 | --- | --- | --- |
-| backend（FastAPI + aiortc） | 8000 | 后端容器化；backend Dockerfile 归 dev-A A1 |
-| nginx | 80 / 443 | 三入口静态托管 + HTTPS 入口 + `/api` `/ws` 反代（Y1 契约） |
-| system-one（laya sidecar） | 7001 | 本地 Laya multilingual 推理 |
-| coturn | 3478 / 5349 | TURN/STUN，跨网段才需要 |
-| langfuse | 凭据口径待 Y2 | Trace 平台；凭据走 `.env` 注入，不硬编码 |
+| backend（FastAPI + aiortc） | 8000 | ✅ **已入编（A2a，2026-11-13）**：A1 镜像（两阶段 + 非 root + entrypoint 自动迁移 0020→0021），`curl /health` healthcheck，`depends_on` postgres/redis healthy；与 nginx **双 healthy + 三入口 200 实测**（dev-A A2a 证据，commit `6eaafe1`） |
+| nginx（前端托管 + 反代） | 80 / 443 | ✅ **已入编（A2a）**：镜像 = dev-C C1 的 `frontend/frontend.Dockerfile`（Y3 契约：构建上下文 `./frontend`、产物 `/usr/share/nginx/html/{pad,console,family}`、镜像内默认配置含三入口静态段 + `/api` `/ws` 反代）；healthcheck 探 `/pad/`；**`deploy/nginx.conf` 的 HTTPS/证书/三入口完整段归 dev-A S6 升格后卷挂载覆盖**（当前镜像内默认配置生效中） |
+| system-one（laya sidecar） | 7001 | ⏳ 待 A2 S4（Q7 裁决：默认挂宿主权重卷，不可行则 sidecar 化如实记录） |
+| coturn | 3478 / 5349 | ⏳ 待 A2 S4 |
+| langfuse | 3000（共享实例在 dev-B 主机） | ⏳ compose 定义 **profile 化**（`--profile langfuse` 才启动，默认全员连 dev-B 主机共享实例——2026-11-13 裁决，Y2 改 B⇄A 双向）；key 向 dev-B 领取，`.env` 注入不进 git |
 
 ### 12.3 端口约定
 
