@@ -31,7 +31,7 @@ import contextlib
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Final, Literal, Protocol
 
 from app.core.context import get_trace_id
@@ -45,7 +45,8 @@ from app.router.rules import (
     match_rule,
 )
 from app.router.safety import SEVERITY_YELLOW, SafetyDecision, safety_check
-from app.system_one.schemas import Intent, SystemOneResult
+from app.system_one.privacy_context import set_current_privacy_scope
+from app.system_one.schemas import Intent, PrivacyScope, SystemOneResult
 
 logger = logging.getLogger("app.router.decision")
 
@@ -112,6 +113,10 @@ class RouteDecision:
     intent: Intent = "other"
     confidence: float = 0.0
     is_sensitive: bool = False
+    #: Day 10 B3（F23）：shadow 的 privacy_scope，有果才填（"personal"/"shared"/"none"）。
+    #: `None` = 这轮没问出来（shadow 超时/熔断/短文本跳过/规则层直返）——**不编造**。
+    #: 消费方（companion）经 `privacy_context` 通道读取，本字段是落库/日志面。
+    privacy_scope: PrivacyScope | None = None
     escalated_to_s2: bool = False
     reason: str | None = None
     tool_name: str | None = None
@@ -276,6 +281,9 @@ class Router:
         started = self.clock()
         trace_id = get_trace_id()
         cleaned = (text or "").strip()
+        # Day 10 B3（F23）：每轮入口重置隐私信号——上一轮残留不得泄漏进本轮 Agent。
+        # 后续 agent 可达出口会写入 shadow 的真实作答（见 `_merge_privacy`）。
+        set_current_privacy_scope(None)
 
         # ---- FR-DLG-07 黄档复核（历史/他人/模糊）：建 follow_up，不打断本轮 ----
         # 位置在 L1 之前：这三类表达可能同时命中固定意图（如「我爸爸胸痛，暂停一下」），
@@ -370,6 +378,7 @@ class Router:
                 reason=REASON_SIDECAR_FAILED,
                 latency_ms=self._elapsed_ms(started),
             )
+            decision = self._merge_privacy(decision, shadow)
             self._log(decision, trace_id, thread_id)
             return decision
 
@@ -379,6 +388,7 @@ class Router:
             thread_id=thread_id,
             started=started,
         )
+        decision = self._merge_privacy(decision, shadow)
         self._log(decision, trace_id, thread_id)
         return decision
 
@@ -657,6 +667,26 @@ class Router:
         )
 
     # -------------------------------------------------------------- 小工具
+
+    @staticmethod
+    def _merge_privacy(
+        decision: RouteDecision, shadow: SystemOneResult | None
+    ) -> RouteDecision:
+        """Day 10 B3（F23）：shadow 的 privacy_scope 有果才并入。
+
+        - `shadow` 缺席（超预算被取消/短文本跳过）或 `degraded`（shadow 自身失败）
+          → 保持 `None`，**不编造**——消费方据此区分「没问出来」与「确认无隐私」；
+        - 有果：`RouteDecision.privacy_scope` 落字段（decision_logs/日志面），同时
+          写 `privacy_context` 通道（Agent 侧消费，双人间收敛）；
+        - clarify/escalate 出口不经过本方法：Agent 不运行，通道维持入口重置的 None。
+        """
+        privacy: PrivacyScope | None = None
+        if shadow is not None and not shadow.degraded:
+            privacy = shadow.privacy_scope
+        set_current_privacy_scope(privacy)
+        if privacy is None:
+            return decision
+        return replace(decision, privacy_scope=privacy)
 
     @staticmethod
     def _args_for_tool(tool_name: str, text: str) -> dict[str, Any] | None:

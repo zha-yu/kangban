@@ -125,6 +125,32 @@ def test_redact_obj_secret_key_inside_nested_dict() -> None:
     assert out["llm"]["model"] == "deepseek"
 
 
+def test_redact_obj_tokens_counters_pass_through() -> None:
+    """`*_tokens` 是 LLM usage **计数字段**，不是令牌——子串误伤 bug（Day 10 B2 实测）回归线。
+
+    0 值曾被掩成空串、正数被掩成 `***`，波及日志轨＋OTel span 属性双轨。
+    """
+    payload = {
+        "prompt_tokens": 2025,
+        "completion_tokens": 0,
+        "total_tokens": 2025,
+        "cache_hit_tokens": 0,
+        "cache_miss_tokens": 2025,
+        "reasoning_tokens": 168,
+    }
+    assert redact_obj(payload) == payload  # 全部原样，0 不变空串、正数不变 ***
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["token", "access_token", "refresh_token", "device_token", "api_token", "session_token"],
+)
+def test_redact_obj_token_keys_still_masked(key: str) -> None:
+    """放行只限 `*_tokens` 计数后缀；真令牌键（`token` 后不跟 `s`）防线不弱化。"""
+    out = redact_obj({key: "sk-abcdef1234567890abcd"})
+    assert out[key] == "***"
+
+
 def test_redact_obj_non_json_scalars_pass_through() -> None:
     assert redact_obj(42) == 42
     assert redact_obj(3.14) == 3.14

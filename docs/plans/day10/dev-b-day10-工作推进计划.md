@@ -1,4 +1,4 @@
-> 状态：**进行中 · 主理人已签认 · Step 0/1/2 关闭 · Q4 已决⑨ · Step 3 联调执行完毕（§2.2 七判据全绿，待确认关闭）· Step 4 执行完毕（B2 §2.3 判据 1/2/4 绿；3 数字可复算，明细链待 redact 修复）· 证据落 eval/reports/day10_langfuse_trace.md ＋ day10_cost_brief.md · LLM 已切 Qwen qwen3.8-flash**（2026-11-13；M6.0 全员核对仍按总览 §5 执行，未冻结项不开工对应节点）　｜　版本：v1.8　｜　日期：2026-11-13
+> 状态：**进行中 · 主理人已签认 · Step 0–6 全部执行完毕（Step 5 经主理人 20:22 确认关闭；Step 6 收口 20:30 完成，含 /api/metrics 实测）· 越域修复 redact.py 误伤 bug（主理人 20:28 授权，全量 1695 passed）· 剩余＝D3 演练抽验（挂起待时点）＋本轮提交＋知会 dev-A（等指令）**　｜　版本：v2.2　｜　日期：2026-11-13
 > 负责人：**dev-B（唯一）**　｜　任务包：**B · 观测与成本线**　｜　容量：上限 24h（3 人日）；实排开发 **13h ＝ B1 8h + B2 2h + B3 2.5h + M6.0 参与 0.5h**（v1.1 口径：B1 扩 OTel exporter，5h→8h），余额为 Line 1 联调槽位占用＋缓冲（`app/main.py` 装配与 `app/scheduler/` 既有写锁仍归你，Line 1 收口优先）
 > 关联：`docs/team_tasks/day10/day10-任务总览与DAG.md` v1.1（§2 DAG、§3 对接点 Y2/Y5、§4 写域）｜`docs/team_tasks/day10/dev-B-观测与成本线.md` v1.1（任务书）｜`docs/plans/day10/day-10-交付与观测-工作推进计划.md` v1.1（主计划件 §4.2/§6）
 > 上游依据：PRD line 513（AC-31 完整 Trace）、line 454/458（FR-TC-04 脱敏上传 / FR-TC-08 成本指标）、line 587（F23 P2 顺延）｜技术设计文档 §1:205（观测选型＝Langfuse + OpenTelemetry Traces，「Langfuse 可作 OTel exporter」）、§8.3 Day 10（line 1176–1183）｜大纲 §十 课时 10.2（仅教学流程口径，不作事实依据）
@@ -320,7 +320,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | A | ~~Q4 Langfuse 部署形态~~ **已决并改判（⑧→⑨，2026-11-13）**：最终形态＝**v4 全家桶共享实例常驻 dev-B**（v2 因无 OTLP 端点撤下，见 §8.1-⑨） | — | 已闭合（实例已就绪＋冒烟 4 判据过；剩 Y2 执行落地＝dev-A compose 口径需同步为 v4，见 §执行记录 Step 3 ⓪） |
 | B | ~~B2 cache 命中率取数落点~~ **已决（⑦，2026-11-13 Step 0）**：方案①进程内计数＋B1 span 明细 | — | 已闭合 |
-| C | B3 privacy_scope 消费点落点是否越入他人写域 | Step 5 方案 | 待 Step 5 方案时定 |
+| C | ~~B3 privacy_scope 消费点落点是否越入他人写域~~ **已决（主理人批准方案含 personal 触发值，2026-11-13 Step 5 方案确认）**：消费落点全在 B 写域——`privacy_context.py`（信号通道＋probe）＋`decision.py` 并入＋`companion.py` 注入＋`main.py` 装配 | — | 已闭合（随 Step 5 落码，18 用例） |
 | E | ~~AC-31 链缺口观测调用点~~ **已决（主理人批准，2026-11-13）**：按「既有锁沿用」口径加观测包装；实际落地收窄为 `decision.py`＋`system_one/client.py` 各一处 try/finally（companion 工具段复用既有 tool_* 事件，零改动） | — | 已闭合（随 6078756 交付） |
 | D | Q1 演示视频、Q2 收口日历、Q3 门禁模式、Q5 TD 勘误、Q6 历史标签、Q7 Laya 形态、Q9 dev-D 计划签认 | 均非 dev-B 直接影响项 | 由 M6.0 全员裁决，本文只引用 |
 
@@ -356,6 +356,8 @@ flowchart LR
 | 2026-11-13 16:10 | Step 3 ⓪ 共享实例就位（⑧→⑨ 改判过程） | **v2 线**：v2.95.11 实例起于 3000（复用 silvermate-postgres 独立 schema）→ 冒烟 404 → 官方文档查证 **OTLP 端点 v3.22 才引入**＋容器构建实测无 otel 路由 → **主理人改判⑨（v4 全家桶）** → v2 容器删除、schema DROP 回滚。**v4 线**：旧 v4 栈（六容器）复启为共享实例（health 200）；exporter 补 `x-langfuse-ingestion-version: 4`；**复冒烟 4 判据全过**（实时落库 3 span、asr 123ms/tts 210ms 耗时回放、trace_id `9ae6d001…5396` 同值、脱敏原样值 0 命中）。B2 代码亦已完成（D-1 方案①，9 新测试，全量 1684 passed，未提交） | Y2 执行落地：dev-A compose 口径需从 v2 同步为 **v4 全家桶（六容器，含 clickhouse/minio/redis）**；全员 `.env` 用各自 v4 key |
 | 2026-11-13 | Step 1 · B1 接入方案 | 方案 v1 编入本节（S1-1～S1-8），含 span 覆盖矩阵与 AC-31 缺口登记；依据 4 项实测（httpx 已在依赖、七 stage 测量点、route/工具无打点、llm_service/companion 调用点） | 方案 v1 已主理人确认（含待决项 E 批准），Step 2 已执行 |
 | 2026-11-13 | Step 2 · B1 骨架落地 | 见下方 Step 2 执行记录（S2-1～S2-6）；含 3 项实测修正（OTel 依赖已在、FastAPIInstrumentor 弃用改自建中间件、E 调用点收窄为 decision.py＋client.py 各一） | 待 Step 3 联调（Y2＋Q4） |
+| 2026-11-13 20:15 | Step 5 · B3 四信号 ①②③④ | **①②③ 落码自检绿**：shadow 扩两问（questions/backend/client）＋privacy_context 信号通道与真身 probe＋decision 并入（None≠"none"）＋companion 双人间收敛指令注入（main 装配）；`tests/test_privacy_scope.py` 18 用例，全量 1688 passed。**待决项 C 闭合**（主理人批准方案含 personal 触发值）。**④ p95 复测**：`eval/reports/day10_step5_b3_p95.md`——全量 p50 155 / **p95 202ms**（超 2ms，按 Q8 口径标注挂起）；拆层：规则路径 p95 **0ms 硬线达标**，模型路径 p50 166 / p95 204ms **单列挂 F23**；普通 41/50、敏感 19/20（95.0% 过线）与锁持平，四层 rule=36/system_one=74 无 fallback（shadow 两问单批前向，仅 4 次 shadow 503 降级，不影响快路径）。环境备注：本机 sidecar 环境补装 asyncpg 0.32.0（B1 观测链 `client.py→app.core.metrics→db` 新增的传递依赖） | **Step 5 已关闭**（2026-11-13 20:22 主理人确认「通过」）；改动未提交（等明确指令） |
+| 2026-11-13 | Step 6 · 收口 | 见下方 Step 6 收口核对记录：① M6.2 三判据证据指针终核 ✅ ＋ **/api/metrics 收口时点实测 ✅**（20:30，三段齐全＋401 双验，测毕即停）；② D3 演练抽验挂起待时点（素材已备：操作指引）；③ 执行记录六步全回填核对 ✅；④ 未决遗留 8 项清点移交 | 本轮提交等主理人指令 |
 
 ### Step 0 核对记录（dev-B 部分，2026-11-13）
 
@@ -470,6 +472,50 @@ flowchart LR
 
 ---
 
+### Step 6 收口核对记录（2026-11-13 20:25，dev-B）
+
+#### ① M6.2 判据终核（证据指针制，全部可溯源）
+
+| 判据 | 证据 | 结论 |
+| --- | --- | --- |
+| AC-31 完整 Trace | `eval/reports/day10_langfuse_trace.md`（提交 a60941d）：五环节 span 落库（agent 轮 8 span 含 GENERATION×2＋tool；MCP tool 轮）、trace_id 同值互查、脱敏 grep 4 条 trace 零命中、降级验证（关观测业务正常） | ✅ |
+| `/api/metrics` 四类指标 | Step 4 自检（v1.8 执行记录＋`eval/reports/day10_cost_brief.md`，提交 449162b）：routing 分层命中率 / token_usage / prompt_cache 齐全，未授权 401 绿，cache 命中率可复算（hit=0/miss=2025 → 0.0，冷缓存真实值） | ✅ |
+| B3 四信号＋消费点 | `tests/test_privacy_scope.py` 18 用例＋p95 复测报告 `eval/reports/day10_step5_b3_p95.md`（202ms 按 Q8 口径标注挂起） | ✅ |
+
+终核口径说明：三项判据的证据均已在 Step 3/4/5 各自自检时**实测留痕**（非转述）；本行只做指针汇总。**收口时点实测（2026-11-13 20:30，主理人指令）**：临时起主服务 8000 复测 `GET /api/metrics`（admin token）——`routing`（by_layer 三层分布＋s1_close_rate＋s2_escalation_rate）/ `token_usage` / `prompt_cache` 三段齐全（token/cache 两段重启归零后 `available=false`＋reason 如实呈现，符合进程内计数口径）；未授权 401 双验（无 token／伪 token 均 401）；测毕即停，端口已释放。
+
+#### ② 支援 D3 干净主机演练的观测抽验
+
+挂起待 D3 演练时点（1 分钟内日志＋Langfuse 串全链路）。dev-B 侧已备齐抽验素材：`docs/guides/langfuse-操作指引.md`（90d300f，五步接入＋UI 查 trace＋已知坑五项）——干净主机按指引走完注册→key→`.env`→重启即可复现全链。
+
+#### ③ 执行记录回填核对
+
+| Step | 执行记录行 | 核对记录小节 | 结论 |
+| --- | --- | --- | --- |
+| Step 0 | ✓ | ✓（Step 0 核对记录） | 齐 |
+| Step 1 | ✓ | ✓（方案 v1 S1-1～S1-8） | 齐 |
+| Step 2 | ✓ | ✓（S2-1～S2-6） | 齐 |
+| Step 3 | ✓（16:10 行） | 证据入 `day10_langfuse_trace.md` | 齐 |
+| Step 4 | ✓（v1.8 变更行） | 证据入 `day10_cost_brief.md` | 齐 |
+| Step 5 | ✓（20:15 行，已标注主理人确认关闭） | p95 报告独立落档 | 齐 |
+
+#### ④ 未决项与遗留清点（移交复盘）
+
+| # | 项 | 归属 | 状态 |
+| --- | --- | --- | --- |
+| 1 | ~~redact.py 误伤 bug~~：`_SECRET_KEY_RE` 匹配 `token` 子串 → 日志轨＋Langfuse 属性的 `*_tokens` 计数被掩码 | dev-A（写域禁触） | **已修复（2026-11-13 20:30，主理人授权越域）**：正则收窄 `token(?!s)` 放行 `*_tokens` 计数后缀；新增 7 用例（计数放行＋真令牌仍掩），redact/observability 53 全绿，全量 1695 passed（14 errors＝已知 tmpdir 沙箱噪音同集）；**须知会 dev-A**（其 A1b 交付物被变更） |
+| 2 | **voiceprints DELETE 204 bug**：`JSONResponse(204, content=None)` 渲染 `b"null"` → uvicorn RuntimeError | C4（写域禁触） | 已登记，未修 |
+| 3 | **F23 模型路径 p95 204ms > 200ms** | B3（Q8 已决） | 如实挂起，D10 F23 量化/批处理后验收 |
+| 4 | **Y2 compose langfuse 服务定义** | dev-A | 任务落 A（v4 六容器口径）；B 侧已交 `.env.example` 段＋操作指引 |
+| 5 | 边界集本机劣化（eval_router 口径 5/20；gate 口径 14/30） | 非本次改动引入 | 属 gate expected_red.json 已标注红项（expires 2026-11-15），D11 X9 达标环境复跑 |
+| 6 | v4 共享实例六容器常驻 dev-B 主机（占 3000 等端口） | 主理人裁决既定 | 运行中；compose profile 化归 A |
+| 7 | 普通意图 41/50（82%）< 90% | 题面边界 | X9 纪律：不换样本不改分母，待路由改进后复跑 |
+| 8 | `.env` 密钥（Qwen key、Langfuse pk-lf-9a4d34bf） | 本机 | 仅存 gitignored `.env`，不入提交不入日志 |
+
+**等待项**：① ~~收口时点实测 `/api/metrics`~~ **已完成**（20:30，见 ① 终核口径说明）；② ② 项挂起待 D3 演练；③ 本轮 Step 5 改动＋计划件 v2.1 **未提交**，等主理人明确指令。
+
+---
+
 ## 变更记录
 
 | 版本 | 日期 | 说明 |
@@ -483,3 +529,6 @@ flowchart LR
 | v1.6 | 2026-11-13 16:10 | **Q4 改判为 §8.1-⑨（v2→v4）＋ Step 3 ⓪ 共享实例就位＋B2 代码完成（未提交）**。改判事实：官方文档明载 OTLP 端点 v3.22 才引入，v2.95 构建实测无 otel 路由——⑧ 的「OTLP v2/v3 通用」系 S1 编制时技术前提错误（本日冒烟预验之所以通，是打的 v4 靶子）。落地：v2 实验回滚（容器删、schema DROP）；旧 v4 六容器栈复启为共享实例；`observability.py` exporter 补 `x-langfuse-ingestion-version: 4` header（v4 实时摄入，test_observability 10 用例复跑全绿）；对 v4 复冒烟 4 判据全过（trace `9ae6d001…5396`）。**新增工作规矩：未经主理人明确指令不提交/不推送 git。** B2 cache 命中率代码按 D-1 方案①完成（metrics.py 计数器＋llm_service 解析＋/api/metrics prompt_cache 段＋9 新测试，全量 1684 passed），**未提交，攒着等指令**。 |
 | v1.8 | 2026-11-13 19:35 | **Step 4 · B2 执行完毕＋LLM 切换 Qwen**。§2.3 判据：①四类指标绿（routing/token_usage/prompt_cache 齐全，无数据如实标注 available=false+reason）；②未授权 401 绿（admin 账号实为 13700000001，seed 文档 13800000000 有误，本机库密码已重置回 123456）；③cache 命中率可复算绿（Qwen 3 调用：hit=0/miss=2025 → hit_rate=0.0，复算 0/(0+2025)，**命中 0 是冷缓存真实值**）；④小抄交付 `eval/reports/day10_cost_brief.md`（实测 token：MiniMax 基线 prompt≈765/轮；Qwen 3 调用 2025+531，**completion 含 reasoning_tokens 需在成本里拆分**）。**LLM 切换**：MiniMax Token Plan 用量耗尽（2056，非临时窗口）→ 主理人换 Qwen qwen3.8-flash（百炼兼容端点，key 先探后切，代码零改动），cache 字段走 OpenAI 口径已验证回传。**新发现 bug 待 dev-A**：redact.py `_SECRET_KEY_RE` 误伤 `*_tokens` 字段名——日志轨＋Langfuse 属性的 token 数暂为 `***`（0 值变空串），修复方案已交主理人转 dev-A；快照数字不受影响。 |
 | v1.7 | 2026-11-13 18:30 | **Step 3 · B1 联调执行完毕（Y2 已随 origin/develop 合并落地）**。链路真跑通：REST `/api/audio/utterance`（设备 JWT）→ 声纹身份（联调临时注册 say 同源声纹 3 段）→ FunASR → 规则/agent 路由 → MiniMax LLM → weather/memory_recall 工具 → TTS 全链 200。§2.2 七条判据全绿，证据落 `eval/reports/day10_langfuse_trace.md`（五环节 span 均落库：`456639a7…` agent 轮 8 span 含 llm_usage GENERATION×2＋tool；`f8f9a92b…` MCP tool 1092ms；`648891d9…` tts 1608ms＋HTTP 2839ms；脱敏 grep 0 命中；降级验证过）。联调期修正：① memory_recall 契约 bug（tool_impls 对齐冻结签名，主理人批准）；② tool_executor 补工具 stage span（主理人批准，不走表轨——白名单锚定 DB CHECK）；③ 本机 alembic 补 0021。登记：worker redis socket timeout 间歇丢批（环境资源）、MiniMax 429、FunASR 重启循环、voiceprints 204 bug（C4 写域）。全量 1670 passed / 0 failed。**待主理人确认后关 Step 3（= M6.2 主判据达成）**。 |
+| v2.0 | 2026-11-13 20:15 | **Step 5 · B3 四信号 ①②③④ 执行完毕（待主理人确认关闭）**。①②③ 落码（主理人批准方案含 personal 触发值，待决项 C 闭合）：shadow 扩两问激活 `privacy_scope`、`privacy_context.py` 新建（ContextVar 信号通道＋`is_shared_room_for_elder` 真身 probe）、`RouteDecision.privacy_scope` 并入（每轮强制重置，None≠"none"）、companion 双人间收敛指令注入（probe 异常如实降级不注入）、main 装配真身 probe；`tests/test_privacy_scope.py` 18 用例，全量 1688 passed。④ p95 复测入档 `eval/reports/day10_step5_b3_p95.md`（真 sidecar HTTP）：全量 p50 155 / p95 202ms（超 2ms，Q8 口径标注挂起）；规则路径 p95 0ms 硬线达标；模型路径 p50 166 / p95 204ms 单列挂 F23；普通 41/50、敏感 19/20 与锁持平。环境备注：本机 sidecar conda 环境补装 asyncpg 0.32.0（B1 观测链传递依赖）；sidecar（7001）为复测临时起服，非常驻。**改动未提交（等主理人明确指令）**。 |
+| v2.2 | 2026-11-13 20:35 | **越域修复 redact.py 误伤 bug（主理人 20:28 授权「你直接改吧」）**。`_SECRET_KEY_RE` 的 `token` 分支收窄为 `token(?!s)`——放行 `*_tokens` LLM usage 计数后缀（prompt_tokens / completion_tokens / cache_hit_tokens / cache_miss_tokens / total_tokens / reasoning_tokens 等），真令牌键（access_token / refresh_token / device_token / api_token / session_token）防线不弱化；单点改动，消费点唯一（`redact_obj`，日志轨 `logging.py:87`＋OTel 轨 `observability.py:103/111` 均经它）。测试：`test_redact.py` 新增 7 用例（计数放行回归线＋令牌键掩码参数化）；redact＋observability 53 全绿；全量 **1695 passed**（14 errors＝已确认的 pytest tmpdir 沙箱噪音同集，非代码问题）；真实形态 llm_usage 载荷端到端抽查过。**须知会 dev-A：其 A1b 交付物（redact.py）被越域变更**。未提交。 |
+| v2.1 | 2026-11-13 20:25 | **Step 5 关闭（主理人 20:22 确认「通过」）＋ Step 6 收口执行**。① M6.2 三判据证据指针终核（AC-31＝`day10_langfuse_trace.md`、四类指标＝`day10_cost_brief.md`、B3＝`test_privacy_scope.py`＋p95 报告）；② D3 演练抽验挂起待时点（素材已备：`docs/guides/langfuse-操作指引.md`）；③ 执行记录六步回填核对齐；④ 未决遗留 8 项清点移交（redact/voiceprints/F23/Y2/边界题面/v4 常驻/普通意图 82%/密钥纪律）。等待项：~~收口时点实测 `/api/metrics`~~ 已完成（20:30 三段齐全＋401 双验，测毕即停）；D3 抽验挂起待演练时点；本轮提交待主理人指令。 |
