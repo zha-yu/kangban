@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import __version__
 from app.agents.companion import DEFAULT_TOOLS, CompanionAgent
+from app.agents.followup import make_followup_sink  # Day 9 B4：F03 假承诺拆除落库出口
 from app.agents.guardrails import Guardrails
 from app.agents.session_coordinator import SessionCoordinator
 from app.agents.tool_registry import default_registry
@@ -592,6 +593,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         on_event=_agent_event_sink,
         on_media_play=_media_play_sink,
         on_media_control=_media_control_sink,
+        # F03「假承诺拆除」接线（Day 9 B4）：高危工具被拒后的 follow_up 工单
+        # 落库出口——没有它，Agent 拒绝改药单/关工单时嘴上说「已帮您转告护工」
+        # 实际没有任何工单存在。落库经 work_order_service（agents 不写库），
+        # dedupe_token=react_followup:{turn_id}:{tool_name} 同轮同工具只建一单。
+        followup_sink=make_followup_sink(session_factory),
     )
     # Day 6 S4：ResponseService 提升为 lifespan 局部变量——TurnService 持有做第 7 步
     # 分段下发，装配层另持引用注册 segment_ack 回调（同一实例，ack 才能命中会话 epoch）

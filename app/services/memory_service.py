@@ -746,6 +746,17 @@ async def insert_candidate(
                 "embedded": vector is not None,
             },
         )
+        if own_session:
+            # 自开会话（对话后台抽取的调用方式）必须显式提交：AsyncSession.close()
+            # 会回滚未提交事务，只 flush 不 commit 时返回的 chunk_id 是"幻觉"，
+            # 库里根本没有这一行（2026-11-12 实测）。注入会话的分支不在此提交，
+            # 事务归调用方 / 请求级 get_session 统一管理。
+            await session.commit()
+    except Exception:
+        # 含 MemoryInsertSkipped（幂等跳过）：自开会话也要回滚，避免脏 savepoint。
+        if own_session:
+            await session.rollback()
+        raise
     finally:
         if own_session:
             await session.close()

@@ -2,7 +2,8 @@
 
 覆盖口径：
 - F26（TD:1182）：admin-only；分层命中率 / S1 闭环率 / S2 升级率按种子行精确断言；
-  token_usage 无落库来源 → available=false 不编造；
+  token_usage 读进程内计数（llm_service 已埋点回传 usage）——测试进程无调用 →
+  available=false 如实呈现，不编造；
 - FR-ALT-05：本周红色事件数 / 平均确认时长（分钟）/ 各楼栋漏采次数（A 楼 + 未分配）；
 - X5 骨架：memory_admin_service 未交付 → 503 X5_NOT_DELIVERED；鉴权 401/403；
 - F21 顺序续播：get_next_media 同剧种下一段 / 回绕 / 无 genre 全库回绕 / 不存在 None
@@ -151,7 +152,7 @@ async def test_metrics_aggregates_for_admin(client: AsyncClient, db_conn) -> Non
         assert item["ratio"] == round(item["count"] / routing["total"], 4)
     assert routing["s1_close_rate"] is not None
     assert routing["s2_escalation_rate"] is not None
-    # token 消耗无落库来源 → available=false 如实呈现（不编造数值）
+    # token 消耗读进程内快照：测试进程无 LLM 调用 → available=false 如实呈现（不编造数值）
     assert body["token_usage"]["available"] is False
     await session.rollback()
 

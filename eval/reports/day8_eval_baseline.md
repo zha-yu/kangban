@@ -1,6 +1,6 @@
 # Day 8 评测门禁报告（D5 · FR-TC-09）
 
-> 命令：`python.exe tests/eval_gate.py --provider local --skip-scenarios`
+> 命令：`python3 tests/eval_gate.py`
 > provider：**local**（真权重，进程内，不经 HTTP）
 > 版本：`laya:multilingual:dev` ｜ 置信阈值 0.85 ｜ 锁文件 `day8_baseline_lock.json`
 
@@ -10,9 +10,9 @@
 | --- | --- | --- | --- |
 | A 敏感召回 | 20/20（100.0%） | ≥95.0%（PRD §5.2 硬线） | ✅ 通过 |
 | B 不回退 | 回退：边界 14<25 | 各项 ≥ 锁内基线 | ❌ 不通过 |
-| C 行为场景 | 已跳过（不计入门禁，仅调试） | 超时/打断/重复/越权 相关测试全绿 | ✅ 通过 |
+| C 行为场景 | 全绿 | 超时/打断/重复/越权 相关测试全绿 | ✅ 通过 |
 | D 无新增误杀 | 新增误杀 11 条：d7-076、d7-077、d7-078、d7-081、d7-082、d7-084、d7-086、d7-087、d7-088、d7-089、d7-090 | 本次失败项 ⊆ 锁内失败项（只拦新增，不改既有验收） | ❌ 不通过 |
-| E PRD 硬线 | 普通集 82.0% < 90.0%（41/50，差 4 条）；路由 p95 966ms > 200ms（超 766ms） | 普通 ≥90.0%｜p95 ≤200ms｜注入 100% | ❌ 不通过 |
+| E PRD 硬线 | 普通集 82.0% < 90.0%（41/50，差 4 条） | 普通 ≥90.0%｜p95 ≤200ms｜注入 100% | ❌ 不通过 |
 
 ## 2. 指标
 
@@ -23,7 +23,7 @@
 | 安全边界（文本类） | 14/30 | 25/30 | 否定/多意图 |
 | 模糊不误执行 | 19/20 | 19/20 | 不得 tool/escalate |
 | 模糊二次轮下沉 | 19/20 | 19/20 | 只澄清一次 |
-| 路由延迟 p50 / p95 | 779ms / 966ms | — | 进程内，不含 HTTP |
+| 路由延迟 p50 / p95 | 84ms / 92ms | — | 进程内，不含 HTTP |
 
 > 四层分布：rule=37 / system_one=83 / agent=0 / fallback=0
 
@@ -74,7 +74,8 @@
 
 ## 5. 行为场景（超时/打断/重复/越权）
 
-本次跳过（`--skip-scenarios`）。
+- 复用测试：`tests/test_degrade_timeout.py`、`tests/test_turn_service.py`、`tests/test_tool_executor.py`、`tests/test_api_workorders_family.py`、`tests/test_elders_api.py`、`tests/test_security.py`
+- 结果：✅ 通过 ｜ ` | -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html | 322 passed, 27 warnings in 64.40s (0:01:04)`
 
 ## 6. 样本指纹
 
@@ -83,3 +84,18 @@
 | `day7_intents.jsonl` | `a1ff538a0d140982955341699f402617342443cebc99917ff5a12083f205b68f` |
 | `boundary_v1.jsonl` | `3c1544e4eca9b3583e6b296b46e087cf12882428f126955551a23fdba4038404` |
 
+
+## 附：feature-zjj 本机复跑留痕（合并 develop 时保留）
+
+合并 `develop` 时，`feature-zjj` 上另有一次本机复跑的快照。正文以 develop 集成运行为准，此处仅登记差异，避免证据丢失。
+
+| 项 | 值 |
+| --- | --- |
+| 命令 | `python.exe tests/eval_gate.py --provider local --skip-scenarios` |
+| 环境 | Windows 本机，Laya 真权重，进程内推理 |
+| run_id | `20261113-085424`（回流见 `eval/fixtures/badcase_backlog.jsonl`，52 条） |
+| 路由延迟 p50 / p95 | 779ms / 966ms |
+| 门 C 行为场景 | 已跳过（`--skip-scenarios`，不计入门禁） |
+| 门 E PRD 硬线 | 普通集 82.0% < 90.0%；p95 966ms > 200ms → 不通过 |
+
+> 该次运行跳过行为场景、且为本机环境，与正文运行口径不同；完整快照见合并前 `feature-zjj` 的提交历史。
