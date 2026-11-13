@@ -149,3 +149,6 @@ vrm-playground/
 asr/
 mp3素材/
 sherpa-onnx/
+
+# laya 镜像离线 torch wheels（宿主预下载，体积大不进 git）
+deploy/laya/wheels/
