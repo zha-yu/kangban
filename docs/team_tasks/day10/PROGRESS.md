@@ -18,7 +18,7 @@
 | --- | --- |
 | `docs/plans/day10/d-评测回归与演示冻结.md` | 📝 草稿（待主理人确认后按步执行） |
 | `docs/plans/day10/day-10-交付与观测-工作推进计划.md` | 🚧 进行中（v1.4 · C 包 S0–S3 已收口；Q1/Q3/Q5/Q10 已裁决，Q2/Q4/Q6–Q9 待 M6.0 收敛） |
-| `docs/plans/day10/dev-a-容器化与部署链.md` | 🚧 进行中（S1+S2+S3 已收口；S6 需修 nginx resolver 缺陷；下一步 S4） |
+| `docs/plans/day10/dev-a-容器化与部署链.md` | 🚧 进行中（S1–S4 已收口；laya 本机按 Q7 兜底 sidecar 形态，容器定义 profile 化；下一步 S5） |
 | `docs/plans/day10/dev-c-day10-工作推进计划.md` | 🚧 进行中（S0–S3 已收口，剩余素材回填待 A4/B2/B1/D1） |
 
 ## 契约冻结：（本日无 contracts.md）

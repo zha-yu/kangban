@@ -199,7 +199,9 @@ services:
       VOICEPRINT_BASE_URL: http://voiceprint:7003
       # 容器内直连 funasr 服务（宿主 7002 映射仅供本地裸跑；provider 为空时此值不生效）
       ASR_BASE_URL: ws://funasr:10095
-      # SYSTEM_ONE_BASE_URL 待 S4 定义 laya 服务后追加（Q7 挂载宿主权重卷）
+      # System One：默认连 compose 内 laya 容器（--profile laya）；本机兜底形态（宿主 jev
+      # sidecar）时在 .env 覆盖 SYSTEM_ONE_BASE_URL=http://host.docker.internal:7001
+      SYSTEM_ONE_BASE_URL: ${SYSTEM_ONE_CONTAINER_URL:-http://laya:7001}
     depends_on:
       postgres:
         condition: service_healthy
@@ -245,6 +247,95 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  coturn:
+    # TURN 中继（Day 10 · A2-b，dev-A）：day09 D2.5 的 GET /api/audio/ice-config 下发
+    # turn_url/turn_username/turn_credential（字段只读不改名），本服务鉴权值与 .env
+    # 同源经 compose 变量注入 command，不写死在 deploy/turnserver.conf（该文件进 git）。
+    # 端口 3478（UDP+TCP，README §6.2 约定）；5349 TLS 待 S7 证书就绪后启用。
+    # 局域网教学场景不做公网中继（external-ip 留注释，见 turnserver.conf）。
+    image: coturn/coturn:latest
+    container_name: silvermate-coturn
+    restart: unless-stopped
+    command: >
+      -c /etc/coturn/turnserver.conf
+      --user ${TURN_USERNAME:-silvermate}:${TURN_CREDENTIAL:-}
+    volumes:
+      - ./deploy/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+    healthcheck:
+      # coturn 镜像（alpine）无 python/curl，用 /proc/net/tcp 探 3478 监听（hex 0D96）
+      test: ["CMD-SHELL", "grep -qi ':0D96' /proc/net/tcp /proc/net/tcp6 2>/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  laya:
+    # Laya / System One sidecar 容器化定义（Day 10 · A2-b，dev-A）。Q7 裁决：挂载宿主已下载权重卷
+    # （宿主 .env 实测 SYSTEM_ONE_MODEL_PATH=C:/models/laya/multilingual，615MB 不重复拉取）。
+    # **本机兜底形态（S4 实测留痕）**：Docker Desktop/WSL2 内存上限仅 1.86GB（docker stats 实测），
+    # 权重+torch 需 3-4GB——本机容器化不可行，Q7 兜底生效：宿主 jev 进程 sidecar（7001）继续服务，
+    # 本服务 profile 化（`--profile laya` 激活，供内存充足的机器/干净主机演练用）。
+    # 镜像 torch 安装走「宿主预下载 Linux wheel 离线装」（deploy/laya/Dockerfile 头注释，wheels/ 不进 git）。
+    build:
+      context: .
+      dockerfile: deploy/laya/Dockerfile
+    container_name: silvermate-laya
+    restart: unless-stopped
+    profiles: ["laya"]
+    environment:
+      SYSTEM_ONE_ENABLED: "true"
+      SYSTEM_ONE_PROVIDER: laya
+      SYSTEM_ONE_DEVICE: cpu
+      SYSTEM_ONE_MODEL_ID: ${SYSTEM_ONE_MODEL_ID:-laya-multilingual}
+      SYSTEM_ONE_MODEL_VERSION: ${SYSTEM_ONE_MODEL_VERSION:-laya:multilingual:dev}
+      SYSTEM_ONE_MODEL_PATH: /models/laya/multilingual
+      # 容器内路径；权重内容来自宿主卷只读挂载
+    volumes:
+      - ${SYSTEM_ONE_MODEL_HOST_DIR:-C:/models/laya}:/models/laya:ro
+    ports:
+      # 环回映射：本地裸跑 backend / scripts/sidecar_bench.py 仍可访问；backend 容器走 laya:7001。
+      # 宿主 7001 默认留给常驻的 jev sidecar 进程（本机联调现状实测占用），容器映射默认 7011 避让
+      - "${LAYA_HOST_PORT:-7011}:7001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7001/health', timeout=5).read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 120s   # 权重 615MB 建图实测约 40s（宿主），容器内更慢，留足余量
+
+  langfuse:
+    # Langfuse v2（Day 10 · A2-b，dev-A）。Q4 裁决：v2 单容器 + 复用 postgres 独立 schema。
+    # **共享实例裁决（主理人 2026-11-13）**：实例常驻 dev-B 主机全员连 B——因此本服务
+    # profile 化，默认 `docker compose up` 不启动；`docker compose --profile langfuse up`
+    # 激活（B 侧常驻跑法，或任何人本机自起临时取证）。
+    # 首次启用前在业务 postgres 建一次 schema（幂等）：
+    #   docker exec silvermate-postgres psql -U silvermate -d silvermate -c "CREATE SCHEMA IF NOT EXISTS langfuse;"
+    image: langfuse/langfuse:2
+    container_name: silvermate-langfuse
+    restart: unless-stopped
+    profiles: ["langfuse"]
+    ports:
+      - "${LANGFUSE_HOST_PORT:-3000}:3000"
+    environment:
+      # Prisma ?schema= 参数：数据落业务 postgres 的 langfuse schema（与业务表/checkpoint 隔离）
+      DATABASE_URL: postgresql://${POSTGRES_USER:-silvermate}:${POSTGRES_PASSWORD:-silvermate}@postgres:5432/${POSTGRES_DB:-silvermate}?schema=langfuse
+      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:3000}
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-}
+      SALT: ${LANGFUSE_SALT:-}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/public/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
 
 volumes:
   postgres_data:
