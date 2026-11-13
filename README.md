@@ -476,8 +476,12 @@ uv run pytest -q -m "not slow" --cov=app --cov-report=term
 | [`docs/工作流选型说明.md`](docs/工作流选型说明.md) | Workflow vs Agent 判定：四问决策法、9 类能力形态映射、两个子图的分支条件 |
 | [`docs/prompts/seed-prompt.md`](docs/prompts/seed-prompt.md) | 种子提示词模板（六要素 + 两个实例） |
 | [`docs/康伴3D数字人_大纲.md`](docs/康伴3D数字人_大纲.md) | 十天迭代流程（Day 1–Day 10）：课时划分与每日产出物。**仅作节奏参考，不作为需求与技术事实依据**（见 `AGENTS.md` 前置节） |
+| [`docs/HARNESS_DESIGN.md`](docs/HARNESS_DESIGN.md) | Agent Harness 十组件本仓落点（Context / System One / Tool / State / Checkpoint / Memory / Loop / Policy / Recovery / Observability / Evaluation）：组件行为 + 对应文件路径 + 关键配置，全部路径实测存在（2026-11-13 交付） |
+| [`docs/IDENTITY_RULES.md`](docs/IDENTITY_RULES.md) | 身份规则：四层锚点、三档级联、声纹阈值 **0.62**（沿革 0.85→0.55→0.62）、通用模式边界、`thread_id` 服务端生成（与 PRD §3.2 逐字一致；2026-11-13 交付） |
+| [`docs/AI_USAGE.md`](docs/AI_USAGE.md) | AI 辅助范围、人工审查记录（高风险五类：auth / 迁移 / Tool 权限 / MCP / Dockerfile）、关键决策引用（day02–day10 计划件；2026-11-13 交付） |
+| [`docs/SECURITY.md`](docs/SECURITY.md) | 安全基线（**v1.1**）：威胁模型、降级矩阵、数据保留、HITL 清单（2026-11-13 复核修订交付） |
 
-后续按课程进度补齐：`docs/HARNESS_DESIGN.md`、`docs/IDENTITY_RULES.md`、`docs/SECURITY.md`、`docs/AI_USAGE.md`、`docs/INTERVIEW_QA.md`、`app/prompts/personas/`（人设模板正文）。
+后续按课程进度补齐：`docs/INTERVIEW_QA.md`、`app/prompts/personas/`（人设模板正文）。前版列于此的 `docs/HARNESS_DESIGN.md`、`docs/IDENTITY_RULES.md`、`docs/AI_USAGE.md`、`docs/SECURITY.md` 四份已于 2026-11-13 交付，移入上表。
 
 ---
 
@@ -499,3 +503,109 @@ uv run pytest -q -m "not slow" --cov=app --cov-report=term
 | 评测门禁归属 | TD §8.4.3：FR-TC-07（评测门禁）归 Day 9 | **现行：主理人 2026-11-11 裁决 D-6——评测基线 v1 + `eval_gate.py` 门禁 + pre-push 接线 Day 8 全量做**（依据 day07 README §1.1 将「评测基线 v1」列为实际 Day 8 补齐项）；TD 归属表述待同步修订（见 docs/plans/day08/day-08 计划 v1.2 §0 / H16） |
 
 > **本表修订（2026-11-12）**：「前端 UI 库」行原「现行口径」误写为 *console/family 用 MUI*，与同表「Day 8 护工看板渲染形态」行及 PRD v2.7（2026-11-06 裁决：移除 MUI、改纯 React + 原生 CSS）自相矛盾。经核对 `frontend/package.json` 无 MUI 依赖、`frontend/src/{console,family}/` 零 `@mui` import，确认 MUI 确已移除；现将「用 MUI」归入旧口径、现行口径与 PRD v2.7 对齐。**其余各行未改动。**
+
+---
+
+## 12. Docker 部署
+
+> **骨架说明（2026-11-13）**：本节为 Day 10 收口骨架，按「先写结构与已确认事实」策略先行。完整 11 服务版编排（backend / nginx / system-one / coturn / langfuse 等新增服务定义）归 dev-A A2 交付，落地后回填本节。演示视频是否纳入交付清单：**待裁决（上游 Q1）**，相关表述不写死。
+
+### 12.1 三步启动
+
+```bash
+git clone <仓库地址> && cd silvermate
+cp .env.example .env    # 至少填 LLM_API_KEY、ASR_*/TTS_*、WEATHER_API_KEY
+docker compose up -d
+```
+
+> ⏳ 待 A2：完整 11 服务版 `docker-compose.yml` 交付后，补充健康检查验收标准与一键启动实测记录。当前 `docker compose up -d` 只起 §12.2 表中已实测的 6 个服务，前后端仍按 §5.2 双终端口径启动。
+
+### 12.2 服务清单
+
+已实测（来源：`docker-compose.yml`，2026-11-13 核对）：
+
+| 服务 | 镜像 / 构建 | 端口 | 说明 |
+| --- | --- | --- | --- |
+| postgres | `pgvector/pgvector:pg16` | 5432 | 业务表 + 独立 schema `langgraph`；`pg_isready` 健康检查；宿主端口可经 `POSTGRES_HOST_PORT` 改写 |
+| redis | `redis:7` | 6379 | 缓存与限流；`redis-cli ping` 健康检查 |
+| funasr | 阿里云镜像源 `funasr-runtime-sdk-online-cpu-0.1.12` | 7002 → 容器 10095 | 本地 ASR 基线（2pass 流式）；CPU 限 2 核；首启下载模型数 GB |
+| weather-mcp | 本地构建 `deploy/weather/Dockerfile` | 127.0.0.1:7101 | 唯一真实外部接口 MCP；仅环回端口映射 |
+| mock-operations-mcp | 本地构建 `deploy/mock-operations/Dockerfile` | 127.0.0.1:7102 | 工单 / 家属通知 Mock 落库；MCP 协议级探活 |
+| voiceprint | 本地构建 `deploy/voiceprint/Dockerfile` | 7003 | 声纹特征提取（`POST /extract` + `GET /health`）；容器不装 torch；CPU 限 1 核 |
+
+计划新增 5 类服务（**⏳ 待 A2** 交付，尚未写入 compose，端口为 §6.2 既有约定）：
+
+| 服务 | 端口 | 说明 |
+| --- | --- | --- |
+| backend（FastAPI + aiortc） | 8000 | 后端容器化；backend Dockerfile 归 dev-A A1 |
+| nginx | 80 / 443 | 三入口静态托管 + HTTPS 入口 + `/api` `/ws` 反代（Y1 契约） |
+| system-one（laya sidecar） | 7001 | 本地 Laya multilingual 推理 |
+| coturn | 3478 / 5349 | TURN/STUN，跨网段才需要 |
+| langfuse | 凭据口径待 Y2 | Trace 平台；凭据走 `.env` 注入，不硬编码 |
+
+### 12.3 端口约定
+
+端口一律沿用 **§6.2 服务与端口表**（唯一口径）：postgres 5432 / redis 6379 / backend 8000 / nginx 80·443 / system-one(laya) 7001 / funasr 7002 / weather-mcp 7101 / mock-operations-mcp 7102 / coturn 3478·5349 / vite dev 5173。
+
+补充一处实测事实：**voiceprint 7003** 已在 `docker-compose.yml` 启用（`VOICEPRINT_HOST_PORT` 可改写），§6.2 表后续统一回补。
+
+### 12.4 前端镜像（C1 已交付，2026-11-13）
+
+| 项 | 口径 |
+| --- | --- |
+| Dockerfile | `frontend/frontend.Dockerfile`，**多阶段构建**（依赖安装 → Vite MPA 构建 → nginx 托管），容器内全新安装，不 COPY 本机 node_modules |
+| 构建命令 | `docker build -f frontend/frontend.Dockerfile -t silvermate-frontend frontend/`（构建上下文 = `frontend/`） |
+| 依赖安装 | `pnpm@11.15.1 --frozen-lockfile`（Y3 契约修订：`frontend/` 目录内仅 pnpm-lock.yaml，`npm ci` 不可执行） |
+| 产物路径 | 容器内 `/usr/share/nginx/html/{pad,console,family}`，三入口独立可访问（冒烟 `/pad` `/console` `/family` 全 200） |
+| 镜像体积 | **489MB**（本地构建实测） |
+| three-vrm 红线判据 | `grep -r "three-vrm" dist/console dist/family` **零命中**（红线：three-vrm 不得进 console/family 构建产物）；`dist/pad` 含 14 个 .vrm 资源 |
+
+---
+
+## 13. 回滚
+
+> ⏳ **待 A4**：dev-A 回滚演练记录与部署门禁清单（D12 交付）。素材到位后逐字合入，不加工数字。
+
+本节为骨架，将填内容的小节：
+
+- **13.1 代码回滚**：回滚基准 tag、演练步骤与实测结果——待 A4。
+- **13.2 数据回滚（alembic downgrade）**：迁移降级演练记录——待 A4。（既有事实参考：Day 6 验收已实测 `0007 → head → downgrade 0007 → upgrade head` 三次连续成功，见 §7.4。）
+- **13.3 部署门禁清单（六项）**：清单条目与判据——待 A4 回填。
+
+---
+
+## 14. 成本数据
+
+> ⏳ **待 B2**：dev-B 成本估算与指标口径（D12 交付）。以下四个指标位只定口径，**数字全部取实测，未达标如实写，不得粉饰**。
+
+| # | 指标 | 目标口径 | 实测值 | 取数来源 |
+| --- | --- | --- | --- | --- |
+| 1 | S1 闭环率（快决策层闭环占比） | ≥ 60%（§1 工程目标） | 待 B2 | `/metrics` |
+| 2 | 单会话 Tool 调用数 | ≤ 8（`MAX_TOOL_CALLS=8` 预算） | 待 B2 | `/metrics` |
+| 3 | prompt cache 命中率 | 口径待 B2 | 待 B2 | `/metrics`（cache 命中率指标待 B2 补齐） |
+| 4 | 分层记忆省 Token | 口径待 B2 | 待 B2 | `/metrics` |
+
+> 教学口径提醒（PRD §1.3）：本节数据为教学演示项目实测，不以模拟数据比例作为真实运营效果证明。
+
+---
+
+## 15. 观测说明
+
+### 15.1 `/metrics` 指标端点（已交付）
+
+- day09 C4 已交付 `GET /metrics`，含**分层命中率**、**S1 闭环率**、**token 用量**三类指标。
+- ⏳ 待 B2：prompt cache 命中率指标补齐后，回填取数口径与示例。
+
+### 15.2 Langfuse Trace 查询（骨架）
+
+- 目标口径（AC-31）：Langfuse 中的 `trace_id` 与系统侧 trace id（`/health` 等响应的 `X-Trace-Id`）为**同值**，可在 Langfuse 界面与系统日志之间双向互查。
+- ⏳ 待 B1：Langfuse 接入（Y2 凭据 + OTel exporter 路线）交付后，补充界面截图与查询操作步骤。
+
+### 15.3 告警规则
+
+- ⏳ 待 B1：SLO 告警规则落地后，回填规则清单与触发阈值。
+
+### 15.4 门禁口径
+
+- 评测门禁机制现状见 §7（`eval_gate.py` 作为 pre-push 钩子，固定集不达标阻断提交）。
+- ⏳ 待 D1 裁决回填：pre-push 阻塞模式（上游 Q3）待补结论，回填后本节给出最终口径（阻塞真门禁 / CI 阻塞 + 本地自检）。

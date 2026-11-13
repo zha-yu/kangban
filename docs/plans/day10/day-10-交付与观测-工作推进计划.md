@@ -175,7 +175,7 @@ flowchart LR
 | --- | --- | --- | --- | --- |
 | Y1 | nginx 配置合并 | C → A | C1 产出前端三入口 dist 相对路径约定（`/pad`、`/console`、`/family` 与 `/api`、`/ws` 反代规则草案），**A 独占改 `deploy/nginx.conf`**，按草案合入 | D11 上午 |
 | Y2 | Langfuse 服务与凭据 | A → B | compose 的 `langfuse` 服务定义（建议 Langfuse v2 镜像 + 复用 postgres 独立 schema，避免 v3 的 ClickHouse/MinIO 依赖【执行细节，B1 落地前与主理人确认镜像版本】）；`LANGFUSE_PUBLIC_KEY/SECRET_KEY/HOST` 走 `.env` 注入，不硬编码；**B1 走 OTel exporter 路线（裁决 ⑤），exporter 端点/凭据复用同一组变量** | D11 上午 |
-| Y3 | 前端构建产物 | C → A | `frontend.Dockerfile` 多阶段产物路径 `/usr/share/nginx/html/{pad,console,family}`；构建命令 `npm ci && npm run build`；验收口径含「three-vrm 不进 console/family 产物」 | D11 上午 |
+| Y3 | 前端构建产物 | C → A | `frontend.Dockerfile` 多阶段产物路径 `/usr/share/nginx/html/{pad,console,family}`；构建命令 `pnpm@11.15.1 --frozen-lockfile && npm run build`，构建上下文=`frontend/`（2026-11-13 主理人裁决修订：目录内仅 pnpm-lock.yaml，`npm ci` 不可执行）；验收口径含「three-vrm 不进 console/family 产物」 | D11 上午 |
 | Y4 | 回滚基准 | A → D | A4 指定演练基准 tag（当前 `8d506b2` 或 D13 前最后一个收口 commit），D5 的 tag final 在演练通过后才打 | D12 下午 |
 | Y5 | 门禁口径 | D → 全员 | D1 裁决 pre-push 阻塞模式（day09 §10 Q2）后的最终口径：阻塞真门禁 / CI 阻塞+本地自检；全员不得为变绿调阈值或删用例（沿 day09 X9 纪律） | D10 下午 |
 
@@ -207,7 +207,7 @@ flowchart LR
 
 | 节点 | 内容与操作步骤 | 工时 | 前置 | 交付物与规格 | 量化验收 / 自检校验标准 |
 | --- | --- | --- | --- | --- | --- |
-| **C1** | 前端镜像与三入口构建：① `frontend.Dockerfile` 多阶段（`npm ci` → `vite build` → nginx 托管）；② Vite MPA 三入口 `pad/console/family` 产物分目录；③ 验收红线：**pad 的 three-vrm 不进 console/family 构建产物**（PRD §2.1 单仓库三入口的初衷）；④ 产物路径按 Y3 契约交 A 合入 nginx | 4h | M6.0 | `frontend/frontend.Dockerfile`（或根目录命名，N6.0 定）、构建说明 | 自检：容器内构建成功；`grep -r "three-vrm" dist/console dist/family` **零命中**；`dist/pad` 含 VRM 资产；三入口 URL（`/pad` `/console` `/family`）经 nginx 可打开且静态资源 200 |
+| **C1** | 前端镜像与三入口构建：① `frontend.Dockerfile` 多阶段（依赖安装 `pnpm@11.15.1 --frozen-lockfile`【2026-11-13 裁决修订，原 npm ci 不可执行】→ `vite build` → nginx 托管）；② Vite MPA 三入口 `pad/console/family` 产物分目录；③ 验收红线：**pad 的 three-vrm 不进 console/family 构建产物**（PRD §2.1 单仓库三入口的初衷）；④ 产物路径按 Y3 契约交 A 合入 nginx | 4h | M6.0 | `frontend/frontend.Dockerfile`（或根目录命名，N6.0 定）、构建说明 | 自检：容器内构建成功；`grep -r "three-vrm" dist/console dist/family` **零命中**；`dist/pad` 含 VRM 资产；三入口 URL（`/pad` `/console` `/family`）经 nginx 可打开且静态资源 200 |
 | **C2** | README 收口：① 新增「Docker 部署」章节（`git clone && cp .env.example .env && docker compose up` 三步口径 + 服务清单表 + 端口表）；② 新增「回滚」章节（合入 A4 演练记录与门禁清单）；③ 新增「成本数据」章节（合入 B2 输出：S1 闭环率 ≥60% 目标、单会话 Tool ≤8、cache 命中率、分层省 Token——数字全部取实测，未达标如实写）；④ 新增「观测说明」（指标端点、Trace 查询方法、告警规则说明——大纲 §11.3 观测说明验收项）；⑤ 更新 §10 文档索引 | 3h | C1；素材依赖 A4/B2 | `README.md` 增量 | 自检：新章节四项齐全；所有数字与 `eval/reports/`、`/metrics` 实测一致（抽查 3 个数字可回溯）；「局限」节保留教学 MVP 口径（PRD §1.3：不以模拟数据比例作为真实运营效果证明） |
 | **C3** | `docs/HARNESS_DESIGN.md` 新建：按大纲 §6.2 十组件表（Context/System One/Tool/State/Checkpoint/Memory/Loop/Policy/Recovery/Observability/Evaluation）逐组件写「本仓落点」——组件行为 + 对应文件路径 + 关键配置。**全部路径实测存在后才能写入**（写前逐个 `ls`） | 3h | M6.0（可与 C1 并行） | `docs/HARNESS_DESIGN.md` | 自检：十组件逐项覆盖；文中每个文件路径 `ls` 通过（零虚构路径）；与 TD §4/§6 口径一致，冲突处以 TD 为准并回改本文档 |
 | **C4** | `docs/IDENTITY_RULES.md` 新建：四层身份锚点（设备绑定→房间默认→声纹→主动确认）+ 三档级联（声纹失败→主动确认→通用模式）+ 阈值口径 **0.62**（含沿革 0.85→0.55→0.62 与依据：`eval/reports/声纹调优报告.md`）+ 通用模式边界（不读记忆/不写健康/不确认用药）+ `thread_id=(elder_id, session_seq)` 服务端生成。口径唯一来源 = PRD §3.2 | 2.5h | M6.0 | `docs/IDENTITY_RULES.md` | 自检：阈值、候选集（设备 1v1、恒 1 位）、级联行为三处与 PRD v3.1 逐字一致；文中行为均有对应测试名可引（如 `tests/test_gates.py`、声纹相关用例） |
@@ -320,3 +320,4 @@ flowchart LR
 | --- | --- | --- |
 | v1.0 | 2026-11-13 | 首版。基于 2026-11-13 主理人四项裁决（双线并行 / 4 人任务包 / tag+文档齐套纳入·简历类单列附录·演示视频待确认 / 技术文档=技术设计文档）编制。含：现状核查表 13 项（实测）、双线日历口径、4 包 19 节点 DAG 与里程碑 M6.0–M6.5、对接点 Y1–Y5、写域互斥矩阵、待确认 Q1–Q9。未改任何业务代码。 |
 | v1.1 | 2026-11-13 | **Q10 裁决 A1 落档**：外部走查发现「TD §1:205 选型承诺 OpenTelemetry Traces、day03/day04 计划与 `app/core/metrics.py`/`app/audio/_observe.py` 注释预留『Day 10 接 OTel 只改一个函数』，但本计划与任务书均未排 OTel」。主理人裁决 A1——B1 扩为「OTel SDK + Langfuse exporter 一体接入」（5h→8h，B 包 9.5h→13h，总计 53h→56.5h）；M6.2 判据增 trace_id 同值互查与非 LLM span；Y2 契约增 exporter 凭据复用；§6 写域增两文件 hook 函数体；Q10 登记已裁决。AC-31 验收口径不受影响。 |
+| v1.2 | 2026-11-13 | **Y3 构建命令口径修订落档**（主理人裁决，dev-C 执行 C1 时发现）：frontend/ 仅 pnpm-lock.yaml，`npm ci` 不可执行——Y3/§4.3 C1 构建命令改为 `pnpm@11.15.1 --frozen-lockfile`，构建上下文=`frontend/`（根 .dockerignore 排除 frontend/）。C1 已按新口径构建成功（镜像 489MB，三入口产物 + three-vrm 红线全过）。 |

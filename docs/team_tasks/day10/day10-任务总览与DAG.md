@@ -197,7 +197,7 @@ flowchart LR
 | 项 | 内容 |
 | --- | --- |
 | 提供方→消费方 | dev-C（C1）→ dev-A（A2/A3） |
-| 契约内容 | `frontend.Dockerfile` 多阶段：`npm ci` → `vite build` → nginx 托管；产物容器内路径 `/usr/share/nginx/html/{pad,console,family}`；构建命令固定 `npm ci && npm run build`；**红线：three-vrm 不进 console/family 产物** |
+| 契约内容 | `frontend.Dockerfile` 多阶段：依赖安装 `pnpm@11.15.1 --frozen-lockfile`（2026-11-13 主理人裁决修订，原 `npm ci` 因无 package-lock.json 不可执行）→ `vite build` → nginx 托管；构建上下文=`frontend/`（根 `.dockerignore` 排除 frontend/）；产物容器内路径 `/usr/share/nginx/html/{pad,console,family}`；**红线：three-vrm 不进 console/family 产物** |
 | 联调时点 | D11 上午 |
 | 联调判据 | `grep -r "three-vrm" dist/console dist/family` 零命中；`dist/pad` 含 VRM 资产；三入口经 nginx 200 |
 
@@ -299,3 +299,4 @@ flowchart LR
 | --- | --- | --- |
 | v1.0 | 2026-11-13 | 首版。基于 `docs/plans/day10/` 计划件 v1.0 与 2026-11-13 主理人四项裁决编制：里程碑 M6.0–M6.5、19 节点 DAG（含输入输出表）、对接点契约 Y1–Y5、写域互斥矩阵、排程表、校验结论、待确认 Q1–Q9。 |
 | v1.1 | 2026-11-13 | **Q10 裁决 A1 落档**（与计划件 v1.1 同步）：B1 扩为「OTel SDK + Langfuse exporter 一体接入」（8h，B 包 13h，总 56.5h）；M6.2 判据增 trace_id 同值互查与非 LLM span；Y2 增 exporter 凭据复用；写域矩阵增 `app/core/metrics.py`/`app/audio/_observe.py` 仅 hook 函数体；AC-31 验收口径与 DAG 结构不变。 |
+| v1.2 | 2026-11-13 | **Y3 构建命令口径修订落档**（主理人裁决）：`npm ci` → `pnpm@11.15.1 --frozen-lockfile`、构建上下文=`frontend/`（目录内仅 pnpm-lock.yaml，根 .dockerignore 排除 frontend/）；dev-C 任务卡同步 v1.1；C1 已交付构建成功。 |
