@@ -1,4 +1,4 @@
-> 状态：进行中（S0 已收口，Q4/Q7/Q-A1/Q-A2 已裁决；下一步 S1）　｜　版本：v1.1　｜　日期：2026-11-13
+> 状态：进行中（S0 已收口，Q4/Q7/Q-A1/Q-A2 已裁决；Langfuse 共享实例裁决落档，下一步 S1）　｜　版本：v1.2　｜　日期：2026-11-13
 > 负责人：**dev-A（唯一）**　｜　任务包：**A · 容器化与部署链（17h）**
 > 关联：docs/team_tasks/day10/dev-A-容器化与部署链.md v1.0（任务书，分工与判据唯一依据）｜docs/team_tasks/day10/day10-任务总览与DAG.md v1.1（§2 DAG、§3 对接点 Y1/Y2/Y4、§4 写域、§8 待确认）｜docs/plans/day10/day-10-交付与观测-工作推进计划.md v1.1（总计划件）
 > 上游依据：PRD line 578（Day 10 完成定义）、§2.5（一键启动/HTTPS/健康检查）、line 455（FR-TC-05）、line 444（FR-ADM-10）｜技术设计文档 §8.3 Day 10（line 1176–1183：多阶段非 root、七服务编排、回滚演练）、§1.4 选型表 line 206（compose 七服务）
@@ -85,7 +85,7 @@ flowchart LR
 | 编号 | 方向 | 内容 | 我方动作 |
 | --- | --- | --- | --- |
 | Y1 | C → A | 三入口 dist 路径表 + 反代规则草案（`/pad` `/console` `/family`、`/api/*`→backend:8000、`/ws/*` 带 Upgrade 头） | S6 按草案独占合入 `deploy/nginx.conf`，联调判据：三入口 200、`wss://` 不断 |
-| Y2 | A → B（**变量段 B 先定稿、A 合编排时成文**） | langfuse 服务定义（默认 v2 + 复用 postgres 独立 schema，Q4）+ 凭据三变量 `.env` 注入 | S4 编排 langfuse 服务；`.env.example` langfuse 段等 B 提交后一并成文 |
+| Y2 | **B ⇄ A（共享实例，2026-11-13 补充裁决：Langfuse 部署于 dev-B 主机，全员连 B）** | B 侧：共享 langfuse v2 实例常驻（含专用库）+ 生成 public/secret key 分发全员 + 防火墙放行 3000 + 提供局域网 IP；A 侧：compose 的 langfuse 服务 **profile 化**（默认 `up` 不起，`--profile langfuse` 激活，供 B 本机或本机自起模式用），`.env.example` 写共享模式注释（`LANGFUSE_HOST=http://<B的局域网IP>:3000` 占位 + 「key 向 B 领取，密钥不进 git」） | S4 编排 profile 化 langfuse；`.env.example` langfuse 段按共享模式成文（key 值由各人 `.env` 自填，不进 git） |
 | Y4 | A → D | 回滚基准 commit 登记（当前 `8d506b2` 或 D13 前最后收口 commit） | S8 写入演练记录；D5 打 tag 前必须核「A4 演练通过」 |
 
 ---
@@ -163,7 +163,7 @@ docker image inspect silvermate-backend --format '{{.Config.Env}}'  # 无密钥
 
 **方案要点**：
 
-- `langfuse`（Y2 产出，给 B1 消费）：按 Q4 默认 **v2 单容器 + 复用 postgres 独立 schema**（`LANGFUSE_DATABASE_SCHEMA`），凭据三变量 `LANGFUSE_PUBLIC_KEY/SECRET_KEY/HOST` 全部 `.env` 注入，compose 里零硬编码；`.env.example` 的 langfuse 段**等 dev-B 定稿后一并合入**（B→A 顺序，共享文件串行锁）。
+- `langfuse`（Y2，**2026-11-13 补充裁决：共享实例部署于 dev-B 主机，全员连 B**）：按 Q4 形态 v2 单容器 + 复用 postgres 独立 schema。compose 保留 langfuse 服务定义但加 **`profiles: ["langfuse"]`**——默认 `docker compose up` 不启动（共享模式下全员连 B 的实例），`docker compose --profile langfuse up` 时激活（B 本机全栈或本机自起模式用）；langfuse 依赖 compose 的 postgres（独立 schema）。凭据三变量 `LANGFUSE_HOST/PUBLIC_KEY/SECRET_KEY` 全部 `.env` 注入，compose 零硬编码；`.env.example` 按共享模式写注释与占位（key 向 B 领取，不进 git）。M6.1 判据口径随之修正：默认 profile 下**业务服务**全 healthy；langfuse 服务在激活 profile 时亦 healthy。
 - `coturn`：`coturn/coturn` 镜像，3478/5349 端口，`deploy/turnserver.conf`（realm/外部 IP 走 `.env`），凭据与 `app/core/config.py` 既有 `turn_url/turn_username/turn_credential` 字段对齐（**不改名**）；S7 联调时与 ice-config 端到端核对。
 - `laya`：按 Q7——方案 A（默认）挂载宿主已下载权重卷 + sidecar 镜像；方案 B（兜底）compose 只留编排占位注释、laya 仍以宿主 jev 进程运行，**如实记录不粉饰**。
 
@@ -184,7 +184,7 @@ docker compose config                       # 校验通过
 docker compose up -d                        # 一键起
 docker compose ps                           # 全部 healthy
 curl --noproxy '*' https://localhost/health # status:ok 带 trace_id（S7 证书就绪后走 443）
-docker compose ps --format json | grep -c healthy   # =11
+docker compose ps --format json | grep -c healthy   # =10（默认 profile，langfuse 已 profile 化不随默认起；--profile langfuse 激活时 =11）
 ```
 
 **确认点**：❸ M6.1 预验收（A 半边）：compose 全 healthy。
@@ -275,7 +275,7 @@ uv run ruff check app tests
 | **Q-A1** | backend 容器是否自动执行 `alembic upgrade head`（entrypoint 内）vs compose 一次性 migrate 服务 vs 保持手动 | A1-b/D3 判据 | **已裁决（2026-11-13 S0）：entrypoint 自动迁移**——`deploy/backend-entrypoint.sh` 先 `alembic upgrade head` 再 exec uvicorn；D3 三步起全栈判据成立 |
 | **Q-A2** | `static/` 进镜像 COPY vs 运行时卷挂载（`/static` 依赖 cwd，main.py L1114-1118） | A1 | **已裁决（2026-11-13 S0）：COPY 进镜像**；VRM 大资产不在此目录，走 nginx 卷 |
 | **Q-A3** | nginx 前端产物在 C1（Y3）到位前的占位方式 | S3 | 按默认口径执行（S0 登记，不单独阻塞）：本地 `dist/` 只读卷占位 + 执行记录登记待替换 |
-| （沿用总览）Q4 | langfuse v2 vs v3 | S4 | **已裁决（2026-11-13 S0）：v2 单容器 + 复用 postgres 独立 schema**（避免 v3 的 ClickHouse/MinIO 依赖，与 Y2 契约默认一致） |
+| （沿用总览）Q4 | langfuse v2 vs v3 | S4 | **已裁决（2026-11-13 S0）：v2 单容器 + 复用 postgres 独立 schema**；**补充裁决（2026-11-13，主理人）：共享实例部署于 dev-B 主机，全员连 B**——compose langfuse 服务 profile 化（默认不起），`.env.example` 按共享模式写占位注释 |
 | （沿用总览）Q7 | laya 挂卷 vs sidecar | S4 | **已裁决（2026-11-13 S0）：挂载宿主已下载权重卷**；不可行再降级 sidecar 化并如实记录 |
 | （沿用总览）Q2 | D12–D13 收口日历 | 排程 | 按 D12–D13 |
 
@@ -289,7 +289,8 @@ uv run ruff check app tests
 | R2 | **`/static` cwd 依赖**：容器 WORKDIR 与挂载不符 → 静态资产 404（§2#8） | `/static/...` 404 | A1 固定 `WORKDIR /app` 并 COPY static；联调首验即查 |
 | R3 | **容器内地址全错**：MCP/声纹/system_one/otel 默认 localhost，backend 容器化后连不上（§2#10） | backend 日志连接拒绝 | S3 environment 逐项覆盖为服务名；mock-operations compose L113-114 已示范；逐服务冒烟 |
 | R4 | **Y1/Y3 未按时到位**（C 的静态段草案与 dist 路径） | D11 上午 C 未交付 | 按 Y1 默认口径先落骨架 + dist 占位卷（Q-A3），C 到位后 diff 对齐；不阻塞 A2/A3 主线 |
-| R5 | **Y2 顺序倒挂**：langfuse 变量段 A 先动会违反 B→A 串行锁 | `.env.example` 冲突 | A 的 S4 只编排服务不写变量段；B 定稿后同一次合入 |
+| R5 | **langfuse 段写域调整（共享模式后）**：`.env.example` 的 langfuse 注释与占位由 A 在 S4 直接成文（B→A 串行锁的冲突面消失），但**必须防 key 真值进 git** | `git diff .env.example` 出现具体 key/IP 之外的密钥值 | A 只写注释与 `<B的局域网IP>` 占位；key 值只进各人本地 `.env`；提交前 grep 复查 |
+| R13 | **共享 Langfuse 单点在 dev-B 主机**：B 关机/离线/防火墙拦截 → 全员 Trace 上传失败 | B1 联调时 Langfuse 界面无新 Trace | `langfuse_enabled=False` 时业务不中断（B1 验收判据复用）；AC-31 取证避开 B 维护时段；B 机器联调窗口（D11 上午起）保持常驻开机；兜底：B 不可用期间本机 `--profile langfuse` 自起一套临时取证 |
 | R6 | **laya 容器化不可行**（权重 615MB + torch 依赖宿主 jev 环境） | Q7 方案 A 挂卷后 sidecar /health 报 model_missing | 按 Q7 兜底：compose 占位 + 宿主 sidecar，总览 §6 挂起留痕，不为达标粉饰 |
 | R7 | **compose 全栈验证被回收**（工具托管后台 ~2h 生命周期） | 验证中途容器退出 | 全栈验证请主理人自开终端常驻执行（总览 §0.4 明示）；我用分服务逐个 up 验证推进 |
 | R8 | **本机代理污染**：`HTTP_PROXY=127.0.0.1:52070` 会劫持 curl 与 docker 拉镜像 | curl 卡死/镜像拉取失败 | curl 一律 `--noproxy '*'`；docker build 拉镜像失败时检查 Docker Desktop 代理配置 |
@@ -305,6 +306,7 @@ uv run ruff check app tests
 | 日期 | 步骤 | 结果/证据指针 | 等待项 |
 | --- | --- | --- | --- |
 | 2026-11-13 | S0 | ①环境自检 PASS：Docker 29.9.1（client=server）、`docker compose config` 退出码 0、C 盘余量 141G≥15G；②现状实测表 §2 十四条逐条复核**无漂移**（/static cwd 依赖实位于 main.py L1115-1119、.dockerignore 排除 alembic 实际 L27；**新增登记**：.dockerignore L28 同时排除 `scripts/` → entrypoint 脚本必须放 `deploy/` 下才能进构建上下文，与 §4 S1 方案一致）；③计划件 v1.0+索引已提交 `a19504b`，工作区干净；④裁决落档：Q4=langfuse v2+复用 postgres 独立 schema、Q7=laya 挂载宿主权重卷、Q-A1=entrypoint 自动迁移、Q-A2=static COPY 进镜像、Q-A3 按默认口径（dist 占位卷）执行 | 无（可进 S1） |
+| 2026-11-13 | （补充裁决） | **Langfuse 走共享实例模式：部署于 dev-B 主机，全员连 B**。计划件同步：Y2 契约改 B⇄A 双向（B 提供实例+key+放行端口，A 提供 profile 化编排+共享模式 .env 注释）、S4 方案改为 `profiles: ["langfuse"]`（默认 up 不含 langfuse，S5 全栈判据 =10）、新增风险 R13（共享实例单点，兜底 `--profile langfuse` 本机自起）、R5 改写（防 key 真值进 git） | 待 B 侧落实：常驻实例、分发 key、放行 3000、提供局域网 IP |
 
 ---
 
@@ -314,3 +316,4 @@ uv run ruff check app tests
 | --- | --- | --- |
 | v1.0 | 2026-11-13 | 首版。基于任务书 v1.0、总览 v1.1、PRD v3.1、TD §8.3/§1.4 与 2026-11-13 代码现状巡检（14 条实测，含文件行号）编制：S0–S10 十一步分步确认制，每步含子任务拆解/工时/优先级/前置/命令级自检/确认点；Y1/Y2/Y4 对接动作、待确认 Q-A1–Q-A3、风险预案 R1–R12、工时 17.5h（含缓冲）。未改任何业务代码。 |
 | v1.1 | 2026-11-13 | S0 收口：环境自检 PASS（Docker 29.9.1/compose config 0/磁盘 141G）；现状表复核无漂移，新增登记 `.dockerignore` 排除 `scripts/`（entrypoint 须放 deploy/）；四项裁决落档（Q4=v2+复用 postgres、Q7=挂载宿主权重卷、Q-A1=entrypoint 自动迁移、Q-A2=static COPY 进镜像），Q-A3 按默认口径执行；计划件提交 `a19504b`。 |
+| v1.2 | 2026-11-13 | **Langfuse 共享实例裁决落档**（主理人：全员连 dev-B 主机）：Y2 契约改 B⇄A 双向；S4 方案改 `profiles: ["langfuse"]` 默认不起；S5 全栈 healthy 判据 11→10；新增风险 R13（共享实例单点＋本机 profile 兜底）、R5 改写（防 key 真值进 git）；Q4 行补充分享模式裁决。 |
