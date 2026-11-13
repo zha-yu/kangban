@@ -19,7 +19,7 @@
 | `docs/plans/day10/d-评测回归与演示冻结.md` | 🚧 进行中（S0/D1/D1-R2 已完成，下一步 D2 P0 全量回归） |
 | `docs/plans/day10/day-10-交付与观测-工作推进计划.md` | 🚧 进行中（v1.4 · C 包 S0–S3 已收口；Q1/Q3/Q5/Q10 已裁决，Q2/Q4/Q6–Q9 待 M6.0 收敛） |
 | `docs/plans/day10/dev-a-容器化与部署链.md` | 🚧 进行中（S1–S4 已收口；**Q4 改判 v2→v4 已同步进 compose 六服务编排**；laya 本机按 Q7 兜底 sidecar 形态；下一步 S5） |
-| `docs/plans/day10/dev-b-day10-工作推进计划.md` | ❔ **进行中 · 主理人已签认 · Step 0/1/2 关闭 · Q4 已决并改判（⑧→⑨，共享实例＝v4 全家桶已就位）· Step 3 冒烟预验通过，正式联调仅待 Y2 执行落地**（2026-11-13 主理人签认；M6.0 全员核对仍按总览 §5 执行，未冻结项不开工对应节点） |
+| `docs/plans/day10/dev-b-day10-工作推进计划.md` | ❔ **进行中 · 主理人已签认 · Step 0/1/2 关闭 · Q4 已决⑨ · Step 3 联调执行完毕（§2.2 七条判据全绿）· 证据落 eval/reports/day10_langfuse_trace.md · 待主理人确认后关 Step 3**（2026-11-13；M6.0 全员核对仍按总览 §5 执行，未冻结项不开工对应节点） |
 | `docs/plans/day10/dev-c-day10-工作推进计划.md` | 🚧 进行中（S0–S3 已收口，剩余素材回填待 A4/B2/B1/D1） |
 
 ## 契约冻结：（本日无 contracts.md）
