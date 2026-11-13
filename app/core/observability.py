@@ -5,8 +5,10 @@
   工具调用 / TTS 各为 Span；记录输入输出摘要、耗时、异常、模型版本；**脱敏后上传**；
 - TD §1:205：观测选型 = Langfuse + OpenTelemetry Traces，「Langfuse 可作 OTel
   exporter」——本模块即该选型的落地：OTel API 发射 Span，OTLP/HTTP exporter 把
-  span 批量推给 Langfuse 的 ``/api/public/otel/v1/traces`` 端点（v2/v3 通用，
-  因此 Q4 部署形态裁决不阻塞本模块）；
+  span 批量推给 Langfuse 的 ``/api/public/otel/v1/traces`` 端点（**OTLP 端点
+  Langfuse v3.22+ 才引入**——Q4 初裁 v2 与该前提冲突，2026-11-13 改判为 v4
+  全家桶共享实例；另附 ``x-langfuse-ingestion-version: 4`` header 使 v4 实时
+  摄入，缺省最多延迟 10 分钟）；
 - M6.2 增补判据：OTel TraceID 与系统 ``trace_id``（``app/core/context.py`` 32 位
   hex）**同值可互查**——由 :class:`SystemTraceIdGenerator` 保证。
 
@@ -59,7 +61,8 @@ from app.core.redact import redact_obj
 
 logger = logging.getLogger("app.core.observability")
 
-#: Langfuse OTLP 端点路径（v2/v3 通用；host 来自 ``langfuse_host``，Y2 契约）
+#: Langfuse OTLP 端点路径（自托管共享实例 = Langfuse v4，Q4 改判；host 来自
+#: ``langfuse_host``，Y2 契约）。v3.22+ 才有此端点，v2 系列不支持。
 _OTLP_PATH = "/api/public/otel/v1/traces"
 
 _TRACER_NAME = "app.observability"
@@ -122,7 +125,8 @@ def init_observability(settings: Settings, *, processor: SpanProcessor | None = 
 
     - 开关：``langfuse_enabled`` 且 ``otel_enabled`` 双闸（任一关闭即 no-op）；
     - endpoint：``{langfuse_host}/api/public/otel/v1/traces``（Y2：复用同一组变量）；
-    - 凭据：Basic Auth（public_key:secret_key），只从 Settings 读；
+    - 凭据：Basic Auth（public_key:secret_key），只从 Settings 读；附
+      ``x-langfuse-ingestion-version: 4``（v4 实时摄入）；
     - 采样：沿用 ``langfuse_sample_rate``（ParentBased，根 span 才掷骰）；
     - ``processor`` 参数仅供测试注入（如 InMemorySpanExporter），生产不传。
     """
@@ -147,7 +151,9 @@ def init_observability(settings: Settings, *, processor: SpanProcessor | None = 
             "Authorization": "Basic "
             + base64.b64encode(
                 f"{settings.langfuse_public_key}:{settings.langfuse_secret_key}".encode()
-            ).decode()
+            ).decode(),
+            # v4 直发 OTLP 若缺此 header，数据入库 UI 呈现最多延迟 10 分钟（官方文档）
+            "x-langfuse-ingestion-version": "4",
         },
         timeout=5,
     )
