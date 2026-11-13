@@ -38,8 +38,11 @@ services:
   funasr:
     # 本地 ASR 基线（FunASR runtime，2pass 双通路流式）。宿主端口 7002 —— 7001 已登记给 laya
     # （见 docs/plans/task-a1-ASR与TTS适配层.md §4.4 与 §9-1），不要再抢。
+    # **共享口径（主理人 2026-11-13）**：默认不自起（重服务，首启拉模型数 GB），全员连
+    # dev-B 的实例（.env 设 ASR_BASE_URL=ws://<B的IP>:7002）；`--profile local` 本地自起。
     # 镜像内 FunASR runtime 默认监听 10095；本服务**不开 TLS**（官方 run_server_2pass.sh 里
     # --certfile/--keyfile 同样是注释掉的），所以客户端用 ws:// 而不是 wss://。
+    profiles: ["local"]
     image: registry.cn-hangzhou.aliyuncs.com/funasr_repo/funasr:funasr-runtime-sdk-online-cpu-0.1.12
     container_name: silvermate-funasr
     init: true
@@ -154,7 +157,10 @@ services:
   voiceprint:
     # 声纹推理容器（Day 4 A1）。只做 POST /extract + GET /health。
     # 比对在主服务进程内 numpy 完成，容器不装 torch（重依赖隔离）。
+    # **共享口径（主理人 2026-11-13）**：默认不自起，全员连 dev-B 的实例
+    # （.env 设 VOICEPRINT_BASE_URL=http://<B的IP>:7003）；`--profile local` 本地自起。
     # 宿主端口 7003（compose 网络内主服务用 voiceprint:7003）。
+    profiles: ["local"]
     build:
       context: ./deploy/voiceprint
       dockerfile: Dockerfile
@@ -196,9 +202,11 @@ services:
       # —— 内部依赖地址覆盖（config.py 默认 localhost，容器内不可达：计划 §2#10）——
       MCP_WEATHER_SERVER_URL: http://weather-mcp:7101
       MCP_OPERATIONS_SERVER_URL: http://mock-operations-mcp:7102
-      VOICEPRINT_BASE_URL: http://voiceprint:7003
-      # 容器内直连 funasr 服务（宿主 7002 映射仅供本地裸跑；provider 为空时此值不生效）
-      ASR_BASE_URL: ws://funasr:10095
+      # **共享口径（主理人 2026-11-13）**：funasr/voiceprint 重服务不自起、默认连 dev-B 实例——
+      # 在 .env 设 VOICEPRINT_BASE_URL=http://<B的局域网IP>:7003、ASR_BASE_URL=ws://<B的IP>:7002；
+      # 两服务已 profile 化（--profile local 自起），不设 .env 时下面的默认值（服务名）才可达
+      VOICEPRINT_BASE_URL: ${VOICEPRINT_BASE_URL:-http://voiceprint:7003}
+      ASR_BASE_URL: ${ASR_BASE_URL:-ws://funasr:10095}
       # System One：默认连 compose 内 laya 容器（--profile laya）；本机兜底形态（宿主 jev
       # sidecar）时在 .env 覆盖 SYSTEM_ONE_BASE_URL=http://host.docker.internal:7001
       SYSTEM_ONE_BASE_URL: ${SYSTEM_ONE_CONTAINER_URL:-http://laya:7001}
@@ -211,8 +219,6 @@ services:
         condition: service_started
       mock-operations-mcp:
         condition: service_started
-      voiceprint:
-        condition: service_healthy
     healthcheck:
       # 镜像内无 curl（slim 最小化），以 python urllib 等价实现；与任务书「curl /health」
       # 口径差异在此登记（计划 v1.3 S1+S2 执行记录）
