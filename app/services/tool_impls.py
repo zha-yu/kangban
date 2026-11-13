@@ -490,7 +490,8 @@ def make_memory_recall_executor(
 ) -> Callable[[dict[str, Any], Identity], Awaitable[dict[str, Any]]]:
     """返回 `memory_recall` 工具的本地执行器。
 
-    依赖 dev-B 的 `recall_for_turn(elder_id, query, limit)` 接口。
+    依赖 dev-B 的 `recall_for_turn(*, elder_id, query, limit=5) -> list[str]` 接口
+    （C1 交接契约，2026-11-13 修正调用侧对齐冻结签名）。
     B2 还没落地时会抛 ImportError——**降级为返回空列表（succeeded + notes=[]），不报错**。
     原因：memory_recall 是只读查询，没有副作用，返回空列表不会破坏任何业务事实。
     """
@@ -501,7 +502,6 @@ def make_memory_recall_executor(
             raise ToolForbiddenError("无法识别长者身份")
 
         query = args.get("query", "")
-        category = args.get("category")
 
         # --- 软依赖 B2 的 recall_for_turn ---
         try:
@@ -516,10 +516,10 @@ def make_memory_recall_executor(
             return {"notes": []}
 
         try:
-            async with session_factory() as session:
-                notes = await recall_for_turn(
-                    session, elder_id=elder_id, query=query, category=category
-                )
+            # C1 交接契约（签名冻结）：recall_for_turn(*, elder_id, query, limit=5) -> list[str]，
+            # 自管 DB 会话（不收 session），无 category 参数。此前的
+            # recall_for_turn(session, ..., category=...) 是旧契约，每次调用必 TypeError。
+            notes = await recall_for_turn(elder_id=elder_id, query=query)
         except ToolError:  # 内层 ToolError 直接上抛让 ToolExecutor 收敛
             raise
         except Exception as exc:
@@ -528,15 +528,8 @@ def make_memory_recall_executor(
             )
             raise ToolTransientError(str(exc)) from exc
 
-        # recall_for_turn 的返回类型：MemoryNote 列表 → 转 dict 给 Agent
-        note_dicts: list[dict[str, Any]] = []
-        for n in notes:
-            note_dicts.append(
-                {
-                    "content": getattr(n, "content", str(n)),
-                    "category": getattr(n, "category", ""),
-                }
-            )
+        # recall_for_turn 返回 chunk 文本列表 → 包 dict 形态给 Agent（保持既有消费格式）
+        note_dicts: list[dict[str, Any]] = [{"content": chunk} for chunk in notes]
         return {"notes": note_dicts}
 
     return _executor

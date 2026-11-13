@@ -107,8 +107,17 @@ def build_fast_questions() -> dict[str, dict[str, Any]]:
 
 
 def build_shadow_questions() -> dict[str, dict[str, Any]]:
-    """Shadow：只问 is_sensitive。并行发出、有果才用，超时/失败就当没问过，不阻塞路由。"""
-    return {"is_sensitive": dict(SENSITIVE_QUESTION)}
+    """Shadow：is_sensitive ＋ privacy_scope 两问并行（Day 10 B3 扩第二问）。
+
+    仍是「并行发出、有果才用，超时/失败就当没问过，不阻塞路由」——shadow 预算
+    400ms 独立于快路径 200ms；两问实测 285ms（jev/cpu p95）在预算内。privacy_scope
+    的三值语义见 `PRIVACY_QUESTION`，缺答时 `map_answers` 保持默认 "none" 且上层
+    以 degraded 标记区分「没问出来」。
+    """
+    return {
+        "is_sensitive": dict(SENSITIVE_QUESTION),
+        "privacy_scope": dict(PRIVACY_QUESTION),
+    }
 
 
 def build_state(

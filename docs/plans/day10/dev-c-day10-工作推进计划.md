@@ -1,4 +1,4 @@
-> 状态：进行中（S0–S3 已收口，剩余素材回填待 A4/B2/B1/D1）　｜　版本：v1.0　｜　日期：2026-11-13
+> 状态：进行中（S0–S3 收口；J1/J2 Y3 闭环、J4 B2/B1 闭环、J5 门禁口径闭环；**仅剩 J3·A4 素材回填 README §13**）　｜　版本：v1.1　｜　日期：2026-11-13
 > 负责人：**dev-C（唯一）**　｜　任务包：C · 前端构建与文档齐套线（15.5h / 容量上限 24h）
 > 上游依据（唯一事实源，本文不另立口径）：
 > - `docs/plans/day10/day-10-交付与观测-工作推进计划.md` v1.1（§4.3 dev-C 节点表、§3 Y1/Y3、§6 写域）
@@ -331,6 +331,10 @@ flowchart LR
 | 2026-11-13 | S3 收口自检 ✅ | 5 份交付物 ls 全在位（frontend.Dockerfile 9.3KB / HARNESS_DESIGN 21.9KB / IDENTITY_RULES 8.6KB / AI_USAGE 14.0KB / SECURITY 13.5KB）；README §12–§15 四章节 grep 验证齐全；占位符 8 处 ⏳ 显式标注；Y1/Y3 契约草案已备妥待交 dev-A | **dev-C 包除素材回填外全部收口** |
 | 2026-11-13 | J5 · Y5 素材知会 | dev-D 通知：门禁口径素材在 `day10_gate_rerun.md` §6（D1 产出）。**该文件尚未在远端 develop / 本地出现**（14:32 实测 fetch + find 零命中）；README §15.4 回填位已就绪（含 expected-red 落地说明位） | **待 dev-D push 该文件后知会 C**，C 即按 §6 逐字合入 README §15.4 并闭环 J5 |
 | 2026-11-13 | J5 · 提单事实先行合入 | 15:17 提单两条纪律事实按原文合入 README §15.4（push 3~4 分钟既定成本 / hooksPath 启用要求 / expected-red 2026-11-15 过期）＋总览 Y5 契约增补（v1.7）；**素材文件仍待 push**，显式标注「到位后逐字校对」，未虚构引用 | dev-D push 文件后逐字校对回填，J5 闭环 |
+| 2026-11-13 | **J5 ✅ 闭环** | dev-D push PR #124/#125：`eval/reports/day10_gate_rerun.md`（§6 Y5 素材小抄＋四态验证表）＋`expected_red.json`（B/D/E，expires 2026-11-15，入库留痕）＋`tests/eval_gate.py` expected-red 机制落码（+132 行）；README §15.4 已按 §6 **逐字校对并填实**（pre-push 双段链路/expected-red 机制/当前标注/四态验证/启用方式/纪律），占位符删除 | 无——J5 关闭；README 剩余等待仅 A4/B2/B1 三项 |
+| 2026-11-13 | 门禁拦截与环境配置 | 首次 push 被**真门禁正确拦截**：本机缺 `.venv_sidecar`（F02 不静默放行，主理人裁决 A=现场配置）；已建 `.venv_sidecar`（python 3.12）并后台安装 torch 2.14 CPU + sidecar 依赖 + sqlalchemy/tzdata（对齐 day10_gate_rerun.md §0 口径） | 安装完成后重推 162ba99（J5 闭环提交） |
+| 2026-11-13 | 改判⑨登记 | 主理人改判 Langfuse 形态：**v2 单容器+复用 postgres → v4 全家桶（六容器）**；已落总览 Q4/Y2（v1.8）＋README §12.2；compose 仍无 langfuse（Y2 归 dev-A S4 待办） | **提单 dev-A**：计划件 S0/S4/Y2 的「v2+连 dev-B」口径过时需自行同步；`.env.example` 占位 `LANGFUSE_HOST` 指向主理人 IP；注册地址 `http://<主理人局域网IP>:3000` |
+| 2026-11-13 | **J4 ✅ 闭环（B2 素材）+ §15.2（B1 素材）** | dev-B PR #129 交付 `eval/reports/day10_cost_brief.md`＋`docs/guides/langfuse-操作指引.md`＋`day10_langfuse_trace.md`（AC-31 证据）；README §14 成本四指标实测回填（S1 闭环率 5.19% 如实登记未达标、cache 命中率 0.0% 真实值、单轮 prompt 基线 765 tokens、价格按当日定价页公式代入）＋§15.1 cache 口径＋§15.2 指引引用；§15.3 SLO 告警素材未含，如实挂起 | **README 剩余等待仅 A4（回滚）一项** |
 | 2026-11-13 | J1/J2 · Y3 闭环、Y1 部分闭环 | dev-A A2a（commit `6eaafe1`）**逐字消费 Y3 契约**：compose nginx 服务 build=`./frontend` + `frontend.Dockerfile`、产物路径、镜像内默认配置三入口+反代；实测证据「双 healthy + 三入口 200 + 自动迁移 0020→0021」——**回执成立，J1/J2（Y3 部分）闭环**；`deploy/nginx.conf` 静态段/HTTPS 归 A-S6 卷挂载覆盖（Y1 残余部分）；README §12 已按 A2a 实况更新（backend/nginx 转写实，langfuse profile 化+共享实例裁决、laya Q7、coturn 待 S4） | Y1 残余（deploy/nginx.conf 三入口+HTTPS 段）待 A-S6 |
 
 ---

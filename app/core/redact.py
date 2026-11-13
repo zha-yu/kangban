@@ -42,9 +42,16 @@ _ROOM_RE = re.compile(r"([A-Za-z]?\d{1,4})\s*(房|房间|室|床|栋)")
 #: 密钥/API Key（in-text 捞取）：sk- 前缀或Bearer 令牌，值 ≥12 位
 _SECRET_RE = re.compile(r"(?i)\b(sk-[A-Za-z0-9_\-]{12,}|bearer\s+[A-Za-z0-9._\-]{16,})\b")
 
-#: extra 字段名命中即整值抹掉（值不留位）——字段级密钥防线
+#: extra 字段名命中即整值抹掉（值不留位）——字段级密钥防线。
+#:
+#: `token(?!s)`：放行 `*_tokens` **计数字段**（prompt_tokens / completion_tokens /
+#: cache_hit_tokens / cache_miss_tokens / total_tokens 等 LLM usage 计数）。
+#: 2026-11-13 B2 联调实测 bug：子串匹配曾把这类计数字段整值掩成 `***`（0 值变空串），
+#: 波及日志轨（logging.py formatter）与 OTel span 属性（observability._scalarize）两轨。
+#: 真令牌键（access_token / refresh_token / device_token / api_token 等，`token` 后
+#: 不跟 `s`）仍整值掩码，防线不弱化。dev-A 写域，经主理人 2026-11-13 授权越域修复。
 _SECRET_KEY_RE = re.compile(
-    r"(?i)(secret|token|password|passwd|api[_-]?key|authorization|credential)"
+    r"(?i)(secret|token(?!s)|password|passwd|api[_-]?key|authorization|credential)"
 )
 
 

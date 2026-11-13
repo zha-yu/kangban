@@ -21,8 +21,11 @@ from app.core.metrics import (
     record_identity_ask_sent,
     record_identity_confirm_received,
     record_identity_result_sent,
+    record_llm_cache,
     record_stage,
     record_wakeup,
+    reset_llm_cache,
+    snapshot_llm_cache,
     stopwatch,
 )
 
@@ -151,3 +154,47 @@ class TestIdentityPoints:
             payload = _formatted(record)
             leaked = forbidden & payload.keys()
             assert not leaked, f"打点出现隐私/载荷字段: {leaked}"
+
+
+# ---------------------------------------------------------------------------
+# Day 10 B2 · D-1 裁决：prompt cache 进程内计数（方案①）
+# ---------------------------------------------------------------------------
+
+
+class TestLLMCacheCounters:
+    """record_llm_cache / snapshot_llm_cache / reset_llm_cache。"""
+
+    def test_none_means_no_record(self) -> None:
+        """双 None（供应商未返回 cache 字段）→ 不记、available 不翻转。"""
+        reset_llm_cache()
+        record_llm_cache(hit_tokens=None, miss_tokens=None)
+        snap = snapshot_llm_cache()
+        assert snap["calls_with_cache_info"] == 0
+        assert snap["cache_info_available"] is False
+        assert snap["hit_rate"] is None
+
+    def test_full_info_accumulates_and_hit_rate_recomputable(self) -> None:
+        """两侧齐：累加可复算 hit_rate = hit/(hit+miss)。"""
+        reset_llm_cache()
+        record_llm_cache(hit_tokens=1000, miss_tokens=250)
+        record_llm_cache(hit_tokens=500, miss_tokens=250)
+        snap = snapshot_llm_cache()
+        assert snap["cache_hit_tokens"] == 1500
+        assert snap["cache_miss_tokens"] == 500
+        assert snap["calls_with_cache_info"] == 2
+        assert snap["hit_rate"] == 0.75
+
+    def test_partial_info_keeps_known_side_only(self) -> None:
+        """只有一侧已知：已知侧照记，hit_rate 不可复算（None），不编造。"""
+        reset_llm_cache()
+        record_llm_cache(hit_tokens=300, miss_tokens=None)
+        snap = snapshot_llm_cache()
+        assert snap["cache_hit_tokens"] == 300
+        assert snap["cache_miss_tokens"] == 0
+        assert snap["hit_rate"] is None  # miss 未知 → 不复算
+
+    def test_reset_clears(self) -> None:
+        record_llm_cache(hit_tokens=10, miss_tokens=10)
+        reset_llm_cache()
+        snap = snapshot_llm_cache()
+        assert snap["cache_info_available"] is False and snap["cache_hit_tokens"] == 0

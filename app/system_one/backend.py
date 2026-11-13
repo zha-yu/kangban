@@ -290,6 +290,35 @@ class MockBackend:
     #: 敏感词（Mock 专用，**不是**业务词表——业务词表在 `app/router/safety.py`）
     SENSITIVE_MARKERS: Final[tuple[str, ...]] = ("胸口", "胸痛", "喘不上", "摔倒", "不想活")
 
+    #: 公共话题词（Mock 专用，Day 10 B3）：命中即 shared（在场都能听）。
+    PUBLIC_MARKERS: Final[tuple[str, ...]] = (
+        "天气",
+        "戏曲",
+        "戏",
+        "电影",
+        "新闻",
+        "活动",
+        "下棋",
+        "广场",
+    )
+
+    @staticmethod
+    def _privacy_scope(text: str) -> str:
+        """Mock 隐私启发式（Day 10 B3 修正为真三值）。
+
+        旧实现 `"personal" if "我" in text else "shared"` 两个问题：永远不出
+        `none`（评测口径里「确认无隐私」与「有隐私」混为一谈）；公共话题句只要
+        不带「我」也判 shared 算蒙对。修正口径（主理人批准的 Step 5 方案）：
+        敏感词/含「我」→ personal，公共话题 → shared，都沾不上 → none。
+        局限如实登记：这是 mock 的词表启发式，不是业务词表；「我想听戏曲」这类
+        公共请求会被判 personal——mock 只为无权重环境兜底链路，不作准确率依据。
+        """
+        if any(marker in text for marker in MockBackend.SENSITIVE_MARKERS) or "我" in text:
+            return "personal"
+        if any(marker in text for marker in MockBackend.PUBLIC_MARKERS):
+            return "shared"
+        return "none"
+
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or get_settings()
 
@@ -320,7 +349,7 @@ class MockBackend:
             hit = any(marker in text for marker in self.SENSITIVE_MARKERS)
             answers["is_sensitive"] = {"noul": 0.95 if hit else 0.02}
         if "privacy_scope" in questions:
-            answers["privacy_scope"] = {"choice": "personal" if "我" in text else "shared"}
+            answers["privacy_scope"] = {"choice": self._privacy_scope(text)}
         if "is_out_of_domain" in questions:
             answers["is_out_of_domain"] = {"noul": 0.05}
         return answers

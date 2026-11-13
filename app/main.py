@@ -54,6 +54,11 @@ from app.core.config import Settings, get_settings
 from app.core.context import TRACE_HEADER, get_trace_id
 from app.core.logging import configure_logging
 from app.core.metrics import get_metrics_recorder
+from app.core.observability import (
+    RequestSpanMiddleware,
+    init_observability,
+    shutdown_observability,
+)
 from app.core.runtime_context import Identity
 from app.core.security import TokenExpiredError
 from app.core.trace import TraceIdMiddleware
@@ -106,6 +111,7 @@ from app.services.turn_service import (
     TurnService,
 )
 from app.system_one.client import SystemOneClient
+from app.system_one.privacy_context import is_shared_room_for_elder
 
 logger = logging.getLogger("app.main")  # 模块级：分节奏 sink 等装配层辅助函数用
 
@@ -259,6 +265,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     logger = logging.getLogger("app.main")
     settings: Settings = app.state.settings
+
+    # ---- Day 10 B1（裁决 ⑤）：OTel→Langfuse 观测接入（开关关闭时 no-op，业务零影响） ----
+    init_observability(settings)
 
     redis_client = redis_asyncio.from_url(
         settings.redis_url, encoding="utf-8", decode_responses=False
@@ -598,6 +607,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # 实际没有任何工单存在。落库经 work_order_service（agents 不写库），
         # dedupe_token=react_followup:{turn_id}:{tool_name} 同轮同工具只建一单。
         followup_sink=make_followup_sink(session_factory),
+        # Day 10 B3（F23）：privacy_scope 消费点的双人间判定（信号 personal 时才惰性查询）
+        privacy_room_probe=is_shared_room_for_elder,
     )
     # Day 6 S4：ResponseService 提升为 lifespan 局部变量——TurnService 持有做第 7 步
     # 分段下发，装配层另持引用注册 segment_ack 回调（同一实例，ack 才能命中会话 epoch）
@@ -992,6 +1003,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        # Day 10 B1：观测收尾（flush 有界、异常吞掉，不阻塞退出流程）
+        shutdown_observability()
         # P14：卸载注入防线，避免测试/多 app 场景串味（hook 是模块级全局）
         set_injection_hook(None)
         await medication_scheduler.stop()
@@ -1088,6 +1101,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.settings = settings
+
+    # ---- Day 10 B1：HTTP 服务端 span（自建纯 ASGI，见 observability.py docstring）。
+    # 必须在 add_middleware(TraceIdMiddleware) 之前注册（后添加者在外层 → 本中间件
+    # 位于最内层），span 创建时系统 trace_id 已就绪，OTel/系统同值可互查。
+    # 未启用时逐请求直通，业务零影响。
+    application.add_middleware(RequestSpanMiddleware)
 
     # 中间件：后添加者在外层，因此 CORS 包住 TraceId，异常响应也带链路头
     application.add_middleware(TraceIdMiddleware)

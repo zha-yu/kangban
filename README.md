@@ -172,6 +172,31 @@ docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:a
 
 需要连 PostgreSQL 跑迁移的完整版本见 [`AGENTS.md` §3.1](AGENTS.md)。
 
+#### 终端 C · System One sidecar（:7001，可选）
+
+只有用到 Laya 本地推理（快路径模型判定）才需要起；不起则主服务走 mock/降级，业务仍可用。**端口 7001 已被占用时启动会直接失败**（`strictPort` 口径）。
+
+```bash
+# 首次：准备一个带 torch 的 Python 环境（主 .venv 不带 torch）
+#   首选 .venv_sidecar（真门禁同款）；本机实例：conda 环境 agent-langgraph（torch 2.14.0）
+#   依赖清单：torch、transformers、fastapi、uvicorn、pydantic-settings、sqlalchemy、asyncpg
+#   （B1 观测链后 client.py → app.core.metrics → db 带出 asyncpg，缺它启动即 ImportError）
+conda activate agent-langgraph    # 或 source .venv_sidecar/bin/activate
+
+# 每次启动（PYTHONPATH 必须指向仓库根；Laya 权重路径读 .env 的 SYSTEM_ONE_MODEL_PATH）
+PYTHONPATH=$PWD python -m uvicorn app.system_one.server:app --port 7001 --log-level warning
+
+# 健康检查（本机设了 http_proxy 时 curl 要加 --noproxy，否则探测被代理吃掉）
+curl -s --noproxy '*' http://127.0.0.1:7001/health
+```
+
+评测复跑（50/110 条样例记 p95）走主环境：
+
+```bash
+NO_PROXY='127.0.0.1,localhost' uv run python scripts/eval_router.py \
+  --fixtures eval/fixtures/day7_intents.jsonl --report eval/reports/<名字>.md --provider sidecar
+```
+
 > **当前进度（2026-11-09）**：Day 1–Day 5 已交付；**Day 6「长者侧 Agent 完整闭环」在推进中**——A 线（历史账本 / 工具执行 / 用药子图 / 工单 / 天气 MCP 接入）已收口，验收 **931 passed、覆盖率 81.51%**，取证见 §7.4；B 线（状态中心与上下文记忆）与 C 线（Agent、统一出口、安全层）的代码已在 `develop`，联调与门禁随全队节奏收口。
 > 已就绪：`docker-compose.yml`（基础依赖版）、`frontend/`（pad / console / family 三端）、`app/`、`alembic/`（至 `0011`）、`tests/`、`mcp-servers/weather/`。
 > 尚未就绪：`Dockerfile`、nginx 托管、`eval/`（评测基线，随 Day 7 之后落地）——在此之前「全栈一键起」不可用，按上面两个终端分别启动。
@@ -541,13 +566,15 @@ docker compose up -d
 | nginx（前端托管 + 反代） | 80 / 443 | ✅ **已入编（A2a）**：镜像 = dev-C C1 的 `frontend/frontend.Dockerfile`（Y3 契约：构建上下文 `./frontend`、产物 `/usr/share/nginx/html/{pad,console,family}`、镜像内默认配置含三入口静态段 + `/api` `/ws` 反代）；healthcheck 探 `/pad/`；**`deploy/nginx.conf` 的 HTTPS/证书/三入口完整段归 dev-A S6 升格后卷挂载覆盖**（当前镜像内默认配置生效中） |
 | system-one（laya sidecar） | 7001 | ⏳ 待 A2 S4（Q7 裁决：默认挂宿主权重卷，不可行则 sidecar 化如实记录） |
 | coturn | 3478 / 5349 | ⏳ 待 A2 S4 |
-| langfuse | 3000（共享实例在 dev-B 主机） | ⏳ compose 定义 **profile 化**（`--profile langfuse` 才启动，默认全员连 dev-B 主机共享实例——2026-11-13 裁决，Y2 改 B⇄A 双向）；key 向 dev-B 领取，`.env` 注入不进 git |
+| langfuse | 3000（共享实例） | ⏳ **改判⑨（2026-11-13）+ 主理人澄清（17:18）：形态 v4 全家桶（六容器），部署在 dev-B 主机，全员直连 dev-B IP，不自己起服务**；compose 服务定义归 dev-A S4 待办（本地仅保留 profile 化编排或占位，由 A 复核）；观测注册 `http://<dev-B局域网IP>:3000` 自行注册拿 key（密钥不进 git，`.env` 注入） |
 
 ### 12.3 端口约定
 
 端口一律沿用 **§6.2 服务与端口表**（唯一口径）：postgres 5432 / redis 6379 / backend 8000 / nginx 80·443 / system-one(laya) 7001 / funasr 7002 / weather-mcp 7101 / mock-operations-mcp 7102 / coturn 3478·5349 / vite dev 5173。
 
 补充一处实测事实：**voiceprint 7003** 已在 `docker-compose.yml` 启用（`VOICEPRINT_HOST_PORT` 可改写），§6.2 表后续统一回补。
+
+> **本机不起 funasr / voiceprint（2026-11-13 17:18 主理人口径）**：两者直连 **dev-B 主机实例**（funasr 免本机 GB 级模型下载；voiceprint 免本机环境重复搭建），本机 compose 可不起这两个容器，backend 经 `.env` 把 `ASR_*` / `VOICEPRINT_BASE_URL` 指向 dev-B 局域网 IP 即可（dev-B IP 由 dev-B 分发）。funasr 连通性为当前攻坚重点。
 
 ### 12.4 前端镜像（C1 已交付，2026-11-13）
 
@@ -576,14 +603,22 @@ docker compose up -d
 
 ## 14. 成本数据
 
-> ⏳ **待 B2**：dev-B 成本估算与指标口径（D12 交付）。以下四个指标位只定口径，**数字全部取实测，未达标如实写，不得粉饰**。
+> 素材来源：`eval/reports/day10_cost_brief.md`（dev-B B2，2026-11-13，全部实测无估算）。**价格不代填**（随厂商变动，按当日定价页代入下方公式），实测数字未达标如实写。
 
-| # | 指标 | 目标口径 | 实测值 | 取数来源 |
+| # | 指标 | 目标口径 | 实测值（2026-11-13） | 说明 |
 | --- | --- | --- | --- | --- |
-| 1 | S1 闭环率（快决策层闭环占比） | ≥ 60%（§1 工程目标） | 待 B2 | `/metrics` |
-| 2 | 单会话 Tool 调用数 | ≤ 8（`MAX_TOOL_CALLS=8` 预算） | 待 B2 | `/metrics` |
-| 3 | prompt cache 命中率 | 口径待 B2 | 待 B2 | `/metrics`（cache 命中率指标待 B2 补齐） |
-| 4 | 分层记忆省 Token | 口径待 B2 | 待 B2 | `/metrics` |
+| 1 | S1 闭环率（快决策层闭环占比） | ≥ 60%（§1 工程目标） | **5.19%**（未达标，如实登记） | 联调期 fallback 占 72.73%（含大量 429 降级与异常探针），生产占比待 Day 11+ 观测；rule 15.58% + system_one 11.69% 为零 LLM 成本层 |
+| 2 | 单会话 Tool 调用数 | ≤ 8（`MAX_TOOL_CALLS=8` 预算） | B2 小抄未含该项实测，待补 | 预算熔断已实现（guardrails） |
+| 3 | prompt cache 命中率 | 可复算（FR-TC-08） | **0.0%**（真实值非缺数据） | Qwen 3 次调用均冷缓存：`cache_hit_tokens=0 / cache_miss_tokens=2025`，可复算 0/(0+2025)=0.0；多轮共享稳定系统提示+人设才可能命中 |
+| 4 | 分层省 Token | 结构性口径 | 单轮 prompt 基线 ≈ **765 tokens**（MiniMax 实测；Qwen ≈675/次） | rule/system_one 层每接住一通即省一次完整 LLM 往返 |
+
+**成本公式**（价格按当日定价页代入；注意 qwen3.8 是思考模型，`completion_tokens` 含 reasoning tokens 也计费）：
+
+```
+单轮 LLM 成本 ≈ prompt_tokens × 输入单价 + completion_tokens × 输出单价
+分段成本 ≈ Σ(各层调用数 × 该层单轮成本)     # rule/system_one 层 = 0
+缓存节省 ≈ cache_hit_tokens × (输入单价 − 缓存命中单价)
+```
 
 > 教学口径提醒（PRD §1.3）：本节数据为教学演示项目实测，不以模拟数据比例作为真实运营效果证明。
 
@@ -593,24 +628,27 @@ docker compose up -d
 
 ### 15.1 `/metrics` 指标端点（已交付）
 
-- day09 C4 已交付 `GET /metrics`，含**分层命中率**、**S1 闭环率**、**token 用量**三类指标。
-- ⏳ 待 B2：prompt cache 命中率指标补齐后，回填取数口径与示例。
+- `GET /metrics`（Bearer 鉴权）含**分层命中率**、**S1 闭环率**、**token 用量**、**prompt cache 段**（B2 补齐：进程内计数 + LLM span 属性明细，重启归零并如实标注 `available/reason`；MiniMax 档当日版本未回传 cache 字段）。
+- 已知缺陷（待 dev-A）：`redact.py` `_SECRET_KEY_RE` 误伤 `*_tokens` 字段名，日志轨与 Langfuse 属性里的 token 数暂显示 `***`（`/api/metrics` 快照数字不受影响）。
 
-### 15.2 Langfuse Trace 查询（骨架）
+### 15.2 Langfuse Trace 查询（B1 已交付）
 
-- 目标口径（AC-31）：Langfuse 中的 `trace_id` 与系统侧 trace id（`/health` 等响应的 `X-Trace-Id`）为**同值**，可在 Langfuse 界面与系统日志之间双向互查。
-- ⏳ 待 B1：Langfuse 接入（Y2 凭据 + OTel exporter 路线）交付后，补充界面截图与查询操作步骤。
+- **操作手册**：`docs/guides/langfuse-操作指引.md`（v4 共享实例，六容器全家桶，dev-B 主机 `http://<dev-B的IP>:3000`，项目 **kangban**）。
+- **接入**：OTel SDK → OTLP/HTTP `{LANGFUSE_HOST}/api/public/otel/v1/traces`（`app/core/observability.py`）；首次接入五步（注册 → 选 kangban 项目 → 生成 pk/sk → 填 `.env` 四变量 → 验证），sk 仅创建时显示一次。
+- **AC-31 已验证**：Langfuse trace_id 与系统 trace_id **同值同名双向互查**；证据：`eval/reports/day10_langfuse_trace.md`。
+- **验数通道**：v4 开启 events_only 模式（legacy 查询 API 禁用），精确验数走 ClickHouse 直查 `default.events_core`（SQL 见指引 §3.2）。
 
 ### 15.3 告警规则
 
-- ⏳ 待 B1：SLO 告警规则落地后，回填规则清单与触发阈值。
+- ⏳ 待 B1/SLO 规则落地：B1 交付物（操作指引 + Trace 证据）未含 SLO 告警规则清单，如实登记待补。
 
 ### 15.4 门禁口径
 
 - 评测门禁机制现状见 §7（`eval_gate.py` 作为 pre-push 钩子，固定集不达标阻断提交）。
-- **阻塞模式已裁决（2026-11-13，Q3=A）：阻塞真门禁**——`git push` 前实跑 `eval_gate.py`，不通过则拒绝 push；同时为已知挂起红项建立 **expected-red 显式标注机制**（标注项不阻塞 push，防止历史挂起项误伤正常提交）。
-- **门禁成本与钩子启用要求（dev-D D1 提单 2026-11-13 15:17；详细素材 `day10_gate_rerun.md` §6，文件待 dev-D push，到位后本节逐字校对回填）**：
-  - 每次 `git push` 实跑评测门禁，**约 3~4 分钟，属既定成本**——push 变慢是门禁在工作，不是卡死；
-  - 钩子启用要求：clone 后必须执行一次 `git config core.hooksPath .githooks`，否则 pre-push 钩子不生效（等于绕过门禁）；
-  - **expected-red 有过期时间：2026-11-15 后 B/D/E 红项自动恢复阻塞**——到期前必须完成 X9 复跑并撤销标注或更新留痕，否则全员 push 被堵。
-- ⏳ 待 dev-D push `day10_gate_rerun.md` 后：按 §6 四态验证表逐字校对本节并回填复跑记录。
+- **阻塞模式已裁决（2026-11-13，Q3=A）：阻塞真门禁**（素材：`eval/reports/day10_gate_rerun.md` §6，2026-11-13 已逐字合入本节）：
+  - **pre-push 链路**：①看板/索引/样本机制自检（`.venv` python）→ ②真门禁 `tests/eval_gate.py --provider local`（`.venv_sidecar` python + torch，**约 3~4 分钟，属 Q3 裁决既定成本**）——不过**拒绝 push**；无 `.venv_sidecar` 环境＝环境未配好，报错退出不静默放行（F02）。
+  - **expected-red 标注机制（已落码）**：已知挂起红项登记 `eval/reports/expected_red.json`（gates/reason/expires/evidence/ruling **入库留痕**，变更走 git 历史）；命中红项**不阻塞 push 但留痕**（报告头＋控制台双留痕）；未标注的红一律阻塞；`--strict` 忽略全部标注（复核用）；**expires 过期自动失效**防「标注永不摘除」。
+  - **当前标注：B/D/E**（本机环境偏差＋普通集 82%<90% 待 Line 1 路由改进；规则路径 p95 0ms 硬线已达标，模型路径 1147ms 单列挂 F23），**expires=2026-11-15**——覆盖 D11 X9 复跑窗口，达标后撤销；过期自动失效、红项重新阻塞。
+  - **四态验证（2026-11-13 实测全过）**：红＋标注 exit 0（留痕）｜`--strict` 红未标注 exit 1｜绿→放行分支已实测｜调低阈值 0.30＋strict exit 1｜端到端 `pre-push` 完整链路 exit 0。
+  - **钩子启用**：clone 后执行一次 `git config core.hooksPath .githooks`，否则钩子不生效＝绕过门禁。
+  - **纪律**：全员不得为变绿调阈值或删用例（沿 day09 X9）；`SENSITIVE_FLOOR_PCT=95.0` 不放宽；D1 复跑五闸门 **A/C 过、B/D/E 如实报红不粉饰**（详见 day10_gate_rerun.md §1–§3）。

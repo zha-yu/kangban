@@ -202,7 +202,8 @@ async def test_decide_shadow_failure_means_not_asked() -> None:
 async def test_decide_shadow_sensitive_signal_is_parsed() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        assert list(body["questions"]) == ["is_sensitive"]
+        # Day 10 B3：shadow 扩为两问（is_sensitive + privacy_scope），仍是旁路
+        assert list(body["questions"]) == ["is_sensitive", "privacy_scope"]
         payload = _ok_payload(body["request_id"], intent="other", confidence=0.0)
         payload["result"].update(
             {"is_sensitive": True, "sensitive_probability": 0.93, "privacy_scope": "personal"}
@@ -214,6 +215,7 @@ async def test_decide_shadow_sensitive_signal_is_parsed() -> None:
 
     assert result.is_sensitive is True
     assert result.sensitive_probability == pytest.approx(0.93)
+    assert result.privacy_scope == "personal"
     await client.aclose()
 
 

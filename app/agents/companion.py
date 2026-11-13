@@ -58,6 +58,7 @@ from app.core.context import (
 from app.core.metrics import Stopwatch, record_stage
 from app.core.runtime_context import Identity
 from app.services.llm_service import LLMReply
+from app.system_one.privacy_context import SharedRoomProbe, current_privacy_scope
 
 logger = logging.getLogger("app.agents.companion")
 
@@ -301,6 +302,17 @@ def _build_turn_context(
     )
 
 
+#: Day 10 B3（F23）：双人间隐私收敛指令（PRD「privacy_scope 用于隐私收敛」的消费落点）。
+#: 触发条件 = Router 本轮 shadow 判 `personal`（本人私密内容）∧ 长者当前房间 ≥2 人在住。
+#: 只注入话术约束，不拦截/改写生成文本——硬拦截对 LLM 输出做手术风险高（方案①口径）。
+PRIVACY_DIRECTIVE: Final[str] = (
+    "（隐私提醒）长者住在多人间，说话时室友可能就在旁边。"
+    "这句话涉及本人健康、用药或身体等私密内容，回复时请注意："
+    "不要复述具体的健康数值或敏感细节，用关心的语气简短回应；"
+    "如需详细讨论，建议长者和护工或家属单独说。"
+)
+
+
 def _tool_protocol_message(tools: Sequence[ToolSpec]) -> dict[str, str]:
     """ReAct 输出协议说明（只描述格式，不含任何阈值——阈值在代码里强制）。
 
@@ -410,6 +422,10 @@ class CompanionAgent:
         followup_sink: FollowupSink | None = None,
         on_media_play: MediaPlaySink | None = None,
         on_media_control: MediaControlSink | None = None,
+        #: Day 10 B3（F23）：双人间判定 ``(elder_id) -> bool``。生产装配层注
+        #: `privacy_context.is_shared_room_for_elder`；缺省 None = 不做收敛注入
+        #: （测试/无 DB 环境零副作用）。
+        privacy_room_probe: SharedRoomProbe | None = None,
     ) -> None:
         self._llm = llm
         self._guardrails = guardrails
@@ -419,6 +435,42 @@ class CompanionAgent:
         self._followup_sink = followup_sink
         self._on_media_play = on_media_play
         self._on_media_control = on_media_control
+        self._privacy_room_probe = privacy_room_probe
+
+    async def _maybe_inject_privacy_directive(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        runtime: Identity,
+        identity: DialogueIdentity | None,
+    ) -> None:
+        """双人间收敛注入（Day 10 B3 · F23 消费点，主理人批准的方案①）。
+
+        全部前置任一不满足即静默跳过：通道无信号（None=没问出来）、信号非
+        `personal`、generic 身份、未装配 probe。命中时 probe 查一次 DB，
+        查失败记 warning 不收敛——**宁可少收敛，不可误收敛**。
+        """
+        scope = current_privacy_scope()
+        if scope != "personal" or self._privacy_room_probe is None:
+            return
+        elder_id = (identity.elder_id if identity is not None else runtime.elder_id) or None
+        is_generic = identity.is_generic if identity is not None else elder_id is None
+        if is_generic or not elder_id:
+            return
+        try:
+            shared_room = await self._privacy_room_probe(elder_id=elder_id)
+        except Exception as exc:
+            logger.warning(
+                "privacy_probe_failed_skip_directive elder_present=%s error_type=%s",
+                bool(elder_id),
+                type(exc).__name__,
+            )
+            return
+        if not shared_room:
+            return
+        logger.info("privacy_directive_injected scope=personal room=shared")
+        # 与工具协议消息同样的位置语义：末条 user 之前的 system 指令
+        messages.insert(len(messages) - 1, {"role": "system", "content": PRIVACY_DIRECTIVE})
 
     async def run(
         self,
@@ -461,6 +513,12 @@ class CompanionAgent:
         )
         if self._tools:
             messages.insert(len(messages) - 1, _tool_protocol_message(self._tools))
+
+        # Day 10 B3（F23）：privacy_scope 消费点——双人间 ∧ 本轮 shadow 判 personal
+        # → 注入收敛指令。信号经 `privacy_context` 通道（Router 同 task 写入）；
+        # 判定惰性：只有信号命中才查一次 DB（路由 200ms 热路径零查询）。
+        # probe 失败不收敛（如实降级，不拖垮轮次）；generic 身份无个人上下文，不注入。
+        await self._maybe_inject_privacy_directive(messages, runtime=runtime, identity=identity)
 
         # Day 6 补回 llm_first_token 打点：原在 dialogue_service.respond 内，
         # N14 后对话走 CompanionAgent 直连 LLM 绕过了该点（S4 试跑实测 0 行）。
