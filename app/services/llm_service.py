@@ -26,6 +26,8 @@ import httpx
 
 from app.core.config import Settings
 from app.core.context import get_trace_id
+from app.core.metrics import record_llm_cache
+from app.core.observability import emit_event_span
 
 logger = logging.getLogger("app.services.llm_service")
 
@@ -185,6 +187,31 @@ class LLMService:
                                     "error_type": type(exc).__name__,
                                 },
                             )
+                        # B2（D-1 裁决）：prompt cache 计数（B 写域内进程计数）+
+                        # llm_usage event span（明细跨重启可查，归 trace 职责）。
+                        # 观测旁路失败不得影响主回复。
+                        try:
+                            cache_hit, cache_miss = _parse_cache_tokens(response.json())
+                            record_llm_cache(hit_tokens=cache_hit, miss_tokens=cache_miss)
+                            emit_event_span(
+                                "llm_usage",
+                                {
+                                    "provider": self._settings.llm_provider,
+                                    "model": self._settings.llm_model,
+                                    "prompt_tokens": prompt_tokens,
+                                    "completion_tokens": completion_tokens,
+                                    "cache_hit_tokens": cache_hit,
+                                    "cache_miss_tokens": cache_miss,
+                                },
+                            )
+                        except Exception as exc:  # pragma: no cover - 防御性
+                            logger.warning(
+                                "llm_cache_record_failed",
+                                extra={
+                                    "trace_id": get_trace_id() or "-",
+                                    "error_type": type(exc).__name__,
+                                },
+                            )
                         return LLMReply(
                             text=parsed,
                             degraded=False,
@@ -242,6 +269,43 @@ def _parse_usage(payload: dict[str, Any]) -> tuple[int | None, int | None]:
     if not isinstance(usage, dict):
         return None, None
     return _pick(usage.get("prompt_tokens")), _pick(usage.get("completion_tokens"))
+
+
+def _parse_cache_tokens(payload: dict[str, Any]) -> tuple[int | None, int | None]:
+    """解析 prompt cache 命中/未命中 token（B2 · D-1 裁决：明细进 llm_usage span）。
+
+    兼容两种供应商口径，取「第一个明确给出的命中值」：
+
+    - DeepSeek：``usage.prompt_cache_hit_tokens`` / ``usage.prompt_cache_miss_tokens``
+      （其语义恒满足 prompt_tokens = hit + miss）；
+    - OpenAI 兼容（Qwen/通义、OpenAI 本家）：``usage.prompt_tokens_details.cached_tokens``
+      （cached_tokens ⊆ prompt_tokens）——miss 未给时按 ``prompt_tokens - hit`` 推导
+      （两值都已确认才推，属「确认后相减」而非估算）；推导不出则 None，不编造。
+
+    返回 ``(hit_tokens, miss_tokens)``，缺即 None，不补零。
+    """
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return None, None
+    hit: int | None = None
+    miss: int | None = None
+
+    def _pick(value: Any) -> int | None:
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value if value >= 0 else None
+
+    hit = _pick(usage.get("prompt_cache_hit_tokens"))
+    miss = _pick(usage.get("prompt_cache_miss_tokens"))
+    if hit is None:
+        details = usage.get("prompt_tokens_details")
+        if isinstance(details, dict):
+            hit = _pick(details.get("cached_tokens"))
+    if miss is None and hit is not None:
+        prompt = _pick(usage.get("prompt_tokens"))
+        if prompt is not None and prompt >= hit:
+            miss = prompt - hit
+    return hit, miss
 
 
 def _parse_completion(response: httpx.Response) -> tuple[str | None, int | None, int | None]:

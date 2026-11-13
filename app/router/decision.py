@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final, Literal, Protocol
 
 from app.core.context import get_trace_id
+from app.core.metrics import record_stage  # Day 10 B1：route 段打点（观测包装用）
 from app.core.runtime_context import Identity
 from app.router.rules import (
     REASON_CAPABILITY_NOT_READY,
@@ -252,7 +253,26 @@ class Router:
         thread_id: str,
         runtime: Any,
     ) -> RouteDecision:
-        """一轮路由。`runtime` 是 turn_service 的 `TurnRuntime`（只读 `elder_id`/`state`）。"""
+        """一轮路由。`runtime` 是 turn_service 的 `TurnRuntime`（只读 `elder_id`/`state`）。
+
+        Day 10 B1（主理人裁决 E）：观测包装——仅补 `route` 段打点（AC-31 链的
+        「规则路由」span + metrics 表轨补 day05 登记的 route 缺口），路由逻辑
+        原样在 `_decide_inner`，一行不改。打点只含耗时/source，不含文本与隐私。
+        """
+        started = self.clock()
+        try:
+            return await self._decide_inner(text, thread_id=thread_id, runtime=runtime)
+        finally:
+            record_stage("route", self._elapsed_ms(started), source="router")
+
+    async def _decide_inner(
+        self,
+        text: str,
+        *,
+        thread_id: str,
+        runtime: Any,
+    ) -> RouteDecision:
+        """（原 decide 主流程，逻辑未动；由观测包装 `decide` 调用。）"""
         started = self.clock()
         trace_id = get_trace_id()
         cleaned = (text or "").strip()

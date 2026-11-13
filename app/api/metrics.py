@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.elders import ContractAPIRoute
 from app.core.auth import require_roles
+from app.core.metrics import snapshot_llm_cache
 from app.core.runtime_context import Identity
 from app.db import get_session
 from app.services.metrics_service import read_decision_metrics, snapshot_llm_usage
@@ -45,4 +46,18 @@ async def get_operational_metrics(
     }
     if not snap["tokens_available"]:
         token_usage["reason"] = "暂无带回 usage 的 LLM 调用（进程内计数，重启归零）"
-    return {"routing": routing, "token_usage": token_usage}
+
+    # FR-TC-08（B2 · D-1 裁决方案①）：prompt cache 命中率＝进程内计数，
+    # 与 token_usage 同口径（重启归零、无数据如实标注 available=false）。
+    cache_snap = snapshot_llm_cache()
+    prompt_cache: dict[str, object] = {
+        "available": cache_snap["cache_info_available"],
+        "calls_with_cache_info": cache_snap["calls_with_cache_info"],
+        "cache_hit_tokens": cache_snap["cache_hit_tokens"],
+        "cache_miss_tokens": cache_snap["cache_miss_tokens"],
+        "hit_rate": cache_snap["hit_rate"],
+    }
+    if not cache_snap["cache_info_available"]:
+        prompt_cache["reason"] = "暂无带回 cache 字段的 LLM 调用（进程内计数，重启归零）"
+
+    return {"routing": routing, "token_usage": token_usage, "prompt_cache": prompt_cache}
