@@ -608,5 +608,9 @@ docker compose up -d
 ### 15.4 门禁口径
 
 - 评测门禁机制现状见 §7（`eval_gate.py` 作为 pre-push 钩子，固定集不达标阻断提交）。
-- **阻塞模式已裁决（2026-11-13，Q3=A）：阻塞真门禁**——`git push` 前实跑 `eval_gate.py`，不通过则拒绝 push；同时为已知挂起红项建立 **expected-red 显式标注机制**（标注项不阻塞 push，防止历史挂起项误伤正常提交）。执行细节（expected-red 清单与接线）由 dev-D D1 落地后回填本节。
-- ⏳ 待 D1 回填：expected-red 标注机制落地说明与复跑记录。
+- **阻塞模式已裁决（2026-11-13，Q3=A）：阻塞真门禁**——`git push` 前实跑 `eval_gate.py`，不通过则拒绝 push；同时为已知挂起红项建立 **expected-red 显式标注机制**（标注项不阻塞 push，防止历史挂起项误伤正常提交）。
+- **门禁成本与钩子启用要求（dev-D D1 提单 2026-11-13 15:17；详细素材 `day10_gate_rerun.md` §6，文件待 dev-D push，到位后本节逐字校对回填）**：
+  - 每次 `git push` 实跑评测门禁，**约 3~4 分钟，属既定成本**——push 变慢是门禁在工作，不是卡死；
+  - 钩子启用要求：clone 后必须执行一次 `git config core.hooksPath .githooks`，否则 pre-push 钩子不生效（等于绕过门禁）；
+  - **expected-red 有过期时间：2026-11-15 后 B/D/E 红项自动恢复阻塞**——到期前必须完成 X9 复跑并撤销标注或更新留痕，否则全员 push 被堵。
+- ⏳ 待 dev-D push `day10_gate_rerun.md` 后：按 §6 四态验证表逐字校对本节并回填复跑记录。

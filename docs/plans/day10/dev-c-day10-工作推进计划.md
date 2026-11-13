@@ -330,6 +330,7 @@ flowchart LR
 | 2026-11-13 | S2 · C2 ✅ | `README.md` 增量 +112/−1：§12 Docker 部署（6 实测服务写实+C1 前端镜像小节全写实）、§13 回滚骨架、§14 成本数据骨架（四指标口径写实）、§15 观测说明半写实、§10 索引增 4 行；占位符 15 处（待 A2×3/待 A4×4/待 B2×6/待 B1×2/待 D1×1/待裁决×1），零编造数字 | A4/B2/B1/D1 素材回填（D12）；Q1/Q3 裁决回填 |
 | 2026-11-13 | S3 收口自检 ✅ | 5 份交付物 ls 全在位（frontend.Dockerfile 9.3KB / HARNESS_DESIGN 21.9KB / IDENTITY_RULES 8.6KB / AI_USAGE 14.0KB / SECURITY 13.5KB）；README §12–§15 四章节 grep 验证齐全；占位符 8 处 ⏳ 显式标注；Y1/Y3 契约草案已备妥待交 dev-A | **dev-C 包除素材回填外全部收口** |
 | 2026-11-13 | J5 · Y5 素材知会 | dev-D 通知：门禁口径素材在 `day10_gate_rerun.md` §6（D1 产出）。**该文件尚未在远端 develop / 本地出现**（14:32 实测 fetch + find 零命中）；README §15.4 回填位已就绪（含 expected-red 落地说明位） | **待 dev-D push 该文件后知会 C**，C 即按 §6 逐字合入 README §15.4 并闭环 J5 |
+| 2026-11-13 | J5 · 提单事实先行合入 | 15:17 提单两条纪律事实按原文合入 README §15.4（push 3~4 分钟既定成本 / hooksPath 启用要求 / expected-red 2026-11-15 过期）＋总览 Y5 契约增补（v1.7）；**素材文件仍待 push**，显式标注「到位后逐字校对」，未虚构引用 | dev-D push 文件后逐字校对回填，J5 闭环 |
 
 ---
 
