@@ -24,8 +24,9 @@ docs/
 eval/
 spikes/
 tests/
-alembic/
 scripts/
+# alembic/ 与 alembic.ini：backend 镜像 runtime 需执行迁移（Q-A1 裁决 entrypoint
+# 自动 alembic upgrade head），不再排除（Day 10 · A1a，dev-A）。
 
 # 版本控制与 IDE
 .git/

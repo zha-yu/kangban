@@ -1,14 +1,22 @@
 #!/bin/sh
-# 推送前校验：看板不过期 + 计划索引与文件头一致 + 评测样本可加载
+# 推送前校验（Day 10 D1-R2 · Q3 阻塞真门禁裁决，2026-11-13）：
+#   ① 看板不过期 + 计划索引一致 + 评测样本机制自检（轻量快查，.venv python）
+#   ② 真门禁：eval_gate --provider local（torch，.venv_sidecar python），
+#      不过拒绝 push；已知挂起红项走 expected-red 标注（eval/reports/expected_red.json，
+#      入库留痕、过期自动失效），未标注的红一律阻塞。
 #
-# 启用方式与 pre-commit 共用一次配置：
+# 启用方式（与 pre-commit 共用一次配置）：
 #     git config core.hooksPath .githooks
 #
-# 校验失败即中止推送，避免把过期看板、不一致的索引或改坏的评测样本带到远端。
+# 环境要求（Day 10 口径：全员本机已配齐）：
+#   - .venv/      → 轻量校验（update_progress / fixtures 自检）
+#   - .venv_sidecar/ → 真门禁（torch + app 依赖）；缺失 = 环境没配好，报错退出（F02：不静默放行）
+# 注意：真门禁含模型推理与场景测试，一次约 3~4 分钟——这是 Q3 裁决的既定成本。
 
 set -e
 
 root=$(git rev-parse --show-toplevel)
+
 py=""
 for cand in "$root/.venv/Scripts/python.exe" "$root/.venv/bin/python" python3 python; do
     if [ -x "$cand" ] || command -v "$cand" >/dev/null 2>&1; then
@@ -18,12 +26,10 @@ for cand in "$root/.venv/Scripts/python.exe" "$root/.venv/bin/python" python3 py
 done
 
 if [ -z "$py" ]; then
-    # Day 9 D3.4 / F02：不再静默放行。推送前校验（看板/索引/样本自检）依赖 python，
-    # 缺解释器 = 校验根本没跑 = 无法证明没把坏东西带上去。按 AGENTS §3 阻塞口径
-    # 报错退出（非 0），由开发者装好环境后再推；总览 Q2 的「报告但不阻塞」模式
-    # 须主理人显式裁决并留痕后才能改回。
+    # Day 9 D3.4 / F02：不再静默放行。轻量校验依赖 python，缺解释器 = 校验没跑
+    # = 无法证明没把坏东西带上去。报错退出（非 0）。
     echo "[pre-push] 错误：未找到 python，推送前校验无法执行（F02：不静默放行）。" >&2
-    echo "[pre-push] 请安装 python 或激活项目 .venv 后重试；如需临时豁免，找主理人裁决并留痕。" >&2
+    echo "[pre-push] 请安装 python 或激活项目 .venv 后重试；临时豁免须主理人裁决并留痕。" >&2
     exit 1
 fi
 
@@ -37,14 +43,38 @@ if ! "$py" "$root/scripts/update_progress.py" --check-plans; then
     exit 1
 fi
 
-# 评测门禁的**机制自检**（R1② 裁决，2026-11-11 主理人批准）：
-# 只验 fixtures 还能被正确加载（基线 110 条、六类边界各 ≥5、id 唯一），
-# 不跑模型、不写锁、不做达标判定。为什么不在这里跑真门禁：它要 torch 与
-# ~60s，本机 provider 还依赖 jev 环境，塞进 pre-push 会把所有人堵在推送前，
-# 且钩子里的环境不一定有 torch —— 那样只能"静默通过"，比不跑更糟。
+# ① 机制自检：fixtures 还能被正确加载（基线 110 条、六类边界各 ≥5、id 唯一）。
+#    样本坏了先拦，不用等 torch 跑完才发现。
 if ! "$py" "$root/tests/eval_gate.py" --self-check; then
     echo "[pre-push] 评测样本自检未通过（fixtures 被改坏或边界缺类），已中止推送" >&2
     exit 1
 fi
 
+# ② 真门禁（Day 10 Q3 裁决：阻塞真门禁）。必须用含 torch 的 .venv_sidecar；
+#    退出码非 0（含未标注红项）即中止推送。expected-red 标注在门禁内生效。
+sidecar=""
+for cand in "$root/.venv_sidecar/Scripts/python.exe" "$root/.venv_sidecar/bin/python"; do
+    if [ -x "$cand" ]; then
+        sidecar="$cand"
+        break
+    fi
+done
+
+if [ -z "$sidecar" ]; then
+    echo "[pre-push] 错误：未找到含 torch 的 .venv_sidecar 环境，真门禁无法执行（F02：不静默放行）。" >&2
+    echo "[pre-push] 请按 README 配置 .venv_sidecar（torch CPU + 项目依赖）后重试；" >&2
+    echo "[pre-push] 临时豁免须主理人裁决并留痕（Q3：阻塞真门禁，不设默认放行）。" >&2
+    exit 1
+fi
+
+echo "[pre-push] 真门禁运行中（--provider local，约 3~4 分钟，请稍候）……"
+if ! PYTHONPATH="$root" "$sidecar" "$root/tests/eval_gate.py" --provider local \
+        --report "$root/eval/reports/eval_gate_last_run.md"; then
+    echo "[pre-push] 真门禁未通过（未标注红项或运行失败），已中止推送。" >&2
+    echo "[pre-push] 已知挂起红项见 eval/reports/expected_red.json（入库留痕）；" >&2
+    echo "[pre-push] 如属新的已知挂起，须主理人裁决后更新标注并同提交留痕。" >&2
+    exit 1
+fi
+
+echo "[pre-push] 真门禁通过（含 expected-red 留痕，详见 eval/reports/eval_gate_last_run.md）。"
 exit 0

@@ -156,7 +156,7 @@ flowchart LR
 | **D1** eval_gate 收口 | dev-D | M6.0；既有 `tests/eval_gate.py`、`.githooks/pre-push` | 门禁复跑记录、pre-push 阻塞口径（Y5）、TD line 1179 路径勘误 | D2、Y5→全员 |
 | **D2** P0 全量回归 | dev-D | **Line 1 M5 收口**；D1；M6.1/M6.2；台账种子数据 | `eval/reports/day10_p0_regression.md`、台账更新 | D4、M6.4 |
 | **D3** 干净主机演练 | dev-D | M6.1；A4 | 演练记录（截图+日志）、`.env.example`/README 缺漏回改提单 | D5、M6.5 |
-| **D4** 演示脚本与冻结 | dev-D | D2（只演示回归通过项） | 5 分钟演示脚本（四场景，标 AC 编号）；视频【待确认 Q1】 | D5 |
+| **D4** 演示脚本与冻结 | dev-D | D2（只演示回归通过项） | 5 分钟演示脚本（四场景，标 AC 编号）；**视频不录制**（Q1 改判 B，2026-11-13 14:28） | D5 |
 | **D5** tag final | dev-D | D3+D4+A4+M6.3+M6.4 | `git tag final` 并 push | M6.5 收口 |
 
 ### 2.3 排程表（与 Line 1 槽位互补，D10–D13 摊开）
@@ -197,7 +197,7 @@ flowchart LR
 | 项 | 内容 |
 | --- | --- |
 | 提供方→消费方 | dev-C（C1）→ dev-A（A2/A3） |
-| 契约内容 | `frontend.Dockerfile` 多阶段：`npm ci` → `vite build` → nginx 托管；产物容器内路径 `/usr/share/nginx/html/{pad,console,family}`；构建命令固定 `npm ci && npm run build`；**红线：three-vrm 不进 console/family 产物** |
+| 契约内容 | `frontend.Dockerfile` 多阶段：依赖安装 `pnpm@11.15.1 --frozen-lockfile`（2026-11-13 主理人裁决修订，原 `npm ci` 因无 package-lock.json 不可执行）→ `vite build` → nginx 托管；构建上下文=`frontend/`（根 `.dockerignore` 排除 frontend/）；产物容器内路径 `/usr/share/nginx/html/{pad,console,family}`；**红线：three-vrm 不进 console/family 产物** |
 | 联调时点 | D11 上午 |
 | 联调判据 | `grep -r "three-vrm" dist/console dist/family` 零命中；`dist/pad` 含 VRM 资产；三入口经 nginx 200 |
 
@@ -215,7 +215,7 @@ flowchart LR
 | 项 | 内容 |
 | --- | --- |
 | 提供方→消费方 | dev-D（D1）→ 全员 |
-| 契约内容 | D1 裁决 pre-push 阻塞模式（day09 §10 Q2 遗留）：阻塞真门禁，或「CI 阻塞＋本地自检」并留痕；裁决结果写入 README 或门禁记录。纪律：**全员不得为变绿调阈值或删用例**（沿 day09 X9） |
+| 契约内容 | D1 裁决 pre-push 阻塞模式（day09 §10 Q2 遗留）：阻塞真门禁，或「CI 阻塞＋本地自检」并留痕；裁决结果写入 README 或门禁记录。纪律：**全员不得为变绿调阈值或删用例**（沿 day09 X9）。**增补（dev-D 提单 2026-11-13 15:17，dev-C 登记全员口径）**：① 每次 push 实跑门禁约 **3~4 分钟**，属既定成本；② 全员 clone 后必须 `git config core.hooksPath .githooks` 启用钩子，否则门禁不生效；③ **expected-red 过期时间 2026-11-15**——到期 B/D/E 红项自动恢复阻塞，须完成 X9 复跑并撤销标注或更新留痕；④ 详细素材 `day10_gate_rerun.md` §6（四态验证表），文件待 dev-D push |
 | 联调时点 | D10 下午（最早冻结，全员开工即受约束） |
 | 联调判据 | 人为调低规则阈值 → 门禁报红并打印差值；无 python 环境时 pre-push 退出码非 0 |
 
@@ -255,7 +255,8 @@ flowchart LR
 | F23（System One 四信号，P2） | day09 顺延落地：信号先齐、延迟如实记录（p95 668ms>200ms 挂起【Q8】） | B3 |
 | FR-ADM-10（设备掉线检测，P2） | day09 顺延落地 | A5 |
 | 人设系统 FR-ADM-07 | 维持裁减（day09 §8.1），本日不安排 | — |
-| 演示视频 | 【待确认 Q1】，裁决前 D4 只交脚本 | D4 |
+| **戏曲相关全部裁减**（day09 D5 合规素材遗留） | **正式裁减（2026-11-13 主理人裁决，dev-D 提单、dev-C 登记本表）**：素材替换不做、戏曲相关全部不做——① AC-37 戏曲点播在回归报告中登记「**裁减—不验收**」（PRD §5.4 追踪表 4.4 其余 AC 正常复跑）；② 媒体戏曲种子（X10）不补交；③ 演示不安排「听戏」场景，白天场景改为陪聊。**留痕层位：任务卡/计划件层已落**（dev-D 计划件 `docs/plans/day10/d-评测回归与演示冻结.md` §0/R6/§7、dev-D 任务卡 v1.5、本表）；**PRD 层留痕已获批（主理人 2026-11-13 14:06 追加裁决）：由 dev-D 按 PRD 修订记录 v3.2 登记 AC-37 裁减**（仅修订记录条目，不改 §5.4 验收语义正文）；PRD:590「不得裁减」清单（反向外呼/唤醒词）不受影响 | D2/D4（dev-D）；PRD v3.2（dev-D 执行） |
+| 演示视频 | **改判不录制（Q1=B，2026-11-13 14:28，推翻同日 14:06 的 A 裁决）**：D4 只交 5 分钟脚本、不安排录制。**偏差登记**：PRD line 578 与大纲课时 10.4 字面含「5 分钟演示视频」，本项为显式偏差不补录；如需 PRD 层留痕，建议 dev-D 并入修订记录 v3.2 同批处理（与 AC-37 同一条目或相邻条目） | D4 |
 | iter2-demo/iter3-demo 历史标签 | 不补打，仅登记偏差【Q6】；回滚演练以收口 commit 为基准 | A4/D5 |
 | 简历段落/INTERVIEW_QA/复盘报告 | 个人学习交付，附录单列不占团队工时（2026-11-13 裁决） | — |
 
@@ -280,11 +281,11 @@ flowchart LR
 
 | # | 待确认 | 影响节点 | 默认口径（仅挂起建议，不自动执行） |
 | --- | --- | --- | --- |
-| Q1 | 5 分钟演示视频是否纳入 | D4 | 不安排录制，D4 只交脚本 |
+| Q1 | ~~5 分钟演示视频是否纳入~~ **改判（B，2026-11-13 14:28，推翻 14:06 A 裁决）：不录制**——D4 只交脚本，PRD line 578 字面偏差登记 §6；PRD 层留痕建议并入修订记录 v3.2 | D4 | 已裁决（改判），随 v1.6 落档 |
+| Q3 | ~~pre-push 阻塞模式~~ **已裁决（A1，2026-11-13 14:06）：阻塞真门禁**——push 前实跑 eval_gate 不过则拒绝；同时为已知挂起红项建 **expected-red 显式标注机制**（标注项不阻塞 push），环境不具备再降级留痕 | D1/Y5 | 已裁决，D1 按此接线 |
+| Q5 | ~~TD line 1179 路径勘误留痕~~ **已裁决（A1，2026-11-13 14:06）：修订记录留痕、不改正文**——TD 修订记录加 v1.x 条目说明实际落点 `tests/eval_gate.py`（沿 day07 先例），dev-D 在 D1 同提交执行 | D1 | 已裁决 |
 | Q2 | Day 10 收口段日历 D12–D13 是否认可 | 排期对外口径 | 按 D12–D13；压缩则按裁减顺序先裁 A5/B3 |
-| Q3 | pre-push 阻塞模式（day09 §10 Q2 遗留） | D1/Y5 | 默认阻塞真门禁；环境不具备则降级留痕 |
 | Q4 | Langfuse 部署形态：v2 单容器+复用 postgres vs v3 全家桶 | A2/B1 | v2＋复用 postgres 独立 schema |
-| Q5 | TD line 1179 `eval/eval_gate.py` 路径勘误留痕（实际 `tests/eval_gate.py`） | D1 | 按 AGENTS §4.7 同提交留痕 |
 | Q6 | iter2-demo/iter3-demo 缺失：不补打仅登记偏差 | A4/D5 | 接受登记 |
 | Q7 | Laya 容器化形态：宿主权重卷挂载 vs sidecar | A2 | 挂载宿主已下载权重卷；不可行则 sidecar 化并如实记录 |
 | Q8 | F23 延迟 668ms>200ms 继续挂起 | B3 | 如实记录不为达标调阈值（沿 X9 纪律） |
@@ -299,3 +300,9 @@ flowchart LR
 | --- | --- | --- |
 | v1.0 | 2026-11-13 | 首版。基于 `docs/plans/day10/` 计划件 v1.0 与 2026-11-13 主理人四项裁决编制：里程碑 M6.0–M6.5、19 节点 DAG（含输入输出表）、对接点契约 Y1–Y5、写域互斥矩阵、排程表、校验结论、待确认 Q1–Q9。 |
 | v1.1 | 2026-11-13 | **Q10 裁决 A1 落档**（与计划件 v1.1 同步）：B1 扩为「OTel SDK + Langfuse exporter 一体接入」（8h，B 包 13h，总 56.5h）；M6.2 判据增 trace_id 同值互查与非 LLM span；Y2 增 exporter 凭据复用；写域矩阵增 `app/core/metrics.py`/`app/audio/_observe.py` 仅 hook 函数体；AC-31 验收口径与 DAG 结构不变。 |
+| v1.2 | 2026-11-13 | **Y3 构建命令口径修订落档**（主理人裁决）：`npm ci` → `pnpm@11.15.1 --frozen-lockfile`、构建上下文=`frontend/`（目录内仅 pnpm-lock.yaml，根 .dockerignore 排除 frontend/）；dev-C 任务卡同步 v1.1；C1 已交付构建成功。 |
+| v1.3 | 2026-11-13 | **戏曲相关全部裁减登记 §6**（dev-D 提单、dev-C 持锁登记）：2026-11-13 主理人裁决——素材替换不做/戏曲全部不做，AC-37 登记「裁减—不验收」，X10 种子不补，演示白天场景改陪聊；留痕沿 day09 先例在任务卡/计划件层，PRD 正文未改；PRD:590 不得裁减清单不受影响。 |
+| v1.4 | 2026-11-13 | **PRD 层留痕获批**（主理人 14:06 追加裁决）：dev-D 按 PRD 修订记录 v3.2 登记 AC-37 裁减（仅修订记录条目，不改 §5.4 验收语义正文）；§6 戏曲行同步修正。 |
+| v1.5 | 2026-11-13 | **Q1/Q3/Q5 三项裁决落档**（主理人 14:06）：Q1=A 纳入演示视频录制（D4 +1~1.5h，白天场景改陪聊）；Q3=A pre-push 阻塞真门禁＋expected-red 显式标注机制（D1 接线）；Q5=A TD 修订记录留痕不改正文（D1 同提交执行）。§2.2 D4 行、§6、§8 同步。 |
+| v1.6 | 2026-11-13 | **Q1 改判落档**（主理人 14:28，推翻 14:06 的 A 裁决）：**演示视频不录制**，D4 只交 5 分钟脚本（工时回 2h）；PRD line 578 / 大纲 10.4 字面偏差显式登记 §6，PRD 层留痕建议并入修订记录 v3.2 同批处理。Q3/Q5 不受影响。 |
+| v1.7 | 2026-11-13 | **Y5 契约增补**（dev-D 提单 15:17，dev-C 登记）：push 成本 3~4 分钟为既定、全员须 `git config core.hooksPath .githooks`、expected-red 过期时间 2026-11-15（到期 B/D/E 红项恢复阻塞）；README §15.4 已先行合入提单事实（素材文件 `day10_gate_rerun.md` 待 dev-D push，到位后逐字校对）。 |

@@ -176,6 +176,76 @@ services:
         limits:
           cpus: "1"
 
+  backend:
+    # backend API 容器（Day 10 · A2a，dev-A）：A1 镜像（两阶段 + 非 root + entrypoint 自动迁移）。
+    # **不做宿主机端口映射**（对齐 weather-mcp 口径）：宿主 8000 常被本地 uvicorn 占用
+    # （netstat 实测 LISTENING），调试流量统一走 nginx 反代与 docker exec；需要直连时
+    # 临时 `docker run -p 18000:8000`。密钥经 env_file=.env 运行时注入，不进镜像层。
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: silvermate-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # —— 数据层（服务名 + .env 口令，与 mock-operations-mcp 同款写法）——
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-silvermate}:${POSTGRES_PASSWORD:-silvermate}@postgres:5432/${POSTGRES_DB:-silvermate}
+      LANGGRAPH_CHECKPOINT_DATABASE_URL: postgresql://${POSTGRES_USER:-silvermate}:${POSTGRES_PASSWORD:-silvermate}@postgres:5432/${POSTGRES_DB:-silvermate}
+      REDIS_URL: redis://redis:6379/0
+      # —— 内部依赖地址覆盖（config.py 默认 localhost，容器内不可达：计划 §2#10）——
+      MCP_WEATHER_SERVER_URL: http://weather-mcp:7101
+      MCP_OPERATIONS_SERVER_URL: http://mock-operations-mcp:7102
+      VOICEPRINT_BASE_URL: http://voiceprint:7003
+      # 容器内直连 funasr 服务（宿主 7002 映射仅供本地裸跑；provider 为空时此值不生效）
+      ASR_BASE_URL: ws://funasr:10095
+      # SYSTEM_ONE_BASE_URL 待 S4 定义 laya 服务后追加（Q7 挂载宿主权重卷）
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      weather-mcp:
+        condition: service_started
+      mock-operations-mcp:
+        condition: service_started
+      voiceprint:
+        condition: service_healthy
+    healthcheck:
+      # 镜像内无 curl（slim 最小化），以 python urllib 等价实现；与任务书「curl /health」
+      # 口径差异在此登记（计划 v1.3 S1+S2 执行记录）
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+  nginx:
+    # 前端托管 + 反代（Day 10 · A2a 骨架，dev-A）。镜像 = dev-C C1 交付的
+    # frontend/frontend.Dockerfile（Y3：容器内 /usr/share/nginx/html/{pad,console,family}；
+    # 镜像内默认配置已含三入口静态段与 /api、/ws 反代草案，upstream=backend:8000）。
+    # deploy/nginx.conf 归 dev-A 独占：S6 升格为 HTTPS/证书/avatars/health 段后，
+    # 以卷挂载覆盖镜像内默认配置（届时补 volumes，S3 骨架阶段不挂——旧 conf 只有
+    # /avatars 段，挂上会盖掉草案的三入口托管）。
+    build:
+      context: ./frontend
+      dockerfile: frontend.Dockerfile
+    container_name: silvermate-nginx
+    restart: unless-stopped
+    ports:
+      - "${NGINX_HTTP_HOST_PORT:-80}:80"
+      - "${NGINX_HTTPS_HOST_PORT:-443}:443"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      # nginx:stable-alpine 自带 busybox wget；探三入口静态段（不依赖 backend）
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/pad/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 volumes:
   postgres_data:
   funasr_models:

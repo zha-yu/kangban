@@ -1,8 +1,8 @@
 # 安全设计说明（SECURITY.md）
 
-> 状态：已冻结　｜　版本：v1.0　｜　日期：2026-11-12
-> 上游依据：PRD FR-ADM-06（三道隔离闸门）/ AC-18 / AC-24；技术设计文档 §1.3、§5；Day 9 任务书 A2
-> 变更记录见文末
+> 状态：已冻结　｜　版本：v1.1　｜　日期：2026-11-13
+> 上游依据：PRD FR-ADM-06（三道隔离闸门）/ AC-18 / AC-24；技术设计文档 §1.3、§5、line 718（数据保留与加密口径）；Day 9 任务书 A2
+> 变更记录见文末（v1.1 = Day 10 C5 复核修订：补齐降级矩阵 / 数据保留 / HITL 清单三节，缺口 G3 状态更新；不推翻 v1.0 已收口结论）
 
 ---
 
@@ -45,14 +45,56 @@ identity_service 而非 runtime_context —— core 层只提供「构造即合�
 6. **密钥不入代码**：JWT secret / API key / TURN credential 全部经 Pydantic Settings 从 `.env` 读取；测试用 monkeypatch 显式注入，不读本地 `.env`。
 7. **审计不含敏感值**：`record_audit` 与 `_audit` 只放 ID、字段名与判定结果；姓名/手机号/token 禁入审计（audit_log_service.py:10）。
 
-## 4. 测试入口
+## 4. 降级矩阵（Day 10 C5 补节）
+
+安全相关的故障降级行为——降级不等于放权，任何降级态都不得绕过闸门①③与范围授权：
+
+| 故障场景 | 降级行为 | 依据 / 测试锚点 |
+| --- | --- | --- |
+| WebRTC 建连超 5s / ICE 协商失败 / TURN 不可达 / 浏览器不支持 / aiortc 异常 | 自动切 HTTP/WS 按住说话降级模式，核心对话与用药/健康功能不受影响，页面明确提示 | PRD §2.2 降级触发条件；`docs/plans/day08/adhoc-20261111-route_degraded契约冻结.md`（`route_degraded` 契约冻结） |
+| LLM / 主控 Agent 故障 | L0 规则层固定功能继续可用（天气/戏曲/用药确认），闲聊返回明确降级话术；敏感输入不得当普通聊天 | FR-DLG-05；`tests/test_degrade_timeout.py` |
+| 声纹未命中（<0.62） | 低置信主动询问确认（页面 `identity_ask`）→ 仍无法确定进通用模式：不读个人记忆、不写健康记录、不确认用药 | PRD §3.2 三档级联；FR-VPR-02/03；`tests/test_companion_identity.py` |
+| 声纹服务不可用 | 降级为「长者 ID + 主动确认」（页面询问），不静默猜人 | PRD §3.2 |
+| 3D 资源加载失败或超 5s | 切静态头像，语音/用药/健康任务完整可用，不白屏 | FR-3D-02；AC-15 |
+| 记忆召回失败 / 跨长者向量检索被拒 | 本轮不加载记忆，不得臆造（闸门②口径） | AGENTS §6；`tests/test_memory_service.py`、`tests/test_memory_embedding.py` |
+| 音频清理 job 异常 / 目录不存在 | 空跑不报错（首启常态），下个周期重试；只删原始音频后缀，脱敏文本永不误删 | `tests/test_audio_retention_jobs.py` |
+
+## 5. 数据保留口径（Day 10 C5 补节）
+
+依据技术设计文档 line 718 与 FR-TC-07（AC-36）：
+
+1. **原始音频默认不保存**；调试模式为独立开关 + 明确用途，**最长保留 72h 自动物理删除**。实现：`app/scheduler/audio_retention_jobs.py`（小时级 cron `23 * * * *`，保留时长读 `settings.audio_retention_hours`，缺省 72）；仅删原始音频后缀（.wav/.pcm/.opus/.webm），脱敏文本（.txt/.jsonl）超期不删。测试：`tests/test_audio_retention_jobs.py`。
+2. **声纹 embedding 加密存储**：采用磁盘/KMS 层加密（PostgreSQL `data_at_rest` 加密或 OS 磁盘加密 / KMS 托管密钥），列保持明文可算——pgvector cosine 相似度与 ivfflat 索引正常工作；**不用应用层加密**（加密后库内无法计算相似度、索引失效）。
+3. **凭证只存哈希**：`token_hash` / `password_hash` 不存明文。
+4. **日志与 Trace 脱敏**：唯一实现 `app/core/redact.py`；日志出口统一脱敏；`decision_logs.input_text` 落库前即脱敏；Langfuse Trace 上传前脱敏（姓名/手机号/身份证号/房间号/健康数值，AC-36）。
+5. **日报最小化**：日报内容来自结构化健康记录、用药结果与需关注事件，不含完整对话、音频、原始记忆、未绑定长者数据（FR-RPT；AC-13）。
+
+## 6. HITL 人工确认清单（Day 10 C5 补节）
+
+与 PRD 验收条目逐条对齐（用药 HITL、健康黄/红复核）：
+
+| # | HITL 场景 | 机制 | PRD 依据 | 测试锚点 |
+| --- | --- | --- | --- | --- |
+| 1 | 用药确认 | LangGraph 子图 `medication_confirmation_graph`：提醒→等待长者确认（语音「吃了」或按钮）→重试循环最多 3 次→终态分流/升级工单；支持定时与对话内双触发（`triggered_by=scheduler/dialog`） | FR-MED-05；AC-05/AC-17/AC-35 | `tests/test_medication_graph.py`、`tests/test_scheduler_medication.py` |
+| 2 | 健康黄/红复核 | LangGraph 子图 `health_checkup_graph`：绿/黄/红分级 + HITL interrupt，黄/红进入人工复核队列；黄色未关闭时补录达红阈值 → 升级红色并立即通知，不重复建单 | FR-HLT-03（黄/红 HITL interrupt）；AC-09/AC-10/AC-11/AC-22 | `tests/test_health_graph.py`、`tests/test_health_dispatch.py` |
+| 3 | 红色事件升级确认 | 红色 → 负责护工 + 同时通知监护人，2 分钟无人确认升级管理员（不重复建单） | PRD 告警与升级口径（line 378） | `tests/test_health_dispatch.py`、`tests/test_alerts_api.py` |
+| 4 | 声纹低置信主动确认 | 相似度 <0.62 → 页面主动询问「请问是哪位在说话？」；命中 ≥0.62 仍叠加长者主动确认兜底（跨设备冒充拒绝后降级 generic 会话） | FR-VPR-02；PRD §3.2 | `tests/test_companion_identity.py`、`tests/test_voiceprint_service.py` |
+| 5 | 通用模式三不边界 | 身份无法确定时不读记忆、不写健康、不确认用药——大模型不可绕过 | FR-VPR-03 | `tests/test_companion_identity.py`、`tests/test_guardrails.py` |
+
+## 7. 测试入口
 
 ```bash
 # 三道闸门攻击用例（本文件第 2 节矩阵，AC-18/24/闸门①③）
 uv run pytest tests/test_gates.py -q
 
+# 提示注入防线（AC-36，夹具 eval/fixtures/injection.jsonl 共 16 条）
+uv run pytest tests/test_injection.py -q
+
 # Day 8 攻击套件（伪造凭证/越权建档/设备重放/WS 攻击面）
 uv run pytest tests/test_auth_attacks.py tests/test_audio_security.py -q
+
+# 数据保留（原始音频 72h 清理）
+uv run pytest tests/test_audio_retention_jobs.py -q
 
 # 全量门禁（pre-push 同款）
 uv run python tests/eval_gate.py
@@ -61,16 +103,17 @@ uv run python tests/eval_gate.py
 测试原则：攻击用例不 mock 鉴权依赖与 service（mock 掉任何一层都会让「拦下来了」变成「假拦」）；
 数据库用外层事务 ＋ savepoint 回滚隔离，连不上库显式 skip 不静默通过。
 
-## 5. 已知缺口与登记（不静默）
+## 8. 已知缺口与登记（不静默）
 
 | # | 缺口 | 现状 | 影响 / 后续 |
 | --- | --- | --- | --- |
 | G1 | 闸门①「403 ＋ DB 审计」入口级闭环 | REST/WS 现状**零入口**接受客户端 thread_id；`validate_thread_belongs_to_device` 无业务调用方（仅单测） | 防线已备（格式层＋DB 层＋纯代码层三层齐）；等 X1 回执帧（dev-B/D）等携带 thread/task 维度的入口落地时一行接线，届时本文件补入口级用例 |
 | G2 | AC-18 范围外**读**的审计落 `audit_logs` DB 行 | 现状为结构化日志审计（A-02 口径），DB 行仅用于写操作 | 若主理人裁决「读也要 DB 行」，需改 elder_service._audit（非 dev-A 写域，需交接） |
-| G3 | 闸门②记忆隔离攻击用例 | memory_service 加固由 dev-B2 进行中（D9 16:00 前） | B2 落地后 M5.1 阶段补 `test_gates.py` 闸门②用例并回填本文件 |
+| G3 | 闸门②记忆隔离攻击用例 | dev-B2 已交付（2026-11-12：embedding + cosine 召回 + 强制 `WHERE elder_id`，`tests/test_memory_embedding.py`）；**`test_gates.py` 闸门②攻击用例尚未回填**（文件头注仍标「B2 修复中，本文件不覆盖」） | M5.1 复验时补闸门②用例并回填本文件与本节 |
 
 ## 修订记录
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-12 | 初版（Day 9 A2 交付）：三道闸门口径、攻击矩阵 11 行、缓解措施 7 条、测试入口、缺口登记 G1–G3。 |
+| v1.1 | 2026-11-13 | Day 10 C5 复核修订（dev-C）：① 补齐三节——§4 降级矩阵、§5 数据保留口径（原始音频 72h 自动删除＋声纹 embedding 磁盘/KMS 层加密）、§6 HITL 人工确认清单（用药确认、健康黄/红复核等 5 项，与 PRD FR-MED-05/FR-HLT-03/FR-VPR-02/03 对齐）；② §7 测试入口补 `test_injection.py`（AC-36 夹具 `eval/fixtures/injection.jsonl`）与 `test_audio_retention_jobs.py`；③ G3 现状更新为 dev-B2 已交付、闸门②用例待回填。原 §1–§3（威胁模型：三道闸门/攻击矩阵/缓解措施）口径未改动，不推翻 Day 9 收口结论；缺口登记顺延为 §8。 |
