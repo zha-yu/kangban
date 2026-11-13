@@ -1,8 +1,8 @@
-> 状态：**已确认 · Step 0/1/2 关闭 · Step 3 联调待 Y2＋Q4**（2026-11-13 主理人签认；M6.0 全员核对仍按总览 §5 执行，未冻结项不开工对应节点）　｜　版本：v1.4　｜　日期：2026-11-13
+> 状态：**已确认 · Step 0/1/2 关闭 · Q4 已决（⑧）· Step 3 联调仅待 Y2 执行落地**（2026-11-13 主理人签认；M6.0 全员核对仍按总览 §5 执行，未冻结项不开工对应节点）　｜　版本：v1.5　｜　日期：2026-11-13
 > 负责人：**dev-B（唯一）**　｜　任务包：**B · 观测与成本线**　｜　容量：上限 24h（3 人日）；实排开发 **13h ＝ B1 8h + B2 2h + B3 2.5h + M6.0 参与 0.5h**（v1.1 口径：B1 扩 OTel exporter，5h→8h），余额为 Line 1 联调槽位占用＋缓冲（`app/main.py` 装配与 `app/scheduler/` 既有写锁仍归你，Line 1 收口优先）
 > 关联：`docs/team_tasks/day10/day10-任务总览与DAG.md` v1.1（§2 DAG、§3 对接点 Y2/Y5、§4 写域）｜`docs/team_tasks/day10/dev-B-观测与成本线.md` v1.1（任务书）｜`docs/plans/day10/day-10-交付与观测-工作推进计划.md` v1.1（主计划件 §4.2/§6）
 > 上游依据：PRD line 513（AC-31 完整 Trace）、line 454/458（FR-TC-04 脱敏上传 / FR-TC-08 成本指标）、line 587（F23 P2 顺延）｜技术设计文档 §1:205（观测选型＝Langfuse + OpenTelemetry Traces，「Langfuse 可作 OTel exporter」）、§8.3 Day 10（line 1176–1183）｜大纲 §十 课时 10.2（仅教学流程口径，不作事实依据）
-> 本轮新增裁决（2026-11-13 主理人确认）：**Q4 Langfuse 部署形态暂不裁决，留待 B1 联调开工前定**（列为 Step 3 开工门槛）；**Q8 已决——接受 F23 延迟继续挂起，如实记录、不粉饰、不为达标调阈值**（沿 X9 纪律）
+> 本轮新增裁决（2026-11-13 主理人确认）：**Q8 已决——接受 F23 延迟继续挂起，如实记录、不粉饰、不为达标调阈值**（沿 X9 纪律）；**Q4 已决（2026-11-13 14:40，§8.1-⑧）**——v2 单容器＋复用 postgres 独立 schema＋共享实例常驻 dev-B 主机＋compose profile 默认不启动
 > 变更记录见文末
 
 ---
@@ -219,11 +219,11 @@ flowchart LR
 
 **——暂停，等待确认——**
 
-### Step 3 · B1 联调与 AC-31 证据（D11，硬前置：Y2 compose 就绪＋Q4 裁决）
+### Step 3 · B1 联调与 AC-31 证据（D11，硬前置：Y2 compose 就绪；Q4 已决⑧）
 
 | 项 | 内容 |
 | --- | --- |
-| 做什么 | ① 以注入凭据发起一次含工具调用的完整对话；② 核对 §2.2 自检表 7 条逐条通过；③ 证据落 `eval/reports/day10_langfuse_trace.md`（trace_id 可复现＋Span 链＋脱敏 grep＋降级证明） |
+| 做什么 | ⓪ **共享实例就位（⑧ 分配给 dev-B 的动作）**：本机 `docker compose --profile langfuse up` 起服务（复用 postgres 独立 schema）→ 创建组织/项目生 key → 放行 3000 → 把局域网 IP＋key 分发给全员并更新本机 `.env`（真值只进本地 `.env`）；① 以注入凭据发起一次含工具调用的完整对话；② 核对 §2.2 自检表 7 条逐条通过；③ 证据落 `eval/reports/day10_langfuse_trace.md`（trace_id 可复现＋Span 链＋脱敏 grep＋降级证明） |
 | 交付物 | `eval/reports/day10_langfuse_trace.md` |
 | 自检 | 7 条判据全绿；trace_id 同值互查演示通过；证据文件含可复现步骤 |
 
@@ -290,7 +290,7 @@ flowchart LR
 | 风险 | 影响 | 预案 |
 | --- | --- | --- |
 | A2 compose 延迟（Y2 未就绪） | B1 联调（Step 3）后移 | Step 2 骨架不依赖 A2，先行完成；联调窗口顺延不挤占 B2 |
-| Q4 迟迟不裁决 | Step 3 无法开工 | OTLP 路线对 v2/v3 均适用，可先用 `.env` 指向临时本地端口冒烟；正式凭据等裁决 |
+| ~~Q4 迟迟不裁决~~（已决⑧） | ~~Step 3 无法开工~~ 剩余风险转为**共享实例单点**：B 主机不可达时全员观测中断 | 降级：个人本机 `docker compose --profile langfuse up` 自起实例（⑧ 预留路径）；`langfuse_enabled=false` 可随时关闭，业务零影响（单测已覆盖） |
 | OTel 依赖与既有栈冲突（spikes 未验） | 安装/启动失败 | 新依赖先在 `spikes/` 最小验证再合并（AGENTS §3）；失败则降级方案回退为 Langfuse SDK 直连并如实登记（需主理人裁决） |
 | hook 改接破坏既有日志/表轨 | 回归打点数据断档 | 三轨并存设计＋tests 锁字段；自检 4（grep 字段不丢）作为硬门 |
 | 本机代理干扰 | curl/OTLP 上报失败 | 本机 curl 一律 `--noproxy '*'`；容器内不受本机代理影响 |
@@ -311,15 +311,16 @@ flowchart LR
 | ⑤（本轮） | **Q8：接受 F23 延迟（p95 668ms>200ms）继续挂起，如实记录、不为达标调阈值** | 2026-11-13 主理人确认 |
 | ⑥ | 粒度/写域/对接点契约沿总览 §3/§4；Y2 凭据三变量 `.env` 注入、B→A 顺序 | 总览 v1.1 §3 |
 | ⑦（本轮 Step 0） | **D-1：B2 cache 命中率取数落点＝方案①（进程内计数，与 token_usage 同先例）＋ B1 LLM span 记录每次调用的 cache 命中/未命中 token 属性**（明细跨重启可查归 trace 职责；不走 metrics_service 落库，不违零新增迁移约束） | 2026-11-13 主理人终裁 |
+| ⑧（Q4，2026-11-13 14:40） | **Langfuse 部署形态＝两层口径**：① 版本形态——**v2 单容器＋复用既有 postgres 独立 schema**（否决 v3 全家桶：编排膨胀、内存占用大，教学 MVP 不值得；凭据三变量 `.env` 注入、compose 零硬编码）；② 部署位置——**共享实例模式，常驻 dev-B 主机**：全员不各自起 Langfuse，统一连 B 主机实例（B 常驻开机、放行 3000、分发 key、提供局域网 IP）；compose 中 langfuse 服务 profile 化（`profiles: ["langfuse"]`）默认不启动，本机自起用 `docker compose --profile langfuse up`；`.env.example` 仅写 `<B的局域网IP>` 占位注释，key 真值只进各人本地 `.env` | 2026-11-13 主理人裁决；依据留痕 `docs/team_tasks/day10/dev-a-容器化与部署链.md` v1.2（§3.2 Y2 契约、§4 S4、§6 待确认、风险 R13） |
 
 ### 8.2 待决口径（对应 Step 开工前必须闭合）
 
 | # | 待决 | 影响 | 状态 |
 | --- | --- | --- | --- |
-| A | **Q4 Langfuse 部署形态（v2＋复用 postgres vs v3 全家桶）** | Step 3 开工门槛（compose 形态与凭据注入方式）；B1 代码路线不受影响 | **主理人已定：暂不裁决，留待 B1 联调开工前**（默认建议 v2，仅挂起建议不自动执行） |
+| A | ~~Q4 Langfuse 部署形态~~ **已决（⑧，2026-11-13 14:40）**：v2 单容器＋复用 postgres 独立 schema＋共享实例常驻 dev-B 主机＋compose profile 默认不启动 | — | 已闭合（Step 3 输入已就绪，剩 Y2 执行落地） |
 | B | ~~B2 cache 命中率取数落点~~ **已决（⑦，2026-11-13 Step 0）**：方案①进程内计数＋B1 span 明细 | — | 已闭合 |
 | C | B3 privacy_scope 消费点落点是否越入他人写域 | Step 5 方案 | 待 Step 5 方案时定 |
-| E | **AC-31 链缺口：规则路由与工具调用两段无测量点**，需在 `app/router/decision.py`、`app/agents/companion.py` 各加 1–2 行观测调用（两文件为 dev-B day09 §6 既有锁，但 day10 任务书 Line 2 领地未列） | Step 2 开工门槛 | **待主理人裁决**（建议：批准，沿「既有锁沿用」口径；不批准则 AC-31 如实登记缺两 span，不越域） |
+| E | ~~AC-31 链缺口观测调用点~~ **已决（主理人批准，2026-11-13）**：按「既有锁沿用」口径加观测包装；实际落地收窄为 `decision.py`＋`system_one/client.py` 各一处 try/finally（companion 工具段复用既有 tool_* 事件，零改动） | — | 已闭合（随 6078756 交付） |
 | D | Q1 演示视频、Q2 收口日历、Q3 门禁模式、Q5 TD 勘误、Q6 历史标签、Q7 Laya 形态、Q9 dev-D 计划签认 | 均非 dev-B 直接影响项 | 由 M6.0 全员裁决，本文只引用 |
 
 ### 8.3 实测口径差登记（本计划编制中实测发现，同提交留痕）
@@ -475,3 +476,4 @@ flowchart LR
 | v1.2 | 2026-11-13 | **Step 0（dev-B 部分）关闭**：①②③⑤ 闭合，④（Y2 与 dev-A 对齐）显式挂起转 M6.0 全员核对（不阻塞 Step 1/2）。**D-1 终裁落档为 §8.1-⑦**：B2 cache 命中率＝方案①进程内计数（与 token_usage 同先例）＋B1 LLM span 记录 cache 命中/未命中 token 属性；不走 metrics_service 落库（§2.3/§4 Step 4/§1.3 禁触表述同步更新）。仍未改任何业务代码。 |
 | v1.3 | 2026-11-13 | **Step 1 · B1 接入方案 v1 编入执行记录**（S1-1～S1-8：依赖清单含 spikes/otel-min 前置验证、模块落点 app/core/observability.py＋main.py 装配 ≤5 行、trace_id 同值双路径预案、hook 改接点表、span 覆盖矩阵）。**新增待决项 E**：规则路由与工具调用两段无测量点（实测），需在 router/decision.py 与 agents/companion.py（B 的 day09 既有锁）加观测调用点，待主理人裁决。方案确认前不落代码。 |
 | v1.4 | 2026-11-13 | **Step 2 · B1 骨架落地完成**（主理人确认方案＋批准 E 后执行）。三项实测修正：① 零新增依赖（此前「OTel 零命中」系 BSD grep 交替失效误判，pyproject 已声明 OTel+langfuse 且 uv.lock 已装）；② FastAPIInstrumentor 实测包最外层致 trace_id 无法同值 → 弃用，自建纯 ASGI `RequestSpanMiddleware`（内层、同值、未启用直通）；③ E 收窄为 decision.py＋client.py 各一处包装（companion 工具打点已存在）。交付：observability.py＋2 个 hook 文件＋2 个观测包装＋main.py 装配＋.env.example 注释＋spikes/otel-min（4 判据 OK）＋tests/test_observability.py（10 用例）。自检：**全量 1675 passed**＋ruff 全绿＋日志字段不丢＋脱敏/降级/同值单测过。余 Step 3 联调（等 Y2＋Q4）。 |
+| v1.5 | 2026-11-13 14:40 | **Q4 终裁落档为 §8.1-⑧**：Langfuse＝v2 单容器＋复用 postgres 独立 schema＋**共享实例常驻 dev-B 主机**（全员连 B，不各自起）＋compose profile 化默认不启动；`.env.example` 只写 `<B的局域网IP>` 占位。依据留痕 dev-A 任务书 v1.2。同步：§8.2 待决 A/E 标已闭合（A 剩 Y2 执行落地）、Step 3 增补 ⓪「共享实例就位」为 dev-B 动作、§7 Q4 风险行改写为共享实例单点风险及降级路径、头部状态更新。代码提交 6078756 / 文档提交 6dce78a 已入库。 |
