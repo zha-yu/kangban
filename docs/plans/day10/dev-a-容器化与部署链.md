@@ -401,20 +401,21 @@ S8（A4）完成后追加：代码回滚演练日志与结果、数据回滚 `al
 
 ### 9.5 README §12 行号级修订清单（A 组复核产出，交 dev-C 合入）
 
-> 背景：`README.md` §12 停留在 **A2a（S3）时点**，S4–S7 交付后多处 ⏳ 与事实已过期。行号基于 2026-11-13 21:45 的 `README.md`。
+> 背景：`README.md` §12 停留在 **A2a（S3）时点**，S4–S7 交付后多处 ⏳ 与事实已过期。
+> ⚠️ **行号已按 2026-11-13 22:12 合并 PR #131 后的版本刷新**：dev-C 在 PR #131 给 README 增加了 25 行，下表行号 = 旧版（21:45）行号 + 25；后续再变动时以小节标题（§12.1／§12.2／§12.3）与 ⏳ 锚点定位为准，不要死守行号。
 > **dev-A 不碰 README**（dev-C 独占写域），以下为逐行替换建议；沿用 §13 的约定「素材到位后逐字合入，不加工数字」。§9.1–9.3 的证书 / 端口 / 镜像体积素材可一并合入 §12。
 
 | README 行 | 现状（过期） | 建议替换为（依据） |
 | --- | --- | --- |
-| L511 骨架说明 | 「laya / coturn / langfuse 归 dev-A S4、nginx HTTPS 完整段归 S6，落地后继续回填」 | S4–S7 **已全部落地**：laya/coturn/langfuse 入编且 profile 化、nginx HTTPS 完整段生效；另补一句「**起栈前必须先生成证书**（§12.1）」 |
-| L513–519 三步启动 ⚠️ | `git clone → cp .env.example .env → docker compose up -d`，**缺证书步骤** | 插入第 2 步 `sh deploy/gen-dev-cert.sh`（跨网段加 `SILVERMATE_LAN_IP=<IP>`）＋第 3 步受控信任（`certutil -addstore -user Root deploy\certs\ca.pem`，另两平台见 §9.1），再 `docker compose up -d`。**不补这步，干净主机 nginx 因缺 `/etc/nginx/certs/server.pem` 起不来**——这是 D3 三步演练的实际阻塞点（R14） |
-| L521 ⏳ | 「待 A2 S4/S6 … 补充健康检查验收标准与一键启动实测记录」 | 换成实测：默认 profile **7 服务全 healthy**（backend/coturn/nginx/postgres/redis/weather/mock）、`curl --noproxy '*' https://localhost/health` 200 `status:ok` 带 trace_id、三入口 `/pad/ /console/ /family/` 全 200、`wss://localhost/ws/signal` 101；Windows curl 需 `--ssl-no-revoke` |
-| L536 | 「计划新增 5 类服务…剩余 3 类待 A2 后续节点」 | 已全部入编；profile 矩阵四态：默认 7（共享连 dev-B）／`--profile local` 加 funasr+voiceprint／`--profile langfuse` 加 v4 六服务／`--profile laya` 加 laya 容器（15 服务 config PASS） |
-| L541 nginx 行 | 「deploy/nginx.conf 的 HTTPS/证书…归 S6 升格后卷挂载覆盖（**当前镜像内默认配置生效中**）」 | 已生效：`docker-compose.yml` 以只读卷挂 `deploy/nginx.conf` + `deploy/certs` 覆盖镜像内 Y1 草案；healthcheck 改探 `/nginx-health`（80 已 301 跳 443） |
-| L542 laya ⏳ | 「待 A2 S4（Q7 裁决…）」 | Q7 兜底已生效：本机 WSL2 内存仅 1.86GB，容器 `profiles: ["laya"]` 保留供充足内存机器，实际由宿主 jev sidecar（7001, model_loaded=true）服务；backend 经 `host.docker.internal:7001` 衔接 |
-| L543 coturn ⏳ | 「待 A2 S4」 | 已入编 healthy：3478 UDP+TCP、`49160-49200/udp` 中继端口段映射；**5349 TLS 未启用**（S7 裁决，无 `turns:` 消费方）；跨网段需 `.env` 的 `TURN_URL`/`STUN_URL` 与 `TURN_EXTERNAL_IP_ARG` 指向宿主可达 IP |
-| L544 langfuse ⏳ | 「形态 v4 全家桶…compose 服务定义归 dev-A S4 待办」 | 已入编 v4 六服务（web/worker + 独立 postgres/redis/clickhouse/minio），`profiles: ["langfuse"]` 默认不起；共享实例常驻 dev-B 主机、全员连 B，compose 仅作一键启动／干净主机演练兜底；凭据全走 `.env` |
-| L548 端口约定 | 「coturn 3478·5349」＋端口列表无中继段 | 补 `49160-49200/udp`（coturn 中继）、注明 5349 **未启用**、80→301→443；voiceprint 7003 与 funasr 10096 共享口径按 L550/552 保留 |
-| L569 ⏳ / L618 ⏳ | 「待 A4」回滚记录、「待 B1」SLO 规则 | **保留**：L569 即 S8（A4）本身，L618 属 dev-B 写域，均非本次修订范围 |
+| L536 骨架说明 | 「laya / coturn / langfuse 归 dev-A S4、nginx HTTPS 完整段归 S6，落地后继续回填」 | S4–S7 **已全部落地**：laya/coturn/langfuse 入编且 profile 化、nginx HTTPS 完整段生效；另补一句「**起栈前必须先生成证书**（§12.1）」 |
+| L538–544 三步启动 ⚠️ | `git clone → cp .env.example .env → docker compose up -d`，**缺证书步骤** | 插入第 2 步 `sh deploy/gen-dev-cert.sh`（跨网段加 `SILVERMATE_LAN_IP=<IP>`）＋第 3 步受控信任（`certutil -addstore -user Root deploy\certs\ca.pem`，另两平台见 §9.1），再 `docker compose up -d`。**不补这步，干净主机 nginx 因缺 `/etc/nginx/certs/server.pem` 起不来**——这是 D3 三步演练的实际阻塞点（R14） |
+| L546 ⏳ | 「待 A2 S4/S6 … 补充健康检查验收标准与一键启动实测记录」 | 换成实测：默认 profile **7 服务全 healthy**（backend/coturn/nginx/postgres/redis/weather/mock）、`curl --noproxy '*' https://localhost/health` 200 `status:ok` 带 trace_id、三入口 `/pad/ /console/ /family/` 全 200、`wss://localhost/ws/signal` 101；Windows curl 需 `--ssl-no-revoke` |
+| L561 | 「计划新增 5 类服务…剩余 3 类待 A2 后续节点」 | 已全部入编；profile 矩阵四态：默认 7（共享连 dev-B）／`--profile local` 加 funasr+voiceprint／`--profile langfuse` 加 v4 六服务／`--profile laya` 加 laya 容器（15 服务 config PASS） |
+| L566 nginx 行 | 「deploy/nginx.conf 的 HTTPS/证书…归 S6 升格后卷挂载覆盖（**当前镜像内默认配置生效中**）」 | 已生效：`docker-compose.yml` 以只读卷挂 `deploy/nginx.conf` + `deploy/certs` 覆盖镜像内 Y1 草案；healthcheck 改探 `/nginx-health`（80 已 301 跳 443） |
+| L567 laya ⏳ | 「待 A2 S4（Q7 裁决…）」 | Q7 兜底已生效：本机 WSL2 内存仅 1.86GB，容器 `profiles: ["laya"]` 保留供充足内存机器，实际由宿主 jev sidecar（7001, model_loaded=true）服务；backend 经 `host.docker.internal:7001` 衔接 |
+| L568 coturn ⏳ | 「待 A2 S4」 | 已入编 healthy：3478 UDP+TCP、`49160-49200/udp` 中继端口段映射；**5349 TLS 未启用**（S7 裁决，无 `turns:` 消费方）；跨网段需 `.env` 的 `TURN_URL`/`STUN_URL` 与 `TURN_EXTERNAL_IP_ARG` 指向宿主可达 IP |
+| L569 langfuse ⏳ | 「形态 v4 全家桶…compose 服务定义归 dev-A S4 待办」 | 已入编 v4 六服务（web/worker + 独立 postgres/redis/clickhouse/minio），`profiles: ["langfuse"]` 默认不起；共享实例常驻 dev-B 主机、全员连 B，compose 仅作一键启动／干净主机演练兜底；凭据全走 `.env` |
+| L573 端口约定 | 「coturn 3478·5349」＋端口列表无中继段 | 补 `49160-49200/udp`（coturn 中继）、注明 5349 **未启用**、80→301→443；voiceprint 7003 与 funasr 10096 共享口径按 L575/577 保留 |
+| L594 ⏳ / L643 ⏳ | 「待 A4」回滚记录、「待 B1」SLO 规则 | **保留**：L594 即 S8（A4）本身，L643 属 dev-B 写域，均非本次修订范围 |
 
 补充：若主理人裁决通过 **R16**（凭据红线判据改为「凭据真值零命中」），README §11「已知文档冲突」表需相应加一行——任务书 A3 判据字面 `grep -rn "turn_credential" frontend/src` 零命中与 day09 D2.5 已冻结实现（`realtime.ts` L212/L220 两处字段名）冲突。
