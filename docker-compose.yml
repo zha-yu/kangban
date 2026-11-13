@@ -263,19 +263,26 @@ services:
     # TURN 中继（Day 10 · A2-b，dev-A）：day09 D2.5 的 GET /api/audio/ice-config 下发
     # turn_url/turn_username/turn_credential（字段只读不改名），本服务鉴权值与 .env
     # 同源经 compose 变量注入 command，不写死在 deploy/turnserver.conf（该文件进 git）。
-    # 端口 3478（UDP+TCP，README §6.2 约定）；5349 TLS 待 S7 证书就绪后启用。
-    # 局域网教学场景不做公网中继（external-ip 留注释，见 turnserver.conf）。
+    # 端口 3478（UDP+TCP，README §6.2 约定）；5349 TLS 未启用（S7 裁决，见计划件执行记录）。
+    # **跨网段（S7）**：`TURN_EXTERNAL_IP_ARG`（.env 整段参数，如 --external-ip=10.55.50.233）
+    # 注入 command，让 Allocate 回给远端 pad 的是宿主可达 IP 而非 Docker 内网 172.x；
+    # 单机开发留空即不传，仓库不写死任何机器 IP（口径见 deploy/turnserver.conf）。
     image: coturn/coturn:latest
     container_name: silvermate-coturn
     restart: unless-stopped
     command: >
       -c /etc/coturn/turnserver.conf
       --user ${TURN_USERNAME:-silvermate}:${TURN_CREDENTIAL:-}
+      ${TURN_EXTERNAL_IP_ARG:-}
     volumes:
       - ./deploy/turnserver.conf:/etc/coturn/turnserver.conf:ro
     ports:
       - "3478:3478/udp"
       - "3478:3478/tcp"
+      # 中继端口段（turnserver.conf min-port/max-port）：external-ip 让 Allocate 回给远端
+      # pad 的是 10.55.50.233:<port>，这些 UDP 端口必须映射到宿主，否则跨网段数据进不来。
+      # 单机开发（relay 走 Docker 内网）用不到，映射本身无副作用；TCP 中继未映射（WebRTC 优先 UDP）。
+      - "49160-49200:49160-49200/udp"
     healthcheck:
       # coturn 镜像（alpine）无 python/curl，用 /proc/net/tcp 探 3478 监听（hex 0D96）
       test: ["CMD-SHELL", "grep -qi ':0D96' /proc/net/tcp /proc/net/tcp6 2>/dev/null"]
