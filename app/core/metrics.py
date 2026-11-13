@@ -111,6 +111,63 @@ def record_stage(
 
 
 # ---------------------------------------------------------------------------
+# prompt cache 命中计数（Day 10 B2 · D-1 裁决：方案①进程内计数，B 写域内；
+# 明细走 llm_service 的 llm_usage event span——聚合与明细归 trace 的规范分工）
+# ---------------------------------------------------------------------------
+
+_llm_cache: dict[str, Any] = {
+    "calls_with_cache_info": 0,
+    "cache_hit_tokens": 0,
+    "cache_miss_tokens": 0,
+    "hit_seen": False,
+    "miss_seen": False,
+    "cache_info_available": False,
+}
+
+
+def record_llm_cache(*, hit_tokens: int | None, miss_tokens: int | None) -> None:
+    """记一次 LLM 调用的 prompt cache 命中/未命中 token（供应商带回才算）。
+
+    - 双 None（供应商未返回 cache 字段）→ 完全不记（与「缺/非法不补零」同口径）；
+    - 只有一侧已知：已知侧照记，未侧不补（``hit_seen``/``miss_seen`` 区分
+      「确实是 0」与「不知道」——miss 未知时 ``hit_rate`` 不可复算，不编造）；
+    - 进程内计数，重启归零——`/api/metrics` 响应中如实标注。
+    """
+    if hit_tokens is None and miss_tokens is None:
+        return
+    if hit_tokens is not None:
+        _llm_cache["cache_hit_tokens"] += hit_tokens
+        _llm_cache["hit_seen"] = True
+    if miss_tokens is not None:
+        _llm_cache["cache_miss_tokens"] += miss_tokens
+        _llm_cache["miss_seen"] = True
+    _llm_cache["calls_with_cache_info"] += 1
+    _llm_cache["cache_info_available"] = True
+
+
+def snapshot_llm_cache() -> dict[str, Any]:
+    """prompt cache 计数快照（拷贝）。
+
+    ``hit_rate = hit / (hit + miss)``：**两侧都见过值才给**——miss 未知时分母
+    不是真的 0，算出 1.0 属误导。
+    """
+    snap = {**_llm_cache}
+    hit, miss = snap["cache_hit_tokens"], snap["cache_miss_tokens"]
+    if snap["hit_seen"] and snap["miss_seen"] and hit + miss > 0:
+        snap["hit_rate"] = round(hit / (hit + miss), 4)
+    else:
+        snap["hit_rate"] = None
+    return snap
+
+
+def reset_llm_cache() -> None:
+    """清零 cache 计数（测试与演示用）——bool 是 int 子类，必须先判 bool。"""
+    for key in list(_llm_cache.keys()):
+        value = _llm_cache[key]
+        _llm_cache[key] = 0 if isinstance(value, int) and not isinstance(value, bool) else False
+
+
+# ---------------------------------------------------------------------------
 # 唤醒 / 建连
 # ---------------------------------------------------------------------------
 

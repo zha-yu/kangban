@@ -438,3 +438,56 @@ def test_think_residue_stripped_from_any_position() -> None:
 
     content, _, _ = llm_service._parse_completion(_make_response("<think>开头截断"))
     assert content is None
+
+
+# ---------------------------------------------------------------------------
+# Day 10 B2 · D-1 裁决：prompt cache 命中/未命中 token 解析
+# ---------------------------------------------------------------------------
+
+
+class TestParseCacheTokens:
+    def test_deepseek_fields(self) -> None:
+        payload = {
+            "usage": {
+                "prompt_tokens": 1250,
+                "completion_tokens": 10,
+                "prompt_cache_hit_tokens": 1000,
+                "prompt_cache_miss_tokens": 250,
+            }
+        }
+        assert llm_service._parse_cache_tokens(payload) == (1000, 250)
+
+    def test_openai_style_details_with_derived_miss(self) -> None:
+        """OpenAI 兼容：cached_tokens 给出、miss 按 prompt - hit 推导（确认后相减）。"""
+        payload = {
+            "usage": {
+                "prompt_tokens": 900,
+                "completion_tokens": 5,
+                "prompt_tokens_details": {"cached_tokens": 640},
+            }
+        }
+        assert llm_service._parse_cache_tokens(payload) == (640, 260)
+
+    def test_cached_tokens_gt_prompt_returns_hit_only(self) -> None:
+        """cached_tokens > prompt_tokens（异常数据）→ miss 不推导，不编造。"""
+        payload = {
+            "usage": {
+                "prompt_tokens": 100,
+                "prompt_tokens_details": {"cached_tokens": 500},
+            }
+        }
+        assert llm_service._parse_cache_tokens(payload) == (500, None)
+
+    def test_no_cache_fields(self) -> None:
+        assert llm_service._parse_cache_tokens({"usage": {"prompt_tokens": 10}}) == (None, None)
+        assert llm_service._parse_cache_tokens({}) == (None, None)
+
+    def test_bool_and_negative_rejected(self) -> None:
+        payload = {
+            "usage": {
+                "prompt_tokens": 100,
+                "prompt_cache_hit_tokens": True,  # bool 是 int 子类，必须排除
+                "prompt_cache_miss_tokens": -5,
+            }
+        }
+        assert llm_service._parse_cache_tokens(payload) == (None, None)
