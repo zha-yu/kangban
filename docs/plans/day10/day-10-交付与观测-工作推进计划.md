@@ -1,4 +1,4 @@
-> 状态：草稿 · 待主理人逐项确认后开工（本轮仅计划，未改任何业务代码）　｜　版本：v1.0　｜　日期：2026-11-13
+> 状态：进行中（v1.3 · C 包 S0–S3 已收口；Q1/Q3/Q5/Q10 已裁决，Q2/Q4/Q6–Q9 待 M6.0 收敛）　｜　版本：v1.3　｜　日期：2026-11-13
 > 上游依据：PRD line 578（Day 10 行与完成定义）、line 453–460（FR-TC-04/05/09）、line 513（AC-31）、line 586–590（裁减顺序与不得裁减）｜技术设计文档 §8.3 Day 10（line 1176–1183，实现口径）、§1.3 模块职责｜大纲 §十 Day 10 课时 10.1–10.4（教学口径）｜day09 总览 §0.2 Q1（日历口径）、§8（顺延项）、§10（待确认）
 > 主理人裁决（2026-11-13 会话确认）：① **双线并行**——day09 联调收口线与 Day 10 交付线同时推进，互不阻塞；② **沿用 4 人任务包**（dev-A/B/C/D）编排；③ 课时 10.4 取舍：**tag final + 交付文档齐套纳入任务包**，简历段落 / INTERVIEW_QA / 复盘报告单列「个人学习交付」附录不占团队工时，**5 分钟演示视频【待确认 Q1】**；④ 《康伴3D数字人_技术文档》即《康伴3D数字人_技术设计文档.md》；⑤ **OTel 缺口按 A1 处置（2026-11-13 追加裁决，原 Q10）**——历史计划与代码 hook 均预期「Day 10 接 OTel」（TD §1:205 选型承诺），但任务书曾遗漏；B1 扩为「**OTel SDK + Langfuse exporter 一体接入**」（B1 5h→8h，B 包 9.5h→13h），AC-31 Span 链语义不变。
 > 编制口径：事实（字段/接口/阈值/服务清单）只引 PRD 与技术设计文档；本文与基线冲突时以基线为准并回改本文（AGENTS.md 前置节铁律）。
@@ -175,7 +175,7 @@ flowchart LR
 | --- | --- | --- | --- | --- |
 | Y1 | nginx 配置合并 | C → A | C1 产出前端三入口 dist 相对路径约定（`/pad`、`/console`、`/family` 与 `/api`、`/ws` 反代规则草案），**A 独占改 `deploy/nginx.conf`**，按草案合入 | D11 上午 |
 | Y2 | Langfuse 服务与凭据 | A → B | compose 的 `langfuse` 服务定义（建议 Langfuse v2 镜像 + 复用 postgres 独立 schema，避免 v3 的 ClickHouse/MinIO 依赖【执行细节，B1 落地前与主理人确认镜像版本】）；`LANGFUSE_PUBLIC_KEY/SECRET_KEY/HOST` 走 `.env` 注入，不硬编码；**B1 走 OTel exporter 路线（裁决 ⑤），exporter 端点/凭据复用同一组变量** | D11 上午 |
-| Y3 | 前端构建产物 | C → A | `frontend.Dockerfile` 多阶段产物路径 `/usr/share/nginx/html/{pad,console,family}`；构建命令 `npm ci && npm run build`；验收口径含「three-vrm 不进 console/family 产物」 | D11 上午 |
+| Y3 | 前端构建产物 | C → A | `frontend.Dockerfile` 多阶段产物路径 `/usr/share/nginx/html/{pad,console,family}`；构建命令 `pnpm@11.15.1 --frozen-lockfile && npm run build`，构建上下文=`frontend/`（2026-11-13 主理人裁决修订：目录内仅 pnpm-lock.yaml，`npm ci` 不可执行）；验收口径含「three-vrm 不进 console/family 产物」 | D11 上午 |
 | Y4 | 回滚基准 | A → D | A4 指定演练基准 tag（当前 `8d506b2` 或 D13 前最后一个收口 commit），D5 的 tag final 在演练通过后才打 | D12 下午 |
 | Y5 | 门禁口径 | D → 全员 | D1 裁决 pre-push 阻塞模式（day09 §10 Q2）后的最终口径：阻塞真门禁 / CI 阻塞+本地自检；全员不得为变绿调阈值或删用例（沿 day09 X9 纪律） | D10 下午 |
 
@@ -207,7 +207,7 @@ flowchart LR
 
 | 节点 | 内容与操作步骤 | 工时 | 前置 | 交付物与规格 | 量化验收 / 自检校验标准 |
 | --- | --- | --- | --- | --- | --- |
-| **C1** | 前端镜像与三入口构建：① `frontend.Dockerfile` 多阶段（`npm ci` → `vite build` → nginx 托管）；② Vite MPA 三入口 `pad/console/family` 产物分目录；③ 验收红线：**pad 的 three-vrm 不进 console/family 构建产物**（PRD §2.1 单仓库三入口的初衷）；④ 产物路径按 Y3 契约交 A 合入 nginx | 4h | M6.0 | `frontend/frontend.Dockerfile`（或根目录命名，N6.0 定）、构建说明 | 自检：容器内构建成功；`grep -r "three-vrm" dist/console dist/family` **零命中**；`dist/pad` 含 VRM 资产；三入口 URL（`/pad` `/console` `/family`）经 nginx 可打开且静态资源 200 |
+| **C1** | 前端镜像与三入口构建：① `frontend.Dockerfile` 多阶段（依赖安装 `pnpm@11.15.1 --frozen-lockfile`【2026-11-13 裁决修订，原 npm ci 不可执行】→ `vite build` → nginx 托管）；② Vite MPA 三入口 `pad/console/family` 产物分目录；③ 验收红线：**pad 的 three-vrm 不进 console/family 构建产物**（PRD §2.1 单仓库三入口的初衷）；④ 产物路径按 Y3 契约交 A 合入 nginx | 4h | M6.0 | `frontend/frontend.Dockerfile`（或根目录命名，N6.0 定）、构建说明 | 自检：容器内构建成功；`grep -r "three-vrm" dist/console dist/family` **零命中**；`dist/pad` 含 VRM 资产；三入口 URL（`/pad` `/console` `/family`）经 nginx 可打开且静态资源 200 |
 | **C2** | README 收口：① 新增「Docker 部署」章节（`git clone && cp .env.example .env && docker compose up` 三步口径 + 服务清单表 + 端口表）；② 新增「回滚」章节（合入 A4 演练记录与门禁清单）；③ 新增「成本数据」章节（合入 B2 输出：S1 闭环率 ≥60% 目标、单会话 Tool ≤8、cache 命中率、分层省 Token——数字全部取实测，未达标如实写）；④ 新增「观测说明」（指标端点、Trace 查询方法、告警规则说明——大纲 §11.3 观测说明验收项）；⑤ 更新 §10 文档索引 | 3h | C1；素材依赖 A4/B2 | `README.md` 增量 | 自检：新章节四项齐全；所有数字与 `eval/reports/`、`/metrics` 实测一致（抽查 3 个数字可回溯）；「局限」节保留教学 MVP 口径（PRD §1.3：不以模拟数据比例作为真实运营效果证明） |
 | **C3** | `docs/HARNESS_DESIGN.md` 新建：按大纲 §6.2 十组件表（Context/System One/Tool/State/Checkpoint/Memory/Loop/Policy/Recovery/Observability/Evaluation）逐组件写「本仓落点」——组件行为 + 对应文件路径 + 关键配置。**全部路径实测存在后才能写入**（写前逐个 `ls`） | 3h | M6.0（可与 C1 并行） | `docs/HARNESS_DESIGN.md` | 自检：十组件逐项覆盖；文中每个文件路径 `ls` 通过（零虚构路径）；与 TD §4/§6 口径一致，冲突处以 TD 为准并回改本文档 |
 | **C4** | `docs/IDENTITY_RULES.md` 新建：四层身份锚点（设备绑定→房间默认→声纹→主动确认）+ 三档级联（声纹失败→主动确认→通用模式）+ 阈值口径 **0.62**（含沿革 0.85→0.55→0.62 与依据：`eval/reports/声纹调优报告.md`）+ 通用模式边界（不读记忆/不写健康/不确认用药）+ `thread_id=(elder_id, session_seq)` 服务端生成。口径唯一来源 = PRD §3.2 | 2.5h | M6.0 | `docs/IDENTITY_RULES.md` | 自检：阈值、候选集（设备 1v1、恒 1 位）、级联行为三处与 PRD v3.1 逐字一致；文中行为均有对应测试名可引（如 `tests/test_gates.py`、声纹相关用例） |
@@ -220,7 +220,7 @@ flowchart LR
 | **D1** | eval_gate 复跑与阻塞口径落地：① 以当前锁文件复跑 `tests/eval_gate.py`，逐闸门记录通过/差值；② 落地 day09 §10 Q2 裁决（Y5 契约）：pre-push 阻塞真门禁，或「CI 阻塞+本地自检」并留痕；③ `.githooks/pre-push` 行为与裁决一致；④ **TD line 1179 `eval/eval_gate.py` 路径勘误**——同提交在 TD 修订记录登记（实际落点 `tests/eval_gate.py`，AGENTS §4.7） | 2h | M6.0 | 门禁复跑记录、`.githooks/pre-push`（如需调整）、TD 修订记录条目 | 自检：复跑结果逐闸门留痕（通过值/差值）；人为调低规则阈值后门禁**报红并打印差值**（不放宽）；无 python 环境时 pre-push 退出码非 0；hooksPath 生效说明写入 README 或门禁记录 |
 | **D2** | P0 全量回归（M6.4）：① 按 PRD §5.4 追踪表（4.1→AC-15/26/40/41/42；4.2→AC-03/04/33；4.3→AC-28；4.4→AC-01/02/37；4.5→AC-05~08/16/17/20/26/27/30/35/41；4.6→AC-09~11/21/22/32/34；4.7→AC-04/10/12/23/38；4.8→AC-13/25；4.9→AC-14/19；4.10→AC-18/19/24/39；4.11→AC-29/30/31/36/40/41/42）逐条复跑；② §5.2 固定测试集复跑（普通 50 条 ≥45、敏感 20 条 ≥19、边界 20 条、模糊 20 条、注入 ≥10 条 100%）；③ 结果落 `eval/reports/day10_p0_regression.md`（每条 AC：通过/失败/证据指针）；④ 演示前按台账重建种子数据并**同步更新台账** | 4h | **Line 1 M5 收口** + D1 | `eval/reports/day10_p0_regression.md`、台账更新 | 自检：报告逐 AC 有结论与证据（SQL 行数/HTTP 状态码/trace_id/截图）；失败项**如实记录不粉饰**并当场归层（ASR/Laya/召回/LLM/Tool/编排）；固定测试集五组达标率可复算；台账 `docs/测试数据_人员与床位.md` 与 `silvermate-postgres` 实查一致 |
 | **D3** | 干净主机一键启动演练（M6.5 前置）：在非开发机（或全新容器/克隆目录）执行 `git clone → cp .env.example .env → docker compose up`，走完「喊小伴 → 问天气 → 听回答」整条链（TD §8.3 功能验收原文） | 2h | M6.1 + A4 | 演练记录（截图 + 步骤日志） | 自检：三步内起全栈、全部服务 healthy、HTTPS 可访问；语音链路端到端走通；演练中发现的缺漏（如 .env 变量缺失、证书步骤缺失）回改 `.env.example`/README 后**复跑一次直到通过** |
-| **D4** | 演示脚本与冻结：① 编写 5 分钟演示脚本（四场景：早晨提醒吃药 → 白天陪聊/听戏 → 晚上健康采集 → 家属收到日报，大纲课时 10.4）；② **演示视频【待确认 Q1】**：若纳入则按脚本录制并归档 `docs/`或 `eval/artifacts/`；③ 演示脚本走查一遍 AC 冒烟（不新造需求） | 2h | D2 | 演示脚本（markdown）、演示视频（如 Q1 确认纳入） | 自检：脚本四场景齐全且每场景标注对应 AC 编号；脚本中的功能**全部在 P0 回归报告中为通过项**（不得演示未验收功能）；视频时长 ≤5 分钟（如纳入） |
+| **D4** | 演示脚本与冻结：① 编写 5 分钟演示脚本（四场景：早晨提醒吃药 → 白天陪聊 → 晚上健康采集 → 家属收到日报，大纲课时 10.4；**听戏场景已随戏曲裁减裁决去除**）；② **演示视频已裁决纳入（Q1=A）**：按脚本录制并归档 `docs/` 或 `eval/artifacts/`；③ 演示脚本走查一遍 AC 冒烟（不新造需求） | 2h（+1~1.5h 录制） | D2 | 演示脚本（markdown）、演示视频 | 自检：脚本四场景齐全且每场景标注对应 AC 编号；脚本中的功能**全部在 P0 回归报告中为通过项**（不得演示未验收功能）；视频时长 ≤5 分钟 |
 | **D5** | tag final（M6.5 收口动作）：确认 M6.1–M6.4 + 回滚演练全部通过后 `git tag final && git push origin final`；之后改动不在验收范围 | 1h | D3 + D4 + A4 + M6.4 | tag `final` | 自检：`git tag -l` 含 final；`git describe` 指向收口 commit；push 成功；**打标前最后一跑** `ruff check` + `pytest -q` + `tests/eval_gate.py` + 前端 `tsc`/`build` 全绿 |
 
 ### 4.5 个人学习交付（附录，不占团队工时，按主理人裁决单列）
@@ -245,7 +245,7 @@ flowchart LR
 | 人设系统 FR-ADM-07 | **维持裁减**（day09 §8.1 裁决）：表/种子/模板保留，入口置灰，本日不安排 | day09 §8.1 |
 | Laya/Chinese-Jev 对比 | **维持裁减**（无第二 backend，对比无对象） | day09 §8.1 |
 | 课时 10.4 简历/INTERVIEW_QA/复盘 | **移出团队任务包**，附录单列 | 2026-11-13 主理人裁决 |
-| 演示视频 | **待确认 Q1**：裁决前不安排录制工时，D4 先交脚本 | 2026-11-13 主理人裁决（「tag+文档」未含视频） |
+| 演示视频 | **已裁决纳入（Q1=A，2026-11-13 14:06）**：D4 在 D2 通过后按脚本录制，白天场景按戏曲裁减改陪聊，归档 `docs/` 或 `eval/artifacts/` | 2026-11-13 14:06 主理人裁决 |
 | iter2-demo / iter3-demo 历史标签 | **不补打**：仅登记偏差（`git tag -l` 现为空），回滚演练直接以当前收口 commit 为基准 | 现状核查表 #10 |
 
 **不得裁减项核对**（PRD line 590 → Day 10 归属）：Docker 部署（A1/A2/C1）✓、Langfuse 最小实现（B1）✓、评测门禁（D1/D2）✓、异常降级（B1 关闭 Langfuse 不中断、B2 未授权 401）✓、WebRTC 全双工与反向外呼含降级（Line 1 D2 已交付，D2 回归覆盖）✓、唤醒词激活（Line 1 D1 已交付，D2 回归覆盖）✓。
@@ -286,11 +286,11 @@ flowchart LR
 
 | # | 待确认 | 影响 | 默认口径（仅当主理人未裁决时的挂起建议，**不自动执行**） |
 | --- | --- | --- | --- |
-| **Q1** | **5 分钟演示视频是否纳入**（2026-11-13 裁决答复为「tag+文档」，未提视频） | D4 工时与交付物 | 不安排录制；D4 只交脚本 |
+| **Q1** | ~~**5 分钟演示视频是否纳入**~~ **已裁决（A1，2026-11-13 14:06）：纳入录制**——D4 在 D2 通过后按脚本录屏（白天场景按戏曲裁减改陪聊），归档 `docs/` 或 `eval/artifacts/`，D4 实排 +1~1.5h | D4 工时与交付物 | 已裁决，随 v1.3 落档 |
 | **Q2** | **Day 10 收口段日历**：本文推算 D12–D13（11-16 → 11-17），是否认可 | 排期对外口径 | 按 D12–D13 编排；如需压缩，按 §6.2 裁减顺序先裁 P1/P2（A5/B3 殿后），P0 与不得裁减项不动 |
-| **Q3** | **pre-push 阻塞模式**（day09 §10 Q2 遗留未裁）：阻塞真门禁 vs CI 阻塞+本地自检 | D1 接线方式 | 默认阻塞真门禁（AGENTS §3）；环境不具备则降级并留痕 |
+| **Q3** | ~~**pre-push 阻塞模式**~~ **已裁决（A1，2026-11-13 14:06）：阻塞真门禁**——push 前实跑 eval_gate 不过则拒绝；为已知挂起红项建 **expected-red 显式标注机制**（标注项不阻塞 push）；环境不具备再降级并留痕 | D1 接线方式 | 已裁决，D1 按此接线 |
 | **Q4** | **Langfuse 部署形态**：v2 单容器+复用 postgres（教学最简）vs v3 全家桶（ClickHouse+MinIO） | A2 编排与 B1 联调 | v2 + 复用 postgres 独立 schema |
-| **Q5** | **TD line 1179 `eval/eval_gate.py` 路径勘误**（实际落点 `tests/eval_gate.py`）：确认同提交在 TD 修订记录留痕 | 基线文档一致性 | 按 AGENTS §4.7 同提交留痕 |
+| **Q5** | ~~**TD line 1179 路径勘误**~~ **已裁决（A1，2026-11-13 14:06）：修订记录留痕、不改正文**——TD 修订记录加 v1.x 条目说明实际落点 `tests/eval_gate.py`（沿 day07 先例），dev-D 在 D1 同提交执行 | 基线文档一致性 | 已裁决 |
 | **Q6** | **iter2-demo/iter3-demo 历史标签缺失**：不补打，仅登记偏差——是否接受 | 验收留痕 | 登记于 §5，不补打 |
 | **Q7** | **Laya 服务容器化形态**：本地权重（`convaiinnovations/laya-multilingual`）体积大、本机为 conda 环境 `jev`（机器事实）——容器内重新拉权重 or laya 以宿主进程 sidecar 挂载（compose 里只留编排占位） | A2 编排 | 容器内挂载宿主已下载权重卷，避免重复拉取；拉取不可行则 sidecar 化并如实记录 |
 | **Q8** | **F23 延迟不达标处置**：四问 p95 实测 668ms > 200ms 硬线，Day 10 只「信号先齐」——是否接受延迟项继续挂起 | B3 验收口径 | 如实记录并挂起，不为达标调阈值（沿 X9 纪律） |
@@ -320,3 +320,5 @@ flowchart LR
 | --- | --- | --- |
 | v1.0 | 2026-11-13 | 首版。基于 2026-11-13 主理人四项裁决（双线并行 / 4 人任务包 / tag+文档齐套纳入·简历类单列附录·演示视频待确认 / 技术文档=技术设计文档）编制。含：现状核查表 13 项（实测）、双线日历口径、4 包 19 节点 DAG 与里程碑 M6.0–M6.5、对接点 Y1–Y5、写域互斥矩阵、待确认 Q1–Q9。未改任何业务代码。 |
 | v1.1 | 2026-11-13 | **Q10 裁决 A1 落档**：外部走查发现「TD §1:205 选型承诺 OpenTelemetry Traces、day03/day04 计划与 `app/core/metrics.py`/`app/audio/_observe.py` 注释预留『Day 10 接 OTel 只改一个函数』，但本计划与任务书均未排 OTel」。主理人裁决 A1——B1 扩为「OTel SDK + Langfuse exporter 一体接入」（5h→8h，B 包 9.5h→13h，总计 53h→56.5h）；M6.2 判据增 trace_id 同值互查与非 LLM span；Y2 契约增 exporter 凭据复用；§6 写域增两文件 hook 函数体；Q10 登记已裁决。AC-31 验收口径不受影响。 |
+| v1.2 | 2026-11-13 | **Y3 构建命令口径修订落档**（主理人裁决，dev-C 执行 C1 时发现）：frontend/ 仅 pnpm-lock.yaml，`npm ci` 不可执行——Y3/§4.3 C1 构建命令改为 `pnpm@11.15.1 --frozen-lockfile`，构建上下文=`frontend/`（根 .dockerignore 排除 frontend/）。C1 已按新口径构建成功（镜像 489MB，三入口产物 + three-vrm 红线全过）。 |
+| v1.3 | 2026-11-13 | **Q1/Q3/Q5 三项裁决落档**（主理人 14:06）＋**戏曲裁减/PRD v3.2 留痕同步**：Q1=A 演示视频纳入录制（§4.4 D4 扩 +1~1.5h，听戏场景去除）；Q3=A pre-push 阻塞真门禁＋expected-red 标注机制（D1 接线）；Q5=A TD 修订记录留痕不改正文（D1 同提交）。§8 Q1/Q3/Q5、§4.4 D4、§5 演示视频行同步。 |

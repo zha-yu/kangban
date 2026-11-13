@@ -1,4 +1,4 @@
-> 状态：可执行（待 M6.0 启动核对后开工）　｜　版本：v1.0　｜　日期：2026-11-13
+> 状态：进行中（C1/C3/C4/C5 已交付，C2 骨架完成待素材回填）　｜　版本：v1.1　｜　日期：2026-11-13
 > 负责人：**dev-C（唯一）**　｜　任务包：**C · 前端构建与文档齐套线**　｜　容量：上限 24h（3 人日）；实排开发 **15.5h ＝ 1.94 人日**，余额为 Line 1 联调槽位占用＋缓冲
 > 关联：docs/team_tasks/day10/day10-任务总览与DAG.md v1.0（§2 DAG、§3 对接点 Y1/Y3、§4 写域）｜docs/plans/day10/day-10-交付与观测-工作推进计划.md v1.0 §4.3
 > 上游依据：PRD §2.1（单仓库三入口）、§1.3（教学 MVP 口径）、§3.2（身份规则口径唯一来源）、line 578（文档清单）｜技术设计文档 §4/§6（十组件口径）｜大纲 §6.2（十组件表）、§11.3（交付文档清单）
@@ -50,7 +50,7 @@ D10 穿插 day09 C6 联调；D11 穿插 M5.4 验证。冲突时 Line 1 优先。
 
 ### 要做什么
 
-1. `frontend/frontend.Dockerfile` 多阶段：`npm ci` → `vite build` → nginx 托管（容器内全新安装，不受本机 Vite 缓存影响；**不要动本机 `node_modules/.vite/deps`，不要 `--force`**）。
+1. `frontend/frontend.Dockerfile` 多阶段：依赖安装 `pnpm@11.15.1 --frozen-lockfile`（**2026-11-13 主理人裁决修订**：目录内仅 pnpm-lock.yaml，`npm ci` 不可执行）→ `vite build` → nginx 托管（容器内全新安装，不受本机 Vite 缓存影响；**不要动本机 `node_modules/.vite/deps`，不要 `--force`**）。
 2. Vite MPA 三入口 `pad/console/family` 产物分目录。
 3. **红线：pad 的 three-vrm 不进 console/family 构建产物**（PRD §2.1 单仓库三入口的初衷）。
 4. 产物路径按 Y3 契约（`/usr/share/nginx/html/{pad,console,family}`）交 A 合入 nginx。
@@ -147,10 +147,15 @@ D10 穿插 day09 C6 联调；D11 穿插 M5.4 验证。冲突时 Line 1 优先。
 
 | 日期 | 节点 | 结果/证据指针 | 等待项 |
 | --- | --- | --- | --- |
-| | | | |
+| 2026-11-13 | C1 ✅ | `frontend/frontend.Dockerfile` 交付（多阶段 pnpm@11.15.1 --frozen-lockfile，构建上下文=frontend/）；容器构建成功 489MB；三入口产物齐全；three-vrm 红线 grep 零命中加固验证；pad 含 14 个 .vrm；三入口独立冒烟 200；Y1/Y3 契约草案备妥 | M6.1 全栈 nginx 终验待 A3 合入 |
+| 2026-11-13 | C3 ✅ | `docs/HARNESS_DESIGN.md` 交付；十组件覆盖；58 路径批量实测零缺失；4 处大纲 vs TD 差异注明以 TD 为准 | 无阻塞 |
+| 2026-11-13 | C4 ✅ | `docs/IDENTITY_RULES.md` 交付；五节齐全；PRD §3.2 逐字机械比对通过；21 测试实存验证；发现大纲 §7.1 两处过时表述（0.85/候选列表）登记待勘误 | 大纲勘误另立 |
+| 2026-11-13 | C5 ✅ | `docs/AI_USAGE.md` 交付（三节，56 引用路径全通过）；`docs/SECURITY.md` 复核至 v1.1（补降级矩阵/数据保留/HITL 三节） | auth 审查底稿待主理人补签；闸门②用例回填归 M5.1；后端 Dockerfile 人工读 diff 待 A1 |
+| 2026-11-13 | C2 ✅（骨架） | `README.md` +112/−1：§12–§15 四新章节 + §10 索引；占位符 15 处显式标注，零编造数字 | 待 A4/B2/B1/D1 素材回填（D12）；待 Q1/Q3 裁决回填 |
 
 ## 变更记录
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-13 | 首版，与总览 v1.0 同批产出。 |
+| v1.1 | 2026-11-13 | C1 执行口径修订（主理人裁决）：依赖安装 `npm ci` → `pnpm@11.15.1 --frozen-lockfile`（目录内仅 pnpm-lock.yaml）；C1 已交付（`frontend/frontend.Dockerfile` 构建成功，三项自检全过），Y1/Y3 契约草案交 dev-A。 |
