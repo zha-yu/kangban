@@ -1,4 +1,4 @@
-> 状态：进行中（S1–S5 已收口；本次 push 经主理人裁决豁免真门禁一次（留痕待补跑）；下一步 S6）　｜　版本：v1.8　｜　日期：2026-11-13
+> 状态：进行中（S1–S7 已收口 · A 组遗留复核修正完成 · M6.1 A 侧就位待与 dev-C 合验；真门禁豁免已由 dev-D D1 复跑＋阻塞门禁接线闭环；下一步 S8）　｜　版本：v2.1　｜　日期：2026-11-13
 > 负责人：**dev-A（唯一）**　｜　任务包：**A · 容器化与部署链（17h）**
 > 关联：docs/team_tasks/day10/dev-A-容器化与部署链.md v1.0（任务书，分工与判据唯一依据）｜docs/team_tasks/day10/day10-任务总览与DAG.md v1.1（§2 DAG、§3 对接点 Y1/Y2/Y4、§4 写域、§8 待确认）｜docs/plans/day10/day-10-交付与观测-工作推进计划.md v1.1（总计划件）
 > 上游依据：PRD line 578（Day 10 完成定义）、§2.5（一键启动/HTTPS/健康检查）、line 455（FR-TC-05）、line 444（FR-ADM-10）｜技术设计文档 §8.3 Day 10（line 1176–1183：多阶段非 root、七服务编排、回滚演练）、§1.4 选型表 line 206（compose 七服务）
@@ -163,7 +163,7 @@ docker image inspect silvermate-backend --format '{{.Config.Env}}'  # 无密钥
 
 **方案要点**：
 
-- `langfuse`（Y2，**2026-11-13 补充裁决：共享实例部署于 dev-B 主机，全员连 B**）：按 Q4 形态 v2 单容器 + 复用 postgres 独立 schema。compose 保留 langfuse 服务定义但加 **`profiles: ["langfuse"]`**——默认 `docker compose up` 不启动（共享模式下全员连 B 的实例），`docker compose --profile langfuse up` 时激活（B 本机全栈或本机自起模式用）；langfuse 依赖 compose 的 postgres（独立 schema）。凭据三变量 `LANGFUSE_HOST/PUBLIC_KEY/SECRET_KEY` 全部 `.env` 注入，compose 零硬编码；`.env.example` 按共享模式写注释与占位（key 向 B 领取，不进 git）。M6.1 判据口径随之修正：默认 profile 下**业务服务**全 healthy；langfuse 服务在激活 profile 时亦 healthy。
+- `langfuse`（Y2，**2026-11-13 补充裁决：共享实例部署于 dev-B 主机，全员连 B**）：按 Q4 形态 v2 单容器 + 复用 postgres 独立 schema。compose 保留 langfuse 服务定义但加 **`profiles: ["langfuse"]`**——默认 `docker compose up` 不启动（共享模式下全员连 B 的实例），`docker compose --profile langfuse up` 时激活（B 本机全栈或本机自起模式用）；langfuse 依赖 compose 的 postgres（独立 schema）。凭据三变量 `LANGFUSE_HOST/PUBLIC_KEY/SECRET_KEY` 全部 `.env` 注入，compose 零硬编码；`.env.example` 按共享模式写注释与占位（key 向 B 领取，不进 git）。M6.1 判据口径随之修正：默认 profile 下**业务服务**全 healthy；langfuse 服务在激活 profile 时亦 healthy。⚠️ **A 组复核（2026-11-13）：本段 v2 形态已于 S4 追加改判为 v4 全家桶（见 §8「S4 追加」／变更记录 v1.6），此段仅作历史方案留痕，不再按 v2 执行。**
 - `coturn`：`coturn/coturn` 镜像，3478/5349 端口，`deploy/turnserver.conf`（realm/外部 IP 走 `.env`），凭据与 `app/core/config.py` 既有 `turn_url/turn_username/turn_credential` 字段对齐（**不改名**）；S7 联调时与 ice-config 端到端核对。
 - `laya`：按 Q7——方案 A（默认）挂载宿主已下载权重卷 + sidecar 镜像；方案 B（兜底）compose 只留编排占位注释、laya 仍以宿主 jev 进程运行，**如实记录不粉饰**。
 
@@ -195,7 +195,7 @@ docker compose ps --format json | grep -c healthy   # =10（默认 profile，lan
 
 **方案要点（高风险文件）**：重写 `deploy/nginx.conf`（保留既有 `/avatars/` 段）：`http` 块 upsteam backend → `server 443 ssl`（证书路径 `/etc/nginx/certs/`）→ 三入口静态段（按 Y1 草案：`/pad`→`dist/pad`、`/console`、`/family`，`try_files` SPA 兜底）→ `/api/` 反代 `backend:8000` → `/ws/` 反代含 `Upgrade`/`Connection` 头 → 80 端口 301 跳 443。**联调时点 D11 上午，C 的 Y1 草案未到可先按总览 §3 Y1 默认值落骨架，到位后 diff 对齐**。
 
-**自检**：`docker compose exec nginx nginx -t` 通过；三入口 `curl --noproxy '*' -k https://localhost/pad/` 等 200；`/api/health` 透传 200；`wss://` 信令建连不断（与 dev-D/pad 联调核对）。
+**自检**（A 组复核修正：backend 的 health 路由**没有 `/api` 前缀**，见 `app/api/__init__.py` ROUTERS，原写的 `/api/health` 不存在）：`docker compose exec nginx nginx -t` 通过；三入口 `curl --noproxy '*' -k https://localhost/pad/` 等 200；`https://localhost/health` 200 且 `status:ok` 带 trace_id；`/api/*` 透传以 `/api/metrics` 401（**非 502**）实证；`wss://` 信令建连不断（与 dev-D/pad 联调核对）。S7 受控信任后所有 curl 可去掉 `-k`（Windows Schannel 另需 `--ssl-no-revoke`）。
 
 ---
 
@@ -274,8 +274,8 @@ uv run ruff check app tests
 | --- | --- | --- | --- |
 | **Q-A1** | backend 容器是否自动执行 `alembic upgrade head`（entrypoint 内）vs compose 一次性 migrate 服务 vs 保持手动 | A1-b/D3 判据 | **已裁决（2026-11-13 S0）：entrypoint 自动迁移**——`deploy/backend-entrypoint.sh` 先 `alembic upgrade head` 再 exec uvicorn；D3 三步起全栈判据成立 |
 | **Q-A2** | `static/` 进镜像 COPY vs 运行时卷挂载（`/static` 依赖 cwd，main.py L1114-1118） | A1 | **已裁决（2026-11-13 S0）：COPY 进镜像**；VRM 大资产不在此目录，走 nginx 卷 |
-| **Q-A3** | nginx 前端产物在 C1（Y3）到位前的占位方式 | S3 | 按默认口径执行（S0 登记，不单独阻塞）：本地 `dist/` 只读卷占位 + 执行记录登记待替换 |
-| （沿用总览）Q4 | langfuse v2 vs v3 | S4 | **已裁决（2026-11-13 S0）：v2 单容器 + 复用 postgres 独立 schema**；**补充裁决（2026-11-13，主理人）：共享实例部署于 dev-B 主机，全员连 B**——compose langfuse 服务 profile 化（默认不起），`.env.example` 按共享模式写占位注释 |
+| **Q-A3** | nginx 前端产物在 C1（Y3）到位前的占位方式 | S3 | ✅ **已闭环，实际口径与 S0 预设不同（A 组复核）**：未采用 `dist/` 只读卷占位——S3 直接把 dev-C 的 `frontend/frontend.Dockerfile` 作为 compose nginx 的 build 源，Y3 产物路径 `/usr/share/nginx/html/{pad,console,family}` 内嵌在镜像中，三入口经 nginx 200 已实测。S0 的「dist 占位卷」为未采用的预设，留痕不执行 |
+| （沿用总览）Q4 | langfuse v2 vs v3 | S4 | ⚠️ **本行 v2 裁决已作废（A 组复核，见 §8「S4 追加」／变更记录 v1.6）**：OTLP 摄入端点 v3.22 才引入，v2 收不了 OTel span → **现行口径 = Langfuse v4 全家桶六服务**（langfuse-web/worker + 独立 postgres/redis/clickhouse/minio），compose `profiles: ["langfuse"]` 默认不起（共享实例常驻 dev-B 主机，全员连 B），compose 这套只作一键启动／干净主机演练兜底；`.env.example` 按共享模式写占位注释（key 向 B 领取，不进 git）。历史「v2 单容器 + 复用 postgres 独立 schema」仅留痕，不再执行 |
 | （沿用总览）Q7 | laya 挂卷 vs sidecar | S4 | **已裁决（2026-11-13 S0）：挂载宿主已下载权重卷**；不可行再降级 sidecar 化并如实记录 |
 | （沿用总览）Q2 | D12–D13 收口日历 | 排程 | 按 D12–D13 |
 
@@ -298,6 +298,10 @@ uv run ruff check app tests
 | R10 | **funasr 首启拉模型数 GB / voiceprint onnx 未放置**：全栈 healthy 超时 | compose ps 长期 starting | 这是既有服务既有缺口，不属于本包写域——提单给主理人/相应负责人，本包判据不含其模型就绪 |
 | R11 | **A5 与 dev-B 写域擦边**：main.py 装配归 B | 我需要改 main.py 才能接 job | 以补丁需求单交 dev-B（沿 day07 handoff-A-to-C 惯例），本包不越界；测试用独立装配绕开 main.py |
 | R12 | **Line 1 槽位抢占**：D10 15:00/16:00 联调冲突 | 槽位通知 | Line 1 优先（总览 §0.2）；S1 的 A1-c 验证段可拆碎填缝隙，D10 内完成 A1 不受影响 |
+| R14 | ✅ **S7 已闭环**（原：证书目录不进 git → 干净主机 clone 后无证书，nginx 起不来） | 曾为 D3 三步演练的阻塞点 | `deploy/gen-dev-cert.sh` 一键生成 CA＋server 证书；`.gitignore` 显式登记 `deploy/certs/`；生成／受控信任／验证／撤销步骤写入计划件 §9.1 交 dev-C 合入 README；D3 演练第一步即跑该脚本 |
+| R15 | **自定义 `NGINX_HTTPS_HOST_PORT`（非 443）时 80→443 跳转丢端口**：`return 301 https://$host$request_uri` 用 `$host` 不带端口 | 改端口后浏览器跳到 443 而非自定义 HTTPS 端口 | 默认 80/443 口径不受影响；自定义端口时在 `deploy/nginx.conf` 的 return 301 显式补端口，并在 README 端口表登记 |
+| R16 | **任务书 A3 凭据红线判据与已冻结实现冲突**：`grep -rn "turn_credential" frontend/src` 字面要求零命中，但 day09 D2.5 交付的 `realtime.ts` 有 2 处字段名引用（类型声明／响应取值） | 按字面判据验收会误判为不达标，且修它要动 dev-C 写域并破坏 ice-config 动态下发设计 | S7 按实质判据验收（凭据真值在 src／dist 均零命中）；**待主理人裁决**把判据修订为「凭据真值零命中」，字段名命中允许，登记为已知文档冲突，不改前端 |
+| R17 | **浏览器 GUI 无告警与手机热点真机跨网段缺自动化实证**：本机只能验证系统根信任链、非回环 IP 下发、relay 地址与端口映射 | D3／演示冻结时才发现浏览器仍告警或远端 ICE 失败 | 系统级证据已备（`X509Chain` chain_build=True、不带 -k 200、Allocate 回宿主 IP、端口段映射）；D3 干净主机演练与 M6.5 演示冻结安排人工目视＋真机热点联调，见 §9.1／§9.2 步骤 |
 
 ---
 
@@ -313,7 +317,9 @@ uv run ruff check app tests
 | 2026-11-13 | S4 | **A2-b 收口（三服务编排）**。①**langfuse** ✓：v2 单容器 + 复用 postgres 独立 schema 实证可行——`DATABASE_URL=...?schema=langfuse` + 一次性 `CREATE SCHEMA IF NOT EXISTS langfuse`，health 返回 `{"status":"OK","version":"2.95.11"}`，`langfuse` schema 内 Prisma 表集完整落库、业务表隔离无损；**profile 化**（默认 up 不起，共享实例裁决落地）；必填三变量实测（NEXTAUTH_SECRET/SALT 任意 + ENCRYPTION_KEY 必须 64-hex）；验证后本机容器已停（实例归 B）。②**coturn** ✓：healthy，3478 UDP/TCP 编排 + 凭据经 command 变量注入（不写死 conf）；turnserver.conf **行内注释坑**实测修复（coturn 解析器把 `# ...` 当参数值致循环重启；no-tlsv1_1 该版本不识别）。③**laya**：容器化定义+镜像构建完成（挂宿主权重卷 `C:/models/laya`），但 **Docker Desktop/WSL2 内存上限实测仅 1.86GB**（docker stats），权重+torch 需 3-4GB——本机容器化不可行，**Q7 兜底生效**：宿主 jev sidecar（7001）继续服务（model_loaded=true 实测），容器定义 `profiles: ["laya"]` 保留供内存充足机器；backend 的 SYSTEM_ONE_BASE_URL 变量化（默认 laya:7001，.env 可覆盖 host.docker.internal:7001）。④`.env.example`：langfuse 段按共享模式成文 + LAYA_HOST_PORT/SYSTEM_ONE_MODEL_HOST_DIR。⑤`docker compose config` 默认 9 服务 PASS、langfuse+laya 双 profile PASS。**laya 镜像构建三连坑留痕**（deploy/laya/Dockerfile 头注释详录）：torch 190MB 直连 SSL 超时 → host.docker.internal 代理被拒（本机代理只监听 127.0.0.1）→ **宿主预下载 Linux cp312 wheel 离线装**（`pip download --platform manylinux_2_28_x86_64 --python-version 312`，wheels/ 不进 git）；另 Docker Hub `# syntax` 指令拉取 401（限流），已删非必需行 | 无（待确认进 S5） |
 | 2026-11-13 | S5 | **A2-c 收口 + 共享口径扩展（主理人指令：funasr/voiceprint 也不自起，连 dev-B）**。①funasr/voiceprint 双服务 `profiles: ["local"]`，backend 的 ASR_BASE_URL/VOICEPRINT_BASE_URL 变量化（${VAR:-服务名默认}，.env 设 B 地址即生效）；backend depends_on 移除 voiceprint（profile 化后不可依赖）；②本机 voiceprint 旧容器已停删；③`.env.example`：ASR 段共享口径注释 + 补 VOICEPRINT_BASE_URL（占位 <B的局域网IP>）；④全栈起验：`docker compose up -d` **7 服务全 healthy**（backend/coturn/nginx/postgres/redis/mock/weather）+ `/pad/` 200 ✓；healthcheck/restart 全服务齐备；⑤profile 矩阵：默认 7 服务（共享连 B）／--profile local 加 funasr+voiceprint／--profile langfuse 加 v4 六服务／--profile laya 加 laya 容器；config 三 profile 组合 PASS。 | **已解除（17:45）**：.env 实测已有 B 地址（10.55.50.115）——backend 重建后容器内实测三路全通：funasr wss://10.55.50.115:10096 TCP 可达 ✓、声纹 http://10.55.50.115:7003 HTTP 探活 `{status:ok, model:CAM++, dim:192}` ✓、宿主 laya sidecar 经 host.docker.internal:7001 `{status:ok, model_loaded:true}` ✓（.env 增 SYSTEM_ONE_CONTAINER_URL 衔接容器→宿主 sidecar）；https /health 判据仍归 S7 |
 | 2026-11-13 | S5 追加 | **主理人裁决：本次 push 豁免真门禁（Q3 临时豁免条款，留痕）**。①背景：本机 .venv_sidecar 真门禁环境反复 segfault（uv CPython + pip 包组合在 RLAgent/ModernBERT init_weights 段错误；已试钉版/KMP/换解释器三轮未根治）；②裁决：本批 develop+feature-zjj 的 push 以 --no-verify 豁免一次，**待环境修复后补跑 eval_gate --provider local 并回填报告**；③已推内容均经轻量校验（看板/索引/样本自检全绿）与本地全量开发期验证；④环境重建进行中（方案：基于本机 agent-course 解释器 + system-site-packages 重建 .venv_sidecar，与常驻 sidecar 进程同栈） | 无 |
-| 2026-11-13 | S5 追加 | **主理人裁决：本次 push 豁免真门禁（Q3 临时豁免条款，留痕）**。①背景：本机 .venv_sidecar 真门禁环境反复 segfault（uv CPython + pip 包组合在 RLAgent/ModernBERT init_weights 段错误；已试钉版/KMP/换解释器三轮未根治）；②裁决：本批 develop+feature-zjj 的 push 以 --no-verify 豁免一次，**待环境修复后补跑 eval_gate --provider local 并回填报告**；③已推内容均经轻量校验（看板/索引/样本自检全绿）与本地全量开发期验证；④环境重建进行中（方案：基于本机 agent-course 解释器 + system-site-packages 重建 .venv_sidecar，与常驻 sidecar 进程同栈） | 无 |
+| 2026-11-13 | S6 | **A3-a 收口（nginx 完整托管配置 ＋ S3 移交缺陷修复）**。①`deploy/nginx.conf` 全量重写（保留 Day4 `/avatars/` 段）：80→443 301＋`/nginx-health` 探针、443 TLS、http 级 `map $connection_upgrade`、server 级 `resolver 127.0.0.11 valid=10s`＋变量化上游、三入口静态（Y1 原样）、`/assets` `/kws` `/vad-assets` `/media`、`.vrm` 正则段、`/health` `/static/` `/api/` `/ws` 反代；**S3 的 `no resolver defined to resolve backend` 缺陷已消**（刻意不改成静态 upstream：其只在 nginx 启动时解析一次，backend 重建换 IP 会一直指向旧 IP）。②`docker-compose.yml` nginx 段补两条只读卷（conf + certs），healthcheck 由 `/pad/` 改探 `/nginx-health`（80 已 301，busybox wget 不宜探 HTTPS）。③**证书前置**：443 段缺证书则 `nginx -t` 失败，故 S6 先生成自签 `deploy/certs/server.{pem,key}`（SAN=localhost / host.docker.internal / 127.0.0.1；`git check-ignore` 实证不进 git）；mkcert 受控信任与 coturn 端到端仍归 S7。④自检逐条：`nginx -t` PASS；`docker compose config` 默认与 `--profile local --profile langfuse --profile laya`（15 服务）均 PASS；7 服务全 healthy；`http://localhost/pad/`→301 `https://localhost/pad/`；三入口 `/pad/ /console/ /family/` 全 200；`https://localhost/health` 200 且 body `status:ok` 带 trace_id（**M6.1 判据达成**）；`/api/metrics`、`/api/audio/ice-config` 均 401（**非 502**，反代已通）；`/static/mock/tts_*.wav` 200 `audio/x-wav`；`/assets/vrm/Danheng.vrm` 200 `model/gltf-binary`；`/avatars/danheng.png` 200 `image/png` 且 CORS 回显 Origin；`/ws/signal` **101 Switching Protocols**（Upgrade 头透传）；`docker compose logs nginx` 无 resolver/error；backend `--force-recreate` 后 `/health` 仍 200。⑤**口径差异登记**：计划 §4 S6 自检写的 `/api/health` 在 backend 不存在（health 路由无 /api 前缀，见 `app/api/__init__.py` ROUTERS），按任务书 A2 判据以 `/health` 为准，`/api/*` 透传另以 `/api/metrics` 401 实证。⑥**过程坑**：Windows curl 在 `MSYS_NO_PATHCONV=1` 下 `-o /dev/null` 报 exit 23，须用 `-o NUL`；nginx 官方镜像 error.log 软链 /dev/stderr，`docker compose exec ... tail/grep` 会挂起，改读 `docker compose logs`。⑦S6 无 Python 改动但仍跑全量回归不回退：`uv run ruff check app tests` All checks passed、`uv run python -m pytest -q` **1709 passed**（`uv run pytest -q` 直调报 "uv trampoline failed to canonicalize script path"，改用 `python -m pytest` 绕过，登记为本机环境坑）；backend 重建实测 IP 未变（172.21.0.6），「换 IP 自动重解析」为设计依据、未取换 IP 实证 | S7：mkcert 受控信任（去掉 -k）、coturn 端到端 / 手机热点跨网段、证书生成说明交 dev-C（README §A4）、干净主机演练前先生成证书；`NGINX_HTTPS_HOST_PORT` 非 443 时 80 跳转需显式补端口 |
+| 2026-11-13 | S7 | **A3-b 收口（HTTPS 受控信任 + coturn 端到端 + M6.1 A 侧就位）**。①**证书**：本机 mkcert 未装 → 按计划走自签兜底，新建 `deploy/gen-dev-cert.sh`（CA:TRUE 根 CA + 由 CA 签发 server 证书，SAN=localhost / host.docker.internal / 127.0.0.1 / ::1 / 可经 `SILVERMATE_LAN_IP` 追加局域网 IP；幂等复用根 CA、`--force` 重建）闭环 **R14**；`openssl verify` OK；`certutil -addstore -user Root` 导入根 CA（受控信任，可用 `certutil -delstore -user Root "SilverMate Local Dev CA"` 撤销）；.NET `X509Chain` chain_build=True、根为 SilverMate Local Dev CA、status none；`curl`（**不带 -k**）`https://localhost/pad/` 与 `https://10.55.50.233/pad/` 均 200、`ssl_verify_result=0`，`https://localhost/health` 200 带 trace_id。②**coturn 端到端**：走真实设备链路（`POST /api/device-sessions` 换 331B device token → `GET /api/audio/ice-config` 200），`turn_username` / `turn_credential` 与 `.env`（即 compose command 注入 coturn 的值）逐字比对一致、字段未改名；`turnutils_uclient` 对非回环 `10.55.50.233:3478` 做 TURN Allocate **success**；`wss://localhost/ws/signal` 不带 -k 仍 **101 Switching Protocols**。③**跨网段缺口闭环（S7 实测发现）**：原 `.env` 的 `turn:localhost:3478` 远端会解析成设备自己 → 改 `10.55.50.233` 并验证下发；Allocate 原返回 Docker 内网 `172.21.0.9` → 新增 `.env` 的 `TURN_EXTERNAL_IP_ARG=--external-ip=<宿主IP>`（整段参数经 compose command 注入，仓库不写死机器 IP）后 relay addr 变 `10.55.50.233:49196`；compose 补 `49160-49200:49160-49200/udp` 中继端口段映射，远端数据才进得来；`.env.example` 同步跨网段说明。④**5349 TLS 裁决**：业务只用 3478（ice-config 下发 `turn:`，无 `turns:` 消费方），S7 明确**不启用**，改 `deploy/turnserver.conf` 用本版本识别的 `no-tls` 关闭 TLS 监听器；顺手清掉 S4 遗留 `no-cli`（deprecated）与 `no-tlsv1`（Bad configuration format）。⑤**凭据红线口径偏差（待主理人裁决）**：任务书 A3 判据 `grep -rn "turn_credential" frontend/src` 零命中**字面不成立**（2 处命中：`realtime.ts` L212 响应类型声明、L220 从响应体取值，属 day09 D2.5 已冻结实现）；实质判据全过——口令真值在 `frontend/src` 0 命中、`frontend/dist` 0 命中、模板占位口令 0 命中，凭据仅由 ice-config 动态下发。建议判据改为「凭据真值零命中」，字段名命中允许。⑥**交付**：`.gitignore` 显式登记 `deploy/certs/`；README 章节素材小抄写入本计划件 §9（证书 / 端口表 / 镜像体积，S8 门禁清单与回滚记录占位）交 dev-C 合入。⑦自检：`docker compose config` 默认与三 profile 组合 PASS；7 服务全 healthy；`uv run ruff check app tests` All checks passed、`uv run python -m pytest -q` 1709 passed 不回退；`git status --porcelain deploy/certs/` 为空（证书未入库）。⑧**坑**：Windows Schannel 因本地 CA 无 CRL/OCSP 报 `CRYPT_E_NO_REVOCATION_CHECK`，curl 需 `--ssl-no-revoke`（Chromium 对私有 CA soft-fail 不受影响）；nginx 换证书后必须 `nginx -s reload`；`TURN_URL` 改后须重建 backend（config 进程启动时读取） | **等待项**：①凭据红线判据口径待主理人裁决（R16）；②浏览器 GUI 目视「无告警」与手机热点真机跨网段未做 UI／真机实证，归 D3／演示冻结人工确认（系统根信任链与非回环链路已证，R17）；③coturn 残留无害警告（默认证书路径检查／无显式监听地址／pid file）登记不影响服务；④S5 真门禁豁免仍待环境修复后补跑 eval_gate；⑤❹ M6.1 正式收口待与 dev-C 的 C1 合验，A 侧已就位 |
+| 2026-11-13 | A 组复核（S8 前） | **S8 前遗留项 A 组 8 项全部收口**。①**文档内部矛盾（A1–A4）**：§4 S4 方案与 §6 Q4 的「v2 单容器 + 复用 postgres」标注作废并指向 v4 改判；§6 Q-A3 的「dist 占位卷」改为 S3 实际口径（直接 build dev-C `frontend.Dockerfile`）；§4 S6 自检的 `/api/health 透传 200` 改为 `https://localhost/health` 200 带 trace_id ＋ `/api/metrics` 401 实证（backend health 无 `/api` 前缀）；删 §8「S5 追加」与变更记录 v1.8 各 1 行重复。②**A5**：§9 新增 9.5「README §12 行号级修订清单」交 dev-C（L511／L513-519／L521／L536／L541-544／L548 逐行建议；重点：§12.1 三步启动缺 `sh deploy/gen-dev-cert.sh`，会阻塞 D3 干净主机演练）。③**A6 真门禁欠账复核**：豁免后环境已闭环——`eval/reports/day10_gate_rerun.md`（dev-D D1 复跑 17:58 完成）、`.githooks/pre-push` 已接阻塞真门禁（`eval_gate.py --provider local` + `.venv_sidecar`）、`expected_red.json` 标注 B/D/E（expires 2026-11-15）、`.venv_sidecar/Scripts/python.exe` 20:15 重建后实测 `python 3.12.8 + torch 2.13.0+cpu` import 成功；**「S6/S7 因欠门禁只提交不 push」的理由已过期**，首部状态行同步更正；剩余未推送提交 `a98f45e`／`cf2dfbf` 仍需主理人定目标分支（B2）。④**A7 trampoline 根治**：`.venv/Scripts/pytest.exe` 内嵌旧路径 `Desktop\AI\kangban` → 备份 `.bak-20261113` 后 `uv sync --reinstall-package pytest` 按 lockfile 重装，新启动器内嵌当前 `Desktop\kangban` 路径，`uv run pytest --version` = 9.2.0（此前报 uv trampoline canonicalize 失败）；uv sync 顺带移除 5 个不在 lockfile 的包（filelock／fsspec／hf-xet／huggingface-hub／tqdm），随后**用修复后的启动器直接跑全量 `uv run pytest -q` = 1709 passed**（330s，不回退，且不再需要 `python -m pytest` 绕道）。⑤**A8 换 IP 实证补做**：`docker compose rm -sf backend` → 用 `redis:7` 占位容器显式占住 `172.21.0.6` → `--force-recreate backend` 拿到 **172.21.0.9**（IP 确变）→ nginx 未 reload、未重启，`/health` 立即 200、12s 后仍 200、`/api/metrics` 401（非 502）、清理占位容器后 7 服务全 healthy；**「resolver 动态重解析」由设计依据升格为实证**（未捕获 502→200 中间态：重建耗时 38s ＞ `valid=10s` 缓存窗口，缓存已自然过期，如实登记） | B 组仍待主理人：R16 判据口径裁决、两个未推送提交的目标分支、任务书 §6 回填、R15 端口方案、coturn 残留警告；C 组按原计划待 D3／演示／dev-C |
 
 ---
 
@@ -330,4 +336,86 @@ uv run ruff check app tests
 | v1.6 | 2026-11-13 | **Q4 改判同步（dev-B 通知）：Langfuse v2 → v4 全家桶**——OTLP 摄入端点 v3.22 才引入，v2 收不了 OTel span（B 在 v2.95 实测）；compose 重编为 v4 六服务（langfuse-web/worker + 独立 postgres/redis/clickhouse/minio，对齐官方模板，服务名 langfuse- 前缀避冲突，基础设施不映射宿主口），profiles 语义不变；config 双 profile PASS（langfuse profile 15 服务）；容器级验证归 D3/B 侧（本机内存不足）；应用侧六变量口径零改动；S0 的 Q4=v2 裁决与 S4 的 v2 schema 方案作废留痕。 |
 | v1.7 | 2026-11-13 | **S5 收口 + 共享口径扩展**：funasr/voiceprint profile 化（local），backend 双地址变量化，本机 7 服务全 healthy 起验 PASS；profile 矩阵四态（默认共享/local 自起/langfuse v4/laya 容器）；S5 的 healthcheck/restart 与 .env.example 收口完成，https /health 归 S7。 |
 | v1.8 | 2026-11-13 | **主理人裁决豁免本次真门禁（留痕）**：本机 .venv_sidecar segfault 三轮未根治，本批 push --no-verify 一次，修复后补跑 eval_gate 回填；环境重建方案（agent-course 解释器 + 继承 site-packages）登记执行记录。 |
-| v1.8 | 2026-11-13 | **主理人裁决豁免本次真门禁（留痕）**：本机 .venv_sidecar segfault 三轮未根治，本批 push --no-verify 一次，修复后补跑 eval_gate 回填；环境重建方案（agent-course 解释器 + 继承 site-packages）登记执行记录。 |
+| v1.9 | 2026-11-13 | **S6 收口**：`deploy/nginx.conf` 升格为完整托管配置（TLS/80→443/三入口/avatars/health/static/api/ws），以 `resolver 127.0.0.11` 修掉 S3 移交的 `no resolver` /api 502；compose nginx 段补 conf+certs 只读卷与 `/nginx-health` 探活；自签开发证书前置到 S6（不进 git）；M6.1 的 `https://localhost/health` 判据达成、wss 握手 101。新增风险 R14（证书前置/干净主机）、R15（自定义 HTTPS 端口跳转），S7 待办登记。 |
+| v2.0 | 2026-11-13 | **S7 收口**：`deploy/gen-dev-cert.sh` 交付（CA＋签发、R14 闭环），根 CA 导入系统受信任根，不带 -k 的 HTTPS/health/wss 全通；coturn 端到端（真实 device token → ice-config 凭据同源 → TURN Allocate success）＋跨网段三缺口闭环（TURN_URL 改宿主 IP、`external-ip`、中继端口段映射）；5349 TLS 裁决不启用并清理 `no-cli`／`no-tlsv1` 配置瑕疵；`.gitignore` 显式登记证书目录、`.env.example` 增跨网段口径；新增 §9 README 章节素材小抄交 dev-C，风险 R16（凭据红线判据口径）／R17（真机跨网段待验）。M6.1 A 侧就位待与 dev-C 合验。 |
+| v2.1 | 2026-11-13 | **A 组（S8 前可先改项）复核收口**：修正计划件内部矛盾四处（Q4 的 v2 作废标注、Q-A3 实际口径、S6 自检 `/api/health` 笔误、重复留痕行）；§9 增 9.5 README §12 行号级修订清单交 dev-C（含「干净主机须先生成证书」阻塞点）；核实真门禁豁免欠账已由 dev-D D1 复跑＋阻塞门禁接线闭环并更正首部状态；根治本机 `uv run pytest` trampoline 旧路径；补做 backend 换 IP 实证（.6→.9，nginx 零干预仍 200），「resolver 动态重解析」升格为实证。B/C 组未动。 |
+
+---
+
+## 9. 附录 · README 章节素材小抄（交 dev-C 合入，dev-A 不直接改 README）
+
+> 交付方式：本节由 dev-A 维护，dev-C 取用后合入 `README.md`；`README.md` 是 dev-C 独占写域。
+> 9.1–9.3 为 S1/S7 已就绪素材；9.4 的回滚演练记录与部署门禁清单待 S8（A4）完成后追加。
+
+### 9.1 §A4 本地 HTTPS 开发证书（S7 已就绪）
+
+浏览器 `getUserMedia`（麦克风）要求安全上下文，全站经 nginx 443 提供 HTTPS。仓库**不含任何证书或私钥**，每台机器首次部署先生成一对本地开发证书：
+
+```bash
+# 1) 生成：本地根 CA + 由 CA 签发的 server 证书（SAN 含 localhost / 127.0.0.1 / host.docker.internal）
+sh deploy/gen-dev-cert.sh
+
+# 2) 多机 / 手机热点跨网段演示：把部署主机局域网 IP 追加进证书 SAN
+SILVERMATE_LAN_IP=10.55.50.233 sh deploy/gen-dev-cert.sh
+
+# 3) 受控信任（各人自己执行，脚本不改系统设置）
+#    Windows : certutil -addstore -user Root deploy\certs\ca.pem
+#    macOS   : sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain deploy/certs/ca.pem
+#    Linux   : sudo cp deploy/certs/ca.pem /usr/local/share/ca-certificates/silvermate-dev.crt && sudo update-ca-certificates
+#    撤销（Windows）：certutil -delstore -user Root "SilverMate Local Dev CA"
+
+# 4) 起栈并验证（受控信任后**不需要** -k）
+docker compose up -d
+curl --noproxy '*' -I https://localhost/pad/          # 200，浏览器无证书告警
+curl --noproxy '*' https://localhost/health            # status:ok 带 trace_id
+```
+
+说明与坑：
+
+- 用「CA + CA 签发」而非裸自签叶证书：浏览器只信任由受信任根签发的证书，裸自签叶证书缺 `CA:TRUE` 会被 Chrome 拒绝。
+- 本机未装 mkcert，故走计划里的**自签 CA 兜底**；效果等价于 mkcert `-install`，且可离线复现。
+- Windows 版 curl 用 Schannel 时会因本地 CA 无 CRL/OCSP 报 `CRYPT_E_NO_REVOCATION_CHECK`，验证命令加 `--ssl-no-revoke`（Chromium/Edge 对私有 CA 是 soft-fail，不受影响）。
+- 换网段后需要重跑生成脚本（追加新 IP 到 SAN）、重启 nginx（`docker compose exec nginx nginx -s reload`）并重新导入新 CA（若用了 `--force`）。
+- 证书与私钥不进 git：`.gitignore` 的 `*.pem` / `*.key` / `deploy/certs/` 已覆盖；`docker compose up` 前必须先生成，否则 nginx 因缺证书起不来。
+
+### 9.2 端口表增量（S7 已就绪）
+
+| 端口 | 用途 | 备注 |
+| --- | --- | --- |
+| 80 / 443 | nginx HTTP→HTTPS 跳转 / TLS 终止 | 可用 `NGINX_HTTP_HOST_PORT` / `NGINX_HTTPS_HOST_PORT` 改写；非 443 时 80 跳转需显式补端口 |
+| 3478 UDP+TCP | coturn TURN/STUN（`turn_url` 下发端口） | 长时凭据由 `.env` 注入，凭据不下前端源码 |
+| 49160–49200 UDP | coturn 中继端口段 | 跨网段演示必须为宿主可达 IP 映射，否则远端拿到的 relay 地址不可达 |
+| 5349 | TLS TURN（`turns:`） | **未启用**：S7 裁决业务只用 3478，无消费方；`deploy/turnserver.conf` 以 `no-tls` 显式关闭 |
+
+跨网段（pad 在另一台设备/手机热点）三步：①`.env` 的 `STUN_URL` / `TURN_URL` 改成部署主机可达 IP（不能用 `localhost`，远端会解析成自己）；②`.env` 的 `TURN_EXTERNAL_IP_ARG=--external-ip=<部署主机IP>`，让 TURN Allocate 回给远端的是宿主 IP 而非 Docker 内网 `172.x`；③重建 `backend` 与 `coturn` 使配置生效。
+
+### 9.3 镜像体积（S1 素材，补交）
+
+| 镜像 | 体积 | 说明 |
+| --- | --- | --- |
+| `silvermate-backend` | 1010.4 MB | 两阶段 + 非 root；`.venv` 422 MB、`static/` 155 MB（Q-A2 裁决 COPY 进镜像）、`app/` 4.1 MB。首版 `RUN chown -R` 反模式曾达 1851.5 MB，改 `COPY --chown` 后降 841 MB |
+
+### 9.4 回滚演练记录 / 部署门禁清单（S8 待补，占位）
+
+S8（A4）完成后追加：代码回滚演练日志与结果、数据回滚 `alembic downgrade/upgrade` 证明、部署门禁清单六项（验收达成 / 测试通过 / 密钥安全 / 迁移可逆 / 监控就绪 / 回滚清晰，逐项带「检查方法」列）、Y4 回滚基准 commit。
+
+### 9.5 README §12 行号级修订清单（A 组复核产出，交 dev-C 合入）
+
+> 背景：`README.md` §12 停留在 **A2a（S3）时点**，S4–S7 交付后多处 ⏳ 与事实已过期。
+> ⚠️ **行号已按 2026-11-13 22:12 合并 PR #131 后的版本刷新**：dev-C 在 PR #131 给 README 增加了 25 行，下表行号 = 旧版（21:45）行号 + 25；后续再变动时以小节标题（§12.1／§12.2／§12.3）与 ⏳ 锚点定位为准，不要死守行号。
+> **dev-A 不碰 README**（dev-C 独占写域），以下为逐行替换建议；沿用 §13 的约定「素材到位后逐字合入，不加工数字」。§9.1–9.3 的证书 / 端口 / 镜像体积素材可一并合入 §12。
+
+| README 行 | 现状（过期） | 建议替换为（依据） |
+| --- | --- | --- |
+| L536 骨架说明 | 「laya / coturn / langfuse 归 dev-A S4、nginx HTTPS 完整段归 S6，落地后继续回填」 | S4–S7 **已全部落地**：laya/coturn/langfuse 入编且 profile 化、nginx HTTPS 完整段生效；另补一句「**起栈前必须先生成证书**（§12.1）」 |
+| L538–544 三步启动 ⚠️ | `git clone → cp .env.example .env → docker compose up -d`，**缺证书步骤** | 插入第 2 步 `sh deploy/gen-dev-cert.sh`（跨网段加 `SILVERMATE_LAN_IP=<IP>`）＋第 3 步受控信任（`certutil -addstore -user Root deploy\certs\ca.pem`，另两平台见 §9.1），再 `docker compose up -d`。**不补这步，干净主机 nginx 因缺 `/etc/nginx/certs/server.pem` 起不来**——这是 D3 三步演练的实际阻塞点（R14） |
+| L546 ⏳ | 「待 A2 S4/S6 … 补充健康检查验收标准与一键启动实测记录」 | 换成实测：默认 profile **7 服务全 healthy**（backend/coturn/nginx/postgres/redis/weather/mock）、`curl --noproxy '*' https://localhost/health` 200 `status:ok` 带 trace_id、三入口 `/pad/ /console/ /family/` 全 200、`wss://localhost/ws/signal` 101；Windows curl 需 `--ssl-no-revoke` |
+| L561 | 「计划新增 5 类服务…剩余 3 类待 A2 后续节点」 | 已全部入编；profile 矩阵四态：默认 7（共享连 dev-B）／`--profile local` 加 funasr+voiceprint／`--profile langfuse` 加 v4 六服务／`--profile laya` 加 laya 容器（15 服务 config PASS） |
+| L566 nginx 行 | 「deploy/nginx.conf 的 HTTPS/证书…归 S6 升格后卷挂载覆盖（**当前镜像内默认配置生效中**）」 | 已生效：`docker-compose.yml` 以只读卷挂 `deploy/nginx.conf` + `deploy/certs` 覆盖镜像内 Y1 草案；healthcheck 改探 `/nginx-health`（80 已 301 跳 443） |
+| L567 laya ⏳ | 「待 A2 S4（Q7 裁决…）」 | Q7 兜底已生效：本机 WSL2 内存仅 1.86GB，容器 `profiles: ["laya"]` 保留供充足内存机器，实际由宿主 jev sidecar（7001, model_loaded=true）服务；backend 经 `host.docker.internal:7001` 衔接 |
+| L568 coturn ⏳ | 「待 A2 S4」 | 已入编 healthy：3478 UDP+TCP、`49160-49200/udp` 中继端口段映射；**5349 TLS 未启用**（S7 裁决，无 `turns:` 消费方）；跨网段需 `.env` 的 `TURN_URL`/`STUN_URL` 与 `TURN_EXTERNAL_IP_ARG` 指向宿主可达 IP |
+| L569 langfuse ⏳ | 「形态 v4 全家桶…compose 服务定义归 dev-A S4 待办」 | 已入编 v4 六服务（web/worker + 独立 postgres/redis/clickhouse/minio），`profiles: ["langfuse"]` 默认不起；共享实例常驻 dev-B 主机、全员连 B，compose 仅作一键启动／干净主机演练兜底；凭据全走 `.env` |
+| L573 端口约定 | 「coturn 3478·5349」＋端口列表无中继段 | 补 `49160-49200/udp`（coturn 中继）、注明 5349 **未启用**、80→301→443；voiceprint 7003 与 funasr 10096 共享口径按 L575/577 保留 |
+| L594 ⏳ / L643 ⏳ | 「待 A4」回滚记录、「待 B1」SLO 规则 | **保留**：L594 即 S8（A4）本身，L643 属 dev-B 写域，均非本次修订范围 |
+
+补充：若主理人裁决通过 **R16**（凭据红线判据改为「凭据真值零命中」），README §11「已知文档冲突」表需相应加一行——任务书 A3 判据字面 `grep -rn "turn_credential" frontend/src` 零命中与 day09 D2.5 已冻结实现（`realtime.ts` L212/L220 两处字段名）冲突。

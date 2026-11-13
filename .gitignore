@@ -18,6 +18,10 @@ eval/artifacts/
 *.p12
 secrets/
 certs/
+# Day10 S7 显式登记：本地 HTTPS 开发证书由 deploy/gen-dev-cert.sh 生成，
+# 含根 CA 私钥（ca.key）与服务端私钥（server.key）——**整目录不进 git、不进镜像**。
+# 干净主机演练：先跑生成脚本，再把 ca.pem 导入受信任根，最后 docker compose up。
+deploy/certs/
 
 # ---------- 2. Python / uv ----------
 __pycache__/
