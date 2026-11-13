@@ -2,7 +2,7 @@
 > 上游依据：PRD line 578（Day 10 行＝完成定义）、line 513（AC-31）、line 453–460（FR-TC-04/05/09）、line 513 附近（FR-TC-08）、line 586–590（裁减顺序与不得裁减）｜技术设计文档 §8.3 Day 10（line 1176–1183，实现口径）｜大纲 §十 课时 10.1–10.4（教学口径）
 > 计划来源：docs/plans/day10/day-10-交付与观测-工作推进计划.md v1.0（2026-11-13 主理人四项裁决：双线并行 / 4 人任务包 / tag+文档齐套纳入·简历类单列附录 / 技术文档=技术设计文档）
 > 角色口径：4 名成员均为前后端开发（dev-A 偏后端部署、dev-B 偏后端观测、dev-C 全栈、dev-D 全栈/评测），**不含**独立测试/产品/设计角色工作——P0 回归、eval_gate 门禁、交付文档（HARNESS_DESIGN / IDENTITY_RULES / AI_USAGE）均为 TD §8.3 明列的**开发实现口径交付物**，由承接该域的开发自产（沿 day09 总览同一口径）
-> 粒度口径：按任务包分配，每包容量上限 **3 人日（24h）**；Day 10 实排开发工时 **A 17h／B 9.5h／C 15.5h／D 11h（合计 53h）**，各包余额为 **Line 1（day09 联调收口）槽位占用＋缓冲**——双线并行下每人 Day 10 阶段总占用仍为 2–3 个工作日（D10–D13 四个日历日摊开），符合粒度要求
+> 粒度口径：按任务包分配，每包容量上限 **3 人日（24h）**；Day 10 实排开发工时 **A 17h／B 13h／C 15.5h／D 11h（合计 56.5h）**，各包余额为 **Line 1（day09 联调收口）槽位占用＋缓冲**——双线并行下每人 Day 10 阶段总占用仍为 2–3 个工作日（D10–D13 四个日历日摊开），符合粒度要求
 > 变更记录见文末
 
 ---
@@ -46,7 +46,7 @@
 | --- | --- | --- | --- | --- |
 | **M6.0 启动核对与口径冻结** | 本文 §8 待确认项逐项裁决；对接点 Y1–Y5 口径冻结；写域矩阵签认 | 无 | D10 09:30 | dev-A 牵头全员 |
 | **M6.1 容器化编排就绪** | `docker compose up -d` 一键起全部服务（含新增 backend/nginx/laya/coturn/langfuse）全 healthy；`https://localhost` 打开长者端页面；`.env` 密钥零进镜像层 | A1 A2 A3 C1 | D11 17:00 | dev-A/dev-C |
-| **M6.2 观测就绪** | AC-31：一条完整 Trace（规则→分类器→模型→工具→TTS）可导出且脱敏；`/metrics` 含 cache 命中率口径 | B1 B2（联调依赖 A2） | D11 17:00 | dev-B |
+| **M6.2 观测就绪** | AC-31：一条完整 Trace（规则→分类器→模型→工具→TTS）可导出且脱敏，trace_id 与系统 `trace_id` 同值可互查；OTel exporter 承载该 Trace（TD §1:205，裁决 ⑤/Q10）；`/metrics` 含 cache 命中率口径 | B1 B2（联调依赖 A2） | D11 17:00 | dev-B |
 | **M6.3 交付文档齐套** | README（部署/回滚/成本/观测章节）+ HARNESS_DESIGN + IDENTITY_RULES + AI_USAGE + SECURITY 复核，清单逐项可检 | C2–C5 | D12 12:00 | dev-C |
 | **M6.4 P0 全量回归通过** | PRD §5.1 全部适用 AC 逐条复跑并落 `eval/reports/day10_p0_regression.md`；§5.2 固定测试集达标 | **Line 1 M5 收口** + D1 + M6.1/M6.2 | D12 18:00 | dev-D |
 | **M6.5 演示冻结与 tag final** | 干净主机三步起全栈全绿 + HTTPS 可访问；回滚演练（代码回滚 + `alembic downgrade` 各一次）成功；`git tag final` 打标并 push | A4 D3 D4 + M6.3 + M6.4 | D13 16:00 | dev-D 牵头全员 |
@@ -74,8 +74,8 @@ flowchart LR
       A1 -.-> A5
     end
 
-    subgraph SB["dev-B · 观测与成本线 · 9.5h"]
-      B1["B1 Langfuse 接入<br/>5h"]
+    subgraph SB["dev-B · 观测与成本线 · 13h"]
+      B1["B1 Langfuse+OTel exporter 接入<br/>8h"]
       B2["B2 /metrics 成本口径补齐<br/>2h"]
       B3["B3 F23 四信号+privacy_scope<br/>2.5h"]
       B1 --> B2
@@ -145,7 +145,7 @@ flowchart LR
 | **A3** nginx/HTTPS/coturn | dev-A | A2；Y1 静态段草案（C）；既有 `GET /api/audio/ice-config` 配置字段（只读） | `deploy/nginx.conf` 增量、HTTPS 证书说明、coturn 编排 | M6.1、D3、pad 语音链路 |
 | **A4** 回滚演练 | dev-A | A3；Y4 回滚基准（自定并登记）；既有迁移 0021 | 回滚演练记录、部署门禁清单 | C2（README 素材）、D5 |
 | **A5** 设备掉线检测 | dev-A | M6.0；既有 `device_service.py`、通知服务（只读调用） | `app/scheduler/device_jobs.py`（新）、`device_service.py` 增量、测试 | D2 回归覆盖（P2，无硬下游） |
-| **B1** Langfuse 接入 | dev-B | M6.0；Y2 langfuse 服务与凭据（A）；既有 `app/core/redact.py`、`langfuse_*` 配置字段 | Langfuse 接入代码、AC-31 证据 `eval/reports/day10_langfuse_trace.md` | M6.2、B2、C2（观测章节素材） |
+| **B1** Langfuse+OTel exporter 接入 | dev-B | M6.0；Y2 langfuse 服务与凭据（A）；既有 `app/core/redact.py`、`langfuse_*` 配置字段；既有单点收口 hook（`_record_asr_observation()`/`record_stage()`） | OTel+Langfuse exporter 接入代码、AC-31 证据 `eval/reports/day10_langfuse_trace.md` | M6.2、B2、C2（观测章节素材） |
 | **B2** /metrics 补齐 | dev-B | B1 | `app/api/metrics.py` 增量（cache 命中率）、成本估算记录 | M6.2、C2（成本章节素材） |
 | **B3** F23 四信号 | dev-B | M6.0；既有 `app/system_one/`、`privacy_scope` 字段 | 四信号输出接线、`privacy_scope` ≥1 消费点、延迟记录 | D2 回归覆盖（P2，无硬下游） |
 | **C1** 前端镜像 | dev-C | M6.0；`frontend/`（三入口 MPA） | `frontend/frontend.Dockerfile`、三入口产物路径约定（Y3） | A2/A3（合入 nginx）、M6.1 |
@@ -188,7 +188,7 @@ flowchart LR
 | 项 | 内容 |
 | --- | --- |
 | 提供方→消费方 | dev-A（A2）→ dev-B（B1） |
-| 契约内容 | compose `langfuse` 服务定义（形态按 §8 Q4 裁决，默认建议 Langfuse v2 镜像＋复用 postgres 独立 schema，避免 v3 的 ClickHouse/MinIO 依赖）；凭据三变量 **`.env` 注入、不硬编码**：`LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_HOST`；`.env.example` 的 langfuse 段由 **B 先定稿、A 合编排时一并成文**（B→A 提交顺序） |
+| 契约内容 | compose `langfuse` 服务定义（形态按 §8 Q4 裁决，默认建议 Langfuse v2 镜像＋复用 postgres 独立 schema，避免 v3 的 ClickHouse/MinIO 依赖）；凭据三变量 **`.env` 注入、不硬编码**：`LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_HOST`；**B1 走 OTel exporter 路线（裁决 ⑤/Q10），exporter 端点/凭据复用同一组变量**；`.env.example` 的 langfuse 段由 **B 先定稿、A 合编排时一并成文**（B→A 提交顺序） |
 | 联调时点 | D11 上午（compose 就绪后） |
 | 联调判据 | B1 以注入凭据发起一次对话，Langfuse 界面可见 Trace 落库可查 |
 
@@ -226,7 +226,7 @@ flowchart LR
 | 成员 | Line 2 写域仅限 | 禁触 |
 | --- | --- | --- |
 | **dev-A** | `Dockerfile`（新）、`.dockerignore`（新）、`docker-compose.yml`（**独占**）、`.env.example`（增量，langfuse 段走 Y2 B→A 顺序）、`deploy/nginx.conf`（**独占**）、`app/scheduler/device_jobs.py`（新，不碰 B 既有调度文件）、`app/services/device_service.py`（增量）、`app/api/audio.py` ICE 字段**只读**、对应 tests | 前端构建、docs 交付文档、eval_gate、Langfuse 接入代码 |
-| **dev-B** | Langfuse 接入代码（观测层模块，M6.0 定落点）、`app/core/config.py` langfuse 段增量、`app/system_one/**`（B3）、`privacy_scope` 消费点、`app/api/metrics.py`（增量）、`eval/reports/day10_langfuse_trace.md` | compose/Dockerfile/nginx、`app/scheduler/`（A5 例外见其任务书）、docs 交付文档 |
+| **dev-B** | OTel+Langfuse 接入代码（观测层模块，M6.0 定落点）、`app/core/config.py` langfuse 段增量、`app/core/metrics.py` 与 `app/audio/_observe.py` **仅 hook 函数体改接 OTel**（文件其余部分不改）、`app/system_one/**`（B3）、`privacy_scope` 消费点、`app/api/metrics.py`（增量）、`eval/reports/day10_langfuse_trace.md` | compose/Dockerfile/nginx、`app/scheduler/`（A5 例外见其任务书）、docs 交付文档 |
 | **dev-C** | `frontend/frontend.Dockerfile`（新）、`README.md` 增量（**独占**）、`docs/HARNESS_DESIGN.md`（新）、`docs/IDENTITY_RULES.md`（新）、`docs/AI_USAGE.md`（新）、`docs/SECURITY.md`（复核修订）、`docs/plans/day10/**`、`docs/team_tasks/day10/**` | backend Dockerfile/compose、观测代码、tests/eval_gate |
 | **dev-D** | `tests/eval_gate.py`（沿 day09 锁）、`.githooks/**`、`eval/reports/day10_p0_regression.md`、`docs/测试数据_人员与床位.md`（台账更新）、演示脚本、tag final 操作 | 部署编排、观测代码、交付文档正文（发现问题提单给 C） |
 
@@ -266,7 +266,7 @@ flowchart LR
 | 校验项 | 方法 | 结论 |
 | --- | --- | --- |
 | 仅前后端开发范畴 | 4 包全部为代码/编排/开发自产文档交付；回归与门禁为开发内嵌自验收（day09 同口径），无独立测试/产品/设计角色工作 | ✓ |
-| 粒度 2–3 人日 | 每包容量 ≤24h（3 人日）；实排 A 17/B 9.5/C 15.5/D 11h，余额为 Line 1 槽位占用，每人 D10–D13 总占用 2–3 个工作日 | ✓ |
+| 粒度 2–3 人日 | 每包容量 ≤24h（3 人日）；实排 A 17/B 13/C 15.5/D 11h，余额为 Line 1 槽位占用，每人 D10–D13 总占用 2–3 个工作日 | ✓ |
 | 4 人并行无串行阻塞 | 包内唯一硬链 A1→A2→A3→A4、B1→B2、C1→C2、D1→D2→D4→D5 均为单人链；跨包边仅 2 条硬边（M5→D2、M6.1→D3），其余为软依赖并行 | ✓ |
 | 责任边界 | 19 节点每节点唯一负责人＋写域矩阵 §4 零文件重叠 | ✓ |
 | 验收可量化 | 19 节点全部含 grep/状态码/healthy/退出码类判据，无「功能正常」类模糊表述 | ✓ |
@@ -289,6 +289,7 @@ flowchart LR
 | Q7 | Laya 容器化形态：宿主权重卷挂载 vs sidecar | A2 | 挂载宿主已下载权重卷；不可行则 sidecar 化并如实记录 |
 | Q8 | F23 延迟 668ms>200ms 继续挂起 | B3 | 如实记录不为达标调阈值（沿 X9 纪律） |
 | Q9 | dev-D 的 day09 计划件签认（作为 D2 回归基线） | D2 | M6.0 一并签认 |
+| Q10 | ~~OTel 缺口处置~~ **已裁决（A1，2026-11-13）**：B1 扩为「OTel SDK + Langfuse exporter 一体接入」，兑现 TD §1:205 选型与 day03/day04 hook 承诺；B1 5h→8h、B 包 9.5h→13h；AC-31 Span 链语义不变 | ~~B1/写域~~ 已落 §2/§4 | 已裁决，随 v1.1 落档 |
 
 ---
 
@@ -297,3 +298,4 @@ flowchart LR
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-13 | 首版。基于 `docs/plans/day10/` 计划件 v1.0 与 2026-11-13 主理人四项裁决编制：里程碑 M6.0–M6.5、19 节点 DAG（含输入输出表）、对接点契约 Y1–Y5、写域互斥矩阵、排程表、校验结论、待确认 Q1–Q9。 |
+| v1.1 | 2026-11-13 | **Q10 裁决 A1 落档**（与计划件 v1.1 同步）：B1 扩为「OTel SDK + Langfuse exporter 一体接入」（8h，B 包 13h，总 56.5h）；M6.2 判据增 trace_id 同值互查与非 LLM span；Y2 增 exporter 凭据复用；写域矩阵增 `app/core/metrics.py`/`app/audio/_observe.py` 仅 hook 函数体；AC-31 验收口径与 DAG 结构不变。 |
