@@ -96,6 +96,10 @@ INJECTION_MIN_CASES = 10
 INJECTION_TEST_PATH = "tests/test_injection.py"
 INJECTION_FIXTURE_PATH = "eval/fixtures/injection.jsonl"
 
+#: Day 10 D1-R2（Q3 阻塞真门禁裁决）：expected-red 入库留痕文件。
+#: 变更走 git 历史（谁标、何时标、为什么标，可追溯）；过期自动失效。
+EXPECTED_RED_PATH = ROOT / "eval/reports/expected_red.json"
+
 #: 行为场景类边界所引用的既有测试（不新造第二套评测实现）
 SCENARIO_TESTS: tuple[str, ...] = (
     "tests/test_degrade_timeout.py",  # 超时/降级
@@ -359,6 +363,7 @@ def write_report(
     bad_cases: list[Row],
     scenarios: tuple[bool, str] | None,
     fixtures_meta: dict[str, str],
+    expected_red_note: str = "",
 ) -> None:
     settings = get_settings()
     lines: list[str] = []
@@ -373,6 +378,8 @@ def write_report(
         f"> 版本：`{settings.system_one_model_version}` ｜ 置信阈值 {settings.system_one_confidence_threshold}"
         f" ｜ 锁文件 `{lock_path.name}`"
     )
+    if expected_red_note:
+        lines.append(f"> {expected_red_note}")
     lines.append("")
     lines.append("## 1. 门禁判定")
     lines.append("")
@@ -486,8 +493,38 @@ def append_backlog(path: Path, run_id: str, bad_cases: list[Row]) -> int:
                 + "\n"
             )
         return 0
+    # Day 10 D1-R2（Q3 接线裁决配套）：按 id 去重——同一 bad case 在锁未变时
+    # 复跑必然复现，无脑追加会让 backlog 按轮次线性膨胀（2026-11-13 实测两轮
+    # 追加 52 条同 id）。已有 id 不重复追加，仅落一条汇总留痕。
+    existing: set[str] = set()
+    if path.exists():
+
+        def _backlog_id(line: str) -> str:
+            try:
+                return json.loads(line).get("id") or ""
+            except ValueError:
+                return ""
+
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                existing.add(_backlog_id(line))
+        existing.discard("")
+    fresh = [r for r in bad_cases if r.id not in existing]
     with path.open("a", encoding="utf-8") as fh:
-        for r in bad_cases:
+        if not fresh:
+            fh.write(
+                json.dumps(
+                    {
+                        "run_id": run_id,
+                        "date": time.strftime("%Y-%m-%d %H:%M"),
+                        "summary": f"{len(bad_cases)} 条 bad case 均已在案（id 去重，未重复追加）",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            return 0
+        for r in fresh:
             d = r.decision
             fh.write(
                 json.dumps(
@@ -517,15 +554,16 @@ def append_backlog(path: Path, run_id: str, bad_cases: list[Row]) -> int:
                 )
                 + "\n"
             )
-    return len(bad_cases)
+    return len(fresh)
 
 
 def self_check(fixtures: Path, boundary: Path) -> int:
-    """pre-push 用的机制自检：**不跑模型、不写锁、不做判定**。
+    """机制自检：**不跑模型、不写锁、不做判定**。
 
     它只回答一个问题：「样本还能被这道门禁正确加载吗」。答案是 no 时，
-    说明 fixtures 被改坏了或六类边界缺类，钩子应当拦住推送——这与「跑分
-    达不达标」是两件事，后者需要 torch 与 ~60s，不能塞进 pre-push。
+    说明 fixtures 被改坏了或六类边界缺类，钩子应当拦住推送。Day 10 Q3
+    裁决后 pre-push 已升级为跑真门禁（`--provider local`），本自检保留为
+    真门禁之前的轻量快查（样本坏了先拦，不用等 torch 跑完才发现）。
     """
     problems: list[str] = []
     try:
@@ -575,6 +613,36 @@ def self_check(fixtures: Path, boundary: Path) -> int:
     return 0
 
 
+def load_expected_red(cli_arg: str, strict: bool) -> dict[str, Any]:
+    """合并文件与 CLI 的 expected-red 标注（Day 10 D1-R2，Q3 阻塞真门禁裁决）。
+
+    - 文件 `eval/reports/expected_red.json` 为**入库留痕**：谁标、何时标、为什么标
+      走 git 历史；`expires` 日期（含当日）过后自动失效，红项重新阻塞——防止
+      「标注永不摘除」变成监控盲点（十大陷阱之补丁叠补丁）。
+    - CLI `--expected-red B,D` 可临时追加（同样计入打印留痕）。
+    - `--strict` 全部忽略：未标注的红必须阻塞（四态验证/复核用）。
+
+    返回 `{"gates": set[str], "reason": str, "expired": list[str]}`。
+    """
+    gates: set[str] = set()
+    reasons: list[str] = []
+    expired: list[str] = []
+    if not strict and EXPECTED_RED_PATH.exists():
+        data = json.loads(EXPECTED_RED_PATH.read_text(encoding="utf-8"))
+        exp = str(data.get("expires", "")).strip()
+        if exp and exp < time.strftime("%Y-%m-%d"):
+            expired.append(f"文件标注已过期（expires={exp}），自动失效")
+        else:
+            gates |= {g.strip().upper() for g in data.get("gates", []) if str(g).strip()}
+            if data.get("reason"):
+                reasons.append(f"文件标注（{data.get('created_at', '')}）：{data['reason']}")
+    if not strict and cli_arg:
+        cli_gates = {g.strip().upper() for g in cli_arg.split(",") if g.strip()}
+        gates |= cli_gates
+        reasons.append(f"CLI 标注：{'、'.join(sorted(cli_gates))}")
+    return {"gates": gates, "reason": "；".join(reasons), "expired": expired}
+
+
 def _default_test_python() -> str:
     """场景测试解释器默认值（跨平台）。
 
@@ -606,7 +674,12 @@ def main() -> int:
         "--allow-mock", action="store_true", help="允许 mock 跑机制（永不写锁，报告标非基线）"
     )
     ap.add_argument("--lock", default=str(ROOT / "eval/reports/day8_baseline_lock.json"))
-    ap.add_argument("--report", default=str(ROOT / "eval/reports/day8_eval_baseline.md"))
+    ap.add_argument(
+        "--report",
+        default=str(ROOT / "eval/reports/eval_gate_last_run.md"),
+        help="报告输出路径。Day 10 D1-R2：默认改为滚动文件 eval_gate_last_run.md，"
+        "防止复跑静默改写历史报告（day8_eval_baseline.md 曾被默认值误写，已还原）",
+    )
     ap.add_argument("--backlog", default=str(ROOT / "eval/fixtures/badcase_backlog.jsonl"))
     ap.add_argument(
         "--skip-scenarios", action="store_true", help="跳过行为场景测试（调试用，不用于门禁放行）"
@@ -630,6 +703,17 @@ def main() -> int:
         "--below-prd-reason",
         default="",
         help="--allow-below-prd 时必须给出留痕理由（写入锁 below_prd 字段）",
+    )
+    ap.add_argument(
+        "--expected-red",
+        default="",
+        help="显式标注已知挂起红项（闸门字母，逗号分隔，如 B,D,E）——红项不阻塞推送但留痕"
+        "（Day 10 Q3 裁决，2026-11-13）；文件 eval/reports/expected_red.json 为入库留痕，CLI 可临时追加",
+    )
+    ap.add_argument(
+        "--strict",
+        action="store_true",
+        help="忽略全部 expected-red 标注（文件与 CLI），按原始判定决定退出码（四态验证/复核用）",
     )
     args = ap.parse_args()
 
@@ -803,6 +887,24 @@ def main() -> int:
         boundary_path.name: sha256_of(boundary_path),
     }
 
+    # ------------------------------------------------------------------
+    # Day 10 D1-R2（Q3 阻塞真门禁裁决，2026-11-13）：expected-red 标注。
+    # 红项被显式标注 → 不阻塞推送但留痕（报告头＋控制台）；未标注的红一律
+    # 阻塞。锁写入逻辑不变：expected-red 生效时 all_ok 仍为 False，不写锁。
+    # ------------------------------------------------------------------
+    er = load_expected_red(args.expected_red, args.strict)
+    failing_letters = {name[0] for name, *_, ok in gates if not ok}
+    er_hit = sorted(failing_letters & er["gates"])
+    er_blocked = sorted(failing_letters - er["gates"])
+    er_note = ""
+    if er_hit:
+        er_note = (
+            f"expected-red：{'、'.join(er_hit)}——已知挂起红项，不阻塞推送但留痕；"
+            f"{er['reason']}；复跑达标后撤销标注"
+        )
+    if er["expired"]:
+        er_note += ("；" if er_note else "") + "；".join(er["expired"])
+
     run_id = time.strftime("%Y%m%d-%H%M%S")
     command = " ".join([Path(sys.executable).name, "tests/eval_gate.py", *sys.argv[1:]])
     attribution = attribute(rows, summary)
@@ -818,6 +920,7 @@ def main() -> int:
         bad_cases=summary.bad_cases,
         scenarios=scenarios,
         fixtures_meta=fixtures_meta,
+        expected_red_note=er_note,
     )
     added = append_backlog(Path(args.backlog), run_id, summary.bad_cases)
 
@@ -903,13 +1006,24 @@ def main() -> int:
         f"｜p50={metrics['latency_p50_ms']}ms p95={metrics['latency_p95_ms']}ms ｜耗时 {elapsed:.1f}s"
     )
     for name, result, rule, ok in gates:
-        print(f"[gate] {verdict(ok)} {name}：{result} ｜判据 {rule}")
+        mark = verdict(ok)
+        if not ok and name[0] in er["gates"]:
+            mark += "（expected-red，不阻塞）"
+        print(f"[gate] {mark} {name}：{result} ｜判据 {rule}")
     print(f"[gate] badcase 回流 {added} 条 → {args.backlog}")
     print(f"[gate] 报告 → {args.report}")
     if args.provider == "mock":
         print("[gate] 注意：mock 结果不代表模型能力，未写锁。", file=sys.stderr)
-    print("[gate] RESULT:", "PASS" if all_ok else "FAIL")
-    return 0 if all_ok else 1
+    if er_blocked:
+        print(
+            f"[gate] 未标注红项：{'、'.join(er_blocked)}——阻塞（如属已知挂起，"
+            "更新 eval/reports/expected_red.json 留痕后放行）",
+            file=sys.stderr,
+        )
+        print("[gate] RESULT: FAIL")
+        return 1
+    print("[gate] RESULT:", "PASS" + ("（expected-red 生效，红项已留痕）" if er_hit else ""))
+    return 0
 
 
 if __name__ == "__main__":
