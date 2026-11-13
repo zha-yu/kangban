@@ -7,8 +7,9 @@
 两个入口（2026-11-10 主理人裁决，见计划 §10-10）：
 
 - `decide_fast()`：只问 `intent`，客户端 200ms 硬预算（PRD §5.3）。实测单问 p95 167ms。
-- `decide_shadow()`：只问 `is_sensitive`，独立 400ms 预算，**有果才用、没果当没问过**。
-  两问 285ms、四问 668ms 均超 200ms，所以敏感信号只能走 shadow 并行。
+- `decide_shadow()`：问 `is_sensitive` ＋ `privacy_scope` 两问（Day 10 B3 扩第二问），
+  独立 400ms 预算，**有果才用、没果当没问过**。
+  两问 285ms、四问 668ms 均超 200ms，所以敏感/隐私信号只能走 shadow 并行。
 
 熔断（连续 3 次失败/30s 打开、半开探测 1 次）：打开期间**立刻**返回降级结果，不再等 200ms。
 快路径与 shadow **各用一个熔断器**：shadow 的 400ms 超时不该把快路径一起打成 fallback。
@@ -157,7 +158,8 @@ class SystemOneClient:
         trace_id: str | None = None,
         state: str | dict[str, Any] | list[Any] | None = None,
     ) -> SystemOneResult:
-        """只问 `is_sensitive`（400ms）。失败即「当没问过」——降级结果的 `is_sensitive=False`。"""
+        """问 `is_sensitive` ＋ `privacy_scope`（400ms）。失败即「当没问过」——降级结果的
+        `is_sensitive=False`、`privacy_scope="none"`，消费方以 `degraded` 标记区分。"""
         return await self._decide(
             text,
             trace_id=trace_id,
