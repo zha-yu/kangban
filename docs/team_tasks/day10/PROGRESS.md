@@ -18,7 +18,7 @@
 | --- | --- |
 | `docs/plans/day10/d-评测回归与演示冻结.md` | 🚧 进行中（S0/D1/D1-R2 已完成，下一步 D2 P0 全量回归） |
 | `docs/plans/day10/day-10-交付与观测-工作推进计划.md` | 🚧 进行中（v1.4 · C 包 S0–S3 已收口；Q1/Q3/Q5/Q10 已裁决，Q2/Q4/Q6–Q9 待 M6.0 收敛） |
-| `docs/plans/day10/dev-a-容器化与部署链.md` | 🚧 进行中（S1–S4 已收口；**Q4 改判 v2→v4 已同步进 compose 六服务编排**；laya 本机按 Q7 兜底 sidecar 形态；下一步 S5） |
+| `docs/plans/day10/dev-a-容器化与部署链.md` | 🚧 进行中（S1–S5 已收口；本次 push 经主理人裁决豁免真门禁一次（留痕待补跑）；下一步 S6） |
 | `docs/plans/day10/dev-b-day10-工作推进计划.md` | ❔ **进行中 · 主理人已签认 · Step 0–6 全部执行完毕（Step 5 经主理人 20:22 确认关闭；Step 6 收口 20:30 完成，含 /api/metrics 实测）· 越域修复 redact.py 误伤 bug（主理人 20:28 授权，全量 1695 passed）· 剩余＝D3 演练抽验（挂起待时点）＋本轮提交＋知会 dev-A（等指令）** |
 | `docs/plans/day10/dev-c-day10-工作推进计划.md` | 🚧 进行中（S0–S3 已收口，剩余素材回填待 A4/B2/B1/D1） |
 

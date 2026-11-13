@@ -578,14 +578,22 @@ docker compose up -d
 
 ## 14. 成本数据
 
-> ⏳ **待 B2**：dev-B 成本估算与指标口径（D12 交付）。以下四个指标位只定口径，**数字全部取实测，未达标如实写，不得粉饰**。
+> 素材来源：`eval/reports/day10_cost_brief.md`（dev-B B2，2026-11-13，全部实测无估算）。**价格不代填**（随厂商变动，按当日定价页代入下方公式），实测数字未达标如实写。
 
-| # | 指标 | 目标口径 | 实测值 | 取数来源 |
+| # | 指标 | 目标口径 | 实测值（2026-11-13） | 说明 |
 | --- | --- | --- | --- | --- |
-| 1 | S1 闭环率（快决策层闭环占比） | ≥ 60%（§1 工程目标） | 待 B2 | `/metrics` |
-| 2 | 单会话 Tool 调用数 | ≤ 8（`MAX_TOOL_CALLS=8` 预算） | 待 B2 | `/metrics` |
-| 3 | prompt cache 命中率 | 口径待 B2 | 待 B2 | `/metrics`（cache 命中率指标待 B2 补齐） |
-| 4 | 分层记忆省 Token | 口径待 B2 | 待 B2 | `/metrics` |
+| 1 | S1 闭环率（快决策层闭环占比） | ≥ 60%（§1 工程目标） | **5.19%**（未达标，如实登记） | 联调期 fallback 占 72.73%（含大量 429 降级与异常探针），生产占比待 Day 11+ 观测；rule 15.58% + system_one 11.69% 为零 LLM 成本层 |
+| 2 | 单会话 Tool 调用数 | ≤ 8（`MAX_TOOL_CALLS=8` 预算） | B2 小抄未含该项实测，待补 | 预算熔断已实现（guardrails） |
+| 3 | prompt cache 命中率 | 可复算（FR-TC-08） | **0.0%**（真实值非缺数据） | Qwen 3 次调用均冷缓存：`cache_hit_tokens=0 / cache_miss_tokens=2025`，可复算 0/(0+2025)=0.0；多轮共享稳定系统提示+人设才可能命中 |
+| 4 | 分层省 Token | 结构性口径 | 单轮 prompt 基线 ≈ **765 tokens**（MiniMax 实测；Qwen ≈675/次） | rule/system_one 层每接住一通即省一次完整 LLM 往返 |
+
+**成本公式**（价格按当日定价页代入；注意 qwen3.8 是思考模型，`completion_tokens` 含 reasoning tokens 也计费）：
+
+```
+单轮 LLM 成本 ≈ prompt_tokens × 输入单价 + completion_tokens × 输出单价
+分段成本 ≈ Σ(各层调用数 × 该层单轮成本)     # rule/system_one 层 = 0
+缓存节省 ≈ cache_hit_tokens × (输入单价 − 缓存命中单价)
+```
 
 > 教学口径提醒（PRD §1.3）：本节数据为教学演示项目实测，不以模拟数据比例作为真实运营效果证明。
 
@@ -595,17 +603,19 @@ docker compose up -d
 
 ### 15.1 `/metrics` 指标端点（已交付）
 
-- day09 C4 已交付 `GET /metrics`，含**分层命中率**、**S1 闭环率**、**token 用量**三类指标。
-- ⏳ 待 B2：prompt cache 命中率指标补齐后，回填取数口径与示例。
+- `GET /metrics`（Bearer 鉴权）含**分层命中率**、**S1 闭环率**、**token 用量**、**prompt cache 段**（B2 补齐：进程内计数 + LLM span 属性明细，重启归零并如实标注 `available/reason`；MiniMax 档当日版本未回传 cache 字段）。
+- 已知缺陷（待 dev-A）：`redact.py` `_SECRET_KEY_RE` 误伤 `*_tokens` 字段名，日志轨与 Langfuse 属性里的 token 数暂显示 `***`（`/api/metrics` 快照数字不受影响）。
 
-### 15.2 Langfuse Trace 查询（骨架）
+### 15.2 Langfuse Trace 查询（B1 已交付）
 
-- 目标口径（AC-31）：Langfuse 中的 `trace_id` 与系统侧 trace id（`/health` 等响应的 `X-Trace-Id`）为**同值**，可在 Langfuse 界面与系统日志之间双向互查。
-- ⏳ 待 B1：Langfuse 接入（Y2 凭据 + OTel exporter 路线）交付后，补充界面截图与查询操作步骤。
+- **操作手册**：`docs/guides/langfuse-操作指引.md`（v4 共享实例，六容器全家桶，dev-B 主机 `http://<dev-B的IP>:3000`，项目 **kangban**）。
+- **接入**：OTel SDK → OTLP/HTTP `{LANGFUSE_HOST}/api/public/otel/v1/traces`（`app/core/observability.py`）；首次接入五步（注册 → 选 kangban 项目 → 生成 pk/sk → 填 `.env` 四变量 → 验证），sk 仅创建时显示一次。
+- **AC-31 已验证**：Langfuse trace_id 与系统 trace_id **同值同名双向互查**；证据：`eval/reports/day10_langfuse_trace.md`。
+- **验数通道**：v4 开启 events_only 模式（legacy 查询 API 禁用），精确验数走 ClickHouse 直查 `default.events_core`（SQL 见指引 §3.2）。
 
 ### 15.3 告警规则
 
-- ⏳ 待 B1：SLO 告警规则落地后，回填规则清单与触发阈值。
+- ⏳ 待 B1/SLO 规则落地：B1 交付物（操作指引 + Trace 证据）未含 SLO 告警规则清单，如实登记待补。
 
 ### 15.4 门禁口径
 
