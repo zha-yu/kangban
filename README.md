@@ -541,13 +541,15 @@ docker compose up -d
 | nginx（前端托管 + 反代） | 80 / 443 | ✅ **已入编（A2a）**：镜像 = dev-C C1 的 `frontend/frontend.Dockerfile`（Y3 契约：构建上下文 `./frontend`、产物 `/usr/share/nginx/html/{pad,console,family}`、镜像内默认配置含三入口静态段 + `/api` `/ws` 反代）；healthcheck 探 `/pad/`；**`deploy/nginx.conf` 的 HTTPS/证书/三入口完整段归 dev-A S6 升格后卷挂载覆盖**（当前镜像内默认配置生效中） |
 | system-one（laya sidecar） | 7001 | ⏳ 待 A2 S4（Q7 裁决：默认挂宿主权重卷，不可行则 sidecar 化如实记录） |
 | coturn | 3478 / 5349 | ⏳ 待 A2 S4 |
-| langfuse | 3000（共享实例） | ⏳ **改判⑨（2026-11-13）：形态改 Langfuse v4 全家桶（六容器）**，compose 服务定义归 dev-A S4 待办（尚未入 compose）；共享实例常驻主理人指定主机，其他成员在 `http://<主理人局域网IP>:3000` 自行注册拿 key（密钥不进 git，`.env` 注入） |
+| langfuse | 3000（共享实例） | ⏳ **改判⑨（2026-11-13）+ 主理人澄清（17:18）：形态 v4 全家桶（六容器），部署在 dev-B 主机，全员直连 dev-B IP，不自己起服务**；compose 服务定义归 dev-A S4 待办（本地仅保留 profile 化编排或占位，由 A 复核）；观测注册 `http://<dev-B局域网IP>:3000` 自行注册拿 key（密钥不进 git，`.env` 注入） |
 
 ### 12.3 端口约定
 
 端口一律沿用 **§6.2 服务与端口表**（唯一口径）：postgres 5432 / redis 6379 / backend 8000 / nginx 80·443 / system-one(laya) 7001 / funasr 7002 / weather-mcp 7101 / mock-operations-mcp 7102 / coturn 3478·5349 / vite dev 5173。
 
 补充一处实测事实：**voiceprint 7003** 已在 `docker-compose.yml` 启用（`VOICEPRINT_HOST_PORT` 可改写），§6.2 表后续统一回补。
+
+> **本机不起 funasr / voiceprint（2026-11-13 17:18 主理人口径）**：两者直连 **dev-B 主机实例**（funasr 免本机 GB 级模型下载；voiceprint 免本机环境重复搭建），本机 compose 可不起这两个容器，backend 经 `.env` 把 `ASR_*` / `VOICEPRINT_BASE_URL` 指向 dev-B 局域网 IP 即可（dev-B IP 由 dev-B 分发）。funasr 连通性为当前攻坚重点。
 
 ### 12.4 前端镜像（C1 已交付，2026-11-13）
 

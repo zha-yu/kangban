@@ -188,7 +188,7 @@ flowchart LR
 | 项 | 内容 |
 | --- | --- |
 | 提供方→消费方 | dev-A（A2）→ dev-B（B1） |
-| 契约内容 | ~~compose `langfuse` 服务定义（建议 Langfuse v2 镜像＋复用 postgres 独立 schema）~~ **改判⑨（2026-11-13 主理人）：Langfuse 形态改 v4 全家桶（六容器）**，compose 服务定义仍归 dev-A S4（**尚未入 compose，Y2 仍是 A 待办**）；共享实例常驻主理人指定主机，**其他成员在 `http://<主理人局域网IP>:3000` 自行注册拿 key**（密钥不进 git）；compose 侧 langfuse 服务定义按 v4 口径补编（profile 化机制是否保留由 dev-A 按 v4 六容器形态复核）；`.env.example` 的 langfuse 段 B 先定稿、A 合编排时成文；**B1 走 OTel exporter 路线（裁决 ⑤/Q10），exporter 端点/凭据复用同一组变量**；⚠️ dev-A 计划件 S0/S4/Y2 所记「v2+复用 postgres、连 dev-B 主机」已过时，待 A 同步 |
+| 契约内容 | ~~compose `langfuse` 服务定义（建议 Langfuse v2 镜像＋复用 postgres 独立 schema）~~ **改判⑨（2026-11-13 主理人）：Langfuse 形态改 v4 全家桶（六容器）**；**主理人澄清（17:18）：实例部署 dev-B 主机、全员直连 dev-B IP，不自己起服务**（早前「主理人 IP」口径作废）；compose 服务定义仍归 dev-A S4（**尚未入 compose，Y2 仍是 A 待办**，本地仅保留 profile 化编排或占位，由 A 按 v4 形态复核）；**其他成员在 `http://<dev-B局域网IP>:3000` 自行注册拿 key**（密钥不进 git）；`.env.example` 的 langfuse 段 B 先定稿、A 合编排时成文；**B1 走 OTel exporter 路线（裁决 ⑤/Q10），exporter 端点/凭据复用同一组变量**；⚠️ dev-A 计划件 S0/S4 所记「v2+复用 postgres」已过时（v4 改判）待 A 同步，「连 dev-B 主机」口径经澄清**维持有效** |
 | 联调时点 | D11 上午（compose 就绪后） |
 | 联调判据 | B1 以注入凭据发起一次对话，Langfuse 界面可见 Trace 落库可查 |
 
@@ -307,3 +307,4 @@ flowchart LR
 | v1.6 | 2026-11-13 | **Q1 改判落档**（主理人 14:28，推翻 14:06 的 A 裁决）：**演示视频不录制**，D4 只交 5 分钟脚本（工时回 2h）；PRD line 578 / 大纲 10.4 字面偏差显式登记 §6，PRD 层留痕建议并入修订记录 v3.2 同批处理。Q3/Q5 不受影响。 |
 | v1.7 | 2026-11-13 | **Y5 契约增补**（dev-D 提单 15:17，dev-C 登记）：push 成本 3~4 分钟为既定、全员须 `git config core.hooksPath .githooks`、expected-red 过期时间 2026-11-15（到期 B/D/E 红项恢复阻塞）；README §15.4 已先行合入提单事实（素材文件 `day10_gate_rerun.md` 待 dev-D push，到位后逐字校对）。 |
 | v1.8 | 2026-11-13 | **改判⑨落档（Langfuse v4 全家桶）**：主理人改判 Langfuse 形态为 **v4 全家桶（六容器）**——Q4 行、Y2 契约同步更新；compose langfuse 服务定义仍归 dev-A S4 待办（当前未入 compose）；共享实例注册 `http://<主理人局域网IP>:3000`；dev-A 计划件 S0/S4 所记「v2+复用 postgres、连 dev-B」标记过时待 A 自行同步（提单不动其写域）。 |
+| v1.9 | 2026-11-13 | **主理人澄清（17:18）**：改判⑨的实例宿主确认 **dev-B 主机、全员直连 dev-B IP，不自己起服务**（v1.8 的「主理人 IP」口径作废，「连 dev-B」恢复有效）；**funasr 与 voiceprint 同口径：直连 dev-B 实例、本机不起容器**（funasr 免本机 GB 级模型下载，为攻坚重点）；Y2/Q4、README §12.2 同步。 |
