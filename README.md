@@ -172,6 +172,31 @@ docker exec -w /w silvermate-verify sh -c 'PYTHONPATH=/w exec uvicorn app.main:a
 
 需要连 PostgreSQL 跑迁移的完整版本见 [`AGENTS.md` §3.1](AGENTS.md)。
 
+#### 终端 C · System One sidecar（:7001，可选）
+
+只有用到 Laya 本地推理（快路径模型判定）才需要起；不起则主服务走 mock/降级，业务仍可用。**端口 7001 已被占用时启动会直接失败**（`strictPort` 口径）。
+
+```bash
+# 首次：准备一个带 torch 的 Python 环境（主 .venv 不带 torch）
+#   首选 .venv_sidecar（真门禁同款）；本机实例：conda 环境 agent-langgraph（torch 2.14.0）
+#   依赖清单：torch、transformers、fastapi、uvicorn、pydantic-settings、sqlalchemy、asyncpg
+#   （B1 观测链后 client.py → app.core.metrics → db 带出 asyncpg，缺它启动即 ImportError）
+conda activate agent-langgraph    # 或 source .venv_sidecar/bin/activate
+
+# 每次启动（PYTHONPATH 必须指向仓库根；Laya 权重路径读 .env 的 SYSTEM_ONE_MODEL_PATH）
+PYTHONPATH=$PWD python -m uvicorn app.system_one.server:app --port 7001 --log-level warning
+
+# 健康检查（本机设了 http_proxy 时 curl 要加 --noproxy，否则探测被代理吃掉）
+curl -s --noproxy '*' http://127.0.0.1:7001/health
+```
+
+评测复跑（50/110 条样例记 p95）走主环境：
+
+```bash
+NO_PROXY='127.0.0.1,localhost' uv run python scripts/eval_router.py \
+  --fixtures eval/fixtures/day7_intents.jsonl --report eval/reports/<名字>.md --provider sidecar
+```
+
 > **当前进度（2026-11-09）**：Day 1–Day 5 已交付；**Day 6「长者侧 Agent 完整闭环」在推进中**——A 线（历史账本 / 工具执行 / 用药子图 / 工单 / 天气 MCP 接入）已收口，验收 **931 passed、覆盖率 81.51%**，取证见 §7.4；B 线（状态中心与上下文记忆）与 C 线（Agent、统一出口、安全层）的代码已在 `develop`，联调与门禁随全队节奏收口。
 > 已就绪：`docker-compose.yml`（基础依赖版）、`frontend/`（pad / console / family 三端）、`app/`、`alembic/`（至 `0011`）、`tests/`、`mcp-servers/weather/`。
 > 尚未就绪：`Dockerfile`、nginx 托管、`eval/`（评测基线，随 Day 7 之后落地）——在此之前「全栈一键起」不可用，按上面两个终端分别启动。
