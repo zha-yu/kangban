@@ -4,14 +4,14 @@
 - **异步批量缓冲**：`record_stage()` 只做校验 + 进程内入队（同步、非阻塞），
   后台任务按 `FLUSH_INTERVAL_SECONDS` 周期批量 INSERT——观测旁路，不阻塞对话主链路；
 - **失败降级**：落库失败丢弃该批并记 warning 日志（打点允许丢失，不允许拖垮主链路）；
-- **非法值不入库**：stage 不在八值白名单、trace_id 缺失、duration_ms < 0 的行
+- **非法值不入库**：stage 不在九值白名单、trace_id 缺失、duration_ms < 0 的行
   直接丢弃记日志（对齐 ER §4.4.7 CHECK 约束，不让 DB 报错回流调用方）；
 - **只写指标不写内容**：调用方不应传转写全文/隐私字段；本服务不主动截取任何业务内容。
 
-**LLM token 用量（P15 / dev-C 需求）**：`record_llm_usage()` 只做「结构化日志 +
-进程内计数」，**不写库**——`metrics.stage` 的 CHECK 白名单里没有 `llm_tokens`，
-加值需 A 的迁移；`duration_ms` 是毫秒列，**不得把 token 数塞进去**。
-跨重启 / 多 worker 的聚合必须等迁移落地，本进程内计数只能服务单实例看板与日志回捞。
+**LLM token 用量（P15 / dev-C 需求，0021 已落地）**：`record_llm_usage()` =
+「结构化日志 + 进程内计数 + 落库一行 stage=llm_tokens（duration_ms=0，
+token 数进 0021 新增的可空列，NULL = 供应商未回 usage）」。跨重启 / 多 worker
+的聚合查库即得；`snapshot_llm_usage()` 的进程内计数继续服务单实例即时读数。
 """
 
 from __future__ import annotations
@@ -31,7 +31,8 @@ from app.models.metrics import Metric
 
 logger = logging.getLogger("app.services.metrics")
 
-#: stage 八值白名单（对齐 models/metrics.py CHECK 约束；0014 迁移加值 response_segment）
+#: stage 九值白名单（对齐 models/metrics.py CHECK 约束；0014 加 response_segment，
+#: 0021 加 llm_tokens——P15 LLM token 用量落库，主理人授权 B 自行交付）
 STAGES: frozenset[str] = frozenset(
     {
         "wakeup",
@@ -42,6 +43,7 @@ STAGES: frozenset[str] = frozenset(
         "tts_first_packet",
         "playback",
         "response_segment",
+        "llm_tokens",
     }
 )
 
@@ -79,9 +81,26 @@ class MetricsRecorder:
         stage: str,
         duration_ms: int | float,
         source: str | None,
+        *,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        total_tokens: int | None = None,
     ) -> bool:
-        """校验并入队一条打点；返回是否被接受（拒绝 = 丢弃 + 日志，不抛异常）。"""
-        row = self._normalize_row(trace_id, elder_id, stage, duration_ms, source)
+        """校验并入队一条打点；返回是否被接受（拒绝 = 丢弃 + 日志，不抛异常）。
+
+        `*_tokens` 仅 stage=llm_tokens 使用（P15）：None = 供应商未回 usage，
+        落 NULL 不补零；非法值（非 int/负数/bool）防御性置 None。
+        """
+        row = self._normalize_row(
+            trace_id,
+            elder_id,
+            stage,
+            duration_ms,
+            source,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+        )
         if row is None:
             return False
         try:
@@ -104,6 +123,10 @@ class MetricsRecorder:
         stage: str,
         duration_ms: int | float,
         source: str | None,
+        *,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        total_tokens: int | None = None,
     ) -> dict[str, Any] | None:
         """字段级校验；非法行丢弃并记日志（自裁 Z4：trace_id 缺失不入库）。"""
         if not trace_id or not isinstance(trace_id, str) or len(trace_id) > 64:
@@ -142,6 +165,9 @@ class MetricsRecorder:
             "stage": stage,
             "duration_ms": round(duration_ms),
             "source": src,
+            "prompt_tokens": _token_or_none(prompt_tokens),
+            "completion_tokens": _token_or_none(completion_tokens),
+            "total_tokens": _token_or_none(total_tokens),
         }
 
     # ---------------------------------------------------------------- 落库
@@ -205,9 +231,9 @@ def get_metrics_recorder() -> MetricsRecorder:
 
 
 # ------------------------------------------------------------------ F26 /metrics 读侧
-# TD:1182 口径：/metrics 输出分层命中率、S1 闭环率与 token 消耗。本函数只读
-# decision_logs（路由决策只追加表）；token 消耗当前无落库来源（llm_service 未回传
-# usage，B 侧适配器埋点后接入），API 层以 available=false 如实呈现，不编造数值。
+# TD:1182 口径：/metrics 输出分层命中率、S1 闭环率与 token 消耗。进程内计数
+# （snapshot_llm_usage）提供 available 语义；持久化经 0021（P15）落
+# `metrics` 表 stage=llm_tokens——跨重启/多 worker 的成本统计查库即得。
 
 
 async def read_decision_metrics(
@@ -285,11 +311,15 @@ def record_llm_usage(
     provider: str | None = None,
     model: str | None = None,
 ) -> dict[str, Any]:
-    """记一次成功 LLM 调用的 token 用量：**一条结构化日志 + 进程内计数**。
+    """记一次成功 LLM 调用的 token 用量：**一条结构化日志 + 进程内计数 + 落库一行**。
 
-    - 缺 usage（双 None）也计入 `calls`，但 token 计数不动（0 与「不知道」不可混同）；
+    - 缺 usage（双 None）也计入 `calls`，但 token 计数与列都不动（NULL = 不知道，
+      0 = 确认为零——「缺/非法不补零」是 LLMReply 的既定口径）；
     - 返回 `snapshot()`，便于调用方即时读取或测试断言；
-    - 不写 `metrics` 表：`llm_tokens` stage 未进 CHECK 白名单（等 A 的迁移）。
+    - **落库**（0021 后生效，P15 闭合）：stage=`llm_tokens`、duration_ms=0（非耗时
+      打点）、source=`llm_usage`，provider/model 明细在结构化日志里（metrics 表
+      只写指标不写内容）。trace_id 缺失的行按 Z4 口径丢弃（进程内计数照记）；
+      落库失败由 recorder 兜底降级，不影响主链路。
 
     日志字段固定为 `trace_id/provider/model/prompt_tokens/completion_tokens/total_tokens`，
     `total_tokens` 只在两侧都已知时给出，否则 None。
@@ -307,6 +337,17 @@ def record_llm_usage(
     if total is not None:
         _llm_usage["total_tokens"] += total
         _llm_usage_seen = True
+
+    get_metrics_recorder().record_stage(
+        get_trace_id(),
+        None,
+        "llm_tokens",
+        0,
+        "llm_usage",
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        total_tokens=total,
+    )
 
     logger.info(
         "llm_usage",

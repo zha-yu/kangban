@@ -77,9 +77,7 @@ class InProcessLayaSystemOne:
         from app.system_one.backend import map_answers
 
         answers = await self._backend.score(state=state or build_state(text), questions=questions)
-        return map_answers(
-            answers, model_version="laya:multilingual:dev(in-process)", latency_ms=0
-        )
+        return map_answers(answers, model_version="laya:multilingual:dev(in-process)", latency_ms=0)
 
     async def decide_fast(self, text: str, *, trace_id: str | None = None, state: Any = None):
         return await self._score(text, state, build_fast_questions())
@@ -102,7 +100,9 @@ class InProcessMockSystemOne:
     async def decide_fast(self, text: str, *, trace_id: str | None = None, state: Any = None):
         from app.system_one.backend import map_answers
 
-        answers = await self._backend.score(state=state or build_state(text), questions=build_fast_questions())
+        answers = await self._backend.score(
+            state=state or build_state(text), questions=build_fast_questions()
+        )
         return map_answers(answers, model_version="mock:in-process", latency_ms=0)
 
     async def decide_shadow(self, text: str, *, trace_id: str | None = None, state: Any = None):
@@ -138,7 +138,7 @@ class Row:
     note: str = ""
     # Day 9 F22（PRD:272）：判黄复核口径标记。空串 = 沿用既有组判定；
     # "yellow_review" = 否定/历史/他人/模糊语料，期望路由判黄复核（不判红、不直接执行）
-    gold_action: str = "" 
+    gold_action: str = ""
     media_status: str = "idle"
     current_task: str = "none"
     decision: RouteDecision | None = None
@@ -173,6 +173,11 @@ class Summary:
     ambiguous_second_agent: int = 0
     layers: Counter = field(default_factory=Counter)
     latencies: list[int] = field(default_factory=list)
+    #: 按路由分层记录的延迟（rule = L1 规则命中 0 模型调用；模型路径 =
+    #: system_one/agent/fallback）。2026-11-12 裁决：闸门 E 的 p95 按此拆双线——
+    #: 规则路径硬线 ≤200ms（纯代码可控）；模型路径单列（瓶颈在 Laya 推理，
+    #: D10 F23 量化/批处理后再验收）。G0 一票否决行不经 Router，不计入本表。
+    layer_latencies: dict[str, list[int]] = field(default_factory=dict)
     bad_cases: list[Row] = field(default_factory=list)
 
 
@@ -258,6 +263,8 @@ async def evaluate(rows: list[Row], *, provider: str) -> Summary:
         summary.latencies.append(row.latency_ms)
         if row.decision is not None:
             summary.layers[row.decision.route_layer] += 1
+            # 分层延迟（2026-11-12 裁决：闸门 E 拆「规则路径硬线 / 模型路径单列」）
+            summary.layer_latencies.setdefault(row.decision.route_layer, []).append(row.latency_ms)
 
         _tally(summary, row)
 
@@ -405,7 +412,25 @@ def render(
         f"{verdict(pct(fast_layers, summary.total) >= 60)} |"
     )
     lines.append(
-        f"| 路由延迟 p50 / p95 | {p50}ms / {p95}ms | p95 ≤200ms | {verdict(p95 <= 200)} |"
+        f"| 路由延迟 p50 / p95（全量） | {p50}ms / {p95}ms | p95 ≤200ms | {verdict(p95 <= 200)} |"
+    )
+    # 2026-11-12 裁决：闸门 E 拆「规则路径硬线 / 模型路径单列」——瓶颈取证见
+    # dev-b 计划 §11.1（fast 单问 p50 187ms 贴预算，shadow 争抢 +27ms）。
+    rule_lats = summary.layer_latencies.get("rule", [])
+    model_lats = (
+        summary.layer_latencies.get("system_one", [])
+        + summary.layer_latencies.get("agent", [])
+        + summary.layer_latencies.get("fallback", [])
+    )
+    rule_p50, rule_p95 = percentile(rule_lats, 0.50), percentile(rule_lats, 0.95)
+    model_p50, model_p95 = percentile(model_lats, 0.50), percentile(model_lats, 0.95)
+    lines.append(
+        f"| └ 规则路径（rule，0 模型调用）p50 / p95 | {rule_p50}ms / {rule_p95}ms | p95 ≤200ms **硬线** | "
+        f"{verdict(rule_p95 <= 200)} |"
+    )
+    lines.append(
+        f"| └ 模型路径（system_one/agent/fallback）p50 / p95 | {model_p50}ms / {model_p95}ms | 目标 200ms，**单列**（D10 F23 优化后验收） | "
+        f"{verdict(model_p95 <= 200)} |"
     )
     lines.append("")
     lines.append("## 2. 四层命中分布")
@@ -431,7 +456,9 @@ def render(
     lines.append("| 动作 | 条数 | 占比 |")
     lines.append("| --- | --- | --- |")
     for action in ("tool", "agent", "clarify", "escalate"):
-        lines.append(f"| {action} | {actions[action]} | {pct(actions[action], len(normal_rows))}% |")
+        lines.append(
+            f"| {action} | {actions[action]} | {pct(actions[action], len(normal_rows))}% |"
+        )
     lines.append("")
     lines.append(
         f"> **澄清率 {clarify_rate}%**（方案 B 只对动作型意图澄清；chat/other 低置信直接下沉）"
@@ -468,7 +495,9 @@ def render(
     lines.append("## 4. 归因统计")
     lines.append("")
     counts = Counter(
-        "标签/题面设计" if row.group == "normal" else ("安全护栏" if row.group in {"sensitive", "boundary"} else "澄清策略")
+        "标签/题面设计"
+        if row.group == "normal"
+        else ("安全护栏" if row.group in {"sensitive", "boundary"} else "澄清策略")
         for row in summary.bad_cases
     )
     if not counts:
@@ -518,11 +547,12 @@ def _conclusion(summary: Summary, intent_accuracy: float, sensitive_recall: floa
         )
     if p95 > 200:
         parts.append(
-            f"- 路由 p95 {p95}ms 超 200ms：快路径单问已达标（实测 167ms），"
-            "超出的部分来自 shadow 并行等待与工具样本，需按 §2 分层看，不放大超时。"
+            f"- 全量路由 p95 {p95}ms 超 200ms：按 2026-11-12 裁决拆层看——"
+            "规则路径 p95 是硬线（纯代码可控，必须达标）；模型路径单列"
+            "（瓶颈在 Laya 推理贴预算，D10 F23 量化/批处理后验收），不放大超时。"
         )
     else:
-        parts.append(f"- 路由 p95 {p95}ms，在 200ms 预算内。")
+        parts.append(f"- 路由 p95 {p95}ms，在 200ms 预算内（规则/模型路径双达标）。")
     parts.append("- fallback 行不计入 system_one 命中率；`laya` 旧值本脚本不会产出。")
     return "\n".join(parts)
 
@@ -564,10 +594,14 @@ async def main_async(args: argparse.Namespace) -> int:
             }
             for row in rows
         ]
-        _pending_report.append((Path(args.dump_json), json.dumps(rows_payload, ensure_ascii=False, indent=1)))
+        _pending_report.append(
+            (Path(args.dump_json), json.dumps(rows_payload, ensure_ascii=False, indent=1))
+        )
 
     layers = summary.layers
-    print(f"普通 {summary.normal_correct}/{summary.normal_total} | 敏感 {summary.sensitive_recalled}/{summary.sensitive_total}")
+    print(
+        f"普通 {summary.normal_correct}/{summary.normal_total} | 敏感 {summary.sensitive_recalled}/{summary.sensitive_total}"
+    )
     print(
         f"四层 rule={layers['rule']} system_one={layers['system_one']} "
         f"agent={layers['agent']} fallback={layers['fallback']}"
