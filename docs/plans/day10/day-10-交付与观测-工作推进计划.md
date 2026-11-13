@@ -1,6 +1,6 @@
 > 状态：草稿 · 待主理人逐项确认后开工（本轮仅计划，未改任何业务代码）　｜　版本：v1.0　｜　日期：2026-11-13
 > 上游依据：PRD line 578（Day 10 行与完成定义）、line 453–460（FR-TC-04/05/09）、line 513（AC-31）、line 586–590（裁减顺序与不得裁减）｜技术设计文档 §8.3 Day 10（line 1176–1183，实现口径）、§1.3 模块职责｜大纲 §十 Day 10 课时 10.1–10.4（教学口径）｜day09 总览 §0.2 Q1（日历口径）、§8（顺延项）、§10（待确认）
-> 主理人裁决（2026-11-13 会话确认）：① **双线并行**——day09 联调收口线与 Day 10 交付线同时推进，互不阻塞；② **沿用 4 人任务包**（dev-A/B/C/D）编排；③ 课时 10.4 取舍：**tag final + 交付文档齐套纳入任务包**，简历段落 / INTERVIEW_QA / 复盘报告单列「个人学习交付」附录不占团队工时，**5 分钟演示视频【待确认 Q1】**；④ 《康伴3D数字人_技术文档》即《康伴3D数字人_技术设计文档.md》。
+> 主理人裁决（2026-11-13 会话确认）：① **双线并行**——day09 联调收口线与 Day 10 交付线同时推进，互不阻塞；② **沿用 4 人任务包**（dev-A/B/C/D）编排；③ 课时 10.4 取舍：**tag final + 交付文档齐套纳入任务包**，简历段落 / INTERVIEW_QA / 复盘报告单列「个人学习交付」附录不占团队工时，**5 分钟演示视频【待确认 Q1】**；④ 《康伴3D数字人_技术文档》即《康伴3D数字人_技术设计文档.md》；⑤ **OTel 缺口按 A1 处置（2026-11-13 追加裁决，原 Q10）**——历史计划与代码 hook 均预期「Day 10 接 OTel」（TD §1:205 选型承诺），但任务书曾遗漏；B1 扩为「**OTel SDK + Langfuse exporter 一体接入**」（B1 5h→8h，B 包 9.5h→13h），AC-31 Span 链语义不变。
 > 编制口径：事实（字段/接口/阈值/服务清单）只引 PRD 与技术设计文档；本文与基线冲突时以基线为准并回改本文（AGENTS.md 前置节铁律）。
 
 ---
@@ -49,7 +49,7 @@
 | 3 | Dockerfile（前端） | 大纲 10.1：vite build 后 nginx 托管 | **不存在**；前端仍以 Vite dev server 运行 | 新建（含三入口 MPA 构建、three-vrm 不进 console/family 包）→ C1 |
 | 4 | nginx 配置 | PRD §2.5：HTTPS 受控开发证书 | `deploy/nginx.conf` 已存在（Day 3 起沉淀）；**未核对 HTTPS 与三入口静态托管段** | 核对+补 HTTPS/静态段 → A3/C1 |
 | 5 | coturn | PRD §2.2/FR-TC-10：跨网段 TURN 中继，compose 内置 | compose **无 coturn 服务**；day09 D2.5 已做 ICE 下发端点（`GET /api/audio/ice-config`，凭据环境注入），coturn 本体显式归 Day 10 | 新增 coturn 服务编排 → A3 |
-| 6 | Langfuse | FR-TC-04：每次主控 Agent 执行一个 Trace，规则/分类器/模型/工具/TTS 为 Span，脱敏上传；AC-31：一条完整 Trace 可导出 | `app/core/config.py:212-216` 已有 5 个 `langfuse_*` 字段（默认 `langfuse_enabled=False`）；`app/audio/_observe.py` 有观测引用；**无 compose 服务、无接入证据** | 接入+服务编排+AC-31 证据 → B1/A2 |
+| 6 | Langfuse | FR-TC-04：每次主控 Agent 执行一个 Trace，规则/分类器/模型/工具/TTS 为 Span，脱敏上传；AC-31：一条完整 Trace 可导出。**另 TD §1:205 选型表承诺 OpenTelemetry Traces（全链路 HTTP/DB/WebRTC/MCP/ASR-TTS 耗时、P50/P95），且注明「Langfuse 可作 OTel exporter」；day03/day04 计划与 `app/core/metrics.py`、`app/audio/_observe.py` 注释均预留「Day 10 接 OTel 只改一个函数」的 hook（历史引用的 TD:989 行号已漂移，现行 TD 无此排期行）** | `app/core/config.py:212-216` 已有 5 个 `langfuse_*` 字段（默认 `langfuse_enabled=False`）；`app/audio/_observe.py` 有观测引用；**无 compose 服务、无接入证据；OTel 未接入** | 接入（含 OTel exporter 一体化，裁决 ⑤）+服务编排+AC-31 证据 → B1/A2 |
 | 7 | 评测门禁 | FR-TC-09：`eval_gate.py` 本地/pre-push 门禁；TD §8.3 写 `eval/eval_gate.py` | `tests/eval_gate.py` **已存在**（day09 D3 交付，含闸门 E）；`.githooks/pre-push` 已存在 | 复跑+阻塞口径落地（day09 §10 Q2 遗留）→ D1；**TD 路径差异登记勘误**（§8 待确认 Q5） |
 | 8 | /metrics 与成本 | FR-TC-08（P1）：分层命中率、S1 闭环率、token 消耗、cache 命中率 | day09 C4 已交付 `app/api/metrics.py`（curl 可见分层命中率/S1 闭环率/token）；**cache 命中率未见字段** | 核对+补 cache 命中口径 → B2 |
 | 9 | 交付文档 | 大纲 §11.3 / PRD line 578：README、HARNESS_DESIGN、IDENTITY_RULES、AI_USAGE、评测报告、安全报告 | `README.md` 已有（缺 Docker 部署/回滚/成本/观测章节）；`docs/SECURITY.md` 已有（76 行，day09 A2 交付，需按收口后现状复核）；**HARNESS_DESIGN.md、IDENTITY_RULES.md、AI_USAGE.md 均不存在**；评测报告已有 day7/day8/day9 系列但**无 Day 10 汇总** | 新建 3 份 + README 增补 + SECURITY 复核 + 回归汇总 → C2–C5/D2 |
@@ -68,7 +68,7 @@
 | --- | --- | --- | --- |
 | **M6.0 启动核对与口径冻结** | 本文 §8 全部待确认项逐项裁决；现状核查表 §1 签认 | 无 | D10 上午（11-13） |
 | **M6.1 容器化编排就绪** | `docker compose up -d` 一键起全部服务（含新增 backend/nginx/laya/coturn/langfuse），**全部 healthcheck 通过**；本机 `https://localhost` 可打开长者端页面（受控开发证书）；`.env` 密钥零进镜像层 | A1 A2 A3 C1 | D11（11-14） |
-| **M6.2 观测就绪** | AC-31：Langfuse 中一条完整 Trace（规则→分类器→模型→工具→TTS）可导出且脱敏；`/metrics` 含 cache 命中率口径 | B1 B2（联调依赖 A2） | D11（11-14） |
+| **M6.2 观测就绪** | AC-31：Langfuse 中一条完整 Trace（规则→分类器→模型→工具→TTS）可导出且脱敏，且 trace_id 与系统 `trace_id` 同值可互查；OTel exporter 承载该 Trace（TD §1:205）；`/metrics` 含 cache 命中率口径 | B1 B2（联调依赖 A2） | D11（11-14） |
 | **M6.3 交付文档齐套** | README（部署/回滚/成本/观测章节）+ HARNESS_DESIGN + IDENTITY_RULES + AI_USAGE + SECURITY 复核完成；清单逐项可检（§4 C 包验收） | C2–C5 | D12 上午（11-16） |
 | **M6.4 P0 全量回归通过** | PRD §5.1 全部适用 AC 逐条复跑通过并落 `eval/reports/day10_p0_regression.md`；§5.2 固定测试集达标 | **Line 1 M5** + D1 | D12（11-16） |
 | **M6.5 演示冻结与 tag final** | 干净主机 `git clone && cp .env.example .env && docker compose up` 全绿 + HTTPS 可访问；回滚演练（代码回滚到基准 tag + `alembic downgrade` 各一次）成功；`git tag final` 打标并 push | A4 D3 D4 | D13（11-17） |
@@ -92,8 +92,8 @@ flowchart LR
       A1 -.-> A5
     end
 
-    subgraph SB["dev-B · 观测与成本线 · 9.5h"]
-      B1["B1 Langfuse 接入<br/>5h"]
+    subgraph SB["dev-B · 观测与成本线 · 13h"]
+      B1["B1 Langfuse+OTel exporter 接入<br/>8h"]
       B2["B2 /metrics 成本口径补齐<br/>2h"]
       B3["B3 F23 四信号+privacy_scope<br/>2.5h"]
       B1 --> B2
@@ -165,7 +165,7 @@ flowchart LR
 | D12（11-16） | A4 回滚演练 → A5 | B3 F23 | C2 README 收口 | D2 P0 全量回归 |
 | D13（11-17） | 支援干净主机演练 | 支援观测抽验 | 支援文档走查 | D3 → D4 → D5（tag final） |
 
-> 工时合计 53h（A 17 / B 9.5 / C 15.5 / D 11），跨 D10–D13 四个日历日摊开，与 Line 1 联调占用互补；各包均低于 20h 包容量上限，缓冲用于 Line 1 优先抢占。
+> 工时合计 56.5h（A 17 / B 13 / C 15.5 / D 11），跨 D10–D13 四个日历日摊开，与 Line 1 联调占用互补；各包均低于 20h 包容量上限，缓冲用于 Line 1 优先抢占。
 
 ---
 
@@ -174,7 +174,7 @@ flowchart LR
 | # | 对接点 | 提供方→消费方 | 契约内容 | 联调时点 |
 | --- | --- | --- | --- | --- |
 | Y1 | nginx 配置合并 | C → A | C1 产出前端三入口 dist 相对路径约定（`/pad`、`/console`、`/family` 与 `/api`、`/ws` 反代规则草案），**A 独占改 `deploy/nginx.conf`**，按草案合入 | D11 上午 |
-| Y2 | Langfuse 服务与凭据 | A → B | compose 的 `langfuse` 服务定义（建议 Langfuse v2 镜像 + 复用 postgres 独立 schema，避免 v3 的 ClickHouse/MinIO 依赖【执行细节，B1 落地前与主理人确认镜像版本】）；`LANGFUSE_PUBLIC_KEY/SECRET_KEY/HOST` 走 `.env` 注入，不硬编码 | D11 上午 |
+| Y2 | Langfuse 服务与凭据 | A → B | compose 的 `langfuse` 服务定义（建议 Langfuse v2 镜像 + 复用 postgres 独立 schema，避免 v3 的 ClickHouse/MinIO 依赖【执行细节，B1 落地前与主理人确认镜像版本】）；`LANGFUSE_PUBLIC_KEY/SECRET_KEY/HOST` 走 `.env` 注入，不硬编码；**B1 走 OTel exporter 路线（裁决 ⑤），exporter 端点/凭据复用同一组变量** | D11 上午 |
 | Y3 | 前端构建产物 | C → A | `frontend.Dockerfile` 多阶段产物路径 `/usr/share/nginx/html/{pad,console,family}`；构建命令 `npm ci && npm run build`；验收口径含「three-vrm 不进 console/family 产物」 | D11 上午 |
 | Y4 | 回滚基准 | A → D | A4 指定演练基准 tag（当前 `8d506b2` 或 D13 前最后一个收口 commit），D5 的 tag final 在演练通过后才打 | D12 下午 |
 | Y5 | 门禁口径 | D → 全员 | D1 裁决 pre-push 阻塞模式（day09 §10 Q2）后的最终口径：阻塞真门禁 / CI 阻塞+本地自检；全员不得为变绿调阈值或删用例（沿 day09 X9 纪律） | D10 下午 |
@@ -195,11 +195,11 @@ flowchart LR
 | **A4** | 回滚演练 + 部署门禁清单：① 代码回滚——以 Y4 基准 tag/commit 部署 → 故意改坏一行 → 回滚到基准并复跑 `/health` + 一条 AC 冒烟（如 AC-01 天气）；② 数据回滚——`alembic downgrade 0020` 再 `upgrade head`，核对业务表数据不丢（演练在**一次性数据卷**上做）；③ 产出部署门禁清单（验收达成/测试通过/密钥安全/迁移可逆/监控就绪/回滚清晰六项，按风险分级） | 2h | A3 | 回滚演练记录（写入 README 回滚章节）、部署门禁清单（README 或独立小节） | 自检：两次演练均有操作日志与结果截图；`alembic downgrade` 后 `alembic_version` 回退一格、`upgrade` 后恢复且表数据完好；清单六项逐项有「检查方法」列 |
 | **A5** | FR-ADM-10 设备掉线检测（day09 顺延项，P2）：心跳超 2 个周期判掉线 → `device.status='offline'` → 通知管理员与负责护工；与用药/采集窗口重叠时升级人工介入；设备自检异常（麦克风/网络）→ 工单。**写锁说明**：新增独立文件 `app/scheduler/device_jobs.py`，不碰 dev-B 既有调度文件（day09 §6 的 scheduler 写锁例外，已经 B 口头确认原则，N6.0 正式签认） | 3h | M6.0（软：与 B1 无文件冲突） | `app/scheduler/device_jobs.py`（新）、`device_service.py` 增量、对应测试 | 自检：心跳超 2 周期 → status 置 offline 且 `notifications` 有行（收件人=管理员+负责护工）；恢复心跳回 online；掉线窗口与用药 T0 重叠 → 立即生成人工介入工单；`pytest tests/test_device_offline.py` 全绿；非 admin/非负责护工查询掉线通知按既有权限矩阵 403 |
 
-### 4.2 dev-B · 观测与成本线（9.5h）
+### 4.2 dev-B · 观测与成本线（13h）
 
 | 节点 | 内容与操作步骤 | 工时 | 前置 | 交付物与规格 | 量化验收 / 自检校验标准 |
 | --- | --- | --- | --- | --- | --- |
-| **B1** | Langfuse 接入（FR-TC-04 / AC-31）：① 启用 `langfuse_enabled`（`.env` 注入 key，Y2 契约）；② 每次主控 Agent 执行 = 1 个 Trace，规则路由 / 分类器 / 模型调用 / 工具调用 / TTS 各为 Span；③ Span 记录输入输出摘要、耗时、异常、模型版本；④ **脱敏后上传**——复用 `app/core/redact.py` 集中脱敏（day09 A1 交付），不含完整音频、密钥、不必要健康信息；⑤ 采样率沿用 `langfuse_sample_rate` 配置 | 5h | M6.0；联调依赖 A2 的 langfuse 服务 | Langfuse 接入代码（观测层增量，写域见 §6）、AC-31 证据（Trace 导出记录或截图） | 自检：发起一次含工具调用的完整对话 → Langfuse 界面可见 1 条完整 Trace 且 Span 链=规则→分类器→模型→工具→TTS；Trace 内 `grep` 手机号/身份证/密钥零命中；关闭 `langfuse_enabled` 后业务不中断（降级不白屏）；**证据落 `eval/reports/day10_langfuse_trace.md`**（含 trace_id 可复现） |
+| **B1** | Langfuse + OTel exporter 一体接入（FR-TC-04 / AC-31 / TD §1:205，裁决 ⑤）：① 启用 `langfuse_enabled`（`.env` 注入 key，Y2 契约）；② **OTel SDK 接入、Langfuse 作 Span Exporter**——每次主控 Agent 执行 = 1 条 OTel Trace，规则路由 / 分类器 / 模型调用 / 工具调用 / TTS 各为 Span（Span 语义与 AC-31 完全一致，仅承载从 Langfuse SDK 直连改为 OTel API + exporter）；③ **全链路 span 最小覆盖**——HTTP 请求 span（trace_id 中间件处）＋ ASR/路由/LLM/TTS 分段耗时 span，经既有单点收口 hook（`app/audio/_observe.py:_record_asr_observation()`、`app/core/metrics.py:record_stage()`）改接 OTel，**兑现 day03/day04 预留的「Day 10 只改一个函数」承诺**；④ Span 记录输入输出摘要、耗时、异常、模型版本；⑤ **脱敏后上传**——复用 `app/core/redact.py` 集中脱敏（day09 A1 交付），不含完整音频、密钥、不必要健康信息；⑥ 采样率沿用 `langfuse_sample_rate` 配置 | 8h | M6.0；联调依赖 A2 的 langfuse 服务 | OTel+Langfuse exporter 接入代码（观测层增量，写域见 §6）、AC-31 证据（Trace 导出记录或截图） | 自检：发起一次含工具调用的完整对话 → Langfuse 界面可见 1 条完整 Trace 且 Span 链=规则→分类器→模型→工具→TTS；**OTel Trace 的 trace_id 与系统 `trace_id`（`app/core/context.py` 32 位 hex）同值可互查**；至少 1 个非 LLM span（HTTP 请求或分段耗时）出现在 Trace 树中；hook 函数已接 OTel 且既有结构化日志字段不丢（grep 既有日志字段仍输出）；Trace 内 `grep` 手机号/身份证/密钥零命中；关闭 `langfuse_enabled` 后业务不中断（降级不白屏）；**证据落 `eval/reports/day10_langfuse_trace.md`**（含 trace_id 可复现） |
 | **B2** | `/metrics` 成本口径补齐（FR-TC-08）：核对既有分层命中率/S1 闭环率/token 消耗；补 **prompt cache 命中率**统计口径（大纲 10.2 与 PRD FR-TC-08 均要求）；一次完整演示后导出 token 消耗与成本估算 | 2h | B1 | `app/api/metrics.py` 增量、成本估算记录（进 README 成本章节，由 C2 合入） | 自检：`curl --noproxy '*' -H "Authorization: ..." http://127.0.0.1:8000/metrics` 可见四类指标（命中率/闭环率/token/cache）；未授权访问 401；cache 命中率数字可复算（来源对话数、命中数可查） |
 | **B3** | F23 System One 四信号 + `privacy_scope` 消费方（day09 顺延项，P2）：快路径补齐敏感度/升级建议/隐私收敛信号输出；`privacy_scope` 接入消费方（双人间收敛场景）。**注意**：day09 实测四问 p95 668ms，压进 200ms 需模型侧改造——本节点按「信号先齐、延迟如实记录」执行，延迟达标另立任务，不为达标调阈值 | 2.5h | M6.0 | `app/system_one/` 增量、`privacy_scope` 消费接线、day10 侧延迟记录 | 自检：四信号在快路径输出齐全（intent/is_sensitive/confidence/privacy）；`privacy_scope` 至少 1 个消费点可演示；复跑 50 条样例记录 p95（如仍 >200ms，**如实记录不粉饰**并登记 §8 Q8） |
 
@@ -257,7 +257,7 @@ flowchart LR
 | 成员 | Line 2 写域仅限 | 禁触 |
 | --- | --- | --- |
 | **dev-A** | `Dockerfile`（新）、`.dockerignore`（新）、`docker-compose.yml`（**独占**）、`.env.example`（增量，与 B 协调 langfuse 段走 Y2）、`deploy/nginx.conf`（**独占**）、`app/scheduler/device_jobs.py`（新，B 既有调度文件不碰）、`app/services/device_service.py`（增量）、`app/api/audio.py` ICE 字段只读不改、对应 tests | 不碰前端构建、docs 交付文档、eval_gate、Langfuse 接入代码 |
-| **dev-B** | Langfuse 接入代码（观测层模块，N6.0 定文件落点）、`app/core/config.py` langfuse 段增量、`app/system_one/**`（B3）、`privacy_scope` 消费点、`app/api/metrics.py`（增量）、`eval/reports/day10_langfuse_trace.md` | 不碰 compose/Dockerfile/nginx、`app/scheduler/`（除与 A5 的原则性确认外）、docs 交付文档 |
+| **dev-B** | OTel+Langfuse 接入代码（观测层模块，N6.0 定文件落点）、`app/core/config.py` langfuse 段增量、`app/core/metrics.py` 与 `app/audio/_observe.py` **仅 hook 函数体改接 OTel**（`record_stage()`、`_record_asr_observation()`，兑现 day03/day04 单点收口承诺；文件其余部分不改）、`app/system_one/**`（B3）、`privacy_scope` 消费点、`app/api/metrics.py`（增量）、`eval/reports/day10_langfuse_trace.md` | 不碰 compose/Dockerfile/nginx、`app/scheduler/`（除与 A5 的原则性确认外）、docs 交付文档 |
 | **dev-C** | `frontend/frontend.Dockerfile`（新）、`docs/README.md` 增量（**README 独占**）、`docs/HARNESS_DESIGN.md`（新）、`docs/IDENTITY_RULES.md`（新）、`docs/AI_USAGE.md`（新）、`docs/SECURITY.md`（复核修订）、`docs/plans/day10/**`（本文维护） | 不碰 backend Dockerfile/compose、观测代码、tests/eval_gate |
 | **dev-D** | `tests/eval_gate.py`（沿用 day09 锁）、`.githooks/**`、`eval/reports/day10_p0_regression.md`、`docs/测试数据_人员与床位.md`（台账更新）、演示脚本、tag final 操作 | 不碰部署编排、观测代码、交付文档正文（发现问题提单给 C） |
 
@@ -295,6 +295,7 @@ flowchart LR
 | **Q7** | **Laya 服务容器化形态**：本地权重（`convaiinnovations/laya-multilingual`）体积大、本机为 conda 环境 `jev`（机器事实）——容器内重新拉权重 or laya 以宿主进程 sidecar 挂载（compose 里只留编排占位） | A2 编排 | 容器内挂载宿主已下载权重卷，避免重复拉取；拉取不可行则 sidecar 化并如实记录 |
 | **Q8** | **F23 延迟不达标处置**：四问 p95 实测 668ms > 200ms 硬线，Day 10 只「信号先齐」——是否接受延迟项继续挂起 | B3 验收口径 | 如实记录并挂起，不为达标调阈值（沿 X9 纪律） |
 | **Q9** | **dev-D 的 day09 计划件仍为草稿待确认**（day09 PROGRESS 现状）：是否在 M6.0 一并签认，作为 D2 回归基线的一部分 | D2 依据完整性 | M6.0 一并签认 |
+| **Q10** | ~~OTel 缺口处置~~ **已裁决（A1，2026-11-13）**：B1 扩为「OTel SDK + Langfuse exporter 一体接入」，兑现 TD §1:205 选型与 day03/day04 hook 承诺；B1 5h→8h、B 包 9.5h→13h；AC-31 Span 链语义不变 | ~~B1/写域~~ 已落 §4.2/§6 | 已裁决，随 v1.1 落档 |
 
 ---
 
@@ -318,3 +319,4 @@ flowchart LR
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-11-13 | 首版。基于 2026-11-13 主理人四项裁决（双线并行 / 4 人任务包 / tag+文档齐套纳入·简历类单列附录·演示视频待确认 / 技术文档=技术设计文档）编制。含：现状核查表 13 项（实测）、双线日历口径、4 包 19 节点 DAG 与里程碑 M6.0–M6.5、对接点 Y1–Y5、写域互斥矩阵、待确认 Q1–Q9。未改任何业务代码。 |
+| v1.1 | 2026-11-13 | **Q10 裁决 A1 落档**：外部走查发现「TD §1:205 选型承诺 OpenTelemetry Traces、day03/day04 计划与 `app/core/metrics.py`/`app/audio/_observe.py` 注释预留『Day 10 接 OTel 只改一个函数』，但本计划与任务书均未排 OTel」。主理人裁决 A1——B1 扩为「OTel SDK + Langfuse exporter 一体接入」（5h→8h，B 包 9.5h→13h，总计 53h→56.5h）；M6.2 判据增 trace_id 同值互查与非 LLM span；Y2 契约增 exporter 凭据复用；§6 写域增两文件 hook 函数体；Q10 登记已裁决。AC-31 验收口径不受影响。 |
