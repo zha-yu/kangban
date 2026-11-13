@@ -11,10 +11,14 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection, async_sessionmaker
 
+from app.models.organization import Elder
 from app.services import memory_service as memory_service_module
 from app.services.memory_service import (
     MemoryCandidate,
@@ -385,6 +389,74 @@ class TestDay7MemoryWiring:
 
         monkeypatch.setattr(memory_service_module, "recall_active_chunks", broken)
         assert await recall_for_turn(elder_id="e1", query="x") == []
+
+
+# ------------------------------------------------------------------ 自开会话事务边界（2026-11-12 修复回归）
+
+
+class TestInsertCandidateOwnSession:
+    """对话后台抽取走的是 insert_candidate(candidate)（不注入 session）分支。
+
+    修复前该分支只 flush、最后 close() 回滚，返回 chunk_id 但库里 0 行。
+    用例把 app.db.session_factory 改绑到 db_conn 的测试库事务，验证：
+    ① 自开会话真实落库；② 幂等跳过路径 rollback 后不残留脏数据。
+    """
+
+    @pytest.mark.asyncio
+    async def test_own_session_commits_and_duplicate_rolls_back(
+        self, db_conn: AsyncConnection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import app.db as app_db
+
+        async def no_embed(_text_value: str) -> None:
+            return None
+
+        sf = async_sessionmaker(
+            bind=db_conn, expire_on_commit=False, join_transaction_mode="create_savepoint"
+        )
+        monkeypatch.setattr(app_db, "session_factory", sf)
+        monkeypatch.setattr(memory_service_module, "_safe_embed", no_embed)
+
+        async with sf() as setup:
+            elder = Elder(name="自开会话回归长者", status="active")
+            setup.add(elder)
+            await setup.flush()
+            elder_id = str(elder.elder_id)
+            # 只释放 savepoint：改动仍留在 db_conn 的外层事务，由 fixture 统一回滚
+            await setup.commit()
+
+        def candidate() -> MemoryCandidate:
+            return MemoryCandidate(
+                elder_id=elder_id,
+                category="preference",
+                subject=elder_id,
+                predicate="preferred_opera_genre",
+                object_value="越剧",
+                fact="长者喜欢越剧",
+                source_turn_ids=["reg-own-session"],
+                confidence=0.8,
+                source_type="elder_explicit",
+            )
+
+        result = await memory_service_module.insert_candidate(candidate())
+        row = (
+            await db_conn.execute(
+                text("SELECT content, status FROM memory_chunks WHERE chunk_id = :cid"),
+                {"cid": uuid.UUID(result["chunk_id"])},
+            )
+        ).one()
+        assert row.content == "长者喜欢越剧"
+        assert row.status == "active"
+
+        with pytest.raises(MemoryInsertSkipped):
+            await memory_service_module.insert_candidate(candidate())
+        count = (
+            await db_conn.execute(
+                text("SELECT count(*) FROM memory_chunks WHERE elder_id = :eid"),
+                {"eid": uuid.UUID(elder_id)},
+            )
+        ).scalar_one()
+        assert count == 1
 
 
 __all__ = []
