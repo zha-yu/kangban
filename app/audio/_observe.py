@@ -74,7 +74,18 @@ def record_asr(
         },
     )
     if is_final and total_ms is not None:
-        record_stage("asr", total_ms, source=source)
+        record_stage(
+            "asr",
+            total_ms,
+            source=source,
+            attrs={
+                "asr_provider": provider,
+                "asr_source": source,
+                "asr_confidence": confidence,
+                "asr_text_len": text_len,
+                "asr_is_final": is_final,
+            },
+        )
 
 
 def record_tts(
@@ -103,4 +114,14 @@ def record_tts(
         },
     )
     if first_packet_ms is not None:
-        record_stage("tts_first_packet", first_packet_ms, source="non_stream")
+        record_stage(
+            "tts_first_packet",
+            first_packet_ms,
+            source="non_stream",
+            attrs={
+                "tts_provider": provider,
+                "tts_voice": voice,
+                "tts_text_len": text_len,
+                "tts_pcm_bytes": pcm_bytes,
+            },
+        )

@@ -27,6 +27,7 @@ import time
 from typing import Any
 
 from app.core.context import get_trace_id
+from app.core.observability import emit_event_span, emit_stage_span
 from app.core.runtime_context import get_identity
 from app.services.metrics_service import get_metrics_recorder
 
@@ -79,8 +80,15 @@ def record_event(name: str, **fields: Any) -> None:
 
     Day 5 /metrics、Day 10 OTel 只改本函数体。字段名不得与 LogRecord 保留属性
     冲突（如 ``name``/``msg``/``module``）。
+
+    Day 10 双轨 → 三轨（B1，裁决 ⑤）：本函数体增发 OTel 事件 span——日志轨照旧、
+    metrics 表轨照旧；``stage_ms`` 不在此发 span（由 :func:`record_stage` 发射
+    带真实耗时的 stage span，避免双 span）。span attrs 经 ``redact.py`` 脱敏，
+    只含指标字段（本函数本就不写转写全文/隐私）。
     """
     logger.info("metric %s", name, extra={"metric": name, **fields})
+    if name != "stage_ms":
+        emit_event_span(name, fields)
 
 
 def record_stage(
@@ -89,12 +97,16 @@ def record_stage(
     *,
     elder_id: str | None = None,
     source: str | None = None,
+    attrs: dict[str, Any] | None = None,
 ) -> None:
     """分段耗时打点（LLM/TTS 触发处 / playback 代打；ASR 走 _observe.record_asr 聚合）。
 
-    双轨：``stage_ms`` 日志行照旧 + ``metrics`` 表一行（``elder_id`` 可空）。
+    三轨（Day 10 B1）：``stage_ms`` 日志行照旧 + ``metrics`` 表一行（``elder_id``
+    可空）+ OTel stage span（span 名 = stage 值，duration = elapsed_ms，attrs
+    含 ``source`` 与调用方补充的 ``attrs``，脱敏后上传——FR-TC-04）。
     """
     record_event("stage_ms", stage=stage, elapsed_ms=elapsed_ms)
+    emit_stage_span(stage, elapsed_ms, attrs={"source": source, **(attrs or {})})
     _record_db(stage, elapsed_ms, elder_id=elder_id, source=source)
 
 
