@@ -27,6 +27,7 @@ import time
 from typing import Any
 
 from app.core.context import get_trace_id
+from app.core.observability import emit_event_span, emit_stage_span
 from app.core.runtime_context import get_identity
 from app.services.metrics_service import get_metrics_recorder
 
@@ -79,8 +80,15 @@ def record_event(name: str, **fields: Any) -> None:
 
     Day 5 /metrics、Day 10 OTel 只改本函数体。字段名不得与 LogRecord 保留属性
     冲突（如 ``name``/``msg``/``module``）。
+
+    Day 10 双轨 → 三轨（B1，裁决 ⑤）：本函数体增发 OTel 事件 span——日志轨照旧、
+    metrics 表轨照旧；``stage_ms`` 不在此发 span（由 :func:`record_stage` 发射
+    带真实耗时的 stage span，避免双 span）。span attrs 经 ``redact.py`` 脱敏，
+    只含指标字段（本函数本就不写转写全文/隐私）。
     """
     logger.info("metric %s", name, extra={"metric": name, **fields})
+    if name != "stage_ms":
+        emit_event_span(name, fields)
 
 
 def record_stage(
@@ -89,13 +97,74 @@ def record_stage(
     *,
     elder_id: str | None = None,
     source: str | None = None,
+    attrs: dict[str, Any] | None = None,
 ) -> None:
     """分段耗时打点（LLM/TTS 触发处 / playback 代打；ASR 走 _observe.record_asr 聚合）。
 
-    双轨：``stage_ms`` 日志行照旧 + ``metrics`` 表一行（``elder_id`` 可空）。
+    三轨（Day 10 B1）：``stage_ms`` 日志行照旧 + ``metrics`` 表一行（``elder_id``
+    可空）+ OTel stage span（span 名 = stage 值，duration = elapsed_ms，attrs
+    含 ``source`` 与调用方补充的 ``attrs``，脱敏后上传——FR-TC-04）。
     """
     record_event("stage_ms", stage=stage, elapsed_ms=elapsed_ms)
+    emit_stage_span(stage, elapsed_ms, attrs={"source": source, **(attrs or {})})
     _record_db(stage, elapsed_ms, elder_id=elder_id, source=source)
+
+
+# ---------------------------------------------------------------------------
+# prompt cache 命中计数（Day 10 B2 · D-1 裁决：方案①进程内计数，B 写域内；
+# 明细走 llm_service 的 llm_usage event span——聚合与明细归 trace 的规范分工）
+# ---------------------------------------------------------------------------
+
+_llm_cache: dict[str, Any] = {
+    "calls_with_cache_info": 0,
+    "cache_hit_tokens": 0,
+    "cache_miss_tokens": 0,
+    "hit_seen": False,
+    "miss_seen": False,
+    "cache_info_available": False,
+}
+
+
+def record_llm_cache(*, hit_tokens: int | None, miss_tokens: int | None) -> None:
+    """记一次 LLM 调用的 prompt cache 命中/未命中 token（供应商带回才算）。
+
+    - 双 None（供应商未返回 cache 字段）→ 完全不记（与「缺/非法不补零」同口径）；
+    - 只有一侧已知：已知侧照记，未侧不补（``hit_seen``/``miss_seen`` 区分
+      「确实是 0」与「不知道」——miss 未知时 ``hit_rate`` 不可复算，不编造）；
+    - 进程内计数，重启归零——`/api/metrics` 响应中如实标注。
+    """
+    if hit_tokens is None and miss_tokens is None:
+        return
+    if hit_tokens is not None:
+        _llm_cache["cache_hit_tokens"] += hit_tokens
+        _llm_cache["hit_seen"] = True
+    if miss_tokens is not None:
+        _llm_cache["cache_miss_tokens"] += miss_tokens
+        _llm_cache["miss_seen"] = True
+    _llm_cache["calls_with_cache_info"] += 1
+    _llm_cache["cache_info_available"] = True
+
+
+def snapshot_llm_cache() -> dict[str, Any]:
+    """prompt cache 计数快照（拷贝）。
+
+    ``hit_rate = hit / (hit + miss)``：**两侧都见过值才给**——miss 未知时分母
+    不是真的 0，算出 1.0 属误导。
+    """
+    snap = {**_llm_cache}
+    hit, miss = snap["cache_hit_tokens"], snap["cache_miss_tokens"]
+    if snap["hit_seen"] and snap["miss_seen"] and hit + miss > 0:
+        snap["hit_rate"] = round(hit / (hit + miss), 4)
+    else:
+        snap["hit_rate"] = None
+    return snap
+
+
+def reset_llm_cache() -> None:
+    """清零 cache 计数（测试与演示用）——bool 是 int 子类，必须先判 bool。"""
+    for key in list(_llm_cache.keys()):
+        value = _llm_cache[key]
+        _llm_cache[key] = 0 if isinstance(value, int) and not isinstance(value, bool) else False
 
 
 # ---------------------------------------------------------------------------
