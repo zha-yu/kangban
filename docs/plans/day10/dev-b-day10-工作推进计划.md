@@ -351,6 +351,7 @@ flowchart LR
 | 日期 | Step/节点 | 结果/证据指针 | 等待项 |
 | --- | --- | --- | --- |
 | 2026-11-13 | Step 0 · M6.0 核对（dev-B 部分） | 见下方 Step 0 核对记录；①②③⑤ 闭合，④ 显式挂起转 M6.0 | ④ Y2 与 dev-A 对齐（M6.0 全员核对时闭合，不阻塞 Step 1/2） |
+| 2026-11-13 15:30 | Step 3 冒烟预验（§7 风险预案路径：临时本地实例先行） | **端到端真链路全通**：`.env` 开启观测（key 只进本地 .env）→ 真实 hook（record_stage/record_event）→ OTLP/HTTP → 本机 Langfuse 实例（v4 events_only，`GET /api/public/traces` 被禁用，验库 `default.events_full`）→ **3 span 落库**（asr 123.4ms 耗时回放准确 / tool_started / tts_first_packet 210ms）；**trace_id 同值互查**：库内三 span 共享 `104f2684…577`＝脚本系统 trace_id；**脱敏**：手机号存 `138\*\*\*\*8000`、身份证 `110101\*\*\*\*\*\*\*\*1234`，原样值 0 命中 | 正式共享实例＝v2（⑧），镜像拉取受网络限制改走镜像源（后台重试中）；Y2 compose 仍待 dev-A |
 | 2026-11-13 | Step 1 · B1 接入方案 | 方案 v1 编入本节（S1-1～S1-8），含 span 覆盖矩阵与 AC-31 缺口登记；依据 4 项实测（httpx 已在依赖、七 stage 测量点、route/工具无打点、llm_service/companion 调用点） | 方案 v1 已主理人确认（含待决项 E 批准），Step 2 已执行 |
 | 2026-11-13 | Step 2 · B1 骨架落地 | 见下方 Step 2 执行记录（S2-1～S2-6）；含 3 项实测修正（OTel 依赖已在、FastAPIInstrumentor 弃用改自建中间件、E 调用点收窄为 decision.py＋client.py 各一） | 待 Step 3 联调（Y2＋Q4） |
 
