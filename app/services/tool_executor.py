@@ -33,6 +33,7 @@ import asyncio
 import datetime
 import logging
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -43,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.guardrails import Guardrails
 from app.agents.tool_registry import ToolRegistry, ToolSpec, default_registry
+from app.core.metrics import emit_stage_span, record_event
 from app.core.runtime_context import Identity
 from app.models.conversation import TOOL_ERROR_CLASSES, ConversationTurn, ToolExecution
 from app.services.audit_log_service import record_audit
@@ -397,6 +399,7 @@ class ToolExecutor:
                 )
 
         # 7) 执行：MCP 只做「调用 + 失败分类」，本地走退避重试；记账在下一步共用
+        _tool_started = time.monotonic()
         if spec.transport == "mcp":
             result = await self._run_mcp(spec=spec, args=cleaned, runtime=runtime)
         else:
@@ -411,6 +414,30 @@ class ToolExecutor:
             row.result_json = result.data if result.ok else {"message": result.message}
             row.finished_at = datetime.datetime.now(datetime.UTC)
             await self._session.flush()
+
+        # Day 10 B1（AC-31 判据 1「工具」环节 span，主理人 2026-11-13 批准）：
+        # 日志轨 + OTel stage span 双打（attrs 含工具名/传输/结果）。**不走表轨**——
+        # metrics_service.STAGES 九值白名单锚定 ER §4.4.7 DB CHECK 约束，扩值需
+        # 0022 migration + ER 口径变更，另行裁决；工具调用数/耗时从 audit_logs 可得。
+        # 覆盖 MCP 与本地两类工具；只记真实执行段，不含鉴权/校验前序开销。
+        _tool_latency_ms = (time.monotonic() - _tool_started) * 1000
+        record_event(
+            "tool",
+            tool_name=tool_name,
+            transport=spec.transport,
+            outcome="ok" if result.ok else result.status,
+            latency_ms=_tool_latency_ms,
+        )
+        emit_stage_span(
+            "tool",
+            _tool_latency_ms,
+            attrs={
+                "source": "tool_executor",
+                "tool_name": tool_name,
+                "transport": spec.transport,
+                "outcome": "ok" if result.ok else result.status,
+            },
+        )
 
         if not result.ok:
             await self._audit(
