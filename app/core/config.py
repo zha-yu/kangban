@@ -228,6 +228,11 @@ class Settings(BaseSettings):
     scheduler_timezone: str = "Asia/Shanghai"
     health_checkup_start: str = "19:00"
     health_checkup_end: str = "20:00"
+    # Day 10 A5 设备掉线检测（FR-ADM-10）：Device.last_heartbeat 注释口径
+    # 「超 2 个心跳周期判掉线」。周期默认 60s（模拟设备语义），阈值=2*周期。
+    device_heartbeat_period_seconds: int = 60
+    # 掉线扫描 job 的运行间隔（半个心跳周期，保证至多迟到 1 次扫描的检测延迟）。
+    device_offline_scan_interval_seconds: int = 30
 
     # ---------------------------- 业务阈值（改动需评审，见 AGENTS.md §7） ----------------------------
     max_tool_calls_per_turn: int = 8
