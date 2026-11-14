@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Iterator
 
 import pytest
@@ -32,6 +33,7 @@ from app.core.observability import (
     is_enabled,
     shutdown_observability,
 )
+from app.core.runtime_context import Identity, identity_scope
 from app.core.trace import TraceIdMiddleware
 
 _HEX32 = "0123456789abcdef0123456789abcdef"
@@ -165,6 +167,47 @@ class TestRedaction:
             reset_trace_id(token)
         span = next(s for s in obs_on.get_finished_spans() if s.name == "response_segment")
         assert "elder_id" not in dict(span.attributes)
+
+
+class TestUserIdentity:
+    """方案 B（主理人 2026-11-14 批准）：Langfuse 用户维度只从服务端
+    runtime_context 注入（AGENTS §4.9 合规路径），键名 ``langfuse.user.id``。"""
+
+    def test_span_carries_user_id_from_runtime_context(self, obs_on: InMemorySpanExporter) -> None:
+        """device 身份 → ``langfuse.user.id`` = elder_id。"""
+        elder = str(uuid.uuid4())
+        identity = Identity(kind="device", device_id=str(uuid.uuid4()), elder_id=elder)
+        token = _trace()
+        try:
+            with identity_scope(identity):
+                record_stage("route", 5.0, source="router")
+        finally:
+            reset_trace_id(token)
+        span = next(s for s in obs_on.get_finished_spans() if s.name == "route")
+        assert dict(span.attributes)["langfuse.user.id"] == elder
+
+    def test_no_identity_no_user_attr(self, obs_on: InMemorySpanExporter) -> None:
+        """无身份上下文（调度 job / 登录前请求）→ 不上报 user 维度，不伪造。"""
+        token = _trace()
+        try:
+            record_stage("route", 5.0, source="router")
+        finally:
+            reset_trace_id(token)
+        span = next(s for s in obs_on.get_finished_spans() if s.name == "route")
+        assert "langfuse.user.id" not in dict(span.attributes)
+
+    def test_identity_wins_over_caller_attr(self, obs_on: InMemorySpanExporter) -> None:
+        """调用方传入的 ``langfuse.user.id`` 被服务端身份覆盖（客户端传入值一律丢弃）。"""
+        elder = str(uuid.uuid4())
+        identity = Identity(kind="device", device_id=str(uuid.uuid4()), elder_id=elder)
+        token = _trace()
+        try:
+            with identity_scope(identity):
+                emit_stage_span("route", 5.0, attrs={"langfuse.user.id": "spoofed"})
+        finally:
+            reset_trace_id(token)
+        span = next(s for s in obs_on.get_finished_spans() if s.name == "route")
+        assert dict(span.attributes)["langfuse.user.id"] == elder
 
 
 class TestFastAPIServerSpan:
