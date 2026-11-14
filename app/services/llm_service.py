@@ -152,6 +152,7 @@ class LLMService:
                 else:
                     parsed, prompt_tokens, completion_tokens = _parse_completion(response)
                     if parsed is not None:
+                        elapsed_ms = round((asyncio.get_running_loop().time() - started) * 1000, 1)
                         logger.info(
                             "llm_request_completed",
                             extra={
@@ -159,9 +160,7 @@ class LLMService:
                                 "provider": self._settings.llm_provider,
                                 "attempt": attempt,
                                 "status_code": status_code,
-                                "elapsed_ms": round(
-                                    (asyncio.get_running_loop().time() - started) * 1000, 1
-                                ),
+                                "elapsed_ms": elapsed_ms,
                                 "reply_chars": len(parsed),
                                 "prompt_tokens": prompt_tokens,
                                 "completion_tokens": completion_tokens,
@@ -190,12 +189,27 @@ class LLMService:
                         # B2（D-1 裁决）：prompt cache 计数（B 写域内进程计数）+
                         # llm_usage event span（明细跨重启可查，归 trace 职责）。
                         # 观测旁路失败不得影响主回复。
+                        # 2026-11-14 方案 A（主理人批准）：补 Langfuse 官方 OTel 映射键，
+                        # 使该 span 落为 GENERATION 观测——「Generation latency percentiles /
+                        # Model latencies」两卡才能聚合（latency_ms 经 emit_event_span 转
+                        # 真实 span 时长）；旧字段名保留，既有 ClickHouse 查询不受影响。
                         try:
                             cache_hit, cache_miss = _parse_cache_tokens(response.json())
                             record_llm_cache(hit_tokens=cache_hit, miss_tokens=cache_miss)
                             emit_event_span(
                                 "llm_usage",
                                 {
+                                    "langfuse.span.type": "generation",
+                                    "gen_ai.request.model": self._settings.llm_model,
+                                    "gen_ai.usage.prompt_tokens": prompt_tokens,
+                                    "gen_ai.usage.completion_tokens": completion_tokens,
+                                    "gen_ai.usage.total_tokens": (
+                                        prompt_tokens + completion_tokens
+                                        if prompt_tokens is not None
+                                        and completion_tokens is not None
+                                        else None
+                                    ),
+                                    "latency_ms": elapsed_ms,
                                     "provider": self._settings.llm_provider,
                                     "model": self._settings.llm_model,
                                     "prompt_tokens": prompt_tokens,
