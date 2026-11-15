@@ -18,7 +18,7 @@
 | --- | --- |
 | `docs/plans/day10/d-评测回归与演示冻结.md` | 🚧 进行中（S0/D1/D1-R2/X1 联调＋AC-42 录音实测已完成，余 D2/D3/D4/D5） |
 | `docs/plans/day10/day-10-交付与观测-工作推进计划.md` | 🚧 进行中（v1.4 · C 包 S0–S3 已收口；Q1/Q3/Q5/Q10 已裁决，Q2/Q4/Q6–Q9 待 M6.0 收敛） |
-| `docs/plans/day10/dev-a-容器化与部署链.md` | 🚧 进行中（S1–S5 已收口；本次 push 经主理人裁决豁免真门禁一次（留痕待补跑）；下一步 S6） |
+| `docs/plans/day10/dev-a-容器化与部署链.md` | 🚧 进行中（S1–S7 已收口 · A 组遗留复核修正完成 · M6.1 A 侧就位待与 dev-C 合验；真门禁豁免已由 dev-D D1 复跑＋阻塞门禁接线闭环；下一步 S8） |
 | `docs/plans/day10/dev-b-day10-工作推进计划.md` | ❔ **已完成（2026-11-13 主理人确认）· Step 0–6 全部收口（M6.2 达成；Step 5/6 经主理人 20:22/20:45 确认）· 越域修复 redact.py 误伤 bug（授权已交 dev-A）· 唯一挂起＝D3 演练抽验（支援项，待 D13 时点，素材已备：docs/guides/langfuse-操作指引.md）** |
 | `docs/plans/day10/dev-c-day10-工作推进计划.md` | 🚧 进行中（S0–S3 收口；J1/J2 Y3 闭环、J4 B2/B1 闭环、J5 门禁口径闭环；**仅剩 J3·A4 素材回填 README §13**） |
 

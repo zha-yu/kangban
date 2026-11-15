@@ -229,12 +229,13 @@ services:
       start_period: 30s
 
   nginx:
-    # 前端托管 + 反代（Day 10 · A2a 骨架，dev-A）。镜像 = dev-C C1 交付的
-    # frontend/frontend.Dockerfile（Y3：容器内 /usr/share/nginx/html/{pad,console,family}；
-    # 镜像内默认配置已含三入口静态段与 /api、/ws 反代草案，upstream=backend:8000）。
-    # deploy/nginx.conf 归 dev-A 独占：S6 升格为 HTTPS/证书/avatars/health 段后，
-    # 以卷挂载覆盖镜像内默认配置（届时补 volumes，S3 骨架阶段不挂——旧 conf 只有
-    # /avatars 段，挂上会盖掉草案的三入口托管）。
+    # 前端托管 + 反代（Day 10 · A2a 骨架 / A3a S6 完整配置，dev-A）。镜像 = dev-C C1
+    # 交付的 frontend/frontend.Dockerfile（Y3：容器内 /usr/share/nginx/html/{pad,console,family}）。
+    # deploy/nginx.conf 归 dev-A 独占：S6 已升格为完整托管配置（443 TLS + 80→443 +
+    # 三入口静态 + /avatars + /health + /static + /api + /ws 反代），以只读卷覆盖镜像内
+    # 的 Y1 草案；同时修掉草案 `no resolver defined to resolve backend` 导致的 /api 502。
+    # 证书目录 deploy/certs/ 由 S6 预置自签开发证书（S7 换 mkcert 受控信任），
+    # 文件不进 git（根 .gitignore 已有 certs/ / *.pem / *.key），干净主机需先生成。
     build:
       context: ./frontend
       dockerfile: frontend.Dockerfile
@@ -243,12 +244,16 @@ services:
     ports:
       - "${NGINX_HTTP_HOST_PORT:-80}:80"
       - "${NGINX_HTTPS_HOST_PORT:-443}:443"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/certs:/etc/nginx/certs:ro
     depends_on:
       backend:
         condition: service_healthy
     healthcheck:
-      # nginx:stable-alpine 自带 busybox wget；探三入口静态段（不依赖 backend）
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/pad/"]
+      # 80 已改为 301 跳 443，故改探 nginx 自身的 /nginx-health（纯存活、不依赖
+      # backend 与 busybox wget 的 HTTPS 能力）；三入口与 /health 由 S6 命令级自检覆盖。
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/nginx-health"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -258,19 +263,26 @@ services:
     # TURN 中继（Day 10 · A2-b，dev-A）：day09 D2.5 的 GET /api/audio/ice-config 下发
     # turn_url/turn_username/turn_credential（字段只读不改名），本服务鉴权值与 .env
     # 同源经 compose 变量注入 command，不写死在 deploy/turnserver.conf（该文件进 git）。
-    # 端口 3478（UDP+TCP，README §6.2 约定）；5349 TLS 待 S7 证书就绪后启用。
-    # 局域网教学场景不做公网中继（external-ip 留注释，见 turnserver.conf）。
+    # 端口 3478（UDP+TCP，README §6.2 约定）；5349 TLS 未启用（S7 裁决，见计划件执行记录）。
+    # **跨网段（S7）**：`TURN_EXTERNAL_IP_ARG`（.env 整段参数，如 --external-ip=10.55.50.233）
+    # 注入 command，让 Allocate 回给远端 pad 的是宿主可达 IP 而非 Docker 内网 172.x；
+    # 单机开发留空即不传，仓库不写死任何机器 IP（口径见 deploy/turnserver.conf）。
     image: coturn/coturn:latest
     container_name: silvermate-coturn
     restart: unless-stopped
     command: >
       -c /etc/coturn/turnserver.conf
       --user ${TURN_USERNAME:-silvermate}:${TURN_CREDENTIAL:-}
+      ${TURN_EXTERNAL_IP_ARG:-}
     volumes:
       - ./deploy/turnserver.conf:/etc/coturn/turnserver.conf:ro
     ports:
       - "3478:3478/udp"
       - "3478:3478/tcp"
+      # 中继端口段（turnserver.conf min-port/max-port）：external-ip 让 Allocate 回给远端
+      # pad 的是 10.55.50.233:<port>，这些 UDP 端口必须映射到宿主，否则跨网段数据进不来。
+      # 单机开发（relay 走 Docker 内网）用不到，映射本身无副作用；TCP 中继未映射（WebRTC 优先 UDP）。
+      - "49160-49200:49160-49200/udp"
     healthcheck:
       # coturn 镜像（alpine）无 python/curl，用 /proc/net/tcp 探 3478 监听（hex 0D96）
       test: ["CMD-SHELL", "grep -qi ':0D96' /proc/net/tcp /proc/net/tcp6 2>/dev/null"]
