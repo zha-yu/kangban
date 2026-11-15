@@ -498,6 +498,8 @@ await device_jobs_runtime.stop()
 
 **A 侧就位复核结果（2026-11-15 19:39）**：
 
+> **同窗口复跑（2026-11-15 20:38:29–20:38:42，与 dev-C 合验窗口同步）**：7/7 healthy（backend/coturn/mock/nginx/postgres/redis/weather）＋三入口 200＋`/health` 200 带 trace_id `47e74121…`（server_time 12:38:31Z）＋`/api/metrics` 401＋wss 101——四组全过，13 秒完成。C 侧结果一致即确认点❹。
+
 | 判据 | 结果 |
 | --- | --- |
 | 7/7 服务 healthy | ✅（backend/coturn/mock/nginx/postgres/redis/weather，coturn 含 11-15 conf 清理后重建） |
