@@ -1,4 +1,4 @@
-> 状态：已完成（A1–A5 全部交付，确认点❺ 2026-11-14 主理人确认收口；M6.1 A 侧待与 dev-C 合验；R15/R16 裁决与任务书 §6 回填等遗留见计划件 v2.4）　｜　版本：v1.1　｜　日期：2026-11-14
+> 状态：已完成（A1–A5 全部交付，确认点❺ 2026-11-14 收口；B 组遗留 2026-11-15 清零：R16 判据修订／R15 警示登记／§6 回填/coturn 清理；M6.1 A 侧待与 dev-C 合验；接线补丁待 dev-B §9.6）　｜　版本：v1.2　｜　日期：2026-11-15
 > 负责人：**dev-A（唯一）**　｜　任务包：**A · 容器化与部署链**　｜　容量：上限 24h（3 人日）；实排开发 **17h ＝ 2.125 人日**，余额为 Line 1 联调槽位占用＋缓冲
 > 关联：docs/team_tasks/day10/day10-任务总览与DAG.md v1.0（§2 DAG、§3 对接点 Y1/Y4、§4 写域）｜docs/plans/day10/day-10-交付与观测-工作推进计划.md v1.0 §4.1
 > 上游依据：PRD §2.5（一键启动/HTTPS/健康检查）、line 578（Day 10 完成定义）、line 444（FR-ADM-10 设备掉线检测，P2）｜技术设计文档 §8.3 Day 10（多阶段非 root、七服务编排、回滚演练）
@@ -101,7 +101,7 @@ D10 穿插 X3/X4/X12 联调槽（15:00/16:00，day09 §3.4）。冲突时 Line 1
 | --- | --- | --- |
 | 1 | `deploy/nginx.conf` 增量、证书生成说明 | 浏览器打开 `https://localhost` 无证书告警（受控信任后） |
 | 2 | coturn 编排 | `wss://` 信令建连成功（走 nginx 反代不断）；pad `RTCPeerConnection` 从 ice-config 拿到 TURN 地址 |
-| 3 | 凭据红线 | `grep -rn "turn_credential" frontend/src` 零命中（沿 day09 D2.5 判据） |
+| 3 | 凭据红线 | **凭据真值零命中**（R16 裁决 2026-11-15 修订，原字面判据 `grep -rn "turn_credential" frontend/src` 与 day09 D2.5 冻结实现冲突）：口令真值在 `frontend/src`、`frontend/dist`、模板占位均 0 命中（已实测），凭据仅由 ice-config 动态下发；`realtime.ts` 的字段名引用（L212/L220）允许 |
 
 ---
 
@@ -147,7 +147,13 @@ D10 穿插 X3/X4/X12 联调槽（15:00/16:00，day09 §3.4）。冲突时 Line 1
 
 | 日期 | 节点 | 结果/证据指针 | 等待项 |
 | --- | --- | --- | --- |
-| | | | |
+| 2026-11-13 | A1（S1+S2） | `.dockerignore` 放行 alembic；Dockerfile 两阶段+非 root（uid 1000）+`deploy/backend-entrypoint.sh` 自动迁移（SKIP_MIGRATIONS 开关）；自检五条全过（构建成功/非 root/import 无错/`docker history` 密钥零命中/Env 无密钥）；冒烟 `/health` ok 带 trace_id；镜像 **1010.4MB**（改 `COPY --chown` 优化 -841MB） | 无 |
+| 2026-11-13 | A2（S3–S5） | compose 七服务编排（地址全服务名覆盖、backend 不映射宿主口）＋profile 矩阵四态（默认 7／local+funasr+voiceprint／langfuse v4 六服务／laya 容器，15 服务 config PASS）；backend/nginx healthy、迁移 0020→0021 实测；laya 按 Q7 兜底宿主 sidecar（7001 model_loaded=true）；共享口径：funasr/voiceprint/langfuse 连 dev-B | 无 |
+| 2026-11-13 | A3（S6+S7） | `deploy/nginx.conf` 全量重写（resolver 127.0.0.11 动态重解析，后经换 IP 实证升格）；自签 CA＋受控信任（X509Chain=True、curl 不带 -k 200）；coturn 端到端（device token→ice-config 凭据同源→TURN Allocate success→external-ip 跨网段闭环、中继段 49160-49200）；M6.1 判据 `https://localhost/health` 200 带 trace_id 达成、wss 101 | 无 |
+| 2026-11-14 | A4（S8） | Y4=`61759ca` 打注解标签 `y4-rollback-baseline`（接替任务书原拟 8d506b2）；代码回滚演练（ENTRYPOINT 破坏→502→25s 恢复→AC-01 冒烟 ok）；数据回滚演练（0021⇄0020，五表行数逐一致）；部署门禁清单六项（逐项检查方法+当日证据）落计划件 §9.4.4 | 无 |
+| 2026-11-14 | A5（S9+S10） | `device_service.py` 增 detect_offline_devices／recover_online_devices／handle_device_self_check_failure（写库全走 service）；独立调度骨架 `app/scheduler/device_jobs.py`（未碰 dev-B 既有调度文件）；`tests/test_device_offline.py` 6 用例首跑即绿；全量 **1715 passed** 无回退 | main.py 接线补丁需求单交 dev-B（计划件 §9.6，约 2 行，D13 演示前合入即可） |
+| 2026-11-14 | 确认点❺ | **A 包收口（主理人确认）**。五节点交付清单核对无误，HEAD `522b7d2` 推送 feature-zjj 真门禁 PASS | 无 |
+| 2026-11-15 | §6 回填＋B 组 | 主理人裁决落档：**R16=A3 凭据红线判据修订为「凭据真值零命中」**（字段名命中允许，README §11 登记已知冲突，前端不改）；**R15=自定义 HTTPS 端口仅登记警示**（README 端口表加句，nginx.conf 不改）；coturn 残留警告清理（listening-ip/relay-ip/pidfile 新增，3 条 WARNING 消失，Allocate success 重验零回归，余 2 条证书 WARNING 为 no-tls 固有噪音）。本表即任务书 §6 回填（证据指针：计划件 §8 对应行） | 无 |
 
 ## 变更记录
 
@@ -155,3 +161,4 @@ D10 穿插 X3/X4/X12 联调槽（15:00/16:00，day09 §3.4）。冲突时 Line 1
 | --- | --- | --- |
 | v1.0 | 2026-11-13 | 首版，与总览 v1.0 同批产出。 |
 | v1.1 | 2026-11-14 | **收口**：S0–S10 十一步全部完成，A1–A5 五节点交付（Dockerfile／compose 编排／nginx+证书+coturn／回滚演练+门禁清单／设备掉线检测），确认点❺ 主理人确认，A 包正式关闭。执行细节与证据指针见计划件 `docs/plans/day10/dev-a-容器化与部署链.md` v2.4 §8。 |
+| v1.2 | 2026-11-15 | **§6 执行记录回填**（A1–A5＋确认点❺＋B 组裁决七行）；A3 判据按主理人 R16 裁决修订为「凭据真值零命中」（字段名命中允许）；R15 端口警示登记口径落 README 素材（计划件 §9.2）。 |

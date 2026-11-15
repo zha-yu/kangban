@@ -451,8 +451,12 @@ def _heartbeat_threshold(now: datetime.datetime) -> datetime.datetime:
 
 
 def _offline_payload(
-    *, device_id: uuid.UUID, elder_id: uuid.UUID, room_no: str | None,
-    last_heartbeat: datetime.datetime | None, now: datetime.datetime,
+    *,
+    device_id: uuid.UUID,
+    elder_id: uuid.UUID,
+    room_no: str | None,
+    last_heartbeat: datetime.datetime | None,
+    now: datetime.datetime,
 ) -> dict[str, object]:
     return {
         "device_id": str(device_id),
@@ -635,9 +639,7 @@ async def handle_device_self_check_failure(
     if device is None:
         raise DeviceNotFoundError(f"device not found: {device_id}")
     if device.elder_id is None:
-        raise DeviceServiceError(
-            f"device {device_id} 未绑定长者，自检异常无法建单（先绑定再上报）"
-        )
+        raise DeviceServiceError(f"device {device_id} 未绑定长者，自检异常无法建单（先绑定再上报）")
     now = now or datetime.datetime.now(datetime.UTC)
     ref = await work_order_service.open_work_order(
         session,

@@ -1,4 +1,4 @@
-> 状态：已收口（S0–S3 全部执行完毕；J1–J5 交接全闭环；README §12–§15 全部填实，M6.3 C 侧齐套；§15.3 SLO 小项挂起归 B）　｜　版本：v1.2　｜　日期：2026-11-15
+> 状态：已收口（S0–S3 全部执行完毕；J1–J5 交接全闭环；README §12–§15 全部填实 + §11 R16 冲突行落档；M6.1 C 侧自验 2026-11-15 全过待双方同跑收口）　｜　版本：v1.3　｜　日期：2026-11-15
 > 负责人：**dev-C（唯一）**　｜　任务包：C · 前端构建与文档齐套线（15.5h / 容量上限 24h）
 > 上游依据（唯一事实源，本文不另立口径）：
 > - `docs/plans/day10/day-10-交付与观测-工作推进计划.md` v1.1（§4.3 dev-C 节点表、§3 Y1/Y3、§6 写域）
@@ -332,6 +332,9 @@ flowchart LR
 | 2026-11-13 | J5 · Y5 素材知会 | dev-D 通知：门禁口径素材在 `day10_gate_rerun.md` §6（D1 产出）。**该文件尚未在远端 develop / 本地出现**（14:32 实测 fetch + find 零命中）；README §15.4 回填位已就绪（含 expected-red 落地说明位） | **待 dev-D push 该文件后知会 C**，C 即按 §6 逐字合入 README §15.4 并闭环 J5 |
 | 2026-11-13 | J5 · 提单事实先行合入 | 15:17 提单两条纪律事实按原文合入 README §15.4（push 3~4 分钟既定成本 / hooksPath 启用要求 / expected-red 2026-11-15 过期）＋总览 Y5 契约增补（v1.7）；**素材文件仍待 push**，显式标注「到位后逐字校对」，未虚构引用 | dev-D push 文件后逐字校对回填，J5 闭环 |
 | 2026-11-13 | **J5 ✅ 闭环** | dev-D push PR #124/#125：`eval/reports/day10_gate_rerun.md`（§6 Y5 素材小抄＋四态验证表）＋`expected_red.json`（B/D/E，expires 2026-11-15，入库留痕）＋`tests/eval_gate.py` expected-red 机制落码（+132 行）；README §15.4 已按 §6 **逐字校对并填实**（pre-push 双段链路/expected-red 机制/当前标注/四态验证/启用方式/纪律），占位符删除 | 无——J5 关闭；README 剩余等待仅 A4/B2/B1 三项 |
+| 2026-11-15 | **M6.1 C 侧自验 ✅（确认点❹ 待双方同跑）** | 按 §9.7 交接单复跑同款判据：`sh deploy/gen-dev-cert.sh`（SAN 齐全）→ `certutil -addstore -user Root`（受控信任）→ `docker compose up -d` → **7/7 healthy**（过程修一坑：本机 `.env` 的 `TURN_CREDENTIAL` 为空致 coturn 崩循环 `missing or malformed ':' separator`，补凭据后 healthy）；三入口 `/pad/ /console/ /family/` 全 200；`/health` 200 带 trace_id `a51adc8d…`；`/api/metrics` 401；`wss://localhost/ws/signal` **101**（不带 -k，受控信任生效）——**与 A 侧 19:39 复核结果逐项一致** | **待约时间窗双方同跑一遍 → 确认点❹ 通过即 M6.1 收口** |
+| 2026-11-15 | R16 裁决落档 | README §11「已知文档冲突」表加行：任务书 A3 凭据红线判据 → 2026-11-15 主理人裁决改「凭据真值零命中」（字段名命中允许，`realtime.ts` L212/L220 属 day09 D2.5 冻结实现） | 无 |
+| 2026-11-15 | **M5 收口复核 C 域回执 ✅** | 按真回执单 `docs/team_tasks/day09/m5-收口复核结论.md` §4 完成三项：①AC-23 通知状态域——通知相关测试 **62 passed**；②前端 `tsc`/`build` 主跑（§1 #5 归 C/D）——`pnpm --dir frontend build` **✓ built in 6.32s**，tsc 零错误；③M5.4 console 证据——`scripts/lifecycle_e2e_dryrun.py` 复跑 **21 PASS / 0 FAIL**（旧设备 token 401 TOKEN_REVOKED、家属 F0 失权、审计 5 行幂等），与 A 侧记录一致 | 电子回执文本已交主理人转发群（IM 通道本运行时不可用）；§3-1 expected-red 今日到期，三选一待 dev-D |
 | 2026-11-13 | 门禁拦截与环境配置 | 首次 push 被**真门禁正确拦截**：本机缺 `.venv_sidecar`（F02 不静默放行，主理人裁决 A=现场配置）；已建 `.venv_sidecar`（python 3.12）并后台安装 torch 2.14 CPU + sidecar 依赖 + sqlalchemy/tzdata（对齐 day10_gate_rerun.md §0 口径） | 安装完成后重推 162ba99（J5 闭环提交） |
 | 2026-11-13 | 改判⑨登记 | 主理人改判 Langfuse 形态：**v2 单容器+复用 postgres → v4 全家桶（六容器）**；已落总览 Q4/Y2（v1.8）＋README §12.2；compose 仍无 langfuse（Y2 归 dev-A S4 待办） | **提单 dev-A**：计划件 S0/S4/Y2 的「v2+连 dev-B」口径过时需自行同步；`.env.example` 占位 `LANGFUSE_HOST` 指向主理人 IP；注册地址 `http://<主理人局域网IP>:3000` |
 | 2026-11-13 | **J4 ✅ 闭环（B2 素材）+ §15.2（B1 素材）** | dev-B PR #129 交付 `eval/reports/day10_cost_brief.md`＋`docs/guides/langfuse-操作指引.md`＋`day10_langfuse_trace.md`（AC-31 证据）；README §14 成本四指标实测回填（S1 闭环率 5.19% 如实登记未达标、cache 命中率 0.0% 真实值、单轮 prompt 基线 765 tokens、价格按当日定价页公式代入）＋§15.1 cache 口径＋§15.2 指引引用；§15.3 SLO 告警素材未含，如实挂起 | **README 剩余等待仅 A4（回滚）一项** |

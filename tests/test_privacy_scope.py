@@ -269,8 +269,6 @@ async def test_no_injection_when_probe_not_wired() -> None:
         tools=(),
     )
     set_current_privacy_scope("personal")
-    await agent.run(
-        runtime=_device_identity(), turn_id="turn-p-3", user_text="我今天血压怎么样"
-    )
+    await agent.run(runtime=_device_identity(), turn_id="turn-p-3", user_text="我今天血压怎么样")
     assert isinstance(agent._llm, OneShotLLM)
     assert all(m["content"] != PRIVACY_DIRECTIVE for m in agent._llm.calls[0])

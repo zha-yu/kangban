@@ -526,6 +526,7 @@ uv run pytest -q -m "not slow" --cov=app --cov-report=term
 | Day 8 声纹调优归属 | 大纲 8.4 + PRD §4 FR-VPR-04 表行（「Day 8.4 产出报告」）：声纹调优在 Day 8 | **现行：主理人 2026-11-10 晚改裁决 D-1——声纹调优（FR-VPR-04）纳入 Day 8 以 P1（H13）承载，产能不足仍可顺延 Day 9**；PRD §6.1 Day 9 行与 TD §8.4.3 的「归 Day 9」表述待同步修订（见 docs/plans/day08/day-08 计划 §0 / §10） |
 | Day 8 护工看板渲染形态 | 大纲 8.2：最简 HTML+JS 服务端渲染，不引前端框架 | **PRD §2.1：console 统一 React + 原生 CSS（tokens.css 唯一真源，MUI 已于 2026-11-06 移除），在现有工程内真实对接，不另起服务端渲染**（2026-11-10 主理人裁决 D-3） |
 | 评测门禁归属 | TD §8.4.3：FR-TC-07（评测门禁）归 Day 9 | **现行：主理人 2026-11-11 裁决 D-6——评测基线 v1 + `eval_gate.py` 门禁 + pre-push 接线 Day 8 全量做**（依据 day07 README §1.1 将「评测基线 v1」列为实际 Day 8 补齐项）；TD 归属表述待同步修订（见 docs/plans/day08/day-08 计划 v1.2 §0 / H16） |
+| 任务书 A3 凭据红线判据 | 任务书 A3 字面：`grep -rn "turn_credential" frontend/src` 零命中 | **现行：2026-11-15 主理人裁决 R16——判据修订为「凭据真值零命中」**（`frontend/src`、`frontend/dist`、模板占位实测 0 命中），**字段名命中允许**（`realtime.ts` L212/L220 两处属 day09 D2.5 已冻结实现：类型声明与响应取值，凭据仅由 ice-config 动态下发，口令真值不落前端源码）；前端不改 |
 
 > **本表修订（2026-11-12）**：「前端 UI 库」行原「现行口径」误写为 *console/family 用 MUI*，与同表「Day 8 护工看板渲染形态」行及 PRD v2.7（2026-11-06 裁决：移除 MUI、改纯 React + 原生 CSS）自相矛盾。经核对 `frontend/package.json` 无 MUI 依赖、`frontend/src/{console,family}/` 零 `@mui` import，确认 MUI 确已移除；现将「用 MUI」归入旧口径、现行口径与 PRD v2.7 对齐。**其余各行未改动。**
 

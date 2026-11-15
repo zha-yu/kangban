@@ -1,4 +1,4 @@
-> 状态：**已收口（S0–S10 全部完成 · A1–A5 全部交付 · 确认点 ❺ 于 2026-11-14 通过主理人确认）**；M6.1 A 侧就位待与 dev-C 合验；A5 接线补丁需求单待 dev-B §9.6；B 组遗留（R15/R16 裁决、任务书 §6 回填、coturn 残留警告）处置中　｜　版本：v2.4　｜　日期：2026-11-14
+> 状态：**已收口（S0–S10 全部完成 · A1–A5 全部交付 · 确认点 ❺ 于 2026-11-14 通过主理人确认）**；B 组遗留已清零（2026-11-15）：R16=判据改「凭据真值零命中」、R15=自定义端口仅登记警示、任务书 §6 已回填、coturn 残留警告已清（余 2 条 no-tls 固有噪音已登记）；**M6.1 A 侧 2026-11-15 复核全过（7/7 healthy＋四组判据），合验交接单 §9.7 就绪**，待 dev-C 合验（确认点❹）；A5 接线补丁需求单待 dev-B §9.6　｜　版本：v2.6　｜　日期：2026-11-15
 > 负责人：**dev-A（唯一）**　｜　任务包：**A · 容器化与部署链（17h）**
 > 关联：docs/team_tasks/day10/dev-A-容器化与部署链.md v1.0（任务书，分工与判据唯一依据）｜docs/team_tasks/day10/day10-任务总览与DAG.md v1.1（§2 DAG、§3 对接点 Y1/Y2/Y4、§4 写域、§8 待确认）｜docs/plans/day10/day-10-交付与观测-工作推进计划.md v1.1（总计划件）
 > 上游依据：PRD line 578（Day 10 完成定义）、§2.5（一键启动/HTTPS/健康检查）、line 455（FR-TC-05）、line 444（FR-ADM-10）｜技术设计文档 §8.3 Day 10（line 1176–1183：多阶段非 root、七服务编排、回滚演练）、§1.4 选型表 line 206（compose 七服务）
@@ -299,8 +299,8 @@ uv run ruff check app tests
 | R11 | **A5 与 dev-B 写域擦边**：main.py 装配归 B | 我需要改 main.py 才能接 job | 以补丁需求单交 dev-B（沿 day07 handoff-A-to-C 惯例），本包不越界；测试用独立装配绕开 main.py |
 | R12 | **Line 1 槽位抢占**：D10 15:00/16:00 联调冲突 | 槽位通知 | Line 1 优先（总览 §0.2）；S1 的 A1-c 验证段可拆碎填缝隙，D10 内完成 A1 不受影响 |
 | R14 | ✅ **S7 已闭环**（原：证书目录不进 git → 干净主机 clone 后无证书，nginx 起不来） | 曾为 D3 三步演练的阻塞点 | `deploy/gen-dev-cert.sh` 一键生成 CA＋server 证书；`.gitignore` 显式登记 `deploy/certs/`；生成／受控信任／验证／撤销步骤写入计划件 §9.1 交 dev-C 合入 README；D3 演练第一步即跑该脚本 |
-| R15 | **自定义 `NGINX_HTTPS_HOST_PORT`（非 443）时 80→443 跳转丢端口**：`return 301 https://$host$request_uri` 用 `$host` 不带端口 | 改端口后浏览器跳到 443 而非自定义 HTTPS 端口 | 默认 80/443 口径不受影响；自定义端口时在 `deploy/nginx.conf` 的 return 301 显式补端口，并在 README 端口表登记 |
-| R16 | **任务书 A3 凭据红线判据与已冻结实现冲突**：`grep -rn "turn_credential" frontend/src` 字面要求零命中，但 day09 D2.5 交付的 `realtime.ts` 有 2 处字段名引用（类型声明／响应取值） | 按字面判据验收会误判为不达标，且修它要动 dev-C 写域并破坏 ice-config 动态下发设计 | S7 按实质判据验收（凭据真值在 src／dist 均零命中）；**待主理人裁决**把判据修订为「凭据真值零命中」，字段名命中允许，登记为已知文档冲突，不改前端 |
+| R15 | **自定义 `NGINX_HTTPS_HOST_PORT`（非 443）时 80→443 跳转丢端口**：`return 301 https://$host$request_uri` 用 `$host` 不带端口 | 改端口后浏览器跳到 443 而非自定义 HTTPS 端口 | 默认 80/443 口径不受影响；自定义端口时在 `deploy/nginx.conf` 的 return 301 显式补端口，并在 README 端口表登记。**✅ 2026-11-15 主理人裁决：仅登记警示**——当前无自定义端口消费方（D3/D13 全默认口径），README 端口表注明「自定义端口时请直接访问 `https://主机:端口`」，不改 nginx.conf |
+| R16 | **任务书 A3 凭据红线判据与已冻结实现冲突**：`grep -rn "turn_credential" frontend/src` 字面要求零命中，但 day09 D2.5 交付的 `realtime.ts` 有 2 处字段名引用（类型声明／响应取值） | 按字面判据验收会误判为不达标，且修它要动 dev-C 写域并破坏 ice-config 动态下发设计 | S7 按实质判据验收（凭据真值在 src／dist 均零命中）；**✅ 2026-11-15 主理人裁决：采纳实质判据**——A3 判据修订为「凭据真值零命中」（src/dist/模板占位实测 0 命中），字段名命中允许，登记为已知文档冲突（README §11 素材见 §9.5 末），前端不改 |
 | R17 | **浏览器 GUI 无告警与手机热点真机跨网段缺自动化实证**：本机只能验证系统根信任链、非回环 IP 下发、relay 地址与端口映射 | D3／演示冻结时才发现浏览器仍告警或远端 ICE 失败 | 系统级证据已备（`X509Chain` chain_build=True、不带 -k 200、Allocate 回宿主 IP、端口段映射）；D3 干净主机演练与 M6.5 演示冻结安排人工目视＋真机热点联调，见 §9.1／§9.2 步骤 |
 
 ---
@@ -323,6 +323,7 @@ uv run ruff check app tests
 | 2026-11-14 | S8 | **A4 收口（回滚演练 + 部署门禁清单 + Y4 基准）**。①**Y4 固化**：`61759ca` 打注解标签 `y4-rollback-baseline`（任务书原拟 `8d506b2` 为 feature-zy 合并点、落后 94 提交，按「D13 前最后收口 commit」条款由 61759ca 接替登记；基线证据：backend 镜像 `58f182293fa0`、`/health` 200、AC-01 冒烟 `ok:True` 高德实测「北京 霾 7.0°C」）。②**演练一 · 代码回滚**：破坏点选 dev-A 写域 `Dockerfile` L54（原拟 `app/scheduler/device_jobs.py` 尚不存在，A5 未开工）`ENTRYPOINT` 加 `-broken` 后缀 → `docker compose build` 13s → `up -d --wait` 失败 `exec: "backend-entrypoint-broken": executable file not found in $PATH` → 外部 `/health` **502**（故障可见）→ `git restore Dockerfile` 零残留 → 重建＋wait **25s 恢复** → `/health` 200 带 trace_id、AC-01 冒烟 `ok:True`、7/7 服务 healthy。③**演练二 · 数据回滚**：前置核对 `metrics` 无 `llm_tokens` 行（0 行，避开 0021 头注明的 CHECK 拒绝）→ 见证 devices=4/elders=4/medication_plans=12/health_records=9/metrics=3501 → `alembic downgrade 0020`（0021→0020，token 三列消失）→ `upgrade head`（三列回归）→ 五表行数逐一致、`/health` 200；Day 10 零新增迁移，纯可逆性证明。④**部署门禁清单六项**（§9.4.4 逐项带「检查方法」列）：验收达成／测试通过／密钥安全／迁移可逆／监控就绪／回滚清晰——当日复跑 `uv run python -m pytest -q` **1709 passed（254s）**；镜像 Env 零凭据（唯一命中 `GPG_KEY` 为 python 官方基础镜像标准变量，判据误报已澄清；JWT_SECRET／TURN_CREDENTIAL／LLM_API_KEY 等仅容器运行时注入，恰证 A2 设计）；`LANGFUSE_*` 9 变量已配；Y4 标签可 `git checkout`。⑤**过程坑**：pytest 经后台运行被沙箱拦截（改前台跑）；`information_schema.columns` 列名误写 `ordinal_place`（正确 `ordinal_position`）一次。⑥全部结果落 §9.4 正式素材（9.4.1 Y4／9.4.2 演练一／9.4.3 演练二／9.4.4 门禁清单）交 dev-C 合入 README | 无（S1–S8 收口，A1–A4 交付完成；下一步 S9–S10 = A5（P2）；M6.1 A 侧待与 dev-C 合验；R16 判据口径仍待主理人裁决） |
 | 2026-11-14 | S9+S10 | **A5 收口（设备掉线检测 FR-ADM-10，A 包全部节点完成）**。①**服务层**（写库全走 service，分层红线遵守）：`device_service.py` 增 `detect_offline_devices`（绑定设备心跳超 `2×device_heartbeat_period_seconds`（config 新增，默认 60s→阈值 120s；含 last_heartbeat IS NULL 的异常在线态）→ `status='offline'`＋`send_staff_notifications` 双发（admin 按角色 / 负责护工按 primary_care 绑定；幂等键 `device_offline:<device_id>:<日期>` 同日 flap 不重复轰炸）＋掉线窗口 `[last_heartbeat, now]` 内存在 `calling`/`waiting_confirm` 的用药事件 → 每事件一张 `device_fault`/`yellow` 工单（dedupe_token 按事件 T0））、`recover_online_devices`（仅**绑定**设备恢复新鲜心跳回 online——AC-24 解绑设备不因心跳回线上）、`handle_device_self_check_failure`（自检异常 → device_fault 工单，dedupe 按设备+部件+当日；未绑定设备抛错不建单）。②**调度骨架**：新建 `app/scheduler/device_jobs.py`（`run_device_offline_check` 独立会话 tick＋`DeviceJobRuntime` 独立 AsyncIOScheduler，`max_instances=1`+`coalesce=True`）；**未碰 dev-B 既有调度文件**；main.py 接线以补丁需求单交 dev-B（§9.6，两行挂载）。③**测试**（先写用例后验证，首跑即绿）：`tests/test_device_offline.py` 6 用例覆盖任务书 4 判据——①超 2 周期置 offline＋通知恰好 {admin, 负责护工}、无关护工不收、同日 flap 幂等；②新鲜心跳回 online＋解绑不恢复（AC-24）＋陈旧心跳不恢复两负例；③T0 重叠建单（type/severity/elder 断言）＋flap 重查 `created=False` 不多建＋窗口外 T0 不建单负例；④无关护工列表范围过滤 0 行＋mark-read 越权抛 `NotificationForbidden`（API 层映射 403）。④**自检**：`uv run ruff check app tests` All checks passed；`uv run pytest tests/test_device_offline.py -q` **6 passed**；全量 `uv run python -m pytest -q` **1715 passed（1709+6，无回退）**。⑤**边界留痕**：设备心跳写入点（设备侧 API）尚不存在——现状全仓无 `last_heartbeat` 写入方，本步交付的是检测/恢复骨架，心跳上报接口与真实设备接入归后续设备侧任务；SAWarning 与既有同款 fixture 模块一致（test_notification_service 单跑同样出现），非本步引入 | 无（A 包 A1–A5 全部交付；dev-B 补丁需求单见 §9.6；R16 判据口径仍待主理人裁决） |
 | 2026-11-14 | 确认点❺ | **dev-A 包收口确认（主理人通过）**。A1–A5 五节点交付清单核对无误：A1 镜像 1010.4MB/非 root/自动迁移、A2 默认 7 服务全 healthy+3 profile（15 服务）、A3 三入口 200+M6.1 判据达成+TURN Allocate success+换 IP 实证、A4 Y4 标签+两次演练+门禁六项、A5 1715 passed 无回退；全局 HEAD `522b7d2` 已推 feature-zjj、真门禁 PASS、工作区干净。**遗留边界**：B 组（R15/R16 裁决、任务书 §6 回填、coturn 残留警告）、C 组（README §12 合入、M6.1 合验、真机跨网段）、dev-B §9.6 补丁单均不属于 A 包验收范围，已登记继续跟踪 | 无（A 包正式关闭；进入 B 组裁决） |
+| 2026-11-15 | B 组裁决 | **B 组遗留四项全部清零（主理人两道裁决＋文档回填＋coturn 清理）**。①**R16=采纳实质判据**：A3 判据修订为「凭据真值零命中」（src/dist/模板占位 0 命中已实证），字段名命中允许；README §11 已知文档冲突加行素材落 §9.5 末（交 dev-C），前端不改；②**R15=仅登记警示**：当前无自定义端口消费方（D3/D13 全默认 80/443），README 端口表加「自定义端口直接访问 https://主机:端口」一句（§9.2），nginx.conf 不改；③**任务书 §6 回填**：A1–A5＋确认点❺ 六行执行记录入任务书（证据指针指计划件 §8 对应行），任务书变更记录升 v1.2；④**coturn 残留警告清理**：`turnserver.conf` 加 `listening-ip=0.0.0.0`／`relay-ip=0.0.0.0`／`pidfile=/tmp/turnserver.pid` 三行，重建后 NO EXPLICIT LISTENER/RELAY 与 pid 三条 WARNING 消失（relay 0.0.0.0 initialization done）；**重验 Allocate success**（relay addr `10.55.50.233:49186` 落中继段，external-ip 映射正常，与 S7 基线一致零回归）；**余 2 条证书 WARNING（`//turn_server_cert.pem` not found）登记为 no-tls 模式固有噪音**——coturn 启动器对编译期默认证书路径的无条件检查，conf 无解（真放证书违背 S7 不启用 TLS 裁决），无功能影响。过程坑留痕：uclient 验证漏 `-e/-r/-n/-v` 与 peer 进程会得 `channel bind: error 403` 假阴性，按 S7 同款命令（`turnutils_peer -p 3480 &` + `uclient -e 127.0.0.1 -r 3480 -n 1 -v`）即正常 | 无（B 组清零；剩 C 组外部依赖：M6.1 合验、README 合入、真机跨网段、dev-B 补丁单） |
 
 ---
 
@@ -345,6 +346,8 @@ uv run ruff check app tests
 | v2.2 | 2026-11-14 | **S8 收口（A4）**：Y4=`61759ca` 注解标签 `y4-rollback-baseline`；演练一代码回滚（Dockerfile ENTRYPOINT 破坏→13s 构建→启动失败 `/health` 502→`git restore` 零残留→25s 恢复 `/health` 200＋AC-01 冒烟 ok）；演练二数据回滚（`downgrade 0020`⇄`upgrade head`，token 三列消失/回归，五表行数逐一致）；部署门禁清单六项落 §9.4.4（逐项「检查方法」＋当日证据，1709 passed 当日复跑、镜像 Env 零凭据澄清 GPG_KEY 误报）；§9.4 占位转正式素材交 dev-C。**A 包步骤 S1–S8 全部收口**。 |
 | v2.3 | 2026-11-14 | **S9+S10 收口（A5 设备掉线检测，A 包全部节点交付）**：`device_service.py` 增 `detect_offline_devices`／`recover_online_devices`／`handle_device_self_check_failure`（写库全走 service）；新建 `app/scheduler/device_jobs.py`（独立 AsyncIOScheduler 骨架，不碰 dev-B 既有调度文件）；config 增 `device_heartbeat_period_seconds=60`／`device_offline_scan_interval_seconds=30`；新增 `tests/test_device_offline.py` 6 用例覆盖任务书 4 判据（先写用例，首跑即绿），全量 **1715 passed** 无回退；main.py 接线以补丁需求单交 dev-B（§9.6）。 |
 | v2.4 | 2026-11-14 | **确认点 ❺ 通过，dev-A 包正式收口（主理人确认）**。A1–A5 五节点交付清单核对无误（A1 镜像 1010.4MB/非 root/自动迁移；A2 默认 7 服务 healthy+3 profile 15 服务；A3 三入口 200+M6.1 判据+TURN Allocate+换 IP 实证；A4 Y4 标签+两次演练+门禁六项；A5 1715 passed）；全局 HEAD `522b7d2` 已推 feature-zjj、真门禁 PASS。遗留边界登记：B 组（R15/R16 裁决、任务书 §6 回填、coturn 残留警告）、C 组（README §12 合入、M6.1 合验、真机跨网段）、dev-B §9.6 补丁单，均不属 A 包验收范围，继续跟踪。 |
+| v2.5 | 2026-11-15 | **B 组遗留清零（主理人裁决落档）**：R16=A3 凭据红线判据修订为「凭据真值零命中」（字段名命中允许，README §11 加行素材落 §9.5 末，前端不改）；R15=自定义 HTTPS 端口跳转仅登记警示（§9.2 端口表加句，nginx.conf 不改）；任务书 §6 执行记录回填（A1–A5＋确认点❺ 六行，任务书 v1.2）；coturn 残留警告清理（listening-ip/relay-ip/pidfile 三行新增，重建后 3 条 WARNING 消失，Allocate success 重验零回归，余 2 条证书 WARNING 登记 no-tls 固有噪音）。C 组外部依赖与 dev-B §9.6 补丁单继续跟踪。 |
+| v2.6 | 2026-11-15 | **C 组启动（A 侧就位复核＋合验交接单）**：①M6.1 A 侧判据全套复跑通过（7/7 healthy 含 coturn 清理后重建、三入口 200、/health 200 带 trace_id `f0210d9c…`、/api/metrics 401、wss 101）；②新增 §9.7 合验交接单：dev-C 合验四步流程、素材取用清单（§9.1–9.5＋R16 裁决行→README §11）、真机热点跨网段六步预检清单（部署主机 4 步＋真机 2 步，R17 无自动化判据如实标注）。README 仍 dev-C 独占，dev-A 零触碰。 |
 
 ---
 
@@ -388,7 +391,7 @@ curl --noproxy '*' https://localhost/health            # status:ok 带 trace_id
 
 | 端口 | 用途 | 备注 |
 | --- | --- | --- |
-| 80 / 443 | nginx HTTP→HTTPS 跳转 / TLS 终止 | 可用 `NGINX_HTTP_HOST_PORT` / `NGINX_HTTPS_HOST_PORT` 改写；非 443 时 80 跳转需显式补端口 |
+| 80 / 443 | nginx HTTP→HTTPS 跳转 / TLS 终止 | 可用 `NGINX_HTTP_HOST_PORT` / `NGINX_HTTPS_HOST_PORT` 改写；⚠ R15（2026-11-15 裁决登记）：自定义非 443 端口时 80→443 跳转不带端口，请直接访问 `https://主机:端口` |
 | 3478 UDP+TCP | coturn TURN/STUN（`turn_url` 下发端口） | 长时凭据由 `.env` 注入，凭据不下前端源码 |
 | 49160–49200 UDP | coturn 中继端口段 | 跨网段演示必须为宿主可达 IP 映射，否则远端拿到的 relay 地址不可达 |
 | 5349 | TLS TURN（`turns:`） | **未启用**：S7 裁决业务只用 3478，无消费方；`deploy/turnserver.conf` 以 `no-tls` 显式关闭 |
@@ -463,7 +466,7 @@ curl --noproxy '*' https://localhost/health            # status:ok 带 trace_id
 | L573 端口约定 | 「coturn 3478·5349」＋端口列表无中继段 | 补 `49160-49200/udp`（coturn 中继）、注明 5349 **未启用**、80→301→443；voiceprint 7003 与 funasr 10096 共享口径按 L575/577 保留 |
 | L594 ⏳ / L643 ⏳ | 「待 A4」回滚记录、「待 B1」SLO 规则 | **保留**：L594 即 S8（A4）本身，L643 属 dev-B 写域，均非本次修订范围 |
 
-补充：若主理人裁决通过 **R16**（凭据红线判据改为「凭据真值零命中」），README §11「已知文档冲突」表需相应加一行——任务书 A3 判据字面 `grep -rn "turn_credential" frontend/src` 零命中与 day09 D2.5 已冻结实现（`realtime.ts` L212/L220 两处字段名）冲突。
+**R16 裁决落档（2026-11-15 主理人：采纳实质判据）**：README §11「已知文档冲突」表需**加一行**——任务书 A3 判据字面 `grep -rn "turn_credential" frontend/src` 零命中与 day09 D2.5 已冻结实现（`realtime.ts` L212/L220 两处字段名）冲突；判据修订为「凭据真值零命中」（src/dist/模板占位实测 0 命中），字段名命中允许，前端不改。**R15 裁决落档（同日：仅登记警示）**：§9.2 端口表 nginx 行已加「自定义非 443 端口时 80 跳转不带端口」警示，nginx.conf 不改。
 
 ### 9.6 补丁需求单 → dev-B：A5 设备掉线检测接线（S9 产出，沿 day07 handoff 惯例）
 
@@ -488,3 +491,39 @@ await device_jobs_runtime.stop()
 **写域边界**：dev-A 只交付了 `app/scheduler/device_jobs.py`（新文件）＋ `app/services/device_service.py` 增量（末尾 A5 段）＋ `app/core/config.py` 两行（`device_heartbeat_period_seconds=60`／`device_offline_scan_interval_seconds=30`）＋ `tests/test_device_offline.py`（新）。B 合入补丁后跑 `uv run pytest tests/test_device_offline.py -q`（6 用例）即可回归。
 
 **优先级**：P2（A5 无硬下游）；D13 演示前合入即可——不接线不影响现有功能，仅掉线检测不生效。
+
+### 9.7 C 组合验交接单（2026-11-15 产出，dev-A → dev-C／主理人）
+
+> 背景：A 侧就位状态 2026-11-15 19:39 复核确认（7/7 healthy＋四组判据全过，见 §8 B 组行同日记录）。M6.1 正式收口需与 dev-C 的 C1 合验（确认点❹）。
+
+**A 侧就位复核结果（2026-11-15 19:39）**：
+
+| 判据 | 结果 |
+| --- | --- |
+| 7/7 服务 healthy | ✅（backend/coturn/mock/nginx/postgres/redis/weather，coturn 含 11-15 conf 清理后重建） |
+| 三入口 `/pad/` `/console/` `/family/` | ✅ 全 200 |
+| `https://localhost/health` | ✅ 200 `status:ok` 带 trace_id `f0210d9c…` |
+| `/api/metrics` | ✅ 401（反代通、鉴权收口，非 502） |
+| `wss://localhost/ws/signal` | ✅ 101 Switching Protocols |
+
+**dev-C 合验步骤**（同款判据自验后约时间窗双方同跑一遍即收口）：
+
+1. `git pull` 后 `sh deploy/gen-dev-cert.sh`（首次）＋ `certutil -addstore -user Root deploy\certs\ca.pem`（受控信任一次）；
+2. `docker compose up -d` → `docker compose ps` 确认 7/7 healthy；
+3. 复跑上表四组判据（curl 命令：`--noproxy '*' --ssl-no-revoke`，Windows 下 `-o NUL`）；
+4. 双方结果一致 → 确认点❹ 通过，M6.1 收口，计划件与总览状态同步。
+
+**素材取用清单**（README 合入，全部就绪）：§9.1 证书步骤 → README §12.1；§9.2 端口表（**已含 R15 警示句**）→ README 端口约定；§9.3 镜像体积；§9.4 回滚演练＋门禁清单 → README §13；§9.5 行号级修订清单 → README §12 逐行替换；§9.5 末 **R16 裁决行 → README §11「已知文档冲突」表加一行**（判据已修订为「凭据真值零命中」）。
+
+**真机热点跨网段预检清单**（M6.5 演示冻结前，需真机设备在场）：
+
+| # | 侧 | 步骤 |
+| --- | --- | --- |
+| 1 | 部署主机 | `.env`：`STUN_URL`/`TURN_URL` 的 host 改部署主机局域网 IP（不能 `localhost`） |
+| 2 | 部署主机 | `.env`：`TURN_EXTERNAL_IP_ARG=--external-ip=<部署主机IP>` |
+| 3 | 部署主机 | `SILVERMATE_LAN_IP=<部署主机IP> sh deploy/gen-dev-cert.sh`（证书 SAN 追加该 IP）→ 重启 nginx（`docker compose exec nginx nginx -s reload`）→ 重建 `backend`＋`coturn` |
+| 4 | 部署主机 | 自验：`turnutils_uclient`（S7 同款命令）Allocate success 且 relay addr 回宿主 IP 落 49160-49200 段 |
+| 5 | 真机（热点） | 浏览器导入 CA（受控信任）后打开 `https://<主机IP>/pad/` 无证书告警、`getUserMedia` 麦克风可用 |
+| 6 | 真机（热点） | 进房间语音对讲：`chrome://webrtc-internals` 确认选中 relay 候选（`10.55.50.233:49160-49200`），全双工语音通 |
+
+> R17 说明：以上 5/6 两步需真机与人工目视，无自动化判据——D3 干净主机演练与 M6.5 演示冻结时点执行。
