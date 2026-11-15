@@ -339,9 +339,24 @@ def _tool_protocol_message(tools: Sequence[ToolSpec]) -> dict[str, str]:
             "不要自创参数名。例如长者说「我要听茉莉雨」，输出：\n"
             '{"tool": "play_opera", "args": {"action": "play", "query": "茉莉雨"}}\n'
             '若工具结果提示 unexpected parameters（如 ["title"]），说明参数名传错了，'
-            "请对照上面示例改成 query 后重试一次，不要换别的参数名。"
+            "请对照上面示例改成 query 后重试一次，不要换别的参数名。\n"
+            "\n"
+            "示例（健康采集 health_checkup）：长者提到身体不适或给出测量数值时，"
+            "把长者原话放进 args 的 answer 字段，不要自创参数名（blood_pressure/"
+            "symptom/text 之类都不对）。例如长者说「我今天血压 190 125 有点晕」，输出：\n"
+            '{"tool": "health_checkup", "args": {"answer": "我今天血压 190 125 有点晕"}}\n'
+            "首次进入健康采集不要带 answer，先拿到第一个问题。\n"
+            "\n"
+            "优先级规则：长者报告身体不适、疼痛或给出任何测量数值时，必须先调用 "
+            "health_checkup 采集记录，拿到结果后再安抚或引导就医；不允许不调工具、"
+            "只用「按呼叫按钮/找护工好吗」话术回应——采集永远优先于转介引导。"
         ),
     }
+
+
+#: M5.2 红线：Agent 侧审计出口（装配层注入，agents 不写库）。
+class AuditSink(Protocol):
+    async def __call__(self, *, action: str, detail: dict[str, object]) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -420,6 +435,11 @@ class CompanionAgent:
         tools: Sequence[ToolSpec] = (),
         on_event: EventSink | None = None,
         followup_sink: FollowupSink | None = None,
+        #: M5.2 红线（dev-B）：Agent 侧 Guardrails 熔断发生在 ToolExecutor 之前，
+        #: 执行器内的 tool_guardrail_denied 审计根本不会触发——由装配层注入本回调
+        #: 落审计（agents 不写库，沿 followup_sink 同款分层口径）。None = 不审计
+        #: （既有测试零副作用）。
+        audit_sink: AuditSink | None = None,
         on_media_play: MediaPlaySink | None = None,
         on_media_control: MediaControlSink | None = None,
         #: Day 10 B3（F23）：双人间判定 ``(elder_id) -> bool``。生产装配层注
@@ -433,6 +453,7 @@ class CompanionAgent:
         self._tools = tuple(tools)
         self._on_event = on_event
         self._followup_sink = followup_sink
+        self._audit_sink = audit_sink
         self._on_media_play = on_media_play
         self._on_media_control = on_media_control
         self._privacy_room_probe = privacy_room_probe
@@ -557,6 +578,14 @@ class CompanionAgent:
                         "reason": decision.reason,
                     },
                 )
+                # M5.2 红线：熔断拒绝也必须落 audit_logs（AGENTS「越权→拒绝+审计」）。
+                # Agent 侧拒绝走不到 ToolExecutor 的审计点，经注入的 audit_sink 独立
+                # 短会话落库（自带 commit，不搭本轮事务——本轮可能继续收尾不回滚）。
+                if self._audit_sink is not None:
+                    await self._audit_sink(
+                        action="tool_guardrail_denied",
+                        detail={"tool_name": call.tool, "reason": decision.reason},
+                    )
                 await self._emit_event(
                     "tool_failed", {"tool_name": call.tool, "error_class": "forbidden"}
                 )

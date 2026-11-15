@@ -37,6 +37,11 @@ class ToolSpec:
     #: 两者不能混：MCP 工具的失败分类必须由 `mcp_client.tool_error_class()` 说了算，
     #: 否则同一个天气超时会出现两套 error_class。
     transport: Literal["local", "mcp"] = "local"
+    #: M5.2（dev-B 语音红档②）：模型给健康采集传 schema 外自由文本字段（自创参数名）
+    #: 时，在参数校验前把这些多余标量**折叠进指定参数**（如 answer），避免 bad_args
+    #: 重试烧额度直至熔断。仅语义上「唯一输入就是长者原话」的工具允许开启；
+    #: 折叠只拼文本、不猜语义，身份字段在更早的消毒步已剥离。
+    fold_extras_into: str | None = None
 
     @property
     def wired(self) -> bool:
@@ -233,8 +238,11 @@ def default_registry() -> ToolRegistry:
                 name="health_checkup",
                 description=(
                     "长者主动说身体不舒服、要量血压或做每日健康采集时，进入健康采集五问。"
-                    "首次调用不传 answer（返回第一问）；之后把长者的回答放进 answer 继续。"
+                    "只要长者提到身体不适或给出任何测量数值，必须先调用本工具采集记录，"
+                    "拿到结果后再安抚或引导，不要只用「找护工/按呼叫按钮」话术替代采集。"
+                    "首次调用不传 answer（返回第一问）；之后把长者的回答原话放进 answer 继续。"
                 ),
+                fold_extras_into="answer",
                 parameters_schema={
                     "type": "object",
                     "properties": {
