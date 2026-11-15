@@ -1,4 +1,4 @@
-> 状态：进行中（S0/D1/D1-R2/X1 联调＋AC-42 录音实测已完成，余 D2/D3/D4/D5）　｜　版本：v1.5　｜　日期：2026-11-13
+> 状态：进行中（S0/D1/D1-R2/X1＋AC-42/X9 补跑已完成，余 D2/D3/D4/D5）　｜　版本：v1.6　｜　日期：2026-11-15
 > 关联：docs/team_tasks/day10/dev-D-评测回归与演示冻结.md v1.0（任务卡）｜docs/team_tasks/day10/day10-任务总览与DAG.md v1.1（§2 DAG、§3 对接点 Y1–Y5、§4 写域）｜docs/plans/day10/day-10-交付与观测-工作推进计划.md（§4.4 dev-D 节）｜docs/team_tasks/day09/dev-D-长者端语音与评测门禁.md v1.4（day09 完成度核查结果）
 > 上游依据：PRD line 455–457（FR-TC-09 评测门禁）、line 578（Day 10 完成定义）、§5.1/§5.2/§5.4（AC 追踪表与固定测试集）｜技术设计文档 §8.3 line 1176–1183（Day 10 实现口径）｜大纲课时 10.3/10.4（仅取流程，不取事实）
 > 变更记录见文末
@@ -241,6 +241,9 @@ flowchart LR
 | 2026-11-13 | D2 准备段 · 红档种子补录（经 H-2 API） | ✓ 王医生 token 经 `POST /api/health-records` 代填张兰 **185/112** → `severity=red`（收缩压单分量 ≥180 判红口径实测验证，rule_version=g2）＋副作用全链路落库验证：risk_event（open）＋紧急工单 WO-20261113-710BD4A7（new）＋staff 通知（mock，dedupe_key 锚定 event_id=AC-12 口径）；记录保持 **pending** 留作 R-3/R-4 复核素材；张兰无家属绑定无 guardian 通知（预期） | 台账 §10.1（种子登记）＋变更记录；本计划执行记录 | 记录与工单为 D2 回归素材非残留；复核动作留 D2 现场执行 |
 | 2026-11-13 | D1-R2 真门禁接线 | ✓ `eval_gate.py` expected-red（CLI＋入库文件＋expires 过期失效＋--strict）＋badcase 去重＋报告路径保护落码；`pre-push` 升级阻塞真门禁（sidecar torch 本机直跑，全员已有环境，无远程链）；四态验证 4/5 实测通过＋端到端钩子 exit 0（绿态沿同分支，D11 X9 自然验证） | eval/reports/expected_red.json（B/D/E，expires 2026-11-15）；eval/reports/eval_gate_last_run.md；day10_gate_rerun.md §6 四态表 | README 门禁小节素材（day10_gate_rerun.md §6 更新版）→ 提单 dev-C 合入；每次 push 约 3~4 分钟成本需告知全员 |
 | 2026-11-13 | Line 1 · X1 回执帧联调＋AC-42 唤醒实测 | ✓ **X1 回执帧 8/8 全绿**（`scripts/x1_receipt_e2e.py` 六用例＋两前置：delivered 落库/幂等/双 kind/越权拒/纯播报/非法帧）；信令层补 delivered→delivered 幂等兜底（深层修复提单 C）。**AC-42 录音驱动实测**：TTS 循环音频＋headless 假音频 32 条样本，检出率 100%（参数调优后），稳态 17/17 ≤1.5s（中位 ~658ms），含冷启动 85.7%——冷启动豁免与真人口述复测待裁决；联调修复 ICE 崩溃（.env 置空 STUN/TURN＋realtime.ts 防御）＋端侧打点 sessionStorage 落账 | 台账 §10.2（全程留痕＋三项提单）；scripts/x1_receipt_e2e.py、gen_wakeup_loop.py、run_wakeup_auto.py；.workbuddy/tmp/wakeup_samples.json | ①「再见」规则缺失（RULESET 满员）→ 主理人裁决；②服务层幂等 → 提单 C；③wakeup 独立上报帧 → 协议口径提单；④真人口述复测 20 轮待安排 |
+| 2026-11-15 | 全量核查＋紧迫项处置 | ✓ ①day10 任务卡状态回写 v1.1（修正 0/4 失真）；②**X9 槽正式复跑（补跑）**：普通集 82.0% 三次复跑一致（分类器能力上限，环境无关）、p95 2133→1352ms（环境负载差异，佐证成员数据更好）、A✅C✅/B❌D❌E❌ 如实报红锁未写；③expected-red 续期 v2（expires 2026-11-17 覆盖 D2/D5 窗口，reason 补 X9 结论）；④X9 结论落档主报告 §7 | day10_gate_rerun.md §7；expected_red.json v2；day10 任务卡 v1.1 | ①**普通集 90% 判据处置路径三选一**（模型优化/fixture 措辞对齐/判据调整）→ 主理人裁决；②M5 收口确认（他人槽位）→ D2 开工硬前置 |
+| 2026-11-15 | 方案 B 根因分析→方案 C 裁决落档 | ✓ badcase 逐条根因分析（`day10_badcase_rca.md` v1.0）：普通集 9 条中仅 1 条措辞歧义、5 条纯分类错误；边界 11 条全部「健康但不触发」语义场崩坏——**方案 B 上限 84% 不可行**；11-12 批次 13 条 mock 签名数据标注不采信。**主理人裁决方案 C**：普通集 82%＋边界回退按 F23 先例挂账，随模型版本升级复测，演示只演示通过项；expected_red.json **v3**（expires 2026-11-18）＋主报告 §8 落档 | eval/reports/day10_badcase_rca.md v1.1；expected_red.json v3；day10_gate_rerun.md §8 | D2 开工待 M5 收口确认（主理人答复中） |
+| 2026-11-15 | M5.3/M5.4 补证据实测（Line 1 D11 收口段，dev-D 值守） | ✓ **AC-42 Run E 整跑 20 轮**：检出 20/20、≤1.5s 17/20、p50=409ms（超标 3 条＝冷启动 6318/边界 1579(+79ms)/抖动 2222ms），与 Run B–D 稳态 17/17 三日复现印证，全程判据仍未达→维持挂账（提单主理人）；**M5.4 前端断言 8/8 全 PASS**（`scripts/m54_passive_auth_e2e.py`：旧设备 token→401 TOKEN_REVOKED、家属日报 403 SCOPE_FORBIDDEN＋审计、pad 被动登出回登录页、家属空态，截图 2 张）→ day09 任务卡 v1.7 改「已完成」、计划件 v1.2 收口；M5.4 口径修正（F0=200 空列表、长者级日报=403+审计）落台账 §10.3 | 台账 §10.2/§10.3；scripts/m54_passive_auth_e2e.py；.workbuddy/tmp/m54_*.png | M5 收口确认（主理人）——本行证据补齐后 Line 1 dev-D 侧再无欠账 |
 
 ---
 
@@ -257,6 +260,9 @@ flowchart LR
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.8 | 2026-11-15 | **M5.3/M5.4 补证据实测落档**：AC-42 Run E 整跑 20 轮（检出 100%、p50=409ms、稳态三日复现、全程判据维持挂账）；M5.4 退房被动链路前端断言 8/8 全 PASS（新增 `scripts/m54_passive_auth_e2e.py`＋截图）；day09 dev-D 任务卡 v1.7 改「已完成」、计划件 v1.2 收口；台账新增 §10.3；提单 dev-A（dryrun seed_orm 复跑 FK）。 |
+| v1.7 | 2026-11-15 | **方案 C 裁决落档**：badcase 逐条根因分析（day10_badcase_rca.md）确认方案 B 不可行（上限 84%）；主理人裁决按 C 判据挂账（F23 先例，随模型升级复测）；expected_red.json v3（expires 2026-11-18）＋主报告 §8。 |
+| v1.6 | 2026-11-15 | **全量核查＋紧迫项处置**：day10 任务卡状态回写 v1.1（修正 0/4 失真）；X9 槽补跑完成（普通集 82% 三次一致＝分类器上限、p95 1352ms 环境波动、锁未写）；expected-red 续期 v2（expires 2026-11-17）；新增裁决项「普通集 90% 判据处置路径三选一」。 |
 | v1.5 | 2026-11-13 | **Line 1 X1 联调＋AC-42 唤醒实测完成**（§6 执行记录、§7 已裁决表更新）：X1 回执帧 8/8 全绿＋信令层幂等兜底；唤醒实测录音驱动口径 32 条（检出率 100%、稳态 17/17 ≤1.5s），三项跨域提单（再见规则/服务层幂等/wakeup 协议帧）；day09 任务卡升至 v1.6，台账新增 §10.2。 |
 | v1.4 | 2026-11-13 | **D1-R2 落码完成**：Q3 阻塞真门禁接线（`eval_gate.py` expected-red 机制＋`--strict`＋badcase 去重＋报告路径保护；`pre-push` 升级真门禁，主理人确认全员本机有 torch 环境、无远程链）；四态验证＋端到端钩子 exit 0；新增 `eval/reports/expected_red.json`（B/D/E，expires 2026-11-15）。主理人另指示：今天不做演示视频（见 v1.3）。 |
 | v1.3 | 2026-11-13 | 主理人最新指示：**今天不做演示视频**（覆盖 C 转达的「纳入 D4」口径）——D4 只交脚本，§0/D4/自检判据同步回退；如后续补录按 C 口径另约窗口。D1-R2 pre-push 真门禁接线仍待确认后落码（待拍板：无 torch 环境时钩子行为 A 报错退出 / B 显式降级自检）。 |

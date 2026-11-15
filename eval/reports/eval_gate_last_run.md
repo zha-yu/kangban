@@ -1,5 +1,9 @@
 # Day 8 评测门禁报告（D5 · FR-TC-09）
 
+> 命令：`python.exe tests/eval_gate.py --provider local --report C:/Users/1/Desktop/2610/kangban/eval/reports/eval_gate_last_run.md`
+> provider：**local**（真权重，进程内，不经 HTTP）
+> 版本：`laya:multilingual:dev` ｜ 置信阈值 0.85 ｜ 锁文件 `day8_baseline_lock.json`
+> expected-red：B、D、E——已知挂起红项，不阻塞推送但留痕；文件标注（2026-11-13）：已裁决挂账（方案 C，2026-11-15 主理人）：普通集 82.0%（41/50）与边界回退（14/30）经逐条根因分析（eval/reports/day10_badcase_rca.md）确认为 Laya 分类器（laya:multilingual:q2）能力边界——普通集 5 条纯分类错误＋边界 11 条「健康但不触发」语义场崩坏，与措辞无关（方案 B 措辞对齐上限仅 84%，不可行）；普通集/边界数字三次复跑完全一致（环境无关、确定性推理）；模型路径 p95 随环境负载波动（1147→2133→1352ms）单列挂 F23 不放松预算。处置：按 F23 先例挂账留痕，随模型版本升级复测，演示只演示通过项；未调阈值、未删用例、锁未写。；复跑达标后撤销标注
 > 命令：`python.exe tests/eval_gate.py --provider local --report D:/Desktop/kangban/eval/reports/eval_gate_last_run.md`
 > provider：**local**（真权重，进程内，不经 HTTP）
 > 版本：`laya:multilingual:q2` ｜ 置信阈值 0.85 ｜ 锁文件 `day8_baseline_lock.json`
