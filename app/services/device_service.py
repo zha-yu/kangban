@@ -16,10 +16,11 @@
 
 from __future__ import annotations
 
+import datetime
 import logging
 import secrets
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -31,6 +32,7 @@ from app.core.redact import mask_name as _mask_display_name
 from app.core.runtime_context import Identity
 from app.core.security import KIND_DEVICE, KIND_STAFF, sha256_hex
 from app.models import Bed, Device, Elder, Room
+from app.models.medication import MedicationEvent
 
 logger = logging.getLogger(__name__)
 
@@ -413,6 +415,250 @@ async def list_devices(session: AsyncSession, identity: Identity) -> list[Device
     ]
 
 
+# ---------------------------------------------------------------------------
+# A5 设备掉线检测（Day 10 · S9，FR-ADM-10）
+#
+# 分层红线：**写库全部走 service**——scheduler 的 job（app/scheduler/device_jobs.py）
+# 只做判定调用与会话管理，不直接改 ORM 字段。通知/工单复用既有服务
+# （notify_service / work_order_service），不另起写入口。
+#
+# 判定口径（Device.last_heartbeat 列注释）：心跳超 2 个周期（
+# `settings.device_heartbeat_period_seconds`）判掉线。恢复=绑定设备重新出现
+# 新鲜心跳；解绑设备不因心跳回线上（AC-24：解绑即失效）。
+# ---------------------------------------------------------------------------
+
+_OFFLINE_NTTYPE = "device_offline"  # notifications.type 开放枚举，无 CHECK
+
+
+@dataclass(frozen=True, slots=True)
+class DeviceOfflineOutcome:
+    """单台设备被判掉线后的处理结果（通知与工单的 id 便于测试断言）。"""
+
+    device_id: uuid.UUID
+    elder_id: uuid.UUID
+    room_no: str | None
+    last_heartbeat: datetime.datetime | None
+    notified_staff_ids: list[uuid.UUID] = field(default_factory=list)
+    t0_work_order_ids: list[uuid.UUID] = field(default_factory=list)
+
+
+def _heartbeat_threshold(now: datetime.datetime) -> datetime.datetime:
+    """掉线判定阈值：now − 2 个心跳周期。"""
+    from app.core.config import get_settings
+
+    period = get_settings().device_heartbeat_period_seconds
+    return now - datetime.timedelta(seconds=2 * period)
+
+
+def _offline_payload(
+    *, device_id: uuid.UUID, elder_id: uuid.UUID, room_no: str | None,
+    last_heartbeat: datetime.datetime | None, now: datetime.datetime,
+) -> dict[str, object]:
+    return {
+        "device_id": str(device_id),
+        "elder_id": str(elder_id),
+        "room_no": room_no,
+        "last_heartbeat": last_heartbeat.isoformat() if last_heartbeat else None,
+        "detected_at": now.isoformat(),
+        "reason": "heartbeat_timeout_2_periods",
+    }
+
+
+async def detect_offline_devices(
+    session: AsyncSession, *, now: datetime.datetime | None = None
+) -> list[DeviceOfflineOutcome]:
+    """扫描绑定设备：心跳超 2 个周期 → `status='offline'` 并处置。
+
+    处置三件事（任务书 A5）：
+    1. 通知管理员与负责护工（`notify_service.send_staff_notifications`；
+       admin 按角色选收件人、护工按 primary_care 绑定；幂等键按「设备+当日」，
+       同日反复掉线不重复轰炸，跨日再掉线会重新通知）；
+    2. 掉线窗口与用药 T0 重叠（存在 `calling`/`waiting_confirm` 且
+       `scheduled_at ∈ [last_heartbeat, now]` 的事件）→ 立即生成
+       `device_fault`/`yellow` 人工介入工单（dedupe 按事件 T0，重复检测不多建）；
+    3. 设备置 `offline`。
+
+    只处理**当前仍为 online 的绑定设备**：已 offline 的不重复通知（幂等），
+    未绑定设备不参与（其掉线无处置对象）。
+    """
+    # 循环 import 规避：notify/work_order 服务不反向依赖本文件
+    from app.services import notify_service, work_order_service
+
+    now = now or datetime.datetime.now(datetime.UTC)
+    threshold = _heartbeat_threshold(now)
+    rows = (
+        await session.execute(
+            select(Device, Room.room_no)
+            .join(Room, Room.room_id == Device.room_id)
+            .where(
+                Device.elder_id.is_not(None),
+                Device.status == "online",
+                (Device.last_heartbeat.is_(None)) | (Device.last_heartbeat < threshold),
+            )
+        )
+    ).all()
+
+    outcomes: list[DeviceOfflineOutcome] = []
+    for device, room_no in rows:
+        assert device.elder_id is not None  # 查询条件保证
+        payload = _offline_payload(
+            device_id=device.device_id,
+            elder_id=device.elder_id,
+            room_no=room_no,
+            last_heartbeat=device.last_heartbeat,
+            now=now,
+        )
+        day_key = f"device_offline:{device.device_id}:{now:%Y%m%d}"
+        notified: list[uuid.UUID] = []
+        # 管理员（按角色）与负责护工（按 primary_care 绑定）各一发；键尾由
+        # notify_service 追加 :staff_id，两组互不冲突。
+        for roles in (("admin",), None):
+            refs = await notify_service.send_staff_notifications(
+                session,
+                elder_id=device.elder_id,
+                ntype=_OFFLINE_NTTYPE,
+                payload=payload,
+                dedupe_key=day_key if roles else f"{day_key}:care",
+                roles=roles,
+            )
+            notified.extend(ref.target_id for ref in refs)
+
+        # 掉线窗口与用药 T0 重叠 → 人工介入工单（每重叠事件一张，幂等）
+        window_start = (
+            device.last_heartbeat
+            if device.last_heartbeat is not None
+            else threshold  # 无心跳记录：按整个判定窗口算
+        )
+        overlapping = (
+            (
+                await session.execute(
+                    select(MedicationEvent).where(
+                        MedicationEvent.elder_id == device.elder_id,
+                        MedicationEvent.scheduled_at >= window_start,
+                        MedicationEvent.scheduled_at <= now,
+                        MedicationEvent.status.in_(("calling", "waiting_confirm")),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        order_ids: list[uuid.UUID] = []
+        for event in overlapping:
+            ref = await work_order_service.open_work_order(
+                session,
+                elder_id=device.elder_id,
+                order_type="device_fault",
+                severity="yellow",
+                dedupe_token=f"device_offline:{device.device_id}:t0:{event.scheduled_at.isoformat()}",
+            )
+            if ref.created:
+                order_ids.append(ref.order_id)
+
+        device.status = "offline"
+        logger.info(
+            "device_offline_detected trace_id=%s device_id=%s elder_id=%s "
+            "last_heartbeat=%s notified=%s t0_orders=%s",
+            get_trace_id() or "-",
+            device.device_id,
+            device.elder_id,
+            device.last_heartbeat,
+            len(notified),
+            len(order_ids),
+        )
+        outcomes.append(
+            DeviceOfflineOutcome(
+                device_id=device.device_id,
+                elder_id=device.elder_id,
+                room_no=room_no,
+                last_heartbeat=device.last_heartbeat,
+                notified_staff_ids=notified,
+                t0_work_order_ids=order_ids,
+            )
+        )
+    return outcomes
+
+
+async def recover_online_devices(
+    session: AsyncSession, *, now: datetime.datetime | None = None
+) -> list[uuid.UUID]:
+    """恢复心跳（2 个周期内有新鲜心跳）的**绑定**设备 → `status='online'`。
+
+    未绑定设备不参与：AC-24 解绑即失效，不因设备仍在发心跳而回线上。
+    恢复不发通知（任务书只要求掉线侧通知）。
+    """
+    now = now or datetime.datetime.now(datetime.UTC)
+    fresh_since = _heartbeat_threshold(now)
+    devices = (
+        (
+            await session.execute(
+                select(Device).where(
+                    Device.elder_id.is_not(None),
+                    Device.status == "offline",
+                    Device.last_heartbeat.is_not(None),
+                    Device.last_heartbeat >= fresh_since,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    recovered: list[uuid.UUID] = []
+    for device in devices:
+        device.status = "online"
+        recovered.append(device.device_id)
+    if recovered:
+        logger.info(
+            "device_online_recovered trace_id=%s devices=%s",
+            get_trace_id() or "-",
+            [str(d) for d in recovered],
+        )
+    return recovered
+
+
+async def handle_device_self_check_failure(
+    session: AsyncSession,
+    *,
+    device_id: uuid.UUID,
+    component: str,
+    detail: str,
+    now: datetime.datetime | None = None,
+) -> uuid.UUID:
+    """设备自检异常（麦克风/网络等）→ `device_fault` 工单，返回 order_id。
+
+    幂等：同一设备同一部件同一天只建一张（dedupe_token 派生单号）。
+    未绑定设备无法定位长者 → 抛 `DeviceServiceError`（工单必须挂 elder）。
+    """
+    from app.services import work_order_service
+
+    device = await session.get(Device, device_id)
+    if device is None:
+        raise DeviceNotFoundError(f"device not found: {device_id}")
+    if device.elder_id is None:
+        raise DeviceServiceError(
+            f"device {device_id} 未绑定长者，自检异常无法建单（先绑定再上报）"
+        )
+    now = now or datetime.datetime.now(datetime.UTC)
+    ref = await work_order_service.open_work_order(
+        session,
+        elder_id=device.elder_id,
+        order_type="device_fault",
+        severity="yellow",
+        dedupe_token=f"device_selfcheck:{device_id}:{component}:{now:%Y%m%d}",
+    )
+    logger.info(
+        "device_selfcheck_failure trace_id=%s device_id=%s component=%s "
+        "order_id=%s created=%s detail=%s",
+        get_trace_id() or "-",
+        device_id,
+        component,
+        ref.order_id,
+        ref.created,
+        detail,
+    )
+    return ref.order_id
+
+
 __all__ = [
     "CandidateList",
     "DeviceBinding",
@@ -420,12 +666,16 @@ __all__ = [
     "DeviceCreated",
     "DeviceListItem",
     "DeviceNotFoundError",
+    "DeviceOfflineOutcome",
     "DeviceScopeForbiddenError",
     "DeviceServiceError",
     "ElderCandidate",
     "bind_device",
     "create_device",
+    "detect_offline_devices",
+    "handle_device_self_check_failure",
     "list_devices",
     "list_elder_candidates",
+    "recover_online_devices",
     "unbind_device",
 ]
