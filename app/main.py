@@ -480,6 +480,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             bind_dev_c_tools(
                 tool_registry, session_factory=session_factory, checkpointer=checkpointer
             )
+
+            # ---- C2 补绑（Day 10 M5.2 排障发现）：health_checkup 执行器此前从未被绑定
+            # （bind_dev_c_tools 只绑 memory_recall/medication_confirm，bind_dev_b_tools
+            # 只绑 play_opera）→ spec.wired=False → 语音健康主诉一律 not_found 兜底话术
+            # （「帮您记下来」），健康子图无法启动、红档链路 0 落库（play_opera 漏绑
+            # 教训重演）。正式归属在 bind_dev_c_tools（dev-C），此处装配段先补齐打通链路。
+            from app.services.tool_impls import make_health_checkup_executor
+
+            tool_registry.bind(
+                "health_checkup",
+                make_health_checkup_executor(
+                    session_factory=session_factory,
+                    checkpointer=checkpointer,
+                    redis_client=redis_client,
+                ),
+            )
+            logger.info(
+                "health_checkup_tool_bound wired=%s",
+                tool_registry.get("health_checkup").wired,
+            )
         except Exception as exc:
             # 工具绑定/checkpointer 不可用不阻塞对话：用药确认由 Agent 的 not_found 话术兜住
             logger.error(
