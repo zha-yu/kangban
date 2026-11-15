@@ -598,3 +598,83 @@ async def test_unknown_turn_id_is_bad_args_not_fake_transient(
         .all()
     )
     assert list(rows) == [], "校验失败不应留下记账行"
+
+
+# ------------------------------------------------------------------ M5.2（dev-B 语音红档）
+
+
+async def test_bad_args_writes_audit_row(session: AsyncSession, identity: Identity) -> None:
+    """M5.2 红线：bad_args 也是一次被拒的工具调用，必须落 audit_logs（此前早退零行）。"""
+
+    async def _executor(args: dict[str, Any], runtime: Identity) -> dict[str, Any]:
+        return {"never": "called"}
+
+    registry = ToolRegistry((_spec(),))
+    registry.bind("probe", _executor)
+    executor = ToolExecutor(session, registry=registry)
+
+    result = await executor.execute(
+        tool_name="probe",
+        args={"mood": "好"},  # 缺 required city → bad_args
+        runtime=identity,
+        turn_id=None,
+        idempotency_key="k-m52-1",
+    )
+
+    assert result.error_class == "bad_args"
+    rows = await _audits(session, "tool_failed")
+    assert len(rows) == 1
+    assert rows[0].detail["error_class"] == "bad_args"
+    assert rows[0].detail["tool_name"] == "probe"
+
+
+async def test_fold_extras_into_answer_instead_of_bad_args(
+    session: AsyncSession, identity: Identity
+) -> None:
+    """M5.2②：模型自创参数名（blood_pressure 等）折叠进 answer，不再 bad_args×2→熔断。"""
+
+    captured: dict[str, Any] = {}
+
+    async def _executor(args: dict[str, Any], runtime: Identity) -> dict[str, Any]:
+        captured.update(args)
+        return {"status": "awaiting_answer"}
+
+    spec = ToolSpec(
+        name="health_checkup",
+        description="测试用采集工具",
+        parameters_schema={
+            "type": "object",
+            "properties": {"answer": {"type": "string", "maxLength": 200}},
+            "additionalProperties": False,
+        },
+        side_effect=True,
+        idempotent=False,
+        fold_extras_into="answer",
+    )
+    registry = ToolRegistry((spec,))
+    registry.bind("health_checkup", _executor)
+    executor = ToolExecutor(session, registry=registry)
+
+    result = await executor.execute(
+        tool_name="health_checkup",
+        args={"blood_pressure": "190 125", "symptom": "有点晕"},
+        runtime=identity,
+        turn_id=None,
+        idempotency_key="k-m52-2",
+    )
+
+    assert result.status == "succeeded"
+    # 折叠口径：字符串值按模型给出顺序拼接（不掺键名，采集子图拿到的就是长者原话）
+    assert "190 125" in captured["answer"]
+    assert "有点晕" in captured["answer"]
+    # 未声明 fold 的工具不受影响：多余字段照样 bad_args
+    plain_registry = ToolRegistry((_spec(),))
+    plain_executor = ToolExecutor(session, registry=plain_registry)
+    plain = await plain_executor.execute(
+        tool_name="probe",
+        args={"city": "杭州", "mood": "好"},
+        runtime=identity,
+        turn_id=None,
+        idempotency_key="k-m52-3",
+    )
+    assert plain.error_class == "bad_args"

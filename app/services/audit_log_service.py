@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping
+from contextlib import AbstractAsyncContextManager
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -64,3 +65,40 @@ async def record_audit(
 
 
 __all__ = ["ACTOR_TYPES", "record_audit"]
+
+# ---------------------------------------------------------------------------
+# M5.2 红线（dev-B）：Agent 侧 Guardrails 熔断的审计出口。
+#
+# 背景：ToolExecutor 内的审计搭执行短会话（_SessionToolExecutor commit 闭合），
+# 但 Agent 侧 Guardrails 拒绝发生在 ToolExecutor 之前，那一条 tool_guardrail_denied
+# 之前完全没有落库点。agents 层不写库（分层红线），故在此提供回调工厂，由装配层
+# （main.py）注入 CompanionAgent.audit_sink——与 followup_sink 同款分层口径。
+
+from collections.abc import Awaitable, Callable  # noqa: E402
+
+AgentAuditSink = Callable[..., Awaitable[None]]
+
+
+def make_agent_audit_sink(
+    session_factory: Callable[[], AbstractAsyncContextManager[AsyncSession]],
+) -> AgentAuditSink:
+    """返回 CompanionAgent.audit_sink 用的回调：独立短会话落一条审计并立即 commit。
+
+    独立会话（不搭 turn 事务）是刻意的：熔断拒绝后本轮对话还要正常收尾，审计不能
+    跟着任何后续回滚一起被抹掉——这正是 2026-11-15 语音红档审计零行的根因。
+    """
+
+    async def _sink(*, action: str, detail: dict[str, Any]) -> None:
+        async with session_factory() as session:
+            await record_audit(
+                session,
+                actor_type="system",
+                actor_id=None,
+                action=action,
+                resource_type="tool_execution",
+                resource_id=None,
+                detail=detail,
+            )
+            await session.commit()
+
+    return _sink

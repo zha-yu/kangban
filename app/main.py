@@ -69,6 +69,7 @@ from app.router.safety import SafetyDecision
 from app.scheduler.audio_retention_jobs import (
     install_audio_retention_scheduler,  # Day 9 B4：F27 72h 清理
 )
+from app.scheduler.device_jobs import DeviceJobRuntime  # Day 10 A5：设备掉线检测（补丁单 §9.6）
 from app.scheduler.health_jobs import install_health_scheduler  # Day 8 B3：健康域调度接线
 from app.scheduler.medication_jobs import install_scheduler  # Day 7 C2：用药到点调度接线
 from app.services import (
@@ -78,6 +79,7 @@ from app.services import (
     memory_service,
     voiceprint_service,
 )
+from app.services.audit_log_service import make_agent_audit_sink
 from app.services.auth_service import (
     AuthConflictError,
     AuthExpiredError,
@@ -479,6 +481,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             bind_dev_c_tools(
                 tool_registry, session_factory=session_factory, checkpointer=checkpointer
             )
+
+            # ---- C2 补绑（Day 10 M5.2 排障发现）：health_checkup 执行器此前从未被绑定
+            # （bind_dev_c_tools 只绑 memory_recall/medication_confirm，bind_dev_b_tools
+            # 只绑 play_opera）→ spec.wired=False → 语音健康主诉一律 not_found 兜底话术
+            # （「帮您记下来」），健康子图无法启动、红档链路 0 落库（play_opera 漏绑
+            # 教训重演）。正式归属在 bind_dev_c_tools（dev-C），此处装配段先补齐打通链路。
+            from app.services.tool_impls import make_health_checkup_executor
+
+            tool_registry.bind(
+                "health_checkup",
+                make_health_checkup_executor(
+                    session_factory=session_factory,
+                    checkpointer=checkpointer,
+                    redis_client=redis_client,
+                ),
+            )
+            logger.info(
+                "health_checkup_tool_bound wired=%s",
+                tool_registry.get("health_checkup").wired,
+            )
         except Exception as exc:
             # 工具绑定/checkpointer 不可用不阻塞对话：用药确认由 Agent 的 not_found 话术兜住
             logger.error(
@@ -607,6 +629,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # 实际没有任何工单存在。落库经 work_order_service（agents 不写库），
         # dedupe_token=react_followup:{turn_id}:{tool_name} 同轮同工具只建一单。
         followup_sink=make_followup_sink(session_factory),
+        # M5.2 红线（dev-B 提单，主理人授权 dev-C 越域装配）：Agent 侧熔断审计——
+        # 之前 Agent 侧 Guardrails 拒绝走不到 ToolExecutor 审计点，audit_logs 零行。
+        audit_sink=make_agent_audit_sink(session_factory),
         # Day 10 B3（F23）：privacy_scope 消费点的双人间判定（信号 personal 时才惰性查询）
         privacy_room_probe=is_shared_room_for_elder,
     )
@@ -999,6 +1024,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     await audio_retention_scheduler.start()
 
+    # Day 10 A5（S9 补丁单 §9.6）：设备掉线检测调度接线——独立 AsyncIOScheduler
+    # 实例（不挂进既有 SchedulerRuntime，避免互改文件）；tick 自管会话自提交，
+    # 异常只记日志不断循环；默认 30s 一 tick（device_offline_scan_interval_seconds）。
+    device_jobs_runtime = DeviceJobRuntime(session_factory=session_factory)
+    await device_jobs_runtime.start()
+
     logger.info("application starting", extra={"app_env": settings.app_env})
     try:
         yield
@@ -1010,6 +1041,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await medication_scheduler.stop()
         await health_scheduler.stop()
         await audio_retention_scheduler.stop()
+        await device_jobs_runtime.stop()
         signaling.set_dialogue_final_handler(None)
         signaling.set_identity_confirm_handler(None)
         signaling.set_identity_timeout_handler(None)
