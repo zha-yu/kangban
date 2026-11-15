@@ -942,6 +942,21 @@ async def _handle_client_receipt(conn: ConnectionContext, message: Mapping[str, 
             _receipt_ack(conn, notification_id=notification_id, status="rejected", duplicate=False)
             return
         except NotificationIllegalTransition as exc:
+            # X1 联调实证（2026-11-13，scripts/x1_receipt_e2e.py 用例③）：pad 真实
+            # 流程 card_rendered 先把通知置 delivered，随后 tts_finished 是新幂等键
+            # 的首次回执，撞 delivered → delivered 非法转换被拒——不符 X1「重复回执
+            # 返回原结果」幂等语义。信令层兜底：current 已是 delivered 的转换按幂等
+            # ack（duplicate=true，入缓存），与 acknowledge_notification 的幂等先例
+            # 同口径；其余非法转换（failed 等）仍诚实拒绝允许重试。
+            # 深层修复（服务层 mark_notification_delivered 补幂等分支）提单 C。
+            if "delivered → delivered" in str(exc):
+                logger.info(
+                    "client_receipt_idempotent_redelivery",
+                    extra=_log_extra(conn, receipt_kind=receipt_kind, notification_id=notification_id or "-"),
+                )
+                conn.receipt_seen[idempotency_key] = "delivered"
+                _receipt_ack(conn, notification_id=notification_id, status="delivered", duplicate=True)  # type: ignore[arg-type]
+                return
             # 例：通知尚在 generated（C3 扫描未推 pending）或已 failed——诚实拒绝，允许重试
             logger.warning(
                 "client_receipt_rejected",

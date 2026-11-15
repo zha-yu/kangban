@@ -79,6 +79,8 @@ function MainScreen({
   const kwsRef = useRef<{ detector: KwsDetector; mic: MicCapture } | null>(null);
   // C-5：端侧 KWS 命中时刻（epoch 秒），随本轮 auth 首帧上报；呼叫按钮路径不填走后端兜底
   const wakeTsRef = useRef<number | undefined>(undefined);
+  /** Day 10 AC-42 端侧打点：KWS 命中时刻（performance.now），首次 listening 时消费 */
+  const wakeHitPerfRef = useRef<number | undefined>(undefined);
   // S5 形象选择：pickerOpen 仅 standby 期可开（会话中禁止换装）；stageKey 变化触发
   // AvatarStage 重挂载读取新 localStorage（D-3 显式换装流程，不做热切换）
   const [pickerOpen, setPickerOpen] = useState(
@@ -264,6 +266,12 @@ function MainScreen({
       }
       detector.onHit = () => {
         wakeTsRef.current = Date.now() / 1000; // C-5：命中时刻捕获（epoch 秒，N1 规范）
+        // Day 10 AC-42 唤醒实测打点：KWS 命中 → onStatus 首次 "listening" 的端侧
+        // 本地时长（performance.now 单调时钟）。样本挂 window 供实测脚本取数——
+        // 服务端 auth 首帧 wake_ts 机制在「standby 信令连接常驻复用」下拿不到
+        // 命中时刻（metrics 全为 source=backend duration=0 占位），端侧口径兜底。
+        wakeHitPerfRef.current = performance.now();
+        (window as unknown as { __wakeupSamples?: unknown[] }).__wakeupSamples ??= [];
         beginSession();
       };
       mic.onFrame = (pcm) => detector.feed(pcm); // 仅本机推理，不出端（AGENTS 红线 10）
@@ -286,6 +294,28 @@ function MainScreen({
     const client = new RealtimeClient({
       onStatus: (s) => {
         setStatus(s);
+        // Day 10 AC-42：命中 → 首次 listening = 端侧唤醒响应时长（每轮只记一次，
+        // speaking→listening 的会话内往返不重复计）。1.5s 判据在实测脚本里统一出。
+        if (s === "listening" && wakeHitPerfRef.current !== undefined) {
+          const sample = {
+            at: new Date().toISOString(),
+            duration_ms: Math.round(performance.now() - wakeHitPerfRef.current),
+          };
+          // sessionStorage 累积：实测循环靠 reload 回待机，window 变量会被清空
+          const w = window as unknown as {
+            __wakeupSamples?: unknown[];
+            __kbSession?: Storage;
+          };
+          w.__wakeupSamples ??= [];
+          w.__wakeupSamples.push(sample);
+          const stored = JSON.parse(
+            sessionStorage.getItem("kb_wakeup_samples") || "[]"
+          ) as unknown[];
+          stored.push(sample);
+          sessionStorage.setItem("kb_wakeup_samples", JSON.stringify(stored));
+          console.info(`[wakeup] 命中→链路就绪 ${sample.duration_ms}ms`);
+          wakeHitPerfRef.current = undefined;
+        }
         if (s === "disconnected") endSession(); // 会话结束/断连 → 回待机（呼叫按钮与唤醒词重新可用）
       },
       onSubtitle: pushSubtitle,

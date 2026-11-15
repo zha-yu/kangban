@@ -9,7 +9,7 @@
 | 闸门 | 用例 | 断言 |
 | --- | --- | --- |
 | ① 会话 | 伪造 thread_id 形状 / 跨设备归属 / 正常归属 | 格式层抛错；DB 层 False；正常 True |
-| ② 记忆 | （B2 修复中，M5.1 复验，本文件不覆盖） | — |
+| ② 记忆 | 跨长者同分向量召回 / generic 身份检索 / embedding 不可用降级 | 仅返回本长者 chunk（零泄漏）；embedding 不被调用；空列表＋降级标记不臆造 |
 | ③ 工具 | 模型自报 elder_id / 无身份调用 | 丢弃＋审计＋runtime 注入；IdentityNotSetError |
 | AC-18 | 护工/家属读范围外长者详情 | 403 SCOPE_FORBIDDEN ＋ audit_logs ＋ trace_id |
 | AC-24 | 员工停用 / 设备解绑后旧凭证重放 | 401 TOKEN_REVOKED |
@@ -23,13 +23,15 @@ thread_id，identity_service.validate_thread_belongs_to_device 未被业务模�
 
 from __future__ import annotations
 
+import datetime
+import logging
 import uuid
 from collections.abc import AsyncIterator
 
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.core.context import reset_trace_id, set_trace_id
@@ -57,7 +59,10 @@ from app.models import (
     Room,
     StaffAccount,
 )
+from app.models.memory import MemoryChunk
+from app.services import memory_service as memory_service_module
 from app.services.identity_service import validate_thread_belongs_to_device
+from app.services.memory_service import EmbeddingUnavailable, recall_active_chunks
 from app.services.tool_executor import ToolExecutor, ToolRegistry, ToolSpec
 
 ROOM_ID = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
@@ -309,6 +314,119 @@ async def test_gate1_db_layer_ownership(client: AsyncClient, db_session: AsyncSe
     forged = f"{ELDER_A}:999"
     assert not await validate_thread_belongs_to_device(
         db_session, thread_id=forged, device_id=DEVICE_A
+    )
+
+
+# ------------------------------------------------------------------ 闸门② 记忆隔离
+
+
+def _gate2_unit_vector(axis: int = 0) -> list[float]:
+    vector = [0.0] * 1536
+    vector[axis] = 1.0
+    return vector
+
+
+async def _seed_gate2_chunks(session: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]:
+    """A/B 各一条同轴同内容向量记忆，返回 (chunk_a, chunk_b)。
+
+    攻击用例设计点：两条记忆向量**完全同向**（cosine 同分），检索排序的唯一
+    判别器只剩 ``WHERE elder_id``——闸门②过滤一旦缺失，B 的记忆必然混入 A 的
+    召回结果。embedding 桩（monkeypatch ``_embed_texts``）只替外部向量化服务，
+    隔离 SQL 走真实数据库（假拦防御纪律）。
+    """
+    chunk_ids: list[uuid.UUID] = []
+    for elder_id, content in (
+        (ELDER_A, "张桂芬喜欢越剧"),
+        (ELDER_B, "李国强喜欢越剧"),
+    ):
+        chunk = MemoryChunk(
+            elder_id=elder_id,
+            subject=str(elder_id),
+            predicate="preferred_opera_genre",
+            object_value="越剧",
+            polarity="positive",
+            content=content,
+            confidence=0.8,
+            sensitivity="private",
+            source_type="elder_explicit",
+            source_turn_ids=["tr-gate2"],
+            status="active",
+            valid_from=datetime.datetime.now(datetime.UTC),
+        )
+        session.add(chunk)
+        await session.flush()
+        await session.execute(
+            text("UPDATE memory_chunks SET embedding = CAST(:vec AS vector) WHERE chunk_id = :cid"),
+            {
+                "vec": "[" + ",".join(str(v) for v in _gate2_unit_vector(0)) + "]",
+                "cid": chunk.chunk_id,
+            },
+        )
+        chunk_ids.append(chunk.chunk_id)
+    await session.flush()
+    return chunk_ids[0], chunk_ids[1]
+
+
+async def test_gate2_cross_elder_vector_recall_zero_leakage(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """闸门②：同分向量下 A/B 身份各自召回，跨长者必须零泄漏（AC-39②）。"""
+    chunk_a, chunk_b = await _seed_gate2_chunks(db_session)
+
+    async def query_embed(texts: object, **_kwargs: object) -> list[list[float]]:
+        return [_gate2_unit_vector(0) for _ in texts]  # 与两条种子记忆同向
+
+    monkeypatch.setattr(memory_service_module, "_embed_texts", query_embed)
+
+    rows_a = await recall_active_chunks(
+        elder_id=str(ELDER_A), is_generic=False, query="越剧", session=db_session
+    )
+    assert rows_a, "正常路径：A 的自身记忆必须可见"
+    assert all(r.elder_id == ELDER_A for r in rows_a)
+    assert all(r.chunk_id != chunk_b for r in rows_a), "B 的记忆泄漏进 A 的召回"
+
+    rows_b = await recall_active_chunks(
+        elder_id=str(ELDER_B), is_generic=False, query="越剧", session=db_session
+    )
+    assert rows_b and all(r.elder_id == ELDER_B for r in rows_b)
+    assert all(r.chunk_id != chunk_a for r in rows_b), "A 的记忆泄漏进 B 的召回"
+
+
+async def test_gate2_generic_identity_never_queries_memory(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """闸门②：generic（未绑定长者）身份不得触发任何记忆检索——embedding 不被调用。"""
+    await _seed_gate2_chunks(db_session)
+
+    async def boom(_texts: object, **_kwargs: object) -> list[list[float]]:
+        raise AssertionError("generic 身份不得触发 embedding 调用")
+
+    monkeypatch.setattr(memory_service_module, "_embed_texts", boom)
+    assert (
+        await recall_active_chunks(elder_id=None, is_generic=True, query="越剧", session=db_session)
+        == []
+    )
+
+
+async def test_gate2_recall_failure_degrades_to_empty_no_fabrication(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """闸门②：embedding 不可用 → 空列表＋降级标记，绝不回退到无过滤文本检索。"""
+    await _seed_gate2_chunks(db_session)  # 库里有同内容记忆，也不得绕道召回
+
+    async def broken(_texts: object, **_kwargs: object) -> list[list[float]]:
+        raise EmbeddingUnavailable("embedding upstream down")
+
+    monkeypatch.setattr(memory_service_module, "_embed_texts", broken)
+    with caplog.at_level(logging.WARNING, logger="app.services.memory_service"):
+        rows = await recall_active_chunks(
+            elder_id=str(ELDER_A), is_generic=False, query="越剧", session=db_session
+        )
+    assert rows == [], "召回失败必须降级为空，不得绕过闸门②臆造记忆"
+    assert any(
+        getattr(record, "reason", None) == "embedding_unavailable" for record in caplog.records
     )
 
 

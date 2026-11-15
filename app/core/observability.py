@@ -58,6 +58,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from app.core.config import Settings
 from app.core.context import get_trace_id
 from app.core.redact import redact_obj
+from app.core.runtime_context import get_identity
 
 logger = logging.getLogger("app.core.observability")
 
@@ -113,6 +114,23 @@ def _clean_attrs(fields: Mapping[str, Any]) -> dict[str, str | bool | int | floa
         if converted is not None:
             cleaned[key] = converted
     return cleaned
+
+
+def _identity_attrs() -> dict[str, str]:
+    """Langfuse 用户维度（方案 B，主理人 2026-11-14 批准）。
+
+    AGENTS §4.9 合规口径：身份只从服务端 ``runtime_context`` 读取，调用方/客户端
+    传入的 user 值一律丢弃（合并时身份键覆盖调用方同名键）。主体 id 按优先级
+    ``elder_id > staff_id > guardian_id``；无身份（调度 job / 登录前请求）或身份
+    不携带任何主体 id（未绑定设备）返回空 dict，不伪造。
+    红线测试 ``test_span_never_carries_elder_id`` 仍成立——原始 ``elder_id`` 键
+    不进 attrs，身份只经 ``langfuse.user.id`` 官方映射键上报。
+    """
+    identity = get_identity()
+    if identity is None:
+        return {}
+    subject = identity.elder_id or identity.staff_id or identity.guardian_id
+    return {"langfuse.user.id": subject} if subject else {}
 
 
 def is_enabled() -> bool:
@@ -204,7 +222,12 @@ class RequestSpanMiddleware:
         path = scope.get("path") or ""
         span: Span = _tracer.start_span(
             f"{method} {path}",
-            attributes={"http.method": method, "http.path": path, "source": "asgi"},
+            attributes={
+                "http.method": method,
+                "http.path": path,
+                "source": "asgi",
+                **_identity_attrs(),
+            },
         )
         status_code = 0
 
@@ -264,7 +287,9 @@ def emit_stage_span(
     now_ns = time.time_ns()
     duration_ns = max(int(elapsed_ms * 1_000_000), 0)
     span: Span = _tracer.start_span(
-        stage, attributes=_clean_attrs(attrs or {}), start_time=now_ns - duration_ns
+        stage,
+        attributes={**_clean_attrs(attrs or {}), **_identity_attrs()},
+        start_time=now_ns - duration_ns,
     )
     try:
         if elapsed_ms < 0:
@@ -281,7 +306,7 @@ def emit_event_span(name: str, fields: Mapping[str, Any]) -> None:
     """
     if _tracer is None:
         return
-    attrs = _clean_attrs(fields)
+    attrs = {**_clean_attrs(fields), **_identity_attrs()}
     duration_key = next(
         (
             k

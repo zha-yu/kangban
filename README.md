@@ -526,6 +526,7 @@ uv run pytest -q -m "not slow" --cov=app --cov-report=term
 | Day 8 声纹调优归属 | 大纲 8.4 + PRD §4 FR-VPR-04 表行（「Day 8.4 产出报告」）：声纹调优在 Day 8 | **现行：主理人 2026-11-10 晚改裁决 D-1——声纹调优（FR-VPR-04）纳入 Day 8 以 P1（H13）承载，产能不足仍可顺延 Day 9**；PRD §6.1 Day 9 行与 TD §8.4.3 的「归 Day 9」表述待同步修订（见 docs/plans/day08/day-08 计划 §0 / §10） |
 | Day 8 护工看板渲染形态 | 大纲 8.2：最简 HTML+JS 服务端渲染，不引前端框架 | **PRD §2.1：console 统一 React + 原生 CSS（tokens.css 唯一真源，MUI 已于 2026-11-06 移除），在现有工程内真实对接，不另起服务端渲染**（2026-11-10 主理人裁决 D-3） |
 | 评测门禁归属 | TD §8.4.3：FR-TC-07（评测门禁）归 Day 9 | **现行：主理人 2026-11-11 裁决 D-6——评测基线 v1 + `eval_gate.py` 门禁 + pre-push 接线 Day 8 全量做**（依据 day07 README §1.1 将「评测基线 v1」列为实际 Day 8 补齐项）；TD 归属表述待同步修订（见 docs/plans/day08/day-08 计划 v1.2 §0 / H16） |
+| 任务书 A3 凭据红线判据 | 任务书 A3 字面：`grep -rn "turn_credential" frontend/src` 零命中 | **现行：2026-11-15 主理人裁决 R16——判据修订为「凭据真值零命中」**（`frontend/src`、`frontend/dist`、模板占位实测 0 命中），**字段名命中允许**（`realtime.ts` L212/L220 两处属 day09 D2.5 已冻结实现：类型声明与响应取值，凭据仅由 ice-config 动态下发，口令真值不落前端源码）；前端不改 |
 
 > **本表修订（2026-11-12）**：「前端 UI 库」行原「现行口径」误写为 *console/family 用 MUI*，与同表「Day 8 护工看板渲染形态」行及 PRD v2.7（2026-11-06 裁决：移除 MUI、改纯 React + 原生 CSS）自相矛盾。经核对 `frontend/package.json` 无 MUI 依赖、`frontend/src/{console,family}/` 零 `@mui` import，确认 MUI 确已移除；现将「用 MUI」归入旧口径、现行口径与 PRD v2.7 对齐。**其余各行未改动。**
 
@@ -533,48 +534,49 @@ uv run pytest -q -m "not slow" --cov=app --cov-report=term
 
 ## 12. Docker 部署
 
-> **骨架说明（2026-11-13，A2a 后更新）**：本节为 Day 10 收口骨架，按「先写结构与已确认事实」策略先行。backend 与 nginx 已入 compose（A2a，双 healthy + 三入口 200 实测）；**laya / coturn / langfuse(profile 化) 归 dev-A S4、nginx HTTPS 完整段归 S6**，落地后继续回填本节。演示视频：**不录制（2026-11-13 14:28 改判，Q1=B）**——D4 只交 5 分钟演示脚本；PRD line 578 字面偏差已登记 day10 总览 §6，PRD 层留痕并入修订记录 v3.2 同批处理。
+> **状态（2026-11-15，A 包 S4–S7 落地后更新）**：服务编排全部入编——默认 profile **7 服务**（backend / nginx / postgres / redis / weather-mcp / mock-operations-mcp / coturn 全 healthy），重服务 profile 化按需自起；nginx HTTPS 完整段已生效（`deploy/nginx.conf` + `deploy/certs` 卷挂载）。**起栈前必须先生成开发证书（§12.1），否则 nginx 缺证书起不来**。演示视频：不录制（Q1=B）；PRD line 578 字面偏差登记 day10 总览 §6。
 
-### 12.1 三步启动
+### 12.1 启动步骤（含证书，实测口径）
 
 ```bash
 git clone <仓库地址> && cd silvermate
-cp .env.example .env    # 至少填 LLM_API_KEY、ASR_*/TTS_*、WEATHER_API_KEY
+cp .env.example .env                  # 至少填 LLM_API_KEY、ASR_*/TTS_*、WEATHER_API_KEY
+sh deploy/gen-dev-cert.sh             # 生成本地根 CA + server 证书（SAN 含 localhost/127.0.0.1/host.docker.internal）
+                                      # 跨网段/手机热点演示：SILVERMATE_LAN_IP=<部署机IP> sh deploy/gen-dev-cert.sh
+# 受控信任（各人自己执行，脚本不改系统设置）：
+#   Windows: certutil -addstore -user Root deploy\certs\ca.pem   （撤销：certutil -delstore -user Root "SilverMate Local Dev CA"）
+#   macOS:   sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain deploy/certs/ca.pem
+#   Linux:   sudo cp deploy/certs/ca.pem /usr/local/share/ca-certificates/silvermate-dev.crt && sudo update-ca-certificates
 docker compose up -d
 ```
 
-> ⏳ 待 A2 S4/S6：laya / coturn / langfuse（profile 化）入编及 nginx HTTPS 完整段后，补充健康检查验收标准与一键启动实测记录。当前 `docker compose up -d` 起 §12.2 表中 8 个服务（6 既有 + backend + nginx，A2a 实测双 healthy + 三入口 200）。
+**一键启动实测记录**（dev-A，2026-11-13/14）：默认 profile **7 服务全 healthy**；`curl --noproxy '*' https://localhost/health` → 200 `status:ok` 带 trace_id；三入口 `/pad/ /console/ /family/` 全 200（浏览器无证书告警）；`wss://localhost/ws/signal` 101 Switching Protocols。注意：Windows 版 curl 需加 `--ssl-no-revoke`（本地 CA 无 CRL，Schannel 报 `CRYPT_E_NO_REVOCATION_CHECK` 为误报）；证书/私钥不进 git（`.gitignore` 已覆盖），**换网段后须重跑生成脚本并 `nginx -s reload`**。
 
 ### 12.2 服务清单
 
-已实测（来源：`docker-compose.yml`，2026-11-13 核对）：
+已实测（来源：`docker-compose.yml`，2026-11-15 核对；**全部 11 服务入编**，重服务按 profile 按需自起）：
 
 | 服务 | 镜像 / 构建 | 端口 | 说明 |
 | --- | --- | --- | --- |
-| postgres | `pgvector/pgvector:pg16` | 5432 | 业务表 + 独立 schema `langgraph`；`pg_isready` 健康检查；宿主端口可经 `POSTGRES_HOST_PORT` 改写 |
+| postgres | `pgvector/pgvector:pg16` | 5432 | 业务表 + 独立 schema `langgraph`；`pg_isready` 健康检查 |
 | redis | `redis:7` | 6379 | 缓存与限流；`redis-cli ping` 健康检查 |
-| funasr | 阿里云镜像源 `funasr-runtime-sdk-online-cpu-0.1.12` | 7002 → 容器 10095 | 本地 ASR 基线（2pass 流式）；CPU 限 2 核；首启下载模型数 GB |
 | weather-mcp | 本地构建 `deploy/weather/Dockerfile` | 127.0.0.1:7101 | 唯一真实外部接口 MCP；仅环回端口映射 |
 | mock-operations-mcp | 本地构建 `deploy/mock-operations/Dockerfile` | 127.0.0.1:7102 | 工单 / 家属通知 Mock 落库；MCP 协议级探活 |
-| voiceprint | 本地构建 `deploy/voiceprint/Dockerfile` | 7003 | 声纹特征提取（`POST /extract` + `GET /health`）；容器不装 torch；CPU 限 1 核 |
+| coturn | coturn 官方镜像 + `deploy/turnserver.conf` | 3478 UDP+TCP、49160–49200/udp | TURN/STUN；**5349（turns:）未启用**（S7 裁决无消费方）；跨网段需 `.env` 的 `TURN_URL`/`STUN_URL`/`TURN_EXTERNAL_IP_ARG` 指向宿主可达 IP |
+| backend | 根目录 `Dockerfile`（两阶段 + 非 root + entrypoint 自动迁移） | 容器内 8000 | healthcheck `curl /health`；`depends_on` postgres/redis healthy；镜像 1010.4 MB（`.dockerignore` 放行 alembic） |
+| nginx | dev-C C1 `frontend/frontend.Dockerfile` + 卷挂 `deploy/nginx.conf`/`deploy/certs` | 80→301→443 | 三入口静态托管 + HTTPS + `/api` `/ws` 反代；healthcheck 探 `/nginx-health` |
+| funasr | `profiles: ["local"]` | 7002 → 容器 10095 | **共享口径：默认不自起**，全员连 dev-B 实例（`.env` 的 `ASR_BASE_URL=wss://<B的IP>:10096`，`ASR_INSECURE=true`）；本地自起 `--profile local`（首启拉模型数 GB） |
+| voiceprint | `profiles: ["local"]` | 7003 | **共享口径：默认不自起**，连 dev-B 实例（`VOICEPRINT_BASE_URL=http://<B的IP>:7003`）；本地自起 `--profile local` |
+| langfuse ×6 | `profiles: ["langfuse"]` | web 3000、minio 9090 | **v4 全家桶六容器**（web/worker + 独立 postgres/redis/clickhouse/minio，服务名 `langfuse-` 前缀）；共享实例常驻 dev-B 主机、全员直连（compose 仅作干净主机演练兜底）；凭据全走 `.env` |
+| laya（system-one） | `profiles: ["laya"]` | 7001 | Q7 兜底生效：本机 WSL2 内存 1.86GB 不足以容器化，实际由**宿主 jev sidecar** 服务（`model_loaded=true`），backend 经 `host.docker.internal:7001` 衔接；容器定义保留供大内存机器 |
 
-计划新增 5 类服务——**backend 与 nginx 已于 2026-11-13 入编（A2a 交付，见下表）**，剩余 3 类待 A2 后续节点（端口为 §6.2 既有约定）：
-
-| 服务 | 端口 | 状态 |
-| --- | --- | --- |
-| backend（FastAPI + aiortc） | 8000 | ✅ **已入编（A2a，2026-11-13）**：A1 镜像（两阶段 + 非 root + entrypoint 自动迁移 0020→0021），`curl /health` healthcheck，`depends_on` postgres/redis healthy；与 nginx **双 healthy + 三入口 200 实测**（dev-A A2a 证据，commit `6eaafe1`） |
-| nginx（前端托管 + 反代） | 80 / 443 | ✅ **已入编（A2a）**：镜像 = dev-C C1 的 `frontend/frontend.Dockerfile`（Y3 契约：构建上下文 `./frontend`、产物 `/usr/share/nginx/html/{pad,console,family}`、镜像内默认配置含三入口静态段 + `/api` `/ws` 反代）；healthcheck 探 `/pad/`；**`deploy/nginx.conf` 的 HTTPS/证书/三入口完整段归 dev-A S6 升格后卷挂载覆盖**（当前镜像内默认配置生效中） |
-| system-one（laya sidecar） | 7001 | ⏳ 待 A2 S4（Q7 裁决：默认挂宿主权重卷，不可行则 sidecar 化如实记录） |
-| coturn | 3478 / 5349 | ⏳ 待 A2 S4 |
-| langfuse | 3000（共享实例） | ⏳ **改判⑨（2026-11-13）+ 主理人澄清（17:18）：形态 v4 全家桶（六容器），部署在 dev-B 主机，全员直连 dev-B IP，不自己起服务**；compose 服务定义归 dev-A S4 待办（本地仅保留 profile 化编排或占位，由 A 复核）；观测注册 `http://<dev-B局域网IP>:3000` 自行注册拿 key（密钥不进 git，`.env` 注入） |
+**Profile 矩阵**（`docker compose config` 四态 PASS）：默认 **7 服务**（共享连 dev-B 的 funasr/voiceprint/langfuse）｜`--profile local` +funasr+voiceprint｜`--profile langfuse` +v4 六服务｜`--profile laya` +laya 容器（全量 15 服务）。
 
 ### 12.3 端口约定
 
-端口一律沿用 **§6.2 服务与端口表**（唯一口径）：postgres 5432 / redis 6379 / backend 8000 / nginx 80·443 / system-one(laya) 7001 / funasr 7002 / weather-mcp 7101 / mock-operations-mcp 7102 / coturn 3478·5349 / vite dev 5173。
+端口一律沿用 **§6.2 服务与端口表**（唯一口径）：postgres 5432 / redis 6379 / backend 8000（容器内）/ system-one(laya) 7001 / funasr 7002→10095（自起形态）/ weather-mcp 7101 / mock-operations-mcp 7102 / voiceprint 7003 / **nginx 80→301→443** / coturn 3478 UDP+TCP＋**49160–49200/udp（中继端口段）** / **5349 未启用**（S7 裁决无 `turns:` 消费方）/ langfuse web 3000·minio 9090（langfuse profile）/ vite dev 5173。
 
-补充一处实测事实：**voiceprint 7003** 已在 `docker-compose.yml` 启用（`VOICEPRINT_HOST_PORT` 可改写），§6.2 表后续统一回补。
-
-> **本机不起 funasr / voiceprint（2026-11-13 17:18 主理人口径）**：两者直连 **dev-B 主机实例**（funasr 免本机 GB 级模型下载；voiceprint 免本机环境重复搭建），本机 compose 可不起这两个容器，backend 经 `.env` 把 `ASR_*` / `VOICEPRINT_BASE_URL` 指向 dev-B 局域网 IP 即可（dev-B IP 由 dev-B 分发）。funasr 连通性为当前攻坚重点。
+> **funasr / voiceprint / langfuse 共享口径（2026-11-13 主理人裁决）**：三者默认不自起，全员直连 **dev-B 主机实例**——`.env` 设 `ASR_BASE_URL=wss://<B的局域网IP>:10096`（**必须 wss + `ASR_INSECURE=true`**，实例仅 TLS；`ws://` 会被关闭）、`VOICEPRINT_BASE_URL=http://<B的IP>:7003`、`LANGFUSE_HOST=http://<B的IP>:3000`。本机自起用 `docker compose --profile local up`（funasr/voiceprint）与 `--profile langfuse`（兜底）。funasr 连通性已实测闭环（2026-11-13 真转写冒烟）。
 
 ### 12.4 前端镜像（C1 已交付，2026-11-13）
 
@@ -591,13 +593,39 @@ docker compose up -d
 
 ## 13. 回滚
 
-> ⏳ **待 A4**：dev-A 回滚演练记录与部署门禁清单（D12 交付）。素材到位后逐字合入，不加工数字。
+> 素材来源：dev-A A4（计划件 §9.4，2026-11-14 交付，逐字合入不加工数字）。回滚基准 **Y4 = `61759ca`**，注解标签 **`y4-rollback-baseline`**（D3/D5 直接 `git checkout y4-rollback-baseline` 可复现基准态；任务书原拟 `8d506b2` 落后 94 提交，按「D13 前最后收口 commit」条款接替登记）。Day 10 零新增迁移，代码回滚无需数据步骤。
 
-本节为骨架，将填内容的小节：
+### 13.1 代码回滚演练（2026-11-14，全栈在跑）
 
-- **13.1 代码回滚**：回滚基准 tag、演练步骤与实测结果——待 A4。
-- **13.2 数据回滚（alembic downgrade）**：迁移降级演练记录——待 A4。（既有事实参考：Day 6 验收已实测 `0007 → head → downgrade 0007 → upgrade head` 三次连续成功，见 §7.4。）
-- **13.3 部署门禁清单（六项）**：清单条目与判据——待 A4 回填。
+| 步骤 | 操作 | 结果 |
+| --- | --- | --- |
+| 基线 | HEAD=`61759ca`，backend 镜像 `58f182293fa0` | `/health` 200；AC-01 冒烟 `ok:True`（高德实测：北京 霾 7.0°C） |
+| 故意改坏 | `Dockerfile` L54 `ENTRYPOINT` 加 `-broken` 后缀 → `docker compose build backend` | 13s 构建成功 |
+| 部署故障 | `docker compose up -d --wait backend` | 启动失败：`exec: "backend-entrypoint-broken": executable file not found in $PATH`；外部 `https://localhost/health` → **502**（故障可见） |
+| 回滚 | `git restore Dockerfile`（零残留）→ 重建 + `up -d --wait` | **25s 恢复**，backend healthy |
+| 复跑判据 | `/health` + AC-01 冒烟 | 200 带 trace_id；冒烟 `ok:True`；**7/7 服务 healthy** |
+
+### 13.2 数据回滚（alembic downgrade，一次性数据卷上）
+
+| 步骤 | 命令 | 结果 |
+| --- | --- | --- |
+| 回滚前见证 | `alembic current` + 五表行数 + 列检查 | `0021_day9_llm_tokens (head)`；devices=4／elders=4／medication_plans=12／health_records=9／metrics=3501；token 三列在 |
+| 降级 | `docker compose exec backend alembic downgrade 0020` | `current`=0020；token 三列消失（0 列） |
+| 恢复 | `docker compose exec backend alembic upgrade head` | `current`=0021 (head)；三列回归 |
+| 数据完好 | 五表行数复核 | 与回滚前**逐一致**（4/4/12/9/3501）；`/health` 200 |
+
+> 前置核对：`metrics` 无 `stage='llm_tokens'` 行（0021 downgrade 会恢复八值白名单 CHECK，已有行会拒绝降级——0021 文件头自带说明）。既有事实参考：Day 6 验收已实测 `0007` 三次连续升降成功（§7.4）。
+
+### 13.3 部署门禁清单（六项，逐项带检查方法）
+
+| # | 项 | 风险 | 检查方法 | 证据（2026-11-14 当日） |
+| --- | --- | --- | --- | --- |
+| 1 | 验收达成 | 高 | 逐条复跑 A1–A3 判据命令 | 三入口 200；`/health` 200 带 trace_id；`wss://localhost/ws/signal` 101；ice-config 凭据与 coturn 同源；TURN Allocate success |
+| 2 | 测试通过 | 高 | `uv run python -m pytest -q`；pre-push 真门禁 | **1709 passed（254s）当日复跑**；真门禁 RESULT: PASS（B/D/E 按 `expected_red.json` 标注，expires 11-15） |
+| 3 | 密钥安全 | 高 | `git check-ignore`；`docker image inspect` 过滤凭据关键字；frontend 口令真值 grep | `.env`+`deploy/certs/*` 不进 git；**镜像 Env 零凭据**（`GPG_KEY` 为 python 官方基础镜像标准变量，误报已澄清）；`JWT_SECRET`/`TURN_CREDENTIAL`/`LLM_API_KEY` 仅运行时注入；frontend 口令真值 0 命中 |
+| 4 | 迁移可逆 | 高 | §13.2 演练（downgrade→upgrade→行数比对） | 0021⇄0020 往返成功，五表行数逐一致 |
+| 5 | 监控就绪 | 中 | `/health` 看 trace_id；`/api/metrics` 匿名探测；backend `printenv \| grep -c ^LANGFUSE` | trace_id 实测在；`/api/metrics` 401（路由挂载、鉴权收口）；`LANGFUSE_*` 9 变量已配；7/7 healthy |
+| 6 | 回滚清晰 | 中 | §13.1–13.2 + `git tag -l -n1 y4-rollback-baseline` | Y4 标签可 `git checkout`；故障 13s 可见、恢复 25s |
 
 ---
 

@@ -102,10 +102,10 @@ export function loadKwsDetector(): Promise<KwsDetector | null> {
           provider: "cpu",
         },
         keywords: KWS_KEYWORD_PINYIN, // 内联唤醒词，见 createKws 签名（config 优先于词表文件）
-        maxActivePaths: 4,
+        maxActivePaths: 8, // Day 10 AC-42 实测：4→8（更多并行路径，短词「小伴」召回偏低）
         numTrailingBlanks: 1,
-        keywordsScore: 2.5,
-        keywordsThreshold: 0.25,
+        keywordsScore: 3.0, // 2.5→3.0（sherpa-onnx 调参指南：漏检多 → 升 score/降 threshold）
+        keywordsThreshold: 0.10, // 0.25→0.10（20 次仅命中 2 次，先保召回，误唤醒率由实测复核对账）
       });
       stream = recognizer.createStream();
       return {

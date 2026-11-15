@@ -40,9 +40,13 @@ async def _clean(session: AsyncSession) -> None:
     """清掉旧的测试数据（按 FK 反向顺序）。"""
     log.info("清理旧数据…")
     for tbl in [
-        ElderStaffAssignment, ElderGuardian,
-        Device, Bed, Elder,
-        StaffAccount, GuardianAccount,
+        ElderStaffAssignment,
+        ElderGuardian,
+        Device,
+        Bed,
+        Elder,
+        StaffAccount,
+        GuardianAccount,
         Room,
     ]:
         await session.execute(delete(tbl))
@@ -65,19 +69,33 @@ async def _seed(session: AsyncSession) -> None:
 
     # A-301：双人间，两位长者
     e1 = Elder(
-        name="张桂芬", birth_date=date(1948, 5, 12), gender="女", status="active",
+        name="张桂芬",
+        birth_date=date(1948, 5, 12),
+        gender="女",
+        status="active",
     )
     e2 = Elder(
-        name="李建国", birth_date=date(1945, 11, 3), gender="男", status="active",
+        name="李建国",
+        birth_date=date(1945, 11, 3),
+        gender="男",
+        status="active",
     )
     session.add_all([e1, e2])
     await session.flush()
     elders.extend([e1, e2])
 
-    beds.append(Bed(room_id=rooms["A-301"].room_id, bed_no="1号床", elder_id=e1.elder_id, status="occupied"))
-    beds.append(Bed(room_id=rooms["A-301"].room_id, bed_no="2号床", elder_id=e2.elder_id, status="occupied"))
-    beds.append(Bed(room_id=rooms["A-302"].room_id, bed_no="1号床", elder_id=None, status="available"))
-    beds.append(Bed(room_id=rooms["B-201"].room_id, bed_no="1号床", elder_id=None, status="available"))
+    beds.append(
+        Bed(room_id=rooms["A-301"].room_id, bed_no="1号床", elder_id=e1.elder_id, status="occupied")
+    )
+    beds.append(
+        Bed(room_id=rooms["A-301"].room_id, bed_no="2号床", elder_id=e2.elder_id, status="occupied")
+    )
+    beds.append(
+        Bed(room_id=rooms["A-302"].room_id, bed_no="1号床", elder_id=None, status="available")
+    )
+    beds.append(
+        Bed(room_id=rooms["B-201"].room_id, bed_no="1号床", elder_id=None, status="available")
+    )
     session.add_all(beds)
     await session.flush()
     log.info("✓ 长者：张桂芬 / 李建国；床位 4 张")
@@ -105,8 +123,8 @@ async def _seed(session: AsyncSession) -> None:
     # ---------- 员工账号 ----------
     staff_in: list[dict] = [
         {"name": "王管理员", "role": "admin", "phone": "13800000000"},
-        {"name": "刘护工",   "role": "care_worker", "phone": "13800000001"},
-        {"name": "陈医生",   "role": "doctor", "phone": "13800000002"},
+        {"name": "刘护工", "role": "care_worker", "phone": "13800000001"},
+        {"name": "陈医生", "role": "doctor", "phone": "13800000002"},
     ]
     staff_rows: list[StaffAccount] = []
     for s in staff_in:
@@ -124,8 +142,10 @@ async def _seed(session: AsyncSession) -> None:
 
     # ---------- 家属账号 ----------
     g1 = GuardianAccount(
-        name="张小明", phone="13900000000",
-        password_hash=hash_password("123456"), status="active",
+        name="张小明",
+        phone="13900000000",
+        password_hash=hash_password("123456"),
+        status="active",
     )
     session.add(g1)
     await session.flush()
@@ -133,16 +153,30 @@ async def _seed(session: AsyncSession) -> None:
 
     # ---------- 绑定关系 ----------
     # 护工 / 医生 → 长者
-    session.add_all([
-        ElderStaffAssignment(elder_id=e1.elder_id, staff_id=staff_rows[1].staff_id, relation="primary_care"),
-        ElderStaffAssignment(elder_id=e2.elder_id, staff_id=staff_rows[1].staff_id, relation="primary_care"),
-        ElderStaffAssignment(elder_id=e1.elder_id, staff_id=staff_rows[2].staff_id, relation="doctor"),
-        ElderStaffAssignment(elder_id=e2.elder_id, staff_id=staff_rows[2].staff_id, relation="doctor"),
-    ])
+    session.add_all(
+        [
+            ElderStaffAssignment(
+                elder_id=e1.elder_id, staff_id=staff_rows[1].staff_id, relation="primary_care"
+            ),
+            ElderStaffAssignment(
+                elder_id=e2.elder_id, staff_id=staff_rows[1].staff_id, relation="primary_care"
+            ),
+            ElderStaffAssignment(
+                elder_id=e1.elder_id, staff_id=staff_rows[2].staff_id, relation="doctor"
+            ),
+            ElderStaffAssignment(
+                elder_id=e2.elder_id, staff_id=staff_rows[2].staff_id, relation="doctor"
+            ),
+        ]
+    )
     # 家属 → 长者
-    session.add_all([
-        ElderGuardian(elder_id=e1.elder_id, guardian_id=g1.guardian_id, relation="母子", status="active"),
-    ])
+    session.add_all(
+        [
+            ElderGuardian(
+                elder_id=e1.elder_id, guardian_id=g1.guardian_id, relation="母子", status="active"
+            ),
+        ]
+    )
     await session.commit()
     log.info("✓ 绑定关系已落库")
 
