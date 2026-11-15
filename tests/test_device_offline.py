@@ -91,11 +91,7 @@ async def seeded(session: AsyncSession) -> dict[str, Any]:
 
 async def _staff_notifications(session: AsyncSession) -> list[Notification]:
     return list(
-        (
-            await session.execute(
-                select(Notification).where(Notification.target_type == "staff")
-            )
-        )
+        (await session.execute(select(Notification).where(Notification.target_type == "staff")))
         .scalars()
         .all()
     )
@@ -244,13 +240,7 @@ async def test_t0_overlap_opens_device_fault_order(
 
     assert len(outcomes) == 1
     assert len(outcomes[0].t0_work_order_ids) == 1
-    orders = list(
-        (
-            await session.execute(select(work_order_service.WorkOrder))
-        )
-        .scalars()
-        .all()
-    )
+    orders = list((await session.execute(select(work_order_service.WorkOrder))).scalars().all())
     assert len(orders) == 1
     assert orders[0].type == "device_fault"
     assert orders[0].severity == "yellow"
@@ -266,9 +256,7 @@ async def test_t0_overlap_opens_device_fault_order(
     assert len(list((await session.execute(select(work_order_service.WorkOrder))).scalars())) == 1
 
 
-async def test_no_t0_overlap_no_order(
-    session: AsyncSession, seeded: dict[str, Any]
-) -> None:
+async def test_no_t0_overlap_no_order(session: AsyncSession, seeded: dict[str, Any]) -> None:
     """掉线窗口内无 pending T0（T0 在窗口外 / 事件已终态）→ 不建单。"""
     now = datetime.datetime.now(datetime.UTC)
     device = await session.get(Device, seeded["device_id"])
