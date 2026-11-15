@@ -113,7 +113,7 @@ D10 穿插 X11 槽（15:00）。冲突时 Line 1 优先。
 
 | 日期 | 节点 | 结果/证据指针 | 等待项 |
 | --- | --- | --- | --- |
-| | | | |
+| 2026-11-15 | M5.1（Line 1 · 闸门②用例回填） | `tests/test_gates.py` 补三条攻击用例（跨长者同分向量召回零泄漏 / generic 身份不触发检索 / embedding 不可用降级不臆造），gates+memory 三套件 61 passed；`docs/SECURITY.md` G3 闭环＋修订记录 v1.2；commit `3af87d3` | 无 |
 
 ## 变更记录
 
