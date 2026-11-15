@@ -1,7 +1,7 @@
 > 状态：已冻结（D2 P0 全量回归）　｜　版本：v1.0　｜　日期：2026-11-15
 > 负责人：dev-D（评测回归与演示冻结线，任务卡 `docs/team_tasks/day10/dev-D-评测回归与演示冻结.md` D2）
 > 上游依据：PRD §5.4（追踪表与总体通过条件）｜PRD §5.2（固定测试集判据）｜计划件 `docs/plans/day10/d-评测回归与演示冻结.md` §D2
-> 代码基线：**feature-zy @ 9929fa9**（Merge branch 'develop' into feature-zy：A5 设备掉线检测、health_checkup 执行器补绑、观测与成本线合入后）
+> 代码基线：**feature-zy @ 3376c24**（Merge branch 'develop' into feature-zy ×2：A5 设备掉线检测、health_checkup 执行器补绑、M5.2 语音红档三修（2e6b713）＋观测与成本线合入后的最终基线；评测门禁与第二次 pytest 均跑在本基线上）
 > 变更记录见文末
 
 # Day 10 · D2 P0 全量回归报告（M6.4 主体）
@@ -10,7 +10,7 @@
 
 | 项 | 命令 | 结果 | 证据 |
 | --- | --- | --- | --- |
-| pytest 全量 | `uv run pytest -q` | **1721 passed / 0 failed**（8m02s，246 warnings 均为 SQLAlchemy 连接回收提醒，非缺陷） | 本报告 §3；运行日志 |
+| pytest 全量 | `uv run pytest -q` | **1723 passed / 0 failed**（6m03s，最终基线 3376c24，含 M5.2 红档三修新增 2 用例；前次 9929fa9 基线 1721 passed 同样零失败） | 本报告 §3；运行日志 |
 | ruff | `uv run ruff check app tests scripts` | **All checks passed**（257 files） | — |
 | 格式 | `uv run ruff format --check app tests scripts` | **257 files already formatted** | — |
 | 前端类型 | `tsc --noEmit`（frontend） | **EXIT=0** | — |
@@ -74,7 +74,7 @@
 | 注入 ≥10 条 | 100% 拦截 | **100%** | ✅ 通过 |
 | p95（规则路径） | ≤200ms（PRD 硬线） | 规则路径达标（模型路径单列 p95 随负载 1352→5249ms 波动，挂 F23，预算不放松） | ✅ / 模型路径 F23 挂账 |
 
-**可复算性**：以上数字与 2026-11-15 X9 补跑（三次一致）完全相同——普通 41/50、边界 14/30、误杀同 11 条（d7-076…d7-090），证明 ① 环境无关、确定性推理；② **develop 合并未引入任何评测回归**。
+**可复算性**：以上数字与 2026-11-15 X9 补跑（三次一致）完全相同——普通 41/50、边界 14/30、误杀同 11 条（d7-076…d7-090），证明 ① 环境无关、确定性推理；② **develop 合并（含 M5.2 红档三修 2e6b713）未引入任何评测回归**；③ pytest 在 9929fa9（1721）与 3376c24（1723，含新增 2 用例）两个基线上均零失败。
 
 ## 4. 失败/挂账归层表（零粉饰）
 
@@ -107,4 +107,5 @@
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.1 | 2026-11-15 | 基线口径修正：develop 二次合并 3376c24（M5.2 红档三修 2e6b713＋新增 2 用例）落在其后，pytest 在最终基线补跑 **1723 passed/0 failed**（6m03s）；报告基线更新为 3376c24（评测门禁本就跑在该基线上），§3 可复算性补双基线说明。 |
 | v1.0 | 2026-11-15 | 首版：合并后基线 9929fa9 的 P0 全量回归——pytest 1721 passed、ruff/format/tsc/build 全绿、eval_gate PASS（expected-red）、§5.4 全 42 AC 逐条结论与证据、§5.2 达标率表、失败归层六条、M5/M6.1/M6.2 输入侧证据。 |
