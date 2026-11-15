@@ -676,7 +676,7 @@ docker compose up -d
 - **阻塞模式已裁决（2026-11-13，Q3=A）：阻塞真门禁**（素材：`eval/reports/day10_gate_rerun.md` §6，2026-11-13 已逐字合入本节）：
   - **pre-push 链路**：①看板/索引/样本机制自检（`.venv` python）→ ②真门禁 `tests/eval_gate.py --provider local`（`.venv_sidecar` python + torch，**约 3~4 分钟，属 Q3 裁决既定成本**）——不过**拒绝 push**；无 `.venv_sidecar` 环境＝环境未配好，报错退出不静默放行（F02）。
   - **expected-red 标注机制（已落码）**：已知挂起红项登记 `eval/reports/expected_red.json`（gates/reason/expires/evidence/ruling **入库留痕**，变更走 git 历史）；命中红项**不阻塞 push 但留痕**（报告头＋控制台双留痕）；未标注的红一律阻塞；`--strict` 忽略全部标注（复核用）；**expires 过期自动失效**防「标注永不摘除」。
-  - **当前标注：B/D/E**（本机环境偏差＋普通集 82%<90% 待 Line 1 路由改进；规则路径 p95 0ms 硬线已达标，模型路径 1147ms 单列挂 F23），**expires=2026-11-15**——覆盖 D11 X9 复跑窗口，达标后撤销；过期自动失效、红项重新阻塞。
+  - **当前标注：B/D/E**（本机环境偏差＋普通集 82%<90% 待 Line 1 路由改进；规则路径 p95 0ms 硬线已达标，模型路径 1147ms 单列挂 F23）。**续期裁决（2026-11-15，主理人方案 C）**：expected_red.json 升 v3——`expires=2026-11-18`（标注持续至模型升级复测或 tag final 验收窗口结束），`updated_at=2026-11-15`，ruling 留裁决原文；覆盖 X9 复跑窗口（11-16 16:00），复跑达标后撤销。⚠️ **v3 文件本体由 dev-D 落库中**——v3 推上远端前，旧 v1（expires 11-15）过期后其他成员 push 会被拦，属规则生效非故障。
   - **四态验证（2026-11-13 实测全过）**：红＋标注 exit 0（留痕）｜`--strict` 红未标注 exit 1｜绿→放行分支已实测｜调低阈值 0.30＋strict exit 1｜端到端 `pre-push` 完整链路 exit 0。
   - **钩子启用**：clone 后执行一次 `git config core.hooksPath .githooks`，否则钩子不生效＝绕过门禁。
   - **纪律**：全员不得为变绿调阈值或删用例（沿 day09 X9）；`SENSITIVE_FLOOR_PCT=95.0` 不放宽；D1 复跑五闸门 **A/C 过、B/D/E 如实报红不粉饰**（详见 day10_gate_rerun.md §1–§3）。
