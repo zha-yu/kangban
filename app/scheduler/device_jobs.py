@@ -38,9 +38,7 @@ logger = logging.getLogger(__name__)
 _JOB_ID = "device_offline_check"
 
 
-async def run_device_offline_check(
-    *, session_factory: Callable[[], Any]
-) -> dict[str, int]:
+async def run_device_offline_check(*, session_factory: Callable[[], Any]) -> dict[str, int]:
     """一次掉线检测 tick：独立会话跑「检测掉线 + 恢复在线」并提交。
 
     供 APScheduler 周期调用（也供运维手动触发）。异常只记日志不上抛，
@@ -99,9 +97,7 @@ class DeviceJobRuntime:
         )
         scheduler.start()
         self._scheduler = scheduler
-        logger.info(
-            "device_jobs started interval=%ss timezone=%s", self._interval, self._timezone
-        )
+        logger.info("device_jobs started interval=%ss timezone=%s", self._interval, self._timezone)
 
     async def stop(self) -> None:
         if self._scheduler is None:

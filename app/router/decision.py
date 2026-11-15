@@ -669,9 +669,7 @@ class Router:
     # -------------------------------------------------------------- 小工具
 
     @staticmethod
-    def _merge_privacy(
-        decision: RouteDecision, shadow: SystemOneResult | None
-    ) -> RouteDecision:
+    def _merge_privacy(decision: RouteDecision, shadow: SystemOneResult | None) -> RouteDecision:
         """Day 10 B3（F23）：shadow 的 privacy_scope 有果才并入。
 
         - `shadow` 缺席（超预算被取消/短文本跳过）或 `degraded`（shadow 自身失败）

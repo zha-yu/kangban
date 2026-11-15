@@ -952,10 +952,14 @@ async def _handle_client_receipt(conn: ConnectionContext, message: Mapping[str, 
             if "delivered → delivered" in str(exc):
                 logger.info(
                     "client_receipt_idempotent_redelivery",
-                    extra=_log_extra(conn, receipt_kind=receipt_kind, notification_id=notification_id or "-"),
+                    extra=_log_extra(
+                        conn, receipt_kind=receipt_kind, notification_id=notification_id or "-"
+                    ),
                 )
                 conn.receipt_seen[idempotency_key] = "delivered"
-                _receipt_ack(conn, notification_id=notification_id, status="delivered", duplicate=True)  # type: ignore[arg-type]
+                _receipt_ack(
+                    conn, notification_id=notification_id, status="delivered", duplicate=True
+                )  # type: ignore[arg-type]
                 return
             # 例：通知尚在 generated（C3 扫描未推 pending）或已 failed——诚实拒绝，允许重试
             logger.warning(
