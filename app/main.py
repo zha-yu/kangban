@@ -69,6 +69,7 @@ from app.router.safety import SafetyDecision
 from app.scheduler.audio_retention_jobs import (
     install_audio_retention_scheduler,  # Day 9 B4：F27 72h 清理
 )
+from app.scheduler.device_jobs import DeviceJobRuntime  # Day 10 A5：设备掉线检测（补丁单 §9.6）
 from app.scheduler.health_jobs import install_health_scheduler  # Day 8 B3：健康域调度接线
 from app.scheduler.medication_jobs import install_scheduler  # Day 7 C2：用药到点调度接线
 from app.services import (
@@ -999,6 +1000,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     await audio_retention_scheduler.start()
 
+    # Day 10 A5（S9 补丁单 §9.6）：设备掉线检测调度接线——独立 AsyncIOScheduler
+    # 实例（不挂进既有 SchedulerRuntime，避免互改文件）；tick 自管会话自提交，
+    # 异常只记日志不断循环；默认 30s 一 tick（device_offline_scan_interval_seconds）。
+    device_jobs_runtime = DeviceJobRuntime(session_factory=session_factory)
+    await device_jobs_runtime.start()
+
     logger.info("application starting", extra={"app_env": settings.app_env})
     try:
         yield
@@ -1010,6 +1017,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await medication_scheduler.stop()
         await health_scheduler.stop()
         await audio_retention_scheduler.stop()
+        await device_jobs_runtime.stop()
         signaling.set_dialogue_final_handler(None)
         signaling.set_identity_confirm_handler(None)
         signaling.set_identity_timeout_handler(None)
