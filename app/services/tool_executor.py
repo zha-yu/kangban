@@ -298,6 +298,35 @@ class ToolExecutor:
                 )
             cleaned[SUBJECT_ELDER_KEY] = context_elder
 
+        # 1.6) M5.2（dev-B 语音红档②）：模型自创参数名的兜底折叠。spec 声明了
+        # `fold_extras_into` 时，把 schema 外的标量值拼进目标参数（目标缺省或为空才折），
+        # 让「模型传参漂移」降级为一次正常调用而不是 bad_args×2 → 熔断。
+        # 身份字段在 1) 已剥离；折叠只拼文本不猜语义，目标参数语义就是「长者原话」。
+        fold_target = spec.fold_extras_into
+        if fold_target is not None:
+            known = set(spec.parameters_schema.get("properties") or {})
+            extras = {
+                k: v
+                for k, v in cleaned.items()
+                if k not in known and k not in IDENTITY_KEYS and isinstance(v, (str, int, float))
+            }
+            if extras:
+                folded = "；".join(
+                    f"{k}: {v}" if isinstance(v, (int, float)) else str(v)
+                    for k, v in extras.items()
+                )
+                existing = cleaned.get(fold_target)
+                cleaned = {k: v for k, v in cleaned.items() if k not in extras}
+                cleaned[fold_target] = (
+                    f"{existing}；{folded}" if isinstance(existing, str) and existing else folded
+                )
+                logger.info(
+                    "tool_args_folded tool=%s folded_keys=%s target=%s",
+                    tool_name,
+                    sorted(extras),
+                    fold_target,
+                )
+
         # 2) 护栏：预算优先于熔断，熔断优先于同参短路（判定顺序在 Guardrails 内）
         if self._guardrails is not None:
             decision = self._guardrails.check(tool_name, cleaned)
@@ -316,6 +345,17 @@ class ToolExecutor:
         # 3) 参数校验（schema 由注册表给，不在执行器里写死任何工具名）
         problem = _validate_args(spec.parameters_schema, cleaned)
         if problem is not None:
+            # M5.2 红线（dev-B）：bad_args 也是一次被拒的工具调用，必须留审计——
+            # 之前早退不写，语音链路 bad_args×2→熔断整条链 audit_logs 零行。
+            await self._audit(
+                runtime,
+                action="tool_failed",
+                detail={
+                    "tool_name": tool_name,
+                    "error_class": "bad_args",
+                    "problem": problem,
+                },
+            )
             return ToolResult(
                 status="failed",
                 error_class="bad_args",
@@ -324,6 +364,11 @@ class ToolExecutor:
 
         # 4) 本地工具：已注册但未绑定实现（MCP 工具 wired 恒真，未注入客户端由 _run_mcp 判）
         if not spec.wired:
+            await self._audit(
+                runtime,
+                action="tool_failed",
+                detail={"tool_name": tool_name, "error_class": "not_wired"},
+            )
             return ToolResult(
                 status="failed",
                 error_class="not_found",

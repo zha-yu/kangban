@@ -79,6 +79,7 @@ from app.services import (
     memory_service,
     voiceprint_service,
 )
+from app.services.audit_log_service import make_agent_audit_sink
 from app.services.auth_service import (
     AuthConflictError,
     AuthExpiredError,
@@ -628,6 +629,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # 实际没有任何工单存在。落库经 work_order_service（agents 不写库），
         # dedupe_token=react_followup:{turn_id}:{tool_name} 同轮同工具只建一单。
         followup_sink=make_followup_sink(session_factory),
+        # M5.2 红线（dev-B 提单，主理人授权 dev-C 越域装配）：Agent 侧熔断审计——
+        # 之前 Agent 侧 Guardrails 拒绝走不到 ToolExecutor 审计点，audit_logs 零行。
+        audit_sink=make_agent_audit_sink(session_factory),
         # Day 10 B3（F23）：privacy_scope 消费点的双人间判定（信号 personal 时才惰性查询）
         privacy_room_probe=is_shared_room_for_elder,
     )
