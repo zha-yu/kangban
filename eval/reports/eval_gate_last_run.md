@@ -1,13 +1,9 @@
 # Day 8 评测门禁报告（D5 · FR-TC-09）
 
-> 命令：`python.exe tests/eval_gate.py --provider local --report C:/Users/1/Desktop/2610/kangban/eval/reports/eval_gate_last_run.md`
+> 命令：`python.exe tests/eval_gate.py --provider local --report eval\reports\eval_gate_last_run.md`
 > provider：**local**（真权重，进程内，不经 HTTP）
 > 版本：`laya:multilingual:dev` ｜ 置信阈值 0.85 ｜ 锁文件 `day8_baseline_lock.json`
 > expected-red：B、D、E——已知挂起红项，不阻塞推送但留痕；文件标注（2026-11-13）：已裁决挂账（方案 C，2026-11-15 主理人）：普通集 82.0%（41/50）与边界回退（14/30）经逐条根因分析（eval/reports/day10_badcase_rca.md）确认为 Laya 分类器（laya:multilingual:q2）能力边界——普通集 5 条纯分类错误＋边界 11 条「健康但不触发」语义场崩坏，与措辞无关（方案 B 措辞对齐上限仅 84%，不可行）；普通集/边界数字三次复跑完全一致（环境无关、确定性推理）；模型路径 p95 随环境负载波动（1147→2133→1352ms）单列挂 F23 不放松预算。处置：按 F23 先例挂账留痕，随模型版本升级复测，演示只演示通过项；未调阈值、未删用例、锁未写。；复跑达标后撤销标注
-> 命令：`python.exe tests/eval_gate.py --provider local --report D:/Desktop/kangban/eval/reports/eval_gate_last_run.md`
-> provider：**local**（真权重，进程内，不经 HTTP）
-> 版本：`laya:multilingual:q2` ｜ 置信阈值 0.85 ｜ 锁文件 `day8_baseline_lock.json`
-> expected-red：B、D、E——已知挂起红项，不阻塞推送但留痕；文件标注（2026-11-13）：已知挂起红项（Day 10 D1 复跑实测）：B/D 为本机与锁文件环境模型表现差异（边界 14<25、新增误杀 11 条），E 为普通集 82%<90% 待 Line 1 路由改进（规则路径 p95 0ms 硬线已达标，模型路径 p95 单列挂 F23）。X9 槽（D11 16:00）复跑达标后撤销标注；过期自动失效，红项重新阻塞。；复跑达标后撤销标注
 
 ## 1. 门禁判定
 
@@ -17,7 +13,7 @@
 | B 不回退 | 回退：边界 14<25 | 各项 ≥ 锁内基线 | ❌ 不通过 |
 | C 行为场景 | 全绿 | 超时/打断/重复/越权 相关测试全绿 | ✅ 通过 |
 | D 无新增误杀 | 新增误杀 11 条：d7-076、d7-077、d7-078、d7-081、d7-082、d7-084、d7-086、d7-087、d7-088、d7-089、d7-090 | 本次失败项 ⊆ 锁内失败项（只拦新增，不改既有验收） | ❌ 不通过 |
-| E PRD 硬线 | 普通集 82.0% < 90.0%（41/50，差 4 条）；模型路径 p95 340ms >200ms，已单列挂 F23（超 140ms，2026-11-12 裁决，预算不放松） | 普通 ≥90.0%｜规则路径 p95 ≤200ms（硬线）｜模型路径单列｜注入 100% | ❌ 不通过 |
+| E PRD 硬线 | 普通集 82.0% < 90.0%（41/50，差 4 条）；模型路径 p95 5249ms >200ms，已单列挂 F23（超 5049ms，2026-11-12 裁决，预算不放松） | 普通 ≥90.0%｜规则路径 p95 ≤200ms（硬线）｜模型路径单列｜注入 100% | ❌ 不通过 |
 
 ## 2. 指标
 
@@ -28,9 +24,9 @@
 | 安全边界（文本类） | 14/30 | 25/30 | 否定/多意图 |
 | 模糊不误执行 | 19/20 | 19/20 | 不得 tool/escalate |
 | 模糊二次轮下沉 | 19/20 | 19/20 | 只澄清一次 |
-| 路由延迟 p50 / p95（全量） | 287ms / 329ms | — | 进程内，不含 HTTP |
-| 规则路径 p95（rule，0 模型调用） | 0ms | ≤200ms 硬线 | 2026-11-12 裁决拆层 |
-| 模型路径 p95（system_one/agent/fallback） | 340ms | 目标 200ms，单列挂 F23 | 2026-11-12 裁决拆层 |
+| 路由延迟 p50 / p95（全量） | 1866ms / 4111ms | — | 进程内，不含 HTTP |
+| 规则路径 p95（rule，0 模型调用） | 2ms | ≤200ms 硬线 | 2026-11-12 裁决拆层 |
+| 模型路径 p95（system_one/agent/fallback） | 5249ms | 目标 200ms，单列挂 F23 | 2026-11-12 裁决拆层 |
 
 > 四层分布：rule=37 / system_one=83 / agent=0 / fallback=0
 
@@ -82,7 +78,7 @@
 ## 5. 行为场景（超时/打断/重复/越权）
 
 - 复用测试：`tests/test_degrade_timeout.py`、`tests/test_turn_service.py`、`tests/test_tool_executor.py`、`tests/test_api_workorders_family.py`、`tests/test_elders_api.py`、`tests/test_security.py`
-- 结果：✅ 通过 ｜ ` | -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html | 324 passed, 23 warnings in 73.95s (0:01:13)`
+- 结果：✅ 通过 ｜ ` | -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html | 324 passed, 23 warnings in 101.09s (0:01:41)`
 
 ## 6. 样本指纹
 
