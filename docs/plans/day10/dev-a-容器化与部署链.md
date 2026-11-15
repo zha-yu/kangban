@@ -1,4 +1,4 @@
-> 状态：**已收口（S0–S10 全部完成 · A1–A5 全部交付 · 确认点 ❺ 于 2026-11-14 通过主理人确认）**；B 组遗留已清零（2026-11-15）；**M6.1 正式收口（确认点❹，2026-11-15 20:46 与 dev-C 同窗口合验四组全过一致）**；A5 接线补丁需求单待 dev-B §9.6；M5 收口复核结论已出（`docs/team_tasks/day09/m5-收口复核结论.md`，B/C/D 回执待）　｜　版本：v2.7　｜　日期：2026-11-15
+> 状态：**已收口（S0–S10 全部完成 · A1–A5 全部交付 · 确认点 ❺ 于 2026-11-14 通过主理人确认）**；B 组遗留已清零（2026-11-15）；**M6.1 正式收口（确认点❹，2026-11-15 20:46 与 dev-C 同窗口合验四组全过一致）**；**A5 接线已由 dev-B 合入 develop（b038979，§9.6 闭环；本分支合并后 6 用例真实装配下全绿）**；M5 收口复核结论已出（B/C 回执齐、D 处置意向已定待落库）　｜　版本：v2.8　｜　日期：2026-11-15
 > 负责人：**dev-A（唯一）**　｜　任务包：**A · 容器化与部署链（17h）**
 > 关联：docs/team_tasks/day10/dev-A-容器化与部署链.md v1.0（任务书，分工与判据唯一依据）｜docs/team_tasks/day10/day10-任务总览与DAG.md v1.1（§2 DAG、§3 对接点 Y1/Y2/Y4、§4 写域、§8 待确认）｜docs/plans/day10/day-10-交付与观测-工作推进计划.md v1.1（总计划件）
 > 上游依据：PRD line 578（Day 10 完成定义）、§2.5（一键启动/HTTPS/健康检查）、line 455（FR-TC-05）、line 444（FR-ADM-10）｜技术设计文档 §8.3 Day 10（line 1176–1183：多阶段非 root、七服务编排、回滚演练）、§1.4 选型表 line 206（compose 七服务）
@@ -492,6 +492,8 @@ await device_jobs_runtime.stop()
 **写域边界**：dev-A 只交付了 `app/scheduler/device_jobs.py`（新文件）＋ `app/services/device_service.py` 增量（末尾 A5 段）＋ `app/core/config.py` 两行（`device_heartbeat_period_seconds=60`／`device_offline_scan_interval_seconds=30`）＋ `tests/test_device_offline.py`（新）。B 合入补丁后跑 `uv run pytest tests/test_device_offline.py -q`（6 用例）即可回归。
 
 **优先级**：P2（A5 无硬下游）；D13 演示前合入即可——不接线不影响现有功能，仅掉线检测不生效。
+
+**✅ 已闭环（2026-11-15）**：dev-B 以 `b038979` 合入 develop（A5 接线）；本分支合并 develop 后 `tests/test_device_offline.py` 6 用例在真实 main.py 装配下全绿，全量 1723 passed 无回退。
 
 ### 9.7 C 组合验交接单（2026-11-15 产出，dev-A → dev-C／主理人）
 
