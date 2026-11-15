@@ -56,7 +56,7 @@ identity_service 而非 runtime_context —— core 层只提供「构造即合�
 | 声纹未命中（<0.62） | 低置信主动询问确认（页面 `identity_ask`）→ 仍无法确定进通用模式：不读个人记忆、不写健康记录、不确认用药 | PRD §3.2 三档级联；FR-VPR-02/03；`tests/test_companion_identity.py` |
 | 声纹服务不可用 | 降级为「长者 ID + 主动确认」（页面询问），不静默猜人 | PRD §3.2 |
 | 3D 资源加载失败或超 5s | 切静态头像，语音/用药/健康任务完整可用，不白屏 | FR-3D-02；AC-15 |
-| 记忆召回失败 / 跨长者向量检索被拒 | 本轮不加载记忆，不得臆造（闸门②口径） | AGENTS §6；`tests/test_memory_service.py`、`tests/test_memory_embedding.py` |
+| 记忆召回失败 / 跨长者向量检索被拒 | 本轮不加载记忆，不得臆造（闸门②口径） | AGENTS §6；`tests/test_memory_service.py`、`tests/test_memory_embedding.py`、`tests/test_gates.py`（闸门②攻击用例） |
 | 音频清理 job 异常 / 目录不存在 | 空跑不报错（首启常态），下个周期重试；只删原始音频后缀，脱敏文本永不误删 | `tests/test_audio_retention_jobs.py` |
 
 ## 5. 数据保留口径（Day 10 C5 补节）
@@ -84,7 +84,7 @@ identity_service 而非 runtime_context —— core 层只提供「构造即合�
 ## 7. 测试入口
 
 ```bash
-# 三道闸门攻击用例（本文件第 2 节矩阵，AC-18/24/闸门①③）
+# 三道闸门攻击用例（本文件第 2 节矩阵，AC-18/24/闸门①②③）
 uv run pytest tests/test_gates.py -q
 
 # 提示注入防线（AC-36，夹具 eval/fixtures/injection.jsonl 共 16 条）
@@ -109,7 +109,7 @@ uv run python tests/eval_gate.py
 | --- | --- | --- | --- |
 | G1 | 闸门①「403 ＋ DB 审计」入口级闭环 | REST/WS 现状**零入口**接受客户端 thread_id；`validate_thread_belongs_to_device` 无业务调用方（仅单测） | 防线已备（格式层＋DB 层＋纯代码层三层齐）；等 X1 回执帧（dev-B/D）等携带 thread/task 维度的入口落地时一行接线，届时本文件补入口级用例 |
 | G2 | AC-18 范围外**读**的审计落 `audit_logs` DB 行 | 现状为结构化日志审计（A-02 口径），DB 行仅用于写操作 | 若主理人裁决「读也要 DB 行」，需改 elder_service._audit（非 dev-A 写域，需交接） |
-| G3 | 闸门②记忆隔离攻击用例 | dev-B2 已交付（2026-11-12：embedding + cosine 召回 + 强制 `WHERE elder_id`，`tests/test_memory_embedding.py`）；**`test_gates.py` 闸门②攻击用例尚未回填**（文件头注仍标「B2 修复中，本文件不覆盖」） | M5.1 复验时补闸门②用例并回填本文件与本节 |
+| G3 | 闸门②记忆隔离攻击用例 | **已闭环（2026-11-15，dev-B）**：dev-B2 实现（2026-11-12：embedding + cosine 召回 + 强制 `WHERE elder_id`，`tests/test_memory_embedding.py`）＋ `test_gates.py` 攻击用例已回填（跨长者同分向量零泄漏 / generic 身份不触发检索 / embedding 不可用降级不臆造，覆盖矩阵第 ② 行同步更新） | 无遗留；M5.1 复验以此为准 |
 
 ## 修订记录
 
@@ -117,3 +117,4 @@ uv run python tests/eval_gate.py
 | --- | --- | --- |
 | v1.0 | 2026-11-12 | 初版（Day 9 A2 交付）：三道闸门口径、攻击矩阵 11 行、缓解措施 7 条、测试入口、缺口登记 G1–G3。 |
 | v1.1 | 2026-11-13 | Day 10 C5 复核修订（dev-C）：① 补齐三节——§4 降级矩阵、§5 数据保留口径（原始音频 72h 自动删除＋声纹 embedding 磁盘/KMS 层加密）、§6 HITL 人工确认清单（用药确认、健康黄/红复核等 5 项，与 PRD FR-MED-05/FR-HLT-03/FR-VPR-02/03 对齐）；② §7 测试入口补 `test_injection.py`（AC-36 夹具 `eval/fixtures/injection.jsonl`）与 `test_audio_retention_jobs.py`；③ G3 现状更新为 dev-B2 已交付、闸门②用例待回填。原 §1–§3（威胁模型：三道闸门/攻击矩阵/缓解措施）口径未改动，不推翻 Day 9 收口结论；缺口登记顺延为 §8。 |
+| v1.2 | 2026-11-15 | M5.1 闸门②攻击用例回填（dev-B）：`tests/test_gates.py` 补三条攻击用例——跨长者同分向量召回零泄漏（AC-39②）、generic 身份不触发记忆检索、embedding 不可用降级为空不臆造（不回退无过滤检索）；覆盖矩阵第 ② 行由「B2 修复中」改为已覆盖；§4 降级矩阵锚点与 §7 测试入口同步补 `test_gates.py`。G3 缺口闭环。闸门①③、AC-18/24 既有口径不变。 |
