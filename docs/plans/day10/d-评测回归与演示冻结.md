@@ -1,4 +1,4 @@
-> 状态：进行中（S0/D1/D1-R2/X1＋AC-42/X9/M5.4 断言/D2 P0 全量回归已完成，余 M5 收口形式确认＋D3/D4/D5 待 D13）　｜　版本：v1.9　｜　日期：2026-11-15
+> 状态：进行中（S0/D1/D1-R2/X1＋AC-42/X9/M5.4 断言/D2 全量回归/**D3 演练＋D4 演示脚本** 已完成，余 D5 tag final 待 M5/M6 形式确认）　｜　版本：v2.0　｜　日期：2026-11-15
 > 关联：docs/team_tasks/day10/dev-D-评测回归与演示冻结.md v1.0（任务卡）｜docs/team_tasks/day10/day10-任务总览与DAG.md v1.1（§2 DAG、§3 对接点 Y1–Y5、§4 写域）｜docs/plans/day10/day-10-交付与观测-工作推进计划.md（§4.4 dev-D 节）｜docs/team_tasks/day09/dev-D-长者端语音与评测门禁.md v1.4（day09 完成度核查结果）
 > 上游依据：PRD line 455–457（FR-TC-09 评测门禁）、line 578（Day 10 完成定义）、§5.1/§5.2/§5.4（AC 追踪表与固定测试集）｜技术设计文档 §8.3 line 1176–1183（Day 10 实现口径）｜大纲课时 10.3/10.4（仅取流程，不取事实）
 > 变更记录见文末
@@ -244,7 +244,8 @@ flowchart LR
 | 2026-11-15 | 全量核查＋紧迫项处置 | ✓ ①day10 任务卡状态回写 v1.1（修正 0/4 失真）；②**X9 槽正式复跑（补跑）**：普通集 82.0% 三次复跑一致（分类器能力上限，环境无关）、p95 2133→1352ms（环境负载差异，佐证成员数据更好）、A✅C✅/B❌D❌E❌ 如实报红锁未写；③expected-red 续期 v2（expires 2026-11-17 覆盖 D2/D5 窗口，reason 补 X9 结论）；④X9 结论落档主报告 §7 | day10_gate_rerun.md §7；expected_red.json v2；day10 任务卡 v1.1 | ①**普通集 90% 判据处置路径三选一**（模型优化/fixture 措辞对齐/判据调整）→ 主理人裁决；②M5 收口确认（他人槽位）→ D2 开工硬前置 |
 | 2026-11-15 | 方案 B 根因分析→方案 C 裁决落档 | ✓ badcase 逐条根因分析（`day10_badcase_rca.md` v1.0）：普通集 9 条中仅 1 条措辞歧义、5 条纯分类错误；边界 11 条全部「健康但不触发」语义场崩坏——**方案 B 上限 84% 不可行**；11-12 批次 13 条 mock 签名数据标注不采信。**主理人裁决方案 C**：普通集 82%＋边界回退按 F23 先例挂账，随模型版本升级复测，演示只演示通过项；expected_red.json **v3**（expires 2026-11-18）＋主报告 §8 落档 | eval/reports/day10_badcase_rca.md v1.1；expected_red.json v3；day10_gate_rerun.md §8 | D2 开工待 M5 收口确认（主理人答复中） |
 | 2026-11-15 | M5.3/M5.4 补证据实测（Line 1 D11 收口段，dev-D 值守） | ✓ **AC-42 Run E 整跑 20 轮**：检出 20/20、≤1.5s 17/20、p50=409ms（超标 3 条＝冷启动 6318/边界 1579(+79ms)/抖动 2222ms），与 Run B–D 稳态 17/17 三日复现印证，全程判据仍未达→维持挂账（提单主理人）；**M5.4 前端断言 8/8 全 PASS**（`scripts/m54_passive_auth_e2e.py`：旧设备 token→401 TOKEN_REVOKED、家属日报 403 SCOPE_FORBIDDEN＋审计、pad 被动登出回登录页、家属空态，截图 2 张）→ day09 任务卡 v1.7 改「已完成」、计划件 v1.2 收口；M5.4 口径修正（F0=200 空列表、长者级日报=403+审计）落台账 §10.3 | 台账 §10.2/§10.3；scripts/m54_passive_auth_e2e.py；.workbuddy/tmp/m54_*.png | M5 收口确认（主理人）——本行证据补齐后 Line 1 dev-D 侧再无欠账 |
-| 2026-11-15 | **D2 P0 全量回归完成（M6.4 主体）** | ✓ 合并后基线 9929fa9：①四件套全绿（pytest **1721 passed/0 failed** 8m02s、ruff/format 257 文件、tsc ✓、vite build ✓）；②eval_gate **PASS**（普通 41/50、敏感 20/20、边界 14/30 与 X9 复跑完全一致——合并不引入回归）；③**M6.1 实测达成**：compose 七服务全 healthy＋HTTPS 200＋CA 受信任根导入；④**§5.4 全 42 AC 逐条结论与证据落档**（AC-37 裁减、AC-42 挂账口径、AC-31 活链路 trace 串查＋B 证据引用）；⑤种子 psql 核对与台账同步；⑥提单 dev-C（Windows Proactor）/主理人（ASR 不可用）/seed 脚本口径 | `eval/reports/day10_p0_regression.md` v1.0；`eval/reports/eval_gate_last_run.md`；台账 §1/§6/§9 | M5 收口形式确认（dev-A 牵头，机器证据已齐）；D3/D4 待 D13 |
+| 2026-11-15 | **D2 P0 全量回归完成（M6.4 主体）** | ✓ 合并后基线 9929fa9→3376c24：①四件套全绿（pytest **1723 passed/0 failed**（最终基线补跑，9929fa9 上 1721 同样零失败）、ruff/format 257 文件、tsc ✓、vite build ✓）；②eval_gate **PASS**（普通 41/50、敏感 20/20、边界 14/30 与 X9 复跑完全一致——合并不引入回归）；③**M6.1 实测达成**：compose 七服务全 healthy＋HTTPS 200＋CA 受信任根导入；④**§5.4 全 42 AC 逐条结论与证据落档**（AC-37 裁减、AC-42 挂账口径、AC-31 活链路 trace 串查＋B 证据引用）；⑤种子 psql 核对与台账同步；⑥提单 dev-C（Windows Proactor）/主理人（ASR 不可用）/seed 脚本口径 | `eval/reports/day10_p0_regression.md` v1.1；台账 §1/§6/§9 | M5 收口形式确认（dev-A 牵头，机器证据已齐）；D3/D4 待 D13 |
+| 2026-11-15 | **D3 干净主机演练＋D4 演示脚本完成** | ✓ **D3**（全新克隆目录，非真机如实登记）：四判据全过——三步起栈（缺漏补齐后）、七服务 healthy、HTTPS 无告警 200、干净库退房链路 dryrun **21 PASS/0 FAIL**；**缺漏三件提单**（①`static/` 不在 git→Dockerfile 构建挂→dev-A；②README 缺证书/NO_PROXY 步骤→dev-C；③演示种子导入步骤缺失→dev-C/主理人），均「提单→模拟回改→复跑通过」闭环。✓ **D4**：四场景演示脚本（全部 AC 为回归报告通过项；AC-42 用呼叫按钮、AC-37 裁减不演示；开场自检含声纹 0.62 确认；视频不交付）。口径登记：本机不再复跑评测门禁/不动 `eval_gate_last_run.md`；推送经同意 `--no-verify` | `eval/reports/day10_d3_clean_host.md` v1.0；`eval/reports/day10_demo_script.md` v1.0 | D5 tag final 待 M5/M6 形式确认（D13） |
 
 ---
 
@@ -261,6 +262,7 @@ flowchart LR
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v2.0 | 2026-11-15 | **D3 干净主机演练＋D4 演示脚本完成**：D3 四判据全过（三步起栈/七服务 healthy/HTTPS 无告警/干净库 dryrun 21 PASS），缺漏三件提单（dev-A static 入库、dev-C README 四步＋NO_PROXY、种子导入步骤）；D4 四场景演示脚本落档（只演示通过项，AC-42 用呼叫按钮）。**口径登记：本机不再复跑评测门禁、不动 eval_gate_last_run.md（评测归测试数据更好的成员）；推送经同意 --no-verify**。 |
 | v1.9 | 2026-11-15 | **D2 P0 全量回归完成（M6.4 主体）**：合并后基线 9929fa9 四件套全绿＋eval_gate PASS（与 X9 复跑一致，无合并回归）＋M6.1 实测达成（compose 七服务 healthy＋HTTPS）＋§5.4 全 42 AC 逐条证据落档 `eval/reports/day10_p0_regression.md` v1.0＋种子核对与台账同步＋提单 dev-C/主理人/seed 脚本。 |
 | v1.8 | 2026-11-15 | **M5.3/M5.4 补证据实测落档**：AC-42 Run E 整跑 20 轮（检出 100%、p50=409ms、稳态三日复现、全程判据维持挂账）；M5.4 退房被动链路前端断言 8/8 全 PASS（新增 `scripts/m54_passive_auth_e2e.py`＋截图）；day09 dev-D 任务卡 v1.7 改「已完成」、计划件 v1.2 收口；台账新增 §10.3；提单 dev-A（dryrun seed_orm 复跑 FK）。 |
 | v1.7 | 2026-11-15 | **方案 C 裁决落档**：badcase 逐条根因分析（day10_badcase_rca.md）确认方案 B 不可行（上限 84%）；主理人裁决按 C 判据挂账（F23 先例，随模型升级复测）；expected_red.json v3（expires 2026-11-18）＋主报告 §8。 |
