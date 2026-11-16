@@ -10,13 +10,13 @@
 | 1 | dev-A · Day 10 任务书 · 容器化与部署链 | ✅ 已完成（A1–A5 全部交付，确认点❺ 2026-11-14 收口；B 组遗留 2026-11-15 清零：R16 判据修订／R15 警示登记／§6 回填/coturn 清理；M6.1 A 侧待与 dev-C 合验；接线补丁待 dev-B §9.6） | `docs/team_tasks/day10/dev-A-容器化与部署链.md` |
 | 2 | dev-B · Day 10 任务书 · 观测与成本线 | ❔ 可执行（待 M6.0 启动核对后开工） | `docs/team_tasks/day10/dev-B-观测与成本线.md` |
 | 3 | dev-C · Day 10 任务书 · 前端构建与文档齐套线 | ✅ 已收口（C1–C5 全交付；README §12–§15 四章节全部按 A2a/A4/B2/B1 素材填实，M6.3 C 侧齐套；15.3 SLO 小项挂起归 B） | `docs/team_tasks/day10/dev-C-前端构建与文档齐套.md` |
-| 4 | dev-D · Day 10 任务书 · 评测回归与演示冻结线 | 🚧 进行中（S0/D1/D1-R2/Y5/X1/X9/M5.4 断言/**D2 P0 全量回归** 已完成：pytest 1721 passed＋eval_gate PASS＋四件套全绿＋42 AC 逐条落档 `eval/reports/day10_p0_regression.md`；D3/D4/D5 待 D13） | `docs/team_tasks/day10/dev-D-评测回归与演示冻结.md` |
+| 4 | dev-D · Day 10 任务书 · 评测回归与演示冻结线 | 🚧 进行中（S0/D1/D1-R2/Y5/X1/X9/M5.4 断言/**D2 P0 全量回归/D3 干净主机演练/D4 演示脚本** 已完成：`eval/reports/day10_p0_regression.md` v1.1、`day10_d3_clean_host.md` v1.0、`day10_demo_script.md` v1.0；余 D5 tag final 待 M5/M6 形式确认） | `docs/team_tasks/day10/dev-D-评测回归与演示冻结.md` |
 
 ## 计划件状态
 
 | 计划 | 状态 |
 | --- | --- |
-| `docs/plans/day10/d-评测回归与演示冻结.md` | 🚧 进行中（S0/D1/D1-R2/X1＋AC-42/X9/M5.4 断言/D2 P0 全量回归已完成，余 M5 收口形式确认＋D3/D4/D5 待 D13） |
+| `docs/plans/day10/d-评测回归与演示冻结.md` | 🚧 进行中（S0/D1/D1-R2/X1＋AC-42/X9/M5.4 断言/D2 全量回归/**D3 演练＋D4 演示脚本** 已完成，余 D5 tag final 待 M5/M6 形式确认） |
 | `docs/plans/day10/day-10-交付与观测-工作推进计划.md` | 🚧 进行中（v1.4 · C 包 S0–S3 已收口；Q1/Q3/Q5/Q10 已裁决，Q2/Q4/Q6–Q9 待 M6.0 收敛） |
 | `docs/plans/day10/dev-a-容器化与部署链.md` | ❔ **已收口（S0–S10 全部完成 · A1–A5 全部交付 · 确认点 ❺ 于 2026-11-14 通过主理人确认）**；B 组遗留已清零（2026-11-15）；**M6.1 正式收口（确认点❹，2026-11-15 20:46 与 dev-C 同窗口合验四组全过一致）**；**A5 接线已由 dev-B 合入 develop（b038979，§9.6 闭环；本分支合并后 6 用例真实装配下全绿）**；M5 收口复核结论已出（B/C 回执齐、D 处置意向已定待落库） |
 | `docs/plans/day10/dev-b-day10-工作推进计划.md` | ❔ **已完成（2026-11-13 主理人确认）· Step 0–6 全部收口（M6.2 达成；Step 5/6 经主理人 20:22/20:45 确认）· 越域修复 redact.py 误伤 bug（授权已交 dev-A）· 唯一挂起＝D3 演练抽验（支援项，待 D13 时点，素材已备：docs/guides/langfuse-操作指引.md）** |
