@@ -1,4 +1,4 @@
-> 状态：进行中（S0/D1/D1-R2/Y5/X1/X9/M5.4 断言/**D2 P0 全量回归** 已完成：pytest 1721 passed＋eval_gate PASS＋四件套全绿＋42 AC 逐条落档 `eval/reports/day10_p0_regression.md`；D3/D4/D5 待 D13）　｜　版本：v1.3　｜　日期：2026-11-15
+> 状态：进行中（S0/D1/D1-R2/Y5/X1/X9/M5.4 断言/**D2 P0 全量回归/D3 干净主机演练/D4 演示脚本** 已完成：`eval/reports/day10_p0_regression.md` v1.1、`day10_d3_clean_host.md` v1.0、`day10_demo_script.md` v1.0；余 D5 tag final 待 M5/M6 形式确认）　｜　版本：v1.4　｜　日期：2026-11-15
 > 负责人：**dev-D（唯一）**　｜　任务包：**D · 评测回归与演示冻结线**　｜　容量：上限 24h（3 人日）；实排开发 **11h ＝ 1.375 人日**，余额为 Line 1 联调槽位占用＋缓冲
 > 关联：docs/team_tasks/day10/day10-任务总览与DAG.md v1.0（§2 DAG、§3 对接点 Y4/Y5、§4 写域）｜docs/plans/day10/day-10-交付与观测-工作推进计划.md v1.0 §4.4
 > 上游依据：PRD §5.1/§5.2/§5.4（AC 追踪表与固定测试集）、line 455–457（FR-TC-09 评测门禁）、line 578（P0 回归与演示冻结）｜技术设计文档 §8.3 Day 10（功能验收原文、tag 口径）
@@ -150,6 +150,7 @@ D10 穿插 X1 槽（12:00）/X9 槽；D11 值守 Line 1 M5.3/M5.4。冲突时 Li
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.4 | 2026-11-15 | **D3＋D4 完成**：①D3 干净主机演练（全新克隆目录，非真机如实登记）四判据全过——三步起栈（缺漏补齐后）、七服务 healthy、HTTPS 无告警 200、干净库退房链路 dryrun 21 PASS/0 FAIL；**缺漏三件提单**（dev-A：`static/` 不在 git 致 Dockerfile 构建挂；dev-C：README 缺证书与 NO_PROXY 步骤；演示种子导入步骤缺失），均「提单→模拟回改→复跑通过」闭环（`eval/reports/day10_d3_clean_host.md` v1.0）；②D4 演示脚本四场景落档（`eval/reports/day10_demo_script.md` v1.0，全部 AC 均为回归报告通过项，AC-42 用呼叫按钮、AC-37 裁减不演示，视频不交付）；③按 dev-D/主理人口径：本机不再复跑评测门禁/不动 `eval_gate_last_run.md`，推送经同意 `--no-verify`。余 D5 tag final 待 M5/M6 形式确认。 |
 | v1.3 | 2026-11-15 | **D2 P0 全量回归完成（合并后基线 9929fa9）**：①四件套全绿（pytest 1721 passed/0 failed 8m02s、ruff/format 257 文件、tsc ✓、vite build ✓ 1m16s）；②eval_gate PASS（普通 41/50、敏感 20/20、边界 14/30 与 X9 复跑完全一致——合并不引入回归）；③**M6.1 实测达成**：compose 七服务全 healthy＋HTTPS 200＋CA 导入受信任根（证书 `deploy/gen-dev-cert.sh` 生成）；④§5.4 全 42 AC 逐条结论与证据落档 `eval/reports/day10_p0_regression.md` v1.0（AC-37 裁减、AC-42 挂账口径、AC-31 活链路 trace 串查）；⑤种子核对与台账同步（memory=0 为 checkout 正确清除、medplan=1 补登记）；⑥提单：dev-C（Windows Proactor 启动缺陷）、主理人（外部 ASR 不可用）、seed_test_data.py 口径过时。D3/D4/D5 待 D13。 |
 | v1.2 | 2026-11-15 | **状态行回写（M5.3/M5.4 补证据完成）**：AC-42 Run E 整跑 20 轮（检出 20/20、p50=409ms、稳态三日复现、全程判据维持挂账）；M5.4 退房被动链路前端断言 8/8 全 PASS（`scripts/m54_passive_auth_e2e.py`＋2 张截图）；day09 dev-D 任务卡 v1.7 改「已完成」、计划件 v1.2 收口、台账 §10.3 新增；提单 dev-A（dryrun seed_orm 复跑 FK）。D2 正式回归仍待 M5 收口确认。 |
 | v1.1 | 2026-11-15 | **状态行回写**（2026-11-15 主理人指示执行核查表紧迫项）：S0/D1/D1-R2/Y5 已完全达标（详见计划件 `docs/plans/day10/d-评测回归与演示冻结.md` v1.5 §6 执行记录逐行留痕）；X1 联调 8/8＋AC-42 录音驱动实测完成（真人口述复测与冷启动豁免待裁决）；D2 准备段完成（台账 §10/§10.1），正式回归待 M5 收口确认后开工；X9 槽（D11 16:00）逾期未执行，expected-red B/D/E 标注 expires=2026-11-15（含当日有效）。 |
